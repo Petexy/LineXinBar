@@ -80,7 +80,7 @@ inject key presses and pointer clicks, and end the session.
 | event `volume`      | A volume key was pressed: one step up, one step down, or the switch that silences the session. A key held down arrives as a run of them. |
 | request `capture_output` | Photograph a whole display — everything on it — into a PNG. |
 | event `output_captured` | Where *that* picture went, or that it did not happen. |
-| request `move_pointer` | Move the seat's pointer, as a mouse would. |
+| request `move_pointer` | Move the seat's pointer, as a mouse would — inside the application in front of the display being driven, and no further. |
 | request `pointer_button` | Press or release one of its buttons. |
 | request `scroll_pointer` | Scroll where it is, as a wheel or a touchpad would. |
 | request `keyboard_key` | Press or release a key on the seat's keyboard — the arrows, not text. |

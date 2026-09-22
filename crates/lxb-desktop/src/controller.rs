@@ -81,7 +81,7 @@ pub struct Poll {
     /// only say by being held for longer.
     pub scroll_stick: (f32, f32),
     /// Pointer buttons that changed this poll, as `(Linux button code, down)`.
-    /// Empty unless one of the buttons the pointer borrows moved.
+    /// Empty unless one of the triggers the pointer clicks with moved.
     pub clicks: Vec<(u32, bool)>,
     /// Arrow keys that changed this poll, as `(Linux key code, down)`, from the
     /// D-pad.
@@ -130,6 +130,11 @@ pub struct ControllerInput {
     /// an application takes the screen, which is exactly when the D-pad starts
     /// being the arrows.
     dpad_held: [bool; Direction::COUNT],
+    /// Whether each trigger was down last poll, as `(left, right)`, for the
+    /// reason the D-pad's state above it is kept: a trigger is read as a
+    /// *position* on every pad here, so the press and the release are this
+    /// shell's to find rather than something a device delivers.
+    triggers_held: (bool, bool),
     /// The second-generation Steam Controller, which GilRs can never see
     /// because the kernel gives that pad no gamepad node at all. Read from its
     /// HID report instead — see [`crate::steam_hid`].
@@ -175,6 +180,7 @@ impl ControllerInput {
                 gilrs: None,
                 navigation: Navigation::default(),
                 dpad_held: [false; Direction::COUNT],
+                triggers_held: (false, false),
                 guide_chorded: false,
                 last_touched: None,
                 pad: SteamPad::new(false),
@@ -190,6 +196,7 @@ impl ControllerInput {
                     gilrs: Some(gilrs),
                     navigation: Navigation::default(),
                     dpad_held: [false; Direction::COUNT],
+                    triggers_held: (false, false),
                     guide_chorded: false,
                     last_touched: None,
                     pad: SteamPad::new(true),
@@ -202,6 +209,7 @@ impl ControllerInput {
                     gilrs: None,
                     navigation: Navigation::default(),
                     dpad_held: [false; Direction::COUNT],
+                    triggers_held: (false, false),
                     guide_chorded: false,
                     last_touched: None,
                     // Still worth watching: this pad's Steam button never came
@@ -231,9 +239,10 @@ impl ControllerInput {
     /// get back out of that game at all, photograph it, or reach Valve's own
     /// overlay over it.
     ///
-    /// The right stick and the two stick presses are read on the same terms
-    /// and for the same reason: the pointer they drive is wanted *inside* the
-    /// application, which is exactly when nothing else here is listened to.
+    /// The right stick and the two triggers are read on the same terms and for
+    /// the same reason: the pointer they drive and click with is wanted
+    /// *inside* the application, which is exactly when nothing else here is
+    /// listened to.
     pub fn poll(&mut self, now: Duration, active: bool) -> Poll {
         let mut actions = Vec::new();
         let mut clicks = Vec::new();
@@ -284,14 +293,6 @@ impl ControllerInput {
                 self.last_touched = Some(Touched::SteamController);
             }
             actions.extend(pad_actions(frame, &mut chorded));
-            for (button, code) in PAD_CLICKS {
-                if frame.pressed.has(*button) {
-                    clicks.push((*code, true));
-                }
-                if frame.released.has(*button) {
-                    clicks.push((*code, false));
-                }
-            }
             if !frame.pressed.is_empty() {
                 tracing::debug!(pressed = ?frame.pressed, "steam controller buttons");
             }
@@ -327,9 +328,6 @@ impl ControllerInput {
                         // started from here should answer to.
                         stirred = true;
                         self.last_touched = Some(Touched::Pad(event.id));
-                        if let Some(click) = pointer_button(button, code) {
-                            clicks.push((click, true));
-                        }
                         if is_guide(button, code) {
                             // A fresh hold; see the same line on the pad above.
                             chorded = false;
@@ -373,13 +371,12 @@ impl ControllerInput {
                     }
                     EventType::ButtonReleased(button, code) => {
                         let code = code.into_u32();
-                        // The buttons the pointer borrows, and the guide
-                        // button. Every other release is nothing: the shell
-                        // acts on presses, and a menu row activated on the way
-                        // back up would fire twice.
-                        if let Some(click) = pointer_button(button, code) {
-                            clicks.push((click, false));
-                        }
+                        // The guide button, and nothing else: the shell acts on
+                        // presses, and a menu row activated on the way back up
+                        // would fire twice. The pointer's own two buttons are
+                        // not here either — they are the triggers, and a
+                        // trigger is read as a position rather than as a press.
+                        // See [`Sticks::read`].
                         if is_guide(button, code) {
                             if !chorded {
                                 actions.push(Action::Guide);
@@ -413,12 +410,31 @@ impl ControllerInput {
         }
         let right_stick = sticks.right;
         let scroll_stick = sticks.left;
+        // And the two mouse buttons, which are the two triggers — read as a
+        // position like the sticks beside them, and turned into the edges a
+        // button has here. One road for every pad on the machine: see
+        // [`ControllerInput::trigger_edges`].
+        let pulled = self.trigger_edges(sticks.triggers);
+        if !pulled.is_empty() {
+            // Logged for the reason every button press is: a trigger that has
+            // become a mouse button and does nothing is otherwise
+            // indistinguishable from a controller nothing is reading, and
+            // this is the only line that can tell the two apart.
+            tracing::debug!(?pulled, travel = ?sticks.triggers, "the pointer's triggers");
+        }
+        clicks.extend(pulled);
         // Held rather than pressed, for both the D-pad and the sticks: this is
         // asked of every poll and a thumb resting on a direction is a hand on
         // the pad on all of them, not only the one it landed on.
         stirred |= sticks.dpad.iter().any(|held| *held)
             || stick_is_pushed(sticks.left)
-            || stick_is_pushed(sticks.right);
+            || stick_is_pushed(sticks.right)
+            // A finger on a trigger is a hand on the pad whether or not it has
+            // gone far enough to be a click, which is the wider question this
+            // asks. Every pad at once, since the Steam Controller's own
+            // reading has been folded in above.
+            || sticks.triggers.0 > TRIGGER_TOUCHED
+            || sticks.triggers.1 > TRIGGER_TOUCHED;
         // And which pad it is on. Buttons say so as they arrive; a stick is
         // read rather than delivered, so the pad it is on has to be looked for
         // — and it has to be, because a bar walked with the stick alone would
@@ -615,6 +631,31 @@ impl ControllerInput {
         self.dpad_held = pressed;
         edges
     }
+
+    /// Which mouse buttons the triggers pressed or let go of since the last
+    /// poll, given how far each is pulled.
+    ///
+    /// The same job [`Self::arrow_edges`] does for the D-pad, and here for a
+    /// stronger reason: a trigger is not a button on every pad. Some report
+    /// one, some report only an axis, and the Steam Controller reports a
+    /// number out of its own HID report — so the edges are found here, once,
+    /// from how far the thing is pulled. That is what makes a trigger the same
+    /// mouse button on every controller somebody might pick up. See
+    /// [`trigger_travel`], which is where the three roads meet.
+    fn trigger_edges(&mut self, pulled: (f32, f32)) -> Vec<(u32, bool)> {
+        let mut edges = Vec::new();
+        for (pulled, was_down, button) in [
+            (pulled.1, &mut self.triggers_held.1, RIGHT_TRIGGER_CLICKS),
+            (pulled.0, &mut self.triggers_held.0, LEFT_TRIGGER_CLICKS),
+        ] {
+            let down = trigger_is_down(pulled, *was_down);
+            if down != *was_down {
+                *was_down = down;
+                edges.push((button, down));
+            }
+        }
+        edges
+    }
 }
 
 /// Where every stick and the D-pad are, read once per poll.
@@ -627,6 +668,10 @@ struct Sticks {
     right: (f32, f32),
     /// The D-pad as four booleans, in [`Direction`] order.
     dpad: [bool; Direction::COUNT],
+    /// How far each analogue trigger is pulled, as `(left, right)` in
+    /// 0.0..=1.0 — the pointer's two mouse buttons, before anything has
+    /// decided that a pull is a press. See [`trigger_is_down`].
+    triggers: (f32, f32),
 }
 
 /// Which pad has a stick or a D-pad pushed, if any has.
@@ -667,18 +712,23 @@ impl Sticks {
         self.left.1 = larger_axis(self.left.1, frame.left_stick.1);
         self.right.0 = larger_axis(self.right.0, frame.right_stick.0);
         self.right.1 = larger_axis(self.right.1, frame.right_stick.1);
+
+        self.triggers.0 = self.triggers.0.max(frame.triggers.0);
+        self.triggers.1 = self.triggers.1.max(frame.triggers.1);
     }
 
     fn read(gilrs: Option<&Gilrs>) -> Self {
         let mut dpad = [false; Direction::COUNT];
         let (mut lx, mut ly) = (0.0_f32, 0.0_f32);
         let (mut rx, mut ry) = (0.0_f32, 0.0_f32);
+        let (mut lt, mut rt) = (0.0_f32, 0.0_f32);
 
         let Some(gilrs) = gilrs else {
             return Self {
                 left: (lx, ly),
                 right: (rx, ry),
                 dpad,
+                triggers: (lt, rt),
             };
         };
 
@@ -711,13 +761,47 @@ impl Sticks {
 
             rx = larger_axis(rx, gamepad.value(Axis::RightStickX));
             ry = larger_axis(ry, gamepad.value(Axis::RightStickY));
+
+            lt = lt.max(trigger_travel(&gamepad, Button::LeftTrigger2, Axis::LeftZ));
+            rt = rt.max(trigger_travel(
+                &gamepad,
+                Button::RightTrigger2,
+                Axis::RightZ,
+            ));
         }
 
         Self {
             left: (lx, ly),
             right: (rx, ry),
             dpad,
+            triggers: (lt, rt),
         }
+    }
+}
+
+/// How far one trigger is pulled, 0.0..=1.0, whichever way this pad reports it.
+///
+/// Two ways, because the hardware has two. A pad the mapping database knows —
+/// nearly every controller somebody owns — has its triggers named as buttons
+/// with a value, and that value is the pull. A pad nothing has heard of has
+/// only the kernel's own naming, and there an analogue trigger is an *axis*:
+/// `ABS_Z` and `ABS_RZ`, which arrive as `LeftZ` and `RightZ` and never as a
+/// button at all. Reading only the first left the mouse buttons missing on
+/// exactly the pads this module takes the most trouble over — measured, on a
+/// pad made for the purpose.
+///
+/// An axis is rescaled because GilRs hands back the whole of it: a trigger
+/// resting at its stop reads −1 and pulled all the way reads 1, so the travel
+/// is the half of that range above rest. A pad whose `ABS_Z` is not a trigger
+/// at all — a flight stick's twist — sits at the middle of its range and so
+/// reads half pulled, which is short of [`TRIGGER_CLICKS`] and clicks nothing.
+fn trigger_travel(gamepad: &gilrs::Gamepad<'_>, button: Button, axis: Axis) -> f32 {
+    if let Some(data) = gamepad.button_data(button) {
+        return data.value();
+    }
+    match gamepad.axis_data(axis) {
+        Some(data) => (data.value() + 1.0) / 2.0,
+        None => 0.0,
     }
 }
 
@@ -757,10 +841,15 @@ fn hat_directions(x: f32, y: f32) -> [bool; Direction::COUNT] {
 /// Absent on purpose: `X`, which belongs to whatever is running until `View` is
 /// held with it; `View` itself, which is only that chord's modifier and the
 /// overlay chord's other half; `Steam`, which acts on its release instead so
-/// the two chords spelled on it can claim the hold (see [`is_guide`]); the two stick presses, which are the pointer's
-/// and never the menu's; and the whole D-pad, which goes through [`Navigation`]
-/// instead so that holding a direction repeats at the same rate every other
-/// pad's does. Listed here as well it would walk the menu two rows per press.
+/// the two chords spelled on it can claim the hold (see [`is_guide`]); the left
+/// stick press, which means nothing to this shell at all; and the whole D-pad,
+/// which goes through [`Navigation`] instead so that holding a direction
+/// repeats at the same rate every other pad's does. Listed here as well it
+/// would walk the menu two rows per press.
+///
+/// The triggers are not here either, and they are not buttons in the first
+/// place: this pad reports them as travel, and what the shell makes of that is
+/// the pointer's two clicks. See [`RIGHT_TRIGGER_CLICKS`] and [`Sticks::read`].
 const PAD_ACTIONS: &[(Buttons, Action)] = &[
     (Buttons::A, Action::Launch),
     (Buttons::B, Action::Back),
@@ -771,9 +860,7 @@ const PAD_ACTIONS: &[(Buttons, Action)] = &[
     (Buttons::L1, Action::PrevScreen),
     (Buttons::R1, Action::NextScreen),
     // The right stick pressed, which is the videos floating over the guide. See
-    // [`Action::Floating`], and note that the same button is the pointer's left
-    // click while the stick is aiming one — the two never overlap, because the
-    // stick aims nothing while any of the shell is on screen.
+    // [`Action::Floating`].
     (Buttons::R3, Action::Floating),
 ];
 
@@ -841,52 +928,63 @@ fn pad_actions(frame: &crate::steam_hid::Frame, chorded: &mut bool) -> Vec<Actio
     actions
 }
 
-/// Which mouse button each of the pad's borrowed buttons is.
+/// Which mouse button each trigger is.
 ///
-/// The same two pairs as [`pointer_button`]: the face buttons where a hand
-/// reaches without being taught, and the stick presses where a thumb already is
-/// when it is aiming.
-const PAD_CLICKS: &[(Buttons, u32)] = &[
-    (Buttons::A, BTN_LEFT),
-    (Buttons::R3, BTN_LEFT),
-    (Buttons::B, BTN_RIGHT),
-    (Buttons::L3, BTN_RIGHT),
-];
+/// Two controls, one each: the right trigger is the left button and the left
+/// trigger is the right one. That is the handheld's own arrangement — a Steam
+/// Deck in its desktop mode clicks with `R2` and opens a context menu with
+/// `L2` — and somebody who has held one of those reaches for it without being
+/// told. It also puts the two mouse buttons under the two fingers that are not
+/// doing anything else while a thumb is aiming.
+///
+/// The triggers rather than the face buttons, which is what these used to be,
+/// for a reason worth more than the familiarity: `A` and `B` are the on-screen
+/// keyboard's. The board is driven with `A` on its keys and `B` to put it
+/// away, so a pointer that borrowed them had to give them back for as long as
+/// it was up — and the one thing a user wants a mouse for while a keyboard is
+/// on screen is to click the field they are about to type into. With the
+/// clicks on the triggers, nothing has to be handed over: the board keeps
+/// every control it was ever driven with, and the pointer keeps both buttons.
+///
+/// Nothing else on the pad is taken. The bumpers still move between displays,
+/// the stick presses are the floating video's, and the left-hand face button
+/// is still half of the keyboard chord.
+const RIGHT_TRIGGER_CLICKS: u32 = BTN_LEFT;
+/// See [`RIGHT_TRIGGER_CLICKS`].
+const LEFT_TRIGGER_CLICKS: u32 = BTN_RIGHT;
 
-/// Which mouse button a press is, if it is one.
+/// How far a trigger has to be pulled before it is a click, and how far it has
+/// to come back before it is not.
 ///
-/// Four buttons, in two pairs. `A` and `B` are where a hand reaches for
-/// "click" without being taught, and the stick presses are where a thumb
-/// already is when it is aiming — R3 under the stick doing the pointing, L3
-/// beside it. Either pair does the same two things, so nothing has to be
-/// remembered about which one this pad wants.
+/// GilRs' own numbers, and they are here so that the pad this shell reads
+/// itself agrees with the pads GilRs reads: a trigger that clicked at half its
+/// travel on one controller and three quarters on another would be two
+/// different buttons. The gap between the two is what stops a finger held at
+/// the threshold rattling the mouse button several hundred times a second.
+const TRIGGER_CLICKS: f32 = 0.75;
+/// See [`TRIGGER_CLICKS`].
+const TRIGGER_LETS_GO: f32 = 0.65;
+
+/// How far a trigger has to be pulled to count as a finger on it at all.
 ///
-/// The caller only acts on these while the pointer is actually being driven,
-/// which is the whole reason `A` can be taken at all: the shell drops every
-/// action but the guide button and the keyboard chord once an application is
-/// in front, so `A` is otherwise doing nothing there, and the user chose to
-/// put this application in that state from the menu. Back in the shell's own
-/// screens `A` is Launch again, because there the pointer is switched off.
+/// A different and much easier question than whether it is a click, and asked
+/// for a different reason: what this decides is whether somebody has the
+/// controller in their hands, which is true long before a trigger bottoms out.
+/// Far enough off rest that a worn trigger resting a little open does not
+/// answer yes for as long as the pad stays plugged in — the same worry
+/// [`stick_is_pushed`] has, about the same hardware.
+const TRIGGER_TOUCHED: f32 = 0.2;
+
+/// Whether a trigger pulled this far is down, given whether it was down.
 ///
-/// The shoulders and triggers are never taken: they still move between
-/// displays, and a game's are its own.
-fn pointer_button(button: Button, code: u32) -> Option<u32> {
-    match button {
-        // Xbox A / PlayStation Cross / Nintendo B, and the stick under the
-        // thumb that is aiming.
-        Button::South | Button::RightThumb => return Some(BTN_LEFT),
-        // Xbox B / PlayStation Circle / Nintendo A, and the other stick.
-        Button::East | Button::LeftThumb => return Some(BTN_RIGHT),
-        // A pad the mapping database has never heard of still has all four,
-        // and the kernel's codes for them are not ambiguous the way the
-        // left-hand face button's are.
-        Button::Unknown => {}
-        _ => return None,
-    }
-    match code {
-        evdev::BTN_SOUTH | evdev::BTN_THUMBR => Some(BTN_LEFT),
-        evdev::BTN_EAST | evdev::BTN_THUMBL => Some(BTN_RIGHT),
-        _ => None,
+/// The hysteresis of [`TRIGGER_CLICKS`], as a rule on its own: past the first
+/// number it is down, below the second it is up, and in between it is whatever
+/// it already was.
+fn trigger_is_down(pulled: f32, was_down: bool) -> bool {
+    if was_down {
+        pulled > TRIGGER_LETS_GO
+    } else {
+        pulled >= TRIGGER_CLICKS
     }
 }
 
@@ -1221,9 +1319,9 @@ mod evdev {
     /// The shoulder bumpers, L1 and R1.
     pub const BTN_TL: u32 = key(0x136);
     pub const BTN_TR: u32 = key(0x137);
-    /// The stick presses, L3 and R3 — the pointer's two mouse buttons while
-    /// the stick above them is driving it.
-    pub const BTN_THUMBL: u32 = key(0x13d);
+    /// The right stick pressed, R3 — the videos floating over the guide. The
+    /// left one is not here because it means nothing to this shell: L3 is the
+    /// application's, whatever the application is.
     pub const BTN_THUMBR: u32 = key(0x13e);
 
     /// Pads that present as a plain joystick rather than a gamepad number
@@ -1274,9 +1372,8 @@ fn action_for_button(button: Button, code: u32, layout: Layout) -> Option<Action
         Button::LeftTrigger => return Some(Action::PrevScreen),
         Button::RightTrigger => return Some(Action::NextScreen),
         // The right stick pressed: the videos floating over the guide. See
-        // [`Action::Floating`]. It is also the pointer's left click — see
-        // [`pointer_button`] — and the two cannot collide, because the stick
-        // aims no pointer while any of this shell is on screen.
+        // [`Action::Floating`]. Nothing the pointer wants — its own two
+        // buttons are the triggers, which reach nothing in the shell at all.
         Button::RightThumb => return Some(Action::Floating),
         Button::Unknown => {}
         _ => return None,
@@ -1570,9 +1667,6 @@ mod tests {
             action_for_button(Button::Unknown, evdev::BTN_TRIGGER, Layout::Guessed),
             Some(Action::Launch)
         );
-        // Start is nobody's pointer button either: it closes a board rather
-        // than clicking anything.
-        assert_eq!(pointer_button(Button::Start, evdev::BTN_START), None);
     }
 
     /// The bug this was written for: the context menu could not be raised from
@@ -1921,91 +2015,73 @@ mod tests {
         );
     }
 
-    /// Two pairs of buttons click, and nothing else does: `A` and `B` where a
-    /// hand reaches without being taught, and the stick presses where a thumb
-    /// already is. Everything a game could plausibly have bound stays the
-    /// game's.
+    /// The two triggers click, one mouse button each, and the pointer takes
+    /// nothing else on the pad.
     #[test]
-    fn the_pointer_borrows_the_face_buttons_and_the_stick_presses() {
-        assert_eq!(pointer_button(Button::South, 0), Some(BTN_LEFT));
-        assert_eq!(pointer_button(Button::RightThumb, 0), Some(BTN_LEFT));
-        assert_eq!(pointer_button(Button::East, 0), Some(BTN_RIGHT));
-        assert_eq!(pointer_button(Button::LeftThumb, 0), Some(BTN_RIGHT));
+    fn the_pointer_clicks_with_the_triggers() {
+        assert_eq!(RIGHT_TRIGGER_CLICKS, BTN_LEFT);
+        assert_eq!(LEFT_TRIGGER_CLICKS, BTN_RIGHT);
 
-        for button in [
-            // The left-hand face button is the keyboard chord's other half.
-            Button::West,
-            Button::North,
-            Button::Start,
-            Button::Select,
-            Button::Mode,
-            // The shoulders still move between displays.
-            Button::LeftTrigger,
-            Button::RightTrigger,
-        ] {
-            assert_eq!(pointer_button(button, 0), None, "{button:?}");
-        }
-
-        // A pad missing from the mapping database still has all four.
-        for (code, expected) in [
-            (evdev::BTN_SOUTH, BTN_LEFT),
-            (evdev::BTN_THUMBR, BTN_LEFT),
-            (evdev::BTN_EAST, BTN_RIGHT),
-            (evdev::BTN_THUMBL, BTN_RIGHT),
-        ] {
-            assert_eq!(
-                pointer_button(Button::Unknown, code),
-                Some(expected),
-                "{code:#x}"
-            );
-        }
-        assert_eq!(pointer_button(Button::Unknown, evdev::BTN_X), None);
+        // Nothing else on the pad is a click: every button below is either the
+        // shell's own or the running application's, and none of them reaches
+        // the pointer at all now that the clicks are read off the triggers.
+        let mut input = ControllerInput::new(false);
+        assert!(input.trigger_edges((0.0, 0.0)).is_empty());
     }
 
-    /// `A` is a click and Launch at once, which is only safe because the two
-    /// are never listened to at the same time: the shell drops every action
-    /// but the guide button and the keyboard chord once an application is in
-    /// front, and the pointer only exists while one is.
+    /// A trigger is a click at the depth GilRs calls a press, and it stays one
+    /// until the finger has come a good way back: a finger resting exactly at
+    /// the threshold must not rattle the mouse button.
     #[test]
-    fn a_face_button_is_a_click_only_where_it_is_not_a_menu_action() {
+    fn a_trigger_clicks_at_the_same_depth_on_every_pad() {
+        // Coming down: nothing until the pull reaches the threshold.
+        assert!(!trigger_is_down(0.0, false));
+        assert!(!trigger_is_down(0.5, false));
+        assert!(!trigger_is_down(TRIGGER_CLICKS - 0.01, false));
+        assert!(trigger_is_down(TRIGGER_CLICKS, false));
+        assert!(trigger_is_down(1.0, false));
+
+        // And going back up: held through the gap, let go below it.
+        assert!(trigger_is_down(TRIGGER_CLICKS - 0.01, true));
+        assert!(trigger_is_down(TRIGGER_LETS_GO + 0.01, true));
+        assert!(!trigger_is_down(TRIGGER_LETS_GO, true));
+        assert!(!trigger_is_down(0.0, true));
+    }
+
+    /// The whole reason the clicks moved off the face buttons: `A` and `B`
+    /// belong to the on-screen keyboard, which is drawn over the very
+    /// application the pointer is aiming inside. Neither is anything to do
+    /// with the pointer any more, and the triggers are nothing else.
+    #[test]
+    fn the_clicks_take_nothing_the_board_is_driven_with() {
+        // `A` is Launch and `B` is Back on the shell's own screens, and the
+        // board over an application is driven with exactly those two.
         assert_eq!(
             action_for_button(Button::South, 0, Layout::Mapped),
             Some(Action::Launch)
         );
-        assert_eq!(pointer_button(Button::South, 0), Some(BTN_LEFT));
-
-        let mut actions = vec![Action::Launch, Action::Back, Action::Guide];
-        actions.retain(survives_an_application);
         assert_eq!(
-            actions,
-            [Action::Guide],
-            "with an application in front, A and B reach nothing but the pointer"
+            action_for_button(Button::East, 0, Layout::Mapped),
+            Some(Action::Back)
         );
 
-        // The right stick press is the pointer's left click *and* the videos
-        // floating over the guide, on exactly the terms `A` is a click and
-        // Launch: the two are never listened to on the same poll. The click is
-        // only ever sent while the stick is aiming at an application, and this
-        // action is dropped the moment one is in front.
+        // The triggers are not actions anywhere: the shell has never had
+        // anything bound to them, which is what leaves them free to be a
+        // mouse even while the board is up. The bumpers beside them are the
+        // ones that move between displays.
+        for button in [Button::LeftTrigger2, Button::RightTrigger2] {
+            assert_eq!(action_for_button(button, 0, Layout::Mapped), None);
+            assert_eq!(chord_action(button, 0, Layout::Mapped, true), None);
+        }
         assert_eq!(
-            action_for_button(Button::RightThumb, 0, Layout::Mapped),
-            Some(Action::Floating)
+            action_for_button(Button::LeftTrigger, 0, Layout::Mapped),
+            Some(Action::PrevScreen)
         );
-        assert_eq!(pointer_button(Button::RightThumb, 0), Some(BTN_LEFT));
-        assert!(
-            !survives_an_application(&Action::Floating),
-            "with an application in front the stick press is the pointer's alone"
-        );
-        // The left one means nothing to the shell in any state.
-        assert_eq!(
-            action_for_button(Button::LeftThumb, 0, Layout::Mapped),
-            None
-        );
-        // And the chord's modifier does not change what either of them is.
-        assert_eq!(
-            chord_action(Button::RightThumb, 0, Layout::Mapped, true),
-            None
-        );
+
+        // And on the pad read from its own report, the same: the stick presses
+        // are the floating video's and the triggers are not buttons at all.
+        assert_eq!(pad_action(Buttons::L3), None);
+        assert_eq!(pad_action(Buttons::R3), Some(Action::Floating));
     }
 
     /// The D-pad is the arrow keys, and it is reported as the edges a key has
@@ -2079,7 +2155,6 @@ mod tests {
         assert_eq!(evdev::BTN_SELECT, 0x1_013a);
         assert_eq!(evdev::BTN_START, 0x1_013b);
         assert_eq!(evdev::BTN_MODE, 0x1_013c);
-        assert_eq!(evdev::BTN_THUMBL, 0x1_013d);
         assert_eq!(evdev::BTN_THUMBR, 0x1_013e);
         // The mouse buttons are the pointer protocol's own, not packed input
         // codes: they go out over the wire as wl_pointer numbers them.
@@ -2147,11 +2222,36 @@ mod tests {
             left: (0.0, 0.0),
             right: (0.0, 0.0),
             dpad: [false; Direction::COUNT],
+            triggers: (0.0, 0.0),
         };
         let frame = pad_frame(Buttons::DOWN, Buttons::DOWN, Buttons::empty());
         sticks.merge_pad(&frame);
         assert!(sticks.dpad[Direction::Down.index()]);
         assert!(!sticks.dpad[Direction::Up.index()]);
+    }
+
+    /// The Steam Controller's triggers reach the pointer by the same road
+    /// every other pad's do: merged into one reading, furthest pull winning,
+    /// and turned into clicks once.
+    #[test]
+    fn the_pads_triggers_merge_with_every_other_pads() {
+        let mut sticks = Sticks {
+            left: (0.0, 0.0),
+            right: (0.0, 0.0),
+            dpad: [false; Direction::COUNT],
+            triggers: (0.0, 0.4),
+        };
+        let mut frame = pad_frame(Buttons::empty(), Buttons::empty(), Buttons::empty());
+        frame.triggers = (0.9, 0.1);
+        sticks.merge_pad(&frame);
+        assert_eq!(sticks.triggers, (0.9, 0.4), "whichever is pulled further");
+
+        let mut input = ControllerInput::new(false);
+        assert_eq!(
+            input.trigger_edges(sticks.triggers),
+            vec![(BTN_RIGHT, true)],
+            "the left trigger is the right button, and 0.4 is not a click"
+        );
     }
 
     /// One poll of the Steam Controller, written as what is down and what
@@ -2267,30 +2367,44 @@ mod tests {
     fn the_pads_chord_halves_do_nothing_apart() {
         assert_eq!(pad_action(Buttons::X), None);
         assert_eq!(pad_action(Buttons::VIEW), None);
-        // Nor does the left stick press, which is the pointer's alone. The
-        // right one is the videos floating over the guide as well — and is the
+        // Nor does the left stick press, which means nothing to this shell at
+        // all. The right one is the videos floating over the guide, and is the
         // same button on this pad as on every other, which is the whole of why
         // it is asserted here too.
         assert_eq!(pad_action(Buttons::L3), None);
         assert_eq!(pad_action(Buttons::R3), Some(Action::Floating));
     }
 
-    /// The pad's mouse buttons are the same two pairs the mapped pads lend the
-    /// pointer, so a hand moving between controllers finds them in one place.
+    /// The pad this shell reads itself clicks with the same two controls the
+    /// mapped pads do, so a hand moving between controllers finds the mouse
+    /// buttons in one place — and it reports them as the edges a button has,
+    /// out of a trigger that only ever says how far it is pulled.
     #[test]
-    fn the_pads_clicks_match_every_other_pads() {
-        let click = |button: Buttons| {
-            PAD_CLICKS
-                .iter()
-                .find(|(candidate, _)| *candidate == button)
-                .map(|(_, code)| *code)
-        };
-        assert_eq!(click(Buttons::A), Some(BTN_LEFT));
-        assert_eq!(click(Buttons::R3), Some(BTN_LEFT));
-        assert_eq!(click(Buttons::B), Some(BTN_RIGHT));
-        assert_eq!(click(Buttons::L3), Some(BTN_RIGHT));
-        assert_eq!(click(Buttons::X), None);
-        assert_eq!(click(Buttons::STEAM), None);
+    fn the_pads_triggers_are_the_same_two_clicks() {
+        let mut input = ControllerInput::new(false);
+        assert!(
+            input.trigger_edges((0.0, 0.0)).is_empty(),
+            "nothing at rest"
+        );
+
+        // The right trigger is the left button, as on a handheld.
+        assert_eq!(input.trigger_edges((0.0, 1.0)), vec![(BTN_LEFT, true)]);
+        // Held is not pressed again.
+        assert!(input.trigger_edges((0.0, 1.0)).is_empty());
+        // A finger easing off but not letting go holds the button down.
+        assert!(input.trigger_edges((0.0, TRIGGER_CLICKS - 0.05)).is_empty());
+        assert_eq!(input.trigger_edges((0.0, 0.0)), vec![(BTN_LEFT, false)]);
+
+        // The left trigger is the right button, and the two are independent.
+        assert_eq!(input.trigger_edges((1.0, 0.0)), vec![(BTN_RIGHT, true)]);
+        assert_eq!(input.trigger_edges((1.0, 1.0)), vec![(BTN_LEFT, true)]);
+        assert_eq!(
+            input.trigger_edges((0.0, 0.0)),
+            vec![(BTN_LEFT, false), (BTN_RIGHT, false)]
+        );
+
+        // And a trigger brushed on the way past is not a click at all.
+        assert!(input.trigger_edges((0.3, 0.3)).is_empty());
     }
 
     /// The whole point of reading this pad from hidraw: the way out of a
@@ -2326,5 +2440,177 @@ mod tests {
         assert_eq!(sticks.left, (0.0, 0.0));
         assert_eq!(sticks.right, (0.0, 0.0));
         assert_eq!(sticks.dpad, [false; Direction::COUNT]);
+    }
+}
+
+/// The triggers against a real kernel, on a pad the mapping database has never
+/// heard of.
+///
+/// Everything above this is the rule; this is whether a controller keeps it.
+/// The fact being pinned is one only a device can answer and one that is
+/// invisible from the outside when it goes wrong: on a pad with no SDL entry
+/// an analogue trigger is an **axis** and never a button, so a shell that read
+/// the buttons alone had no mouse buttons at all there — the pointer moved,
+/// aimed, and could not click. Measured on a `uinput` pad made for the purpose
+/// on 2026-09-21, which is also where [`trigger_travel`]'s second half comes
+/// from.
+///
+/// Skipped, rather than failed, where `/dev/uinput` cannot be written or where
+/// the pad never reaches GilRs: a build machine without a seat is not a shell
+/// with broken clicks.
+#[cfg(test)]
+mod hardware_tests {
+    // `::evdev` throughout: this module has a private `evdev` of its own —
+    // the raw button codes — and `use super::*` brings it into scope here.
+    use super::*;
+    use ::evdev::uinput::VirtualDevice;
+    use ::evdev::{
+        AbsInfo, AbsoluteAxisCode, AbsoluteAxisEvent, AttributeSet, BusType, InputId, KeyCode,
+        UinputAbsSetup,
+    };
+    use std::io::ErrorKind;
+    use std::path::PathBuf;
+    use std::time::Instant;
+
+    /// A pad nobody has heard of. Deliberately not a real vendor and product:
+    /// a test that borrowed one would be testing SDL's database rather than
+    /// this shell, and the case that matters is the pad the database misses.
+    const TEST_NAME: &str = "LineXinBar Test Triggers";
+    fn test_id() -> InputId {
+        InputId::new(BusType::BUS_USB, 0x9a7e, 0x4d21, 0x0001)
+    }
+
+    const PATIENCE: Duration = Duration::from_secs(3);
+
+    fn uinput_is_available() -> bool {
+        std::fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .open("/dev/uinput")
+            .is_ok()
+    }
+
+    fn stick(axis: AbsoluteAxisCode) -> UinputAbsSetup {
+        UinputAbsSetup::new(axis, AbsInfo::new(0, -32768, 32767, 16, 128, 0))
+    }
+
+    /// One trigger, over the byte `xpad` gives one.
+    fn trigger(axis: AbsoluteAxisCode) -> UinputAbsSetup {
+        UinputAbsSetup::new(axis, AbsInfo::new(0, 0, 255, 0, 0, 0))
+    }
+
+    /// A pad with two sticks, two triggers **as axes**, and the face buttons
+    /// GilRs insists on before it will read anything at all.
+    fn make_pad() -> std::io::Result<(VirtualDevice, PathBuf)> {
+        let keys: AttributeSet<KeyCode> = [KeyCode::BTN_SOUTH, KeyCode::BTN_EAST]
+            .into_iter()
+            .collect();
+        let mut pad = VirtualDevice::builder()?
+            .name(TEST_NAME)
+            .input_id(test_id())
+            .with_keys(&keys)?
+            .with_absolute_axis(&stick(AbsoluteAxisCode::ABS_X))?
+            .with_absolute_axis(&stick(AbsoluteAxisCode::ABS_Y))?
+            .with_absolute_axis(&stick(AbsoluteAxisCode::ABS_RX))?
+            .with_absolute_axis(&stick(AbsoluteAxisCode::ABS_RY))?
+            .with_absolute_axis(&trigger(AbsoluteAxisCode::ABS_Z))?
+            .with_absolute_axis(&trigger(AbsoluteAxisCode::ABS_RZ))?
+            .build()?;
+        let node = pad
+            .enumerate_dev_nodes_blocking()?
+            .flatten()
+            .find(|node| {
+                node.file_name()
+                    .is_some_and(|name| name.as_encoded_bytes().starts_with(b"event"))
+            })
+            .ok_or_else(|| {
+                std::io::Error::new(ErrorKind::NotFound, "the test pad never got a device node")
+            })?;
+        Ok((pad, node))
+    }
+
+    /// Drain GilRs until its cached state is current, which is what every
+    /// reading in this module is taken from.
+    fn settle(gilrs: &mut Gilrs) {
+        let deadline = Instant::now() + Duration::from_millis(300);
+        while Instant::now() < deadline {
+            while gilrs.next_event().is_some() {}
+            std::thread::sleep(Duration::from_millis(10));
+        }
+    }
+
+    #[test]
+    fn a_trigger_reported_as_an_axis_still_clicks() {
+        if !uinput_is_available() {
+            crate::skipped("/dev/uinput cannot be opened here");
+            return;
+        }
+        let (mut pad, node) = make_pad().expect("a test pad can be made");
+        // udev gives a joystick its node and then its permissions, and GilRs
+        // can read neither until both have happened.
+        let deadline = Instant::now() + PATIENCE;
+        let mut gilrs = loop {
+            if std::fs::File::open(&node).is_ok() {
+                if let Ok(gilrs) = Gilrs::new() {
+                    if gilrs
+                        .gamepads()
+                        .any(|(_, gamepad)| gamepad.name() == TEST_NAME)
+                    {
+                        break gilrs;
+                    }
+                }
+            }
+            if Instant::now() >= deadline {
+                crate::skipped("the test pad never reached GilRs");
+                return;
+            }
+            std::thread::sleep(Duration::from_millis(50));
+        };
+
+        let mut input = ControllerInput::new(false);
+        let pull = |pad: &mut VirtualDevice, axis, value| {
+            pad.emit(&[*AbsoluteAxisEvent::new(axis, value)])
+                .expect("the test pad can be pulled");
+        };
+
+        // The right trigger, all the way down: the left mouse button, which is
+        // what a handheld's `R2` does.
+        pull(&mut pad, AbsoluteAxisCode::ABS_RZ, 255);
+        settle(&mut gilrs);
+        let sticks = Sticks::read(Some(&gilrs));
+        assert!(
+            sticks.triggers.1 > TRIGGER_CLICKS,
+            "a trigger held down reads as pulled: {:?}",
+            sticks.triggers
+        );
+        assert_eq!(input.trigger_edges(sticks.triggers), vec![(BTN_LEFT, true)]);
+
+        // And let go.
+        pull(&mut pad, AbsoluteAxisCode::ABS_RZ, 0);
+        settle(&mut gilrs);
+        let sticks = Sticks::read(Some(&gilrs));
+        assert!(sticks.triggers.1 < TRIGGER_LETS_GO, "{:?}", sticks.triggers);
+        assert_eq!(
+            input.trigger_edges(sticks.triggers),
+            vec![(BTN_LEFT, false)]
+        );
+
+        // The left trigger is the right button.
+        pull(&mut pad, AbsoluteAxisCode::ABS_Z, 255);
+        settle(&mut gilrs);
+        let sticks = Sticks::read(Some(&gilrs));
+        assert_eq!(
+            input.trigger_edges(sticks.triggers),
+            vec![(BTN_RIGHT, true)]
+        );
+
+        // Half way is not a click — the threshold is a threshold.
+        pull(&mut pad, AbsoluteAxisCode::ABS_Z, 128);
+        settle(&mut gilrs);
+        let sticks = Sticks::read(Some(&gilrs));
+        assert_eq!(
+            input.trigger_edges(sticks.triggers),
+            vec![(BTN_RIGHT, false)]
+        );
     }
 }

@@ -692,6 +692,85 @@ fn shell_faces() -> FontSystem {
     FontSystem::new_with_locale_and_db("en-US".to_string(), db)
 }
 
+/// How wide one of the shell's own short words really is, as a share of its
+/// size — measured in this face rather than guessed at.
+///
+/// **What this replaces is a gap the user could see.** A legend is laid out
+/// from its right-hand end leftwards, so it needs each word's width *before*
+/// the GPU has shaped it, and what it used was a flat share of the size per
+/// character — deliberately generous, because a box narrower than its word is
+/// a word cut to an ellipsis. The word is set right-aligned in that box, so
+/// everything the estimate over-counted became air to the **left** of it:
+/// harmless for a four-letter word, and eighty points of hole in front of
+/// *Picture-in-Picture*, whose eighteen characters were given eleven and nine
+/// tenths ems of room for seven and two thirds of word. A row whose pairs are
+/// spaced by the lengths of their own words is a row that reads as broken, and
+/// it was reported as exactly that.
+///
+/// **At one em, once, and scaled.** An advance is linear in the size — swash
+/// scales the face's own units and nothing is rounded to a pixel on the way —
+/// so a word measured at [`WORD_EM`] answers for every size a legend is ever
+/// drawn at, including the sizes [`crate::ui::legend_that_fits`] shrinks to.
+/// One entry per word per language, filled on the frame a word is first drawn
+/// and read out of a map on every frame after it.
+///
+/// Measured in the shell's own two faces with no system fallback behind them,
+/// like everything else in this file that measures rather than draws: what a
+/// legend is set in is *this* type, and a machine that happened to have
+/// something wider installed must not move the row.
+pub fn word_width(label: &str) -> f32 {
+    static MEASURED: std::sync::LazyLock<std::sync::Mutex<HashMap<String, f32>>> =
+        std::sync::LazyLock::new(|| std::sync::Mutex::new(HashMap::new()));
+    static FONTS: std::sync::LazyLock<std::sync::Mutex<FontSystem>> =
+        std::sync::LazyLock::new(|| std::sync::Mutex::new(shell_faces()));
+
+    if label.is_empty() {
+        return 0.0;
+    }
+    if let Some(known) = MEASURED.lock().unwrap().get(label) {
+        return *known;
+    }
+    let width = {
+        let mut fonts = FONTS.lock().unwrap();
+        shaped_run(&mut fonts, label, WORD_EM)
+            .map(|glyphs| {
+                glyphs
+                    .iter()
+                    .map(|glyph| glyph.x + glyph.w)
+                    .fold(0.0_f32, f32::max)
+                    / WORD_EM
+            })
+            // A word this face cannot shape at all keeps the old generous
+            // guess rather than none: a row of nothing is worse than a row
+            // with air in it.
+            .unwrap_or(crate::ui::guessed_word_width(label, 1.0))
+    };
+    // A shade over what was measured. Nothing about the layout is allowed to
+    // come out *narrower* than the word, because the run is given this as its
+    // box and a box narrower than its word ellipsizes it — and a measurement
+    // is exact only for the shaping it was taken from, while the drawing side
+    // has the machine's own faces behind these two for a character neither of
+    // them has. See [`WORD_SLACK`].
+    let width = width * (1.0 + WORD_SLACK);
+    MEASURED.lock().unwrap().insert(label.to_string(), width);
+    width
+}
+
+/// The size a word is measured at, in the same units the drawing uses.
+///
+/// Large enough that the shaping is settled — a word measured at a legend's
+/// own nineteen points and scaled back up carries that size's rounding with it
+/// — and no larger, because the number is divided back out immediately.
+const WORD_EM: f32 = 256.0;
+
+/// How much wider than the measurement a word is given, as a share.
+///
+/// Half a percent, which at the size a legend is drawn is a fifth of a point:
+/// enough that a run whose last glyph reaches its box exactly is not rounded
+/// into an ellipsis, and far too little to be seen as air. The old guess was
+/// generous by more than half the word.
+const WORD_SLACK: f32 = 0.005;
+
 /// Break dialog prose using the same face, size, and shaping as the renderer.
 /// Called when dialog content changes, never in the frame loop. Keeping complete
 /// sentences in catalogs lets translators choose their own word order.
@@ -5214,6 +5293,30 @@ mod tests {
         );
     }
 
+    /// Every word this shell writes beside a picture of a button.
+    ///
+    /// One list for the two tests below, which are the two halves of one
+    /// promise: a box may never be narrower than its word, and never much
+    /// wider. The last two joined it when the videos floating over the guide
+    /// became something its buttons could be pointed at — the longest word any
+    /// legend here carries, and the word that ends a window's carry. See
+    /// [`crate::ui::guide_hints`].
+    const LEGEND_WORDS: [&str; 11] = [
+        "shell-select",
+        "shell-options",
+        "shell-friends",
+        "shell-guide",
+        "shell-back",
+        // The invitation's own word, which is drawn in two legends — the
+        // panel's and the one on the card itself.
+        "shell-accept",
+        "shell-cancel",
+        "shell-choose",
+        "shell-keyboard",
+        "shell-picture-in-picture",
+        "shell-done",
+    ];
+
     /// A legend's word is given the room the shell estimates for it before
     /// the GPU has shaped it, and the estimate has to be enough in every
     /// language — a box narrower than its word is a word cut to an ellipsis,
@@ -5224,19 +5327,7 @@ mod tests {
         let mut font_system = shell_fonts();
         for language in crate::i18n::Language::CHOICES {
             crate::i18n::set(language);
-            for id in [
-                "shell-select",
-                "shell-options",
-                "shell-friends",
-                "shell-guide",
-                "shell-back",
-                // The invitation's own word, which is drawn in two legends —
-                // the panel's and the one on the card itself.
-                "shell-accept",
-                "shell-cancel",
-                "shell-choose",
-                "shell-keyboard",
-            ] {
+            for id in LEGEND_WORDS {
                 let word = crate::i18n::text(id);
                 let room = crate::ui::legend_word_width(word, 18.0);
                 let mut pool = Vec::new();
@@ -5249,6 +5340,43 @@ mod tests {
                     reached,
                     Some(word.len()),
                     "{language:?} {id}: {word:?} was cut in a box of {room}"
+                );
+            }
+        }
+        crate::i18n::set(crate::i18n::Language::British);
+    }
+
+    /// And it is given no more room than it needs, which is the other half of
+    /// the same promise.
+    ///
+    /// A legend's word is set right-aligned in the box this answers with, so
+    /// every point the box has over and above the word is air in front of it —
+    /// and the row steps by the box, not by the word. Under the flat guess this
+    /// replaced, that air was a share of the word's own length: *Select* got a
+    /// few points of it and *Picture-in-Picture* got eighty, so one pair of the
+    /// guide's row stood a hole away from the rest. The user reported it from a
+    /// photograph on 2026-09-22. See [`word_width`].
+    ///
+    /// The bound is [`WORD_SLACK`] and a quarter of a point for the arithmetic,
+    /// which is the whole of what a box may now carry that its word does not.
+    #[test]
+    fn a_legend_word_is_given_no_more_room_than_it_needs() {
+        let mut font_system = shell_fonts();
+        for language in crate::i18n::Language::CHOICES {
+            crate::i18n::set(language);
+            for id in LEGEND_WORDS {
+                let word = crate::i18n::text(id);
+                let room = crate::ui::legend_word_width(word, 18.0);
+                let mut pool = Vec::new();
+                shape_texts(&mut font_system, &mut pool, &[label(word, room)]);
+                let (_, buffer) = &pool[0];
+                let drawn = buffer
+                    .layout_runs()
+                    .map(|run| run.line_w)
+                    .fold(0.0_f32, f32::max);
+                assert!(
+                    room <= drawn * (1.0 + WORD_SLACK) + 0.25,
+                    "{language:?} {id}: {word:?} is {drawn} wide and was given {room}"
                 );
             }
         }

@@ -296,6 +296,9 @@ pub struct Lxb {
     /// The same for the pointer being held on screen, having been driven off
     /// every display — see `crate::input::watch_a_clamped_pointer`.
     pub pointer_clamped: Option<crate::input::Repeatedly>,
+    /// And for the stick pointer being held inside the application it was
+    /// turned on for — see `crate::input::watch_a_confined_pointer`.
+    pub pointer_confined: Option<crate::input::Repeatedly>,
     /// When a client last placed the pointer itself, and how many times it has
     /// done so since — see `crate::input::watch_a_client_placing_the_pointer`.
     pub pointer_hints: Option<(std::time::Instant, u32)>,
@@ -564,6 +567,7 @@ impl LxbState {
                 pointer_position_hint: None,
                 pointer_refused: None,
                 pointer_clamped: None,
+                pointer_confined: None,
                 pointer_hints: None,
                 cursor_status: smithay::input::pointer::CursorImageStatus::default_named(),
                 cursor_override: None,

@@ -2179,12 +2179,35 @@ impl Cursor {
             };
             orders = Some(read);
         }
-        // And the rows themselves, now that there are columns to hold them. The
-        // listing is the same folder read the same way, so the numbers mean
-        // what they meant — and where they do not, because the walk stopped
-        // short or the folder lost a file, the clamp is what answers for it.
+        // And the row in the innermost column, which is the only row on this
+        // path the walk cannot know: every row above it is a folder the walk
+        // has just opened, found by *what it is* rather than by where it used
+        // to be, while the remembered numbers are from before the rebuild.
+        //
+        // Putting the whole remembered stack back undid the walk wherever a
+        // listing had moved under it — and a rebuild is exactly when listings
+        // move, since something landing on the disk is what caused it. One file
+        // added to a folder on the path shifts every row below it, so the
+        // restored number pointed at the folder *next door*, which the walk
+        // never opened and so has no rows read under it, and
+        // [`Self::keep_in_bounds`] can only answer a column that is not there
+        // by stepping the user out of it and out of every column the walk had
+        // just reopened under it. Somebody three folders deep came back one
+        // folder deep, depending on what had been written where.
+        //
+        // Taken by its level rather than off the end of the stack, because the
+        // stack outlives the walking: a column stepped *out* of leaves its row
+        // behind so that stepping back in returns to it, so the last entry of a
+        // remembered stack can belong to a column the user is not in. From the
+        // innermost level down is the part this walk did not decide, and it
+        // comes back whole. Where that innermost column has moved too, the
+        // clamp answers for it, as it always did.
         if self.open == footing.open {
-            self.stack.clone_from(&footing.stack);
+            if let Some(innermost) = self.open.checked_sub(1) {
+                self.stack.truncate(innermost);
+                self.stack
+                    .extend_from_slice(footing.stack.get(innermost..).unwrap_or_default());
+            }
         }
         self.keep_in_bounds(lattice);
         orders
@@ -3333,6 +3356,94 @@ mod tests {
             cursor.current_entry(&now).map(Entry::title),
             Some("thing.zip"),
             "on the row they were on"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A folder on the path that gained a file while the bar was rebuilt does
+    /// not take the path down with it.
+    ///
+    /// The rebuild happens *because* something landed on the disk, so a
+    /// listing on the path having moved is the ordinary case rather than the
+    /// odd one. The walk finds each folder by what it is, and the rows it
+    /// lands on are the rebuilt listing's own — so the one thing that must not
+    /// happen afterwards is those rows being replaced with the numbers they
+    /// had before. They were, and a number one row out pointed at the folder
+    /// next door: nothing has been read under that one, and a column with no
+    /// rows is a column the cursor is stepped out of, taking every column the
+    /// walk had just reopened with it. Somebody three folders deep came back
+    /// one folder deep, at random, depending on what had been written where.
+    ///
+    /// It was found as a test that failed about one run in two — the walk
+    /// below goes through `/tmp`, and a test suite makes and removes
+    /// directories there while it runs.
+    #[test]
+    fn a_folder_that_moved_under_the_path_does_not_close_it() {
+        let Some(dir) = scratch("moved-under-the-path") else {
+            return;
+        };
+        let deep = dir.join("one").join("two");
+        std::fs::create_dir_all(&deep).unwrap();
+        for name in ["another.txt", "thing.zip"] {
+            std::fs::write(deep.join(name), b"x").unwrap();
+        }
+        // Enough rows beside `two` that a row number taken from the column
+        // below it lands on one of them rather than off the end, where the
+        // clamp would quietly put it right again.
+        for name in ["a.txt", "b.txt", "c.txt", "d.txt"] {
+            std::fs::write(dir.join("one").join(name), b"x").unwrap();
+        }
+        let thing = deep.join("thing.zip");
+
+        let mut lattice = with_a_files_row();
+        let mut cursor = cursor(&lattice);
+        assert!(cursor
+            .walk_to_file(&mut lattice, &deep, Some(&thing), by_name())
+            .is_some());
+        let depth = cursor.depth();
+        let footing = cursor.remember(&lattice);
+
+        // What the rebuild is about: something landed on the disk, in a folder
+        // the user has open. It sorts before `one`, so every row under it in
+        // that column — the row the path goes through — is one further down
+        // than the footing remembers.
+        std::fs::create_dir(dir.join("0-just-arrived")).unwrap();
+
+        let mut now = with_a_files_row();
+        cursor.recall(&footing, &now);
+        cursor.keep_in_bounds(&now);
+        assert!(cursor.walk_back_in(&mut now, &footing, by_name()).is_some());
+        assert_eq!(
+            cursor.depth(),
+            depth,
+            "the walk found the folders and the rows it landed on are kept"
+        );
+        assert_eq!(
+            cursor.current_entry(&now).map(Entry::title),
+            Some("thing.zip"),
+            "and the innermost row, which the walk cannot know, comes from the footing"
+        );
+
+        // And that row is taken by its level, not off the end of the stack. A
+        // column stepped out of leaves its row behind so that stepping back in
+        // returns to it, so somebody who walked six folders deep and pressed
+        // Back is standing five deep with a stack six long — and the end of it
+        // is a row in a column they are not in.
+        assert!(cursor.leave());
+        let depth = cursor.depth();
+        let footing = cursor.remember(&now);
+        std::fs::create_dir(dir.join("0-and-another")).unwrap();
+        let mut later = with_a_files_row();
+        cursor.recall(&footing, &later);
+        cursor.keep_in_bounds(&later);
+        assert!(cursor
+            .walk_back_in(&mut later, &footing, by_name())
+            .is_some());
+        assert_eq!(cursor.depth(), depth);
+        assert_eq!(
+            cursor.current_entry(&later).map(Entry::title),
+            Some("two"),
+            "the row they were standing on, not the one they had stepped out of"
         );
         let _ = std::fs::remove_dir_all(&dir);
     }

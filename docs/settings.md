@@ -1112,7 +1112,19 @@ is a moment when the user is plainly not using the application underneath, and
 that is the moment the overlay is up. **With the guide open, the right stick
 pressed hands the guide's own directions to the videos floating over it**, and
 presses again to hand them back; Back does the same. Nothing is offered when
-there is nothing floating on that screen, and the press then does nothing at all.
+there is nothing floating on that screen, and the press then does nothing at
+all — nor while something with buttons of its own is standing over the menu: a
+board being typed on, a question being answered, a file being carried, or the
+power dialog, which is modal and takes every key so that a choice about ending
+the session cannot be answered by something meant for the menu behind it.
+
+**And the menu says so.** The row of button pictures in the corner of the
+overlay gains a *Picture-in-Picture* pair while there is something floating over
+that screen, and becomes a row about the window once the directions are on one —
+see [what the menu's buttons do](guide.md#what-the-menus-buttons-do), which is
+where the three rows are set out. Without it the feature was reachable only by
+somebody who already knew it was there: nothing named the press that goes to the
+video, and nothing named what the buttons did once they had.
 
 The selected window is marked by the compositor rather than by the shell, which
 is forced and is the right way round: such a window is drawn in front of every

@@ -70,7 +70,17 @@ pub enum Command {
     UpdateDaily,
     UpdateCheck,
     UpdateCancelCheck,
+    /// Ask whether to restart the machine now that the updates are installed.
+    ///
+    /// The ask and the act are two commands, on the terms
+    /// [`Command::Uninstall`] and [`Command::ConfirmUninstall`] are two: this
+    /// one is the first button on the finished panel and the one the highlight
+    /// starts on, because a machine that has just replaced its kernel should be
+    /// restarted — and a button that both stands under the thumb and ends the
+    /// session in one press is a button that ends somebody's game for them.
     UpdateRestart,
+    /// Answer that question with yes, and take the machine down.
+    UpdateRestartNow,
     /// Put up what the shell knows about the application the menu is about.
     Information,
     /// Ask whether to remove it from the machine.

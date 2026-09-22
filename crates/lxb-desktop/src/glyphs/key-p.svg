@@ -1,0 +1,30 @@
+<!--
+  The P key, as the key is labelled.
+
+  The letter, because the letter is what is printed on it — and no cap round
+  it, on key-escape.svg's rule: at the size a hint is drawn a body round a mark
+  only takes room from it, and here the room is the bowl. A P shrunk to fit
+  inside key-enter.svg's cap has a counter of two of these units, which is
+  under three pixels where the row is drawn and closes up under the material
+  long before it is read. Given the whole cell the counter is four and a half
+  and the letter is a letter.
+
+  It is the one glyph in the set whose word begins with it, and that is not a
+  coincidence to be drawn around: `p` is this shell's key for the floating
+  video *because* it is the initial — see `action_for_keysym` — so the mark
+  beside the word teaches the shorthand rather than repeating it.
+
+  Stroked rather than filled, like the three letters of key-escape.svg, and at
+  that file's weight: a stem and a bowl of even thickness is what a keycap
+  prints, and an outline drawn from a typeface's own contours would put two
+  walls where this material wants one.
+
+  lxb:shape — the material is computed from this outline. See
+  category-games.svg, which is where it is explained.
+-->
+
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24">
+  <path fill="none" stroke="#fff" stroke-width="1.7"
+        stroke-linecap="round" stroke-linejoin="round"
+        d="M8.6 19.4V4.6h2.4a4.4 4.4 0 0 1 0 8.8H8.6"/>
+</svg>

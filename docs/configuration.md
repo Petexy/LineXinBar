@@ -1546,9 +1546,10 @@ document name and would change under the setting.
 
 ```toml
 [apps."org.mozilla.firefox"]
-# The controller is a mouse inside this application: the right stick aims, `A`
-# and `B` (or R3 and L3) click, and the left stick and D-pad scroll. Off unless
-# the guide's tile has been switched on.
+# The controller is a mouse inside this application: the right stick aims, the
+# two triggers click, and the left stick and D-pad scroll. The pointer cannot
+# leave the application's own window. Off unless the guide's tile has been
+# switched on.
 stick-pointer = true
 ```
 

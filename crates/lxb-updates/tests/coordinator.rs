@@ -716,3 +716,67 @@ fn completion_notification_survives_reconnect_until_acknowledged() {
     assert!(fixture.request(Request::Events).events.is_empty());
     assert!(!fixture.root.join("install.log").exists());
 }
+
+/// What is left is counted when the job ends, without anybody asking again.
+///
+/// A review is a photograph of what was waiting *before* the tools ran, and
+/// nothing in a snapshot stops being true when a package is installed — so the
+/// Settings column went on offering the ten updates it had just installed until
+/// somebody pressed a row and made it look again. The count now follows the
+/// machine: when the tools stop, each source that ran is asked once more, with
+/// the same bounded read-only query the check uses.
+///
+/// It is a *count*, not an assumption. The fixture's tool has exactly one
+/// update to give and gives it once, so a coordinator that believed the review
+/// would still say one is waiting, and one that asked says none is. And it is
+/// the same job throughout: a job number that moved would mean a whole new
+/// check had been started behind the result on screen, which is the thing the
+/// user would have had to press anyway.
+#[test]
+fn a_finished_job_counts_what_is_left_without_being_asked_again() {
+    let fixture = Fixture::new();
+    let after = serde_json::json!({"Devices":[
+        {"DeviceId":"1111111111111111111111111111111111111111", "Name":"Test SSD", "Plugin":"nvme", "Protocol":"org.nvmexpress", "Flags":["updatable"], "Version":"2"},
+        {"DeviceId":"2222222222222222222222222222222222222222", "Name":"System Firmware", "Plugin":"uefi_capsule", "Protocol":"org.uefi.capsule", "Flags":["updatable"], "Releases":[{"Version":"2"}]},
+        {"DeviceId":"3333333333333333333333333333333333333333", "Name":"Unknown peripheral", "Plugin":"future", "Protocol":"future.device", "Flags":["updatable"], "Releases":[{"Version":"2"}]}
+    ]});
+    fs::write(fixture.root.join("bin/after.json"), after.to_string()).unwrap();
+    script(
+        &fixture.root.join("bin/fwupdmgr"),
+        r#"#!/bin/sh
+case "$1" in
+refresh) printf '{}\n' ;;
+get-devices|get-updates)
+    if [ -f "${0%/*}/installed" ]; then cat "${0%/*}/after.json"; else cat "${0%/*}/devices.json"; fi ;;
+update)
+    printf 'Device operation finished\n'
+    : > "${0%/*}/installed"
+    ;;
+*) exit 1 ;;
+esac
+"#,
+    );
+    fixture.request(Request::Check {
+        selected: vec![SourceId::Firmware],
+    });
+    let review = fixture.wait(|r| r.snapshot.phase == Phase::Reviewing);
+    let job = review.snapshot.job;
+    let firmware = |r: &Response| {
+        r.snapshot
+            .sources
+            .iter()
+            .find(|s| s.id == SourceId::Firmware)
+            .cloned()
+            .unwrap()
+    };
+    assert_eq!(firmware(&review).items.len(), 1);
+    fixture.request(Request::Install { job });
+    let counted =
+        fixture.wait(|r| r.snapshot.phase == Phase::Completed && firmware(r).items.is_empty());
+    assert_eq!(counted.snapshot.job, job, "counting is not a new job");
+    // The result the panel is about is untouched by the counting: the phase,
+    // what each source did, and the devices that were never eligible.
+    assert!(counted.snapshot.results.iter().all(|r| r.success));
+    assert_eq!(counted.snapshot.results.len(), 1);
+    assert_eq!(firmware(&counted).excluded.len(), 2);
+}

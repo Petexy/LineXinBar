@@ -724,6 +724,12 @@ is the one place where a corner is free. Over the menu it is allowed to stand on
 a window card, which is what the concept it was drawn from shows, and it never
 reaches the column: it is a panel's width pinned to the opposite corner.
 
+It keeps that corner when the machine is updating itself as well: the update's
+own card — the same card, wearing the update mark, see
+[Updates](updates.md#using-the-page) — stands on top of this one rather than in
+its place, and comes down into the corner only once this one has finished
+leaving.
+
 The one download, not a list of them. Valve's client downloads one game at a
 time and the rest of a queue is waiting rather than arriving, so the card shows
 what is actually moving — a game this session pressed install on first, because

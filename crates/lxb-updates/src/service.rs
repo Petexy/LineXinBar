@@ -992,8 +992,12 @@ fn install_job(shared: &Shared) {
         } else {
             Phase::Completed
         };
-        s.message = if bad { "Some updates could not be installed. Review each source's result." }
-            else { "Update commands finished. Review restart requirements and check again to verify available updates." }.into();
+        s.message = if bad {
+            "Some updates could not be installed. Review each source's result."
+        } else {
+            "Update commands finished. Counting what is left to update."
+        }
+        .into();
     });
     // Neither of the two below is an installation outcome, and neither may
     // move the phase. What installed, installed: a job where every provider
@@ -1025,6 +1029,71 @@ fn install_job(shared: &Shared) {
         });
     }
     archive(shared);
+    // Last, and after the finish has been announced: the count the page
+    // shows is about the machine as it is now, not as the review found it.
+    recount(shared, snapshot.job);
+}
+
+/// Count what is still waiting, now that the tools have run.
+///
+/// A review is a photograph of what was waiting *before* the job, and
+/// installing a package does not change a photograph — so the Settings column
+/// went on saying “10 updates available” over a machine that had just
+/// installed all ten, until somebody pressed a row and made it check again.
+/// The user's words for it, 2026-09-22: “after updates has been done, the
+/// number of available updates in the description is not changing until
+/// pressed again”.
+///
+/// It asks rather than assumes. A tool that exited nought is not proof that
+/// every package it was handed went on, and a transaction that failed
+/// half-way may still have installed the first half; the only honest count is
+/// the one the provider gives when it is asked again — the same bounded,
+/// read-only query the check itself runs, no root and no more network than a
+/// check already uses.
+///
+/// After [`archive`], deliberately: the finish is announced from there, and a
+/// notification that waited for `flatpak remote-ls` to come back would be an
+/// update that had been over for ten seconds before it said so.
+///
+/// Quiet, too. The phase, the results, the restart and the transcript are what
+/// the finished panel is about and none of them is touched; only the sources
+/// move, one at a time as each answers, and only while this is still the job
+/// the coordinator is holding — Check again on that same panel starts a job of
+/// its own, and this must never write over its findings.
+fn recount(shared: &Shared, job: u64) {
+    let sources: Vec<crate::Source> = {
+        let state = shared.lock().unwrap_or_else(|p| p.into_inner());
+        if state.snapshot.job != job {
+            return;
+        }
+        state
+            .snapshot
+            .sources
+            .iter()
+            .filter(|source| state.snapshot.selected.contains(&source.id))
+            .cloned()
+            .collect()
+    };
+    for mut source in sources {
+        if shared
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .snapshot
+            .job
+            != job
+        {
+            return;
+        }
+        discovery::check(&mut source);
+        change(shared, |s| {
+            if s.job != job {
+                return;
+            }
+            if let Some(held) = s.sources.iter_mut().find(|held| held.id == source.id) {
+                *held = source.clone();
+            }
+        });
+    }
 }
 
 /// Why a reviewed source is not run now, if it is not.

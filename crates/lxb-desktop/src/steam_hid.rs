@@ -260,6 +260,14 @@ pub struct Frame {
     /// already applied.
     pub left_stick: (f32, f32),
     pub right_stick: (f32, f32),
+    /// The triggers as `(left, right)`, each 0.0..=1.0 of their travel.
+    ///
+    /// How far they are pulled, not whether they are pulled: where a trigger
+    /// becomes a press is a question about what the press is *for* — the
+    /// pointer's two mouse buttons, on this pad and on every other — and it is
+    /// answered once, in [`crate::controller`], so that both pads click at the
+    /// same depth. This module's job is to say what the hardware is doing.
+    pub triggers: (f32, f32),
 }
 
 /// The stand-in devices this shell is currently presenting, for the parts of
@@ -392,6 +400,7 @@ struct State {
     released: Buttons,
     left: (f32, f32),
     right: (f32, f32),
+    triggers: (f32, f32),
 }
 
 impl SteamPad {
@@ -433,6 +442,7 @@ impl SteamPad {
             released: std::mem::take(&mut state.released),
             left_stick: state.left,
             right_stick: state.right,
+            triggers: state.triggers,
         })
     }
 }
@@ -611,10 +621,15 @@ impl Worker {
         state.held = Buttons::empty();
         state.left = (0.0, 0.0);
         state.right = (0.0, 0.0);
+        state.triggers = (0.0, 0.0);
         for puck in self.pucks.iter().filter(|puck| puck.speaking) {
             state.held = state.held.union(puck.report.buttons);
             state.left = further(state.left, normalise(puck.report.left));
             state.right = further(state.right, normalise(puck.report.right));
+            // Merged the way the sticks are, and for the same reason: two pads
+            // plugged in are one pad to drive the session with, and the answer
+            // is whichever of them is being pulled.
+            state.triggers = further(state.triggers, pulled(puck.report.triggers));
         }
     }
 
@@ -794,6 +809,16 @@ fn deadzone(value: f32) -> f32 {
     } else {
         value
     }
+}
+
+/// The two triggers as the shell reads them: 0.0..=1.0 of their travel.
+///
+/// No dead zone. A stick's is about a thumb resting on it; a trigger rests
+/// against its own stop and reads zero, and what is done with a part-pulled one
+/// is the caller's question.
+fn pulled((left, right): (u16, u16)) -> (f32, f32) {
+    let travel = |raw: u16| f32::from(raw) / f32::from(TRIGGER_FULL_SCALE);
+    (travel(left), travel(right))
 }
 
 /// Whichever of two stick positions is further from rest, axis by axis.

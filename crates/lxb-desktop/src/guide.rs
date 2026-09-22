@@ -219,6 +219,26 @@ impl Transport {
     }
 }
 
+/// What the second corner card is about: work the machine is doing to itself
+/// that nobody is standing in front of.
+///
+/// Today that is exactly one thing — an update installing while the person who
+/// pressed it went off to do something else — and it is written here the way
+/// [`crate::steam::Coming`] is written for a download, because the two are one
+/// piece of furniture: a line saying what is happening and a bar saying how
+/// far. See [`Guide::set_working`].
+#[derive(Debug, Clone, PartialEq, Default)]
+pub struct Working {
+    /// What is being done, in the words the panel behind it uses — "Updating
+    /// System", "Preparing your updates".
+    pub said: String,
+    /// How far, or nothing where nothing can be counted yet. Nothing and not
+    /// nought, for the reason a download's is nothing: an empty groove is the
+    /// honest picture of a tool that has not said anything, and nought per
+    /// cent is a reading.
+    pub share: Option<f32>,
+}
+
 /// What the card is about: the one player the buttons act on.
 ///
 /// Everything here is what the shell was told at the last look, and the card
@@ -572,6 +592,20 @@ pub struct Guide {
     /// not a start time, for the reason every other one here is — a card taken
     /// away half way in leaves from where it got to.
     download_linear: f32,
+    /// The work the machine is doing to itself in the corner of the menu, or
+    /// `None` for a session that is not updating. Kept through the way out on
+    /// the terms [`Guide::arriving`] is kept, and dropped only by
+    /// [`Guide::animate_working`].
+    working: Option<Working>,
+    /// Whether the shell still wants that card.
+    working_wanted: bool,
+    /// How far it is in: 0 gone, 1 fully arrived.
+    working_linear: f32,
+    /// Which row of the corner it stands on — 0 in the corner itself, 1 above
+    /// a download card — eased rather than set, so that a download starting or
+    /// ending under it moves it rather than teleporting it. See
+    /// [`Guide::working_row`].
+    working_row: f32,
     /// How far the media rows are open: 0 gone, 1 fully there.
     ///
     /// A position rather than a start time, for the reason [`Guide::power_linear`]
@@ -1224,6 +1258,93 @@ impl Guide {
     /// frames it needs to arrive in.
     pub fn download_is_moving(&self) -> bool {
         self.download_linear != if self.download_wanted { 1.0 } else { 0.0 }
+    }
+
+    /// How far the card about the machine's own work has arrived, 0 to 1.
+    pub fn working_at(&self) -> f32 {
+        self.working_linear
+    }
+
+    /// What that card is about, for as long as it is on screen — through the
+    /// way out as well, exactly as [`Guide::downloading`] is.
+    pub fn working(&self) -> Option<&Working> {
+        self.working.as_ref()
+    }
+
+    /// Which row of the corner it stands on, eased: 0 in the corner, 1 one
+    /// card's height above it.
+    ///
+    /// A number rather than a slot, because it moves. The corner belongs to
+    /// the download — it was there first and it is the one a person is
+    /// watching — so this card stands on top of it while there is one, and
+    /// comes down into the corner when the download has finished leaving.
+    /// Eased so that it is seen to come down rather than found somewhere
+    /// else on the next frame.
+    pub fn working_row(&self) -> f32 {
+        self.working_row
+    }
+
+    /// Put the machine's own work in the corner, take it away, or bring what
+    /// is written on it up to date.
+    ///
+    /// The same rule [`Guide::set_downloading`] keeps: replacing the words on
+    /// a card that is already up must never restart its way in, because the
+    /// percentage under them changes every second.
+    ///
+    /// Says whether anything about the card changed, because the card moves on
+    /// a clock of its own: a job that is a per cent further along is a frame
+    /// nothing else in the session is going to ask for. The download card
+    /// beside it is kept moving the same way, off the library changing.
+    pub fn set_working(&mut self, working: Option<Working>) -> bool {
+        match working {
+            Some(working) => {
+                let changed = self.working.as_ref() != Some(&working) || !self.working_wanted;
+                if changed {
+                    self.working = Some(working);
+                }
+                self.working_wanted = true;
+                changed
+            }
+            None => std::mem::replace(&mut self.working_wanted, false),
+        }
+    }
+
+    /// Advance that card by `dt` — its way in, and its way down into the
+    /// corner when the download under it has gone.
+    pub fn animate_working(&mut self, dt: f32) -> f32 {
+        let target = if self.working_wanted { 1.0 } else { 0.0 };
+        let step = dt / ARRIVING_FLIGHT;
+        self.working_linear = if self.working_linear < target {
+            (self.working_linear + step).min(target)
+        } else {
+            (self.working_linear - step).max(target)
+        };
+        // A card with nothing under it belongs in the corner; one with a
+        // download under it stands on top. Asked of the card rather than of
+        // the download's position, because a download leaving is still
+        // standing in the corner for the whole of its way out.
+        let row = if self.arriving.is_some() { 1.0 } else { 0.0 };
+        self.working_row = if self.working_linear <= 0.0 {
+            // Nothing is on screen to be seen moving, so the next arrival
+            // starts where it belongs rather than sliding in from the row the
+            // last one happened to leave from.
+            row
+        } else if self.working_row < row {
+            (self.working_row + step).min(row)
+        } else {
+            (self.working_row - step).max(row)
+        };
+        if !self.working_wanted && self.working_linear <= 0.0 {
+            self.working = None;
+        }
+        self.working_linear
+    }
+
+    /// Whether that card is still moving — in, out, or between the two rows.
+    pub fn working_is_moving(&self) -> bool {
+        self.working_linear != if self.working_wanted { 1.0 } else { 0.0 }
+            || (self.working_linear > 0.0
+                && self.working_row != if self.arriving.is_some() { 1.0 } else { 0.0 })
     }
 
     /// Whether the media rows are still moving.
@@ -3448,6 +3569,69 @@ mod tests {
             Some(0.20),
             "and says the new number"
         );
+    }
+
+    /// The two corner cards are two things happening, and neither takes the
+    /// other's place.
+    ///
+    /// A machine can be installing its updates while a game comes down — the
+    /// update panel says as much, since it pauses sleep and shutdown and not
+    /// Steam — and a corner that showed one of them would be silent about the
+    /// other at the moment somebody opened the menu to look. So they stack:
+    /// the download keeps the corner it was drawn for, the machine's own work
+    /// stands on top of it, and when the download has finished leaving the
+    /// card above comes *down* into the corner rather than being found there
+    /// on the next frame.
+    #[test]
+    fn the_machines_own_work_stands_on_top_of_a_download_and_comes_down_after_it() {
+        let mut guide = Guide::default();
+        let updating = Working {
+            said: "Updating System".into(),
+            share: Some(0.4),
+        };
+        // Both are advanced together every frame, as the loop advances them.
+        fn frame(guide: &mut Guide, dt: f32) {
+            guide.animate_download(dt);
+            guide.animate_working(dt);
+        }
+        guide.set_working(Some(updating.clone()));
+        while guide.working_is_moving() {
+            frame(&mut guide, 0.05);
+        }
+        assert_eq!(guide.working_at(), 1.0);
+        assert_eq!(guide.working_row(), 0.0, "alone, it is the corner");
+
+        // A download starting under it lifts it, and it is seen to be lifted.
+        guide.set_downloading(Some(coming(945360, "Among Us", Some(0.33))));
+        frame(&mut guide, ARRIVING_FLIGHT * 0.5);
+        let midway = guide.working_row();
+        assert!(midway > 0.0 && midway < 1.0, "jumped straight to {midway}");
+        while guide.working_is_moving() || guide.download_is_moving() {
+            frame(&mut guide, 0.05);
+        }
+        assert_eq!(guide.working_row(), 1.0);
+
+        // The download finishing brings it back down — and not before the card
+        // under it has finished leaving, or it would come down onto one.
+        guide.set_downloading(None);
+        while guide.downloading().is_some() {
+            assert_eq!(guide.working_row(), 1.0, "not while there is one under it");
+            frame(&mut guide, 0.05);
+        }
+        while guide.working_is_moving() {
+            frame(&mut guide, 0.05);
+        }
+        assert_eq!(guide.working_row(), 0.0);
+
+        // And it keeps its words for the whole of its own way out, exactly as
+        // the card beside it does.
+        guide.set_working(None);
+        while guide.working_at() > 0.0 {
+            assert!(guide.working().is_some());
+            frame(&mut guide, 0.05);
+        }
+        assert!(guide.working().is_none());
+        assert!(!guide.working_is_moving());
     }
 
     /// A download that finishes while its card is still arriving leaves from

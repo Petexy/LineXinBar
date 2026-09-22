@@ -1310,11 +1310,37 @@ impl Scene {
     /// shader afterwards. Dimming the tint would leave a fading pane at full
     /// strength and merely less purple.
     pub fn fade(&mut self, alpha: f32) {
-        for quad in &mut self.quads {
-            quad.fade *= alpha;
+        self.fade_except(0..0, 0..0, alpha);
+    }
+
+    /// The same, sparing one run of quads and one of texts.
+    ///
+    /// For a layer that steps back while one thing drawn *into* it does not,
+    /// and there is exactly one: the guide's legend while the directions are on
+    /// a video floating over it. The row is then the one part of the menu that
+    /// is about the live half of the screen — what the buttons do to the video
+    /// — so dimming it with the menu it happens to be drawn on would be the
+    /// shell quieting the only thing still answering a press.
+    ///
+    /// A run rather than a second scene because the row's place in the stack is
+    /// load-bearing: the power dialog's scrim is drawn over it and must stay
+    /// over it, and a caller that pushed the legend last and merged it back in
+    /// afterwards would have moved the row in front of that question.
+    pub fn fade_except(
+        &mut self,
+        quads: std::ops::Range<usize>,
+        texts: std::ops::Range<usize>,
+        alpha: f32,
+    ) {
+        for (index, quad) in self.quads.iter_mut().enumerate() {
+            if !quads.contains(&index) {
+                quad.fade *= alpha;
+            }
         }
-        for text in &mut self.texts {
-            text.color[3] *= alpha;
+        for (index, text) in self.texts.iter_mut().enumerate() {
+            if !texts.contains(&index) {
+                text.color[3] *= alpha;
+            }
         }
     }
 
@@ -5044,6 +5070,10 @@ pub fn build_guide(view: GuideView, width: f32, height: f32) -> Scene {
         });
     }
 
+    // Where the row landed in the scene, so the step-back below can leave it
+    // alone without the row having to be drawn somewhere else in the stack.
+    // Empty when there is no row, which spares nothing.
+    let mut row = (0..0, 0..0);
     // **What the buttons do**, in the corner opposite the column.
     //
     // The same corner of the same display the start screen writes its own
@@ -5062,21 +5092,20 @@ pub fn build_guide(view: GuideView, width: f32, height: f32) -> Scene {
     // blinked out every time something began downloading would be missing
     // exactly while the user was reading the corner.
     if let Some(legend) = view.legend {
+        let from = (quads.len(), texts.len());
         let glyph = START_HINT_GLYPH * scale;
         let settled = height - corner_line(scale);
-        let above_the_card =
-            height - (ARRIVING_INSET + TOAST_HEIGHT + GUIDE_MARGIN) * scale - glyph * 0.5;
+        // Over whichever of the corner's cards reaches highest — the download
+        // alone, or an update standing on top of it. See [`corner_cards`].
+        let (taken, arrival) = corner_cards(view.guide);
+        let above_the_card = height - (ARRIVING_INSET + taken + GUIDE_MARGIN) * scale - glyph * 0.5;
         legend_row(
             &mut quads,
             &mut texts,
-            &guide_hints(legend.pad, legend.options, legend.friends),
+            &guide_hints(legend.pad, legend.options, legend.friends, legend.floating),
             view.slots,
             width - CORNER_INSET * scale,
-            lerp(
-                settled,
-                above_the_card.min(settled),
-                view.guide.download().clamp(0.0, 1.0),
-            ),
+            lerp(settled, above_the_card.min(settled), arrival),
             &LegendSize {
                 glyph,
                 label: START_HINT_LABEL * scale,
@@ -5091,13 +5120,16 @@ pub fn build_guide(view: GuideView, width: f32, height: f32) -> Scene {
             theme.text.a(CORNER_INK * slide),
             theme.text_soft.a(CORNER_INK * slide),
         );
+        row = (from.0..quads.len(), from.1..texts.len());
     }
 
     let mut scene = Scene { quads, texts };
-    // What is coming down, in the far corner from the column. After the cards,
-    // because it is drawn over one; before the power dialog, because that is
-    // drawn over everything.
+    // What is coming down, in the far corner from the column, and what the
+    // machine is doing to itself on top of it. After the cards, because they
+    // are drawn over one; before the power dialog, because that is drawn over
+    // everything.
     push_download_card(&mut scene, &view, width, height, scale);
+    push_working_card(&mut scene, &view, width, height, scale);
     // Drawn on the eased position, not on whether it is open: a dismissed
     // dialog still has to fall back into the button it came out of.
     if view.power > 0.0 {
@@ -5106,8 +5138,21 @@ pub fn build_guide(view: GuideView, width: f32, height: f32) -> Scene {
     // And the whole of it steps back while a video has the directions. See
     // [`GuideView::elsewhere`]. The last thing done to the scene, so nothing
     // added after this escapes it.
+    //
+    // All of it but the legend, which is the one thing here that is *about*
+    // the video rather than about the menu: while the directions are gone the
+    // row in the corner says what the buttons do to the window they are on, and
+    // a shell that dimmed it along with the menu would have quieted the only
+    // part of its own screen still answering a press. See [`guide_hints`],
+    // which is what makes the row a different row while they are gone, and
+    // [`Scene::fade_except`], which is what spares it without moving it in
+    // front of the power dialog.
     if elsewhere > 0.0 {
-        scene.fade(lerp(1.0, ELSEWHERE_DIM, elsewhere));
+        scene.fade_except(
+            row.0.clone(),
+            row.1.clone(),
+            lerp(1.0, ELSEWHERE_DIM, elsewhere),
+        );
         // The windows in the deck are not in this scene to be faded: the
         // compositor draws them and the shell only frames them, so fading the
         // frame would leave the brightest thing in the menu — a live window,
@@ -11620,17 +11665,32 @@ struct LegendSize {
     step: f32,
 }
 
-/// How wide a legend's word is given, before the GPU has shaped it.
+/// How wide a legend's word is given.
 ///
-/// [`estimated_width`], and it is used here for the same reason it exists:
-/// the shell cannot measure a run before the GPU shapes it, and this row is
-/// laid out from its right-hand end leftwards. Each word is set right-aligned
-/// in a box, so it lands exactly where it should whatever its true width — the
-/// estimate only decides how much air is left before the pair to its left,
-/// where there is nothing to collide with. The box has to be *at least* as
-/// wide as the word, though, or the layout cuts the word to an ellipsis: which
-/// is what the estimate knowing a full-width character from a Latin one is for.
+/// **Measured, not guessed at** — see [`crate::gpu::word_width`], which is
+/// where the reason is written down. A legend is laid out from its right-hand
+/// end leftwards, so it needs this before the frame is shaped; each word is
+/// then set right-aligned in a box of exactly this width, so whatever the box
+/// is given over and above the word becomes air to the *left* of it. Under the
+/// old guess — a flat share of the size per character, generous so that no box
+/// could ever be narrower than its word — that air was the length of the word:
+/// four letters carried a few points of it and *Picture-in-Picture* carried
+/// eighty, which read on screen as one pair of the row having been pushed away
+/// from the rest. It had been.
+///
+/// The measurement is cached per word and scaled from one em, so what this
+/// costs after the first frame a word appears on is a lookup in a map.
 pub(crate) fn legend_word_width(label: &str, size: f32) -> f32 {
+    crate::gpu::word_width(label) * size
+}
+
+/// The guess that used to answer that question, kept for the one caller that
+/// still wants a generous number rather than a true one.
+///
+/// A word this shell's own faces cannot shape has no measurement to be had —
+/// see [`crate::gpu::word_width`], which falls back here rather than to
+/// nothing.
+pub(crate) fn guessed_word_width(label: &str, size: f32) -> f32 {
     estimated_width(label, size)
 }
 
@@ -11875,16 +11935,56 @@ fn start_hints(pad: bool, options: bool, friends: bool) -> Vec<Hint> {
 /// window, and gone on the trailing start-screen card, which is not a window
 /// and has nothing that can be done to it. See `Shell::window_card_menu`,
 /// which is what answers it — the same function the press asks.
-fn guide_hints(pad: bool, options: bool, friends: bool) -> Vec<Hint> {
+///
+/// **And it is three rows, not one, because the menu is three screens** — see
+/// [`Floating`]. A video floating over the guide is a second thing the same
+/// buttons can be pointed at, and until this row said so it was reachable only
+/// by somebody who already knew: nothing anywhere named the press that goes to
+/// it, and nothing named what the buttons did once they were there. Each row
+/// is the same rule applied to whatever is answering the next press.
+fn guide_hints(pad: bool, options: bool, friends: bool, floating: Floating) -> Vec<Hint> {
     let one = |label, on_a_pad, otherwise| Hint {
         label,
         glyph: if pad { on_a_pad } else { otherwise },
     };
-    let mut hints = vec![one(
-        crate::i18n::text("shell-select"),
-        icons::PAD_SOUTH,
-        icons::KEY_ENTER,
-    )];
+    // A window being carried is a mode inside the menu, and its row is the two
+    // presses that end it and nothing else. Everything the other rows offer is
+    // held back while a window is following the thumb — see
+    // `Shell::floating_answers` — so naming any of it here would be naming
+    // buttons that do nothing, and the two that do are the two the user has to
+    // be told: one leaves the window where it has been put and the other puts
+    // it back where it was picked up from.
+    if floating == Floating::Carried {
+        return vec![
+            one(
+                crate::i18n::text("shell-done"),
+                icons::PAD_SOUTH,
+                icons::KEY_ENTER,
+            ),
+            one(
+                crate::i18n::text("shell-cancel"),
+                icons::PAD_EAST,
+                icons::KEY_ESCAPE,
+            ),
+        ];
+    }
+    let mut hints = Vec::new();
+    // Select takes the card the light is on, and while the directions are on a
+    // video there is no card under the light to take: the press is swallowed so
+    // that it cannot reach the menu behind the mode. The one word the row gives
+    // up when the thumb goes to the window.
+    if floating != Floating::Directions {
+        hints.push(one(
+            crate::i18n::text("shell-select"),
+            icons::PAD_SOUTH,
+            icons::KEY_ENTER,
+        ));
+    }
+    // Which stays true of Options in both: on the menu it raises the selected
+    // card's, and on a video it raises that window's own — the same menu the
+    // right button raises, about the same window. One word for one act, which
+    // is what the *shell* answers by asking whichever of the two questions
+    // applies. See `Shell::guide_legend`.
     if options {
         hints.push(one(
             crate::i18n::text("shell-options"),
@@ -11892,10 +11992,29 @@ fn guide_hints(pad: bool, options: bool, friends: bool) -> Vec<Hint> {
             icons::MOUSE_RIGHT,
         ));
     }
+    // And the way to the videos, drawn only where there are videos to go to and
+    // a compositor that can hand them over. Between what is done to the card
+    // and the way out, where the friends list sits and for its reason: it is
+    // somewhere else to stand rather than something done to what the light is
+    // on, and it is not the way out.
+    //
+    // Named for the feature rather than for the act, again as the friends list
+    // is. What the press does — hand the directions to the window and take them
+    // back — is a sentence; what is on the other side of it is a thing the user
+    // has already met by that name, on the Settings page that floats it and in
+    // the menu row that puts an application there.
+    if floating == Floating::Offered {
+        hints.push(one(
+            crate::i18n::text("shell-picture-in-picture"),
+            icons::PAD_STICK,
+            icons::KEY_P,
+        ));
+    }
     // Who is on Steam, which this menu is one of the two doors into — see
     // `Shell::toggle_friends`, which answers the button from here exactly as it
     // does from the bar. On the same terms as the start screen's: only where
-    // there is an account for the panel to be about.
+    // there is an account for the panel to be about. Still offered with the
+    // directions on a video, because it still answers there.
     if friends {
         hints.push(one(
             crate::i18n::text("shell-friends"),
@@ -11903,6 +12022,9 @@ fn guide_hints(pad: bool, options: bool, friends: bool) -> Vec<Hint> {
             icons::KEY_SHIFT,
         ));
     }
+    // The way out, and it is the way out of wherever the reader is standing: of
+    // the menu, or — with the directions on a video — of the video and back to
+    // the menu. One word, because from the reader's side it is one act.
     hints.push(one(
         crate::i18n::text("shell-back"),
         icons::PAD_EAST,
@@ -11940,6 +12062,43 @@ pub struct Legend {
     pub friends: bool,
     /// Whether the user's hands are on a pad rather than on a keyboard.
     pub pad: bool,
+    /// What the videos floating over this screen are to the next press.
+    ///
+    /// Always [`Floating::None`] on the start screen, and not because the
+    /// question is meaningless there: a video floats over the bar too. It is
+    /// because nothing on the bar can be pointed at one — the mode lives over
+    /// the guide and nowhere else, so the bar's own way to a floating window is
+    /// the Guide the row already names, and a second word for the same press
+    /// would be the corner offering two doors into one room.
+    pub floating: Floating,
+}
+
+/// Where the videos floating over the guide stand in relation to the buttons.
+///
+/// Four states and not a pair of booleans, because they are one answer: the
+/// directions are on the menu, or on a window, or on a window that is following
+/// the thumb, and each is a different row in the corner. Two flags would make a
+/// fourth combination the shell would have to say was impossible.
+///
+/// The shell's to answer, like every other field of [`Legend`] — see
+/// `Shell::floating_legend`, which is the same question
+/// `Shell::floating_answers` asks before it takes a press, so the row and the
+/// press cannot disagree about what a button is for.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum Floating {
+    /// Nothing floats over this screen, or nothing here can be pointed at it —
+    /// no guide, a compositor too old to hand a window over, or something
+    /// standing in front of the menu with buttons of its own.
+    #[default]
+    None,
+    /// Videos float over the menu, and the directions are still the menu's.
+    /// The row gains the press that goes to them.
+    Offered,
+    /// The directions are on one of them.
+    Directions,
+    /// And one of them is following the thumb, because a row of its own menu
+    /// asked it to.
+    Carried,
 }
 
 /// What a tile has to say about itself.
@@ -13566,6 +13725,10 @@ pub fn toast_height(lines: u8) -> f32 {
 
 /// Where the download card stands, and how far it has come in.
 ///
+/// The corner it is pinned to, which is row nought of the stack described in
+/// [`guide_card_rect`]: the download was the first card drawn here and it
+/// keeps the corner, whatever stands on top of it.
+///
 /// `open` is the guide's own linear position for it — see
 /// [`crate::guide::Guide::animate_download`] — and the card rides in from off
 /// the right edge on the same flight a bubble arrives on, so it is never seen
@@ -13579,6 +13742,19 @@ pub fn toast_height(lines: u8) -> f32 {
 /// cut is a cut rather than a fade. See [`Scene::dim_text_behind`], which is
 /// what those panels need instead.
 pub fn guide_download_rect(width: f32, height: f32, open: f32) -> ([f32; 4], f32) {
+    guide_card_rect(width, height, open, 0.0)
+}
+
+/// The same, on any row of the corner.
+///
+/// `row` is how many cards stand between this one and the foot of the display,
+/// and it is a fraction rather than a count because it moves: the card about
+/// the machine's own work stands on top of a download while there is one and
+/// comes down into the corner when there is not, and it is *seen* to come down
+/// — see [`crate::guide::Guide::working_row`]. The stack grows upwards from
+/// the corner on the bubbles' own gap, because two pieces of the same
+/// furniture in one corner may not be spaced two different ways.
+pub fn guide_card_rect(width: f32, height: f32, open: f32, row: f32) -> ([f32; 4], f32) {
     let scale = guide_scale(height);
     let card_w = ARRIVING_WIDTH * scale;
     let card_h = TOAST_HEIGHT * scale;
@@ -13588,7 +13764,7 @@ pub fn guide_download_rect(width: f32, height: f32, open: f32) -> ([f32; 4], f32
     (
         [
             width - inset - card_w + offset,
-            height - inset - card_h,
+            height - inset - card_h - (card_h + TOAST_GAP * scale) * row.max(0.0),
             card_w,
             card_h,
         ],
@@ -13596,18 +13772,45 @@ pub fn guide_download_rect(width: f32, height: f32, open: f32) -> ([f32; 4], f32
     )
 }
 
-/// Take away the words the download card is standing on.
+/// How much of the corner the cards have taken, against 1080p, and how far in
+/// the one that reaches highest is.
 ///
-/// Called on every scene drawn before it — the guide's own, and the bar the
+/// Both halves are for the legend that has to climb over them — see
+/// [`build_guide`] — and they are two numbers rather than one because the
+/// climb rides on the *card's* arrival: a card is at its full height from the
+/// first frame of its flight and only slides in sideways, so a legend lifted
+/// by how much of it had arrived would be a legend that moved twice.
+fn corner_cards(guide: &Guide) -> (f32, f32) {
+    let mut reach = (0.0, 0.0);
+    for (open, row) in [
+        (guide.download(), 0.0),
+        (guide.working_at(), guide.working_row()),
+    ] {
+        let taken = TOAST_HEIGHT + (TOAST_HEIGHT + TOAST_GAP) * row.max(0.0);
+        let open = open.clamp(0.0, 1.0);
+        if taken * open > reach.0 * reach.1 {
+            reach = (taken, open);
+        }
+    }
+    reach
+}
+
+/// Take away the words the corner's cards are standing on — both of them.
+///
+/// Called on every scene drawn before them — the guide's own, and the bar the
 /// start-screen card is a miniature of, whose labels are assembled separately
 /// and would otherwise print straight through the glass. The same arrangement
 /// [`recede_behind_power_dialog`] is in, and for the same reason: a scene is
 /// all of its quads and then all of its text.
-pub fn hide_text_under_guide_download(scene: &mut Scene, width: f32, height: f32, open: f32) {
-    if open <= 0.0 {
-        return;
+pub fn hide_text_under_guide_cards(scene: &mut Scene, guide: &Guide, width: f32, height: f32) {
+    for (open, row) in [
+        (guide.download(), 0.0),
+        (guide.working_at(), guide.working_row()),
+    ] {
+        if open > 0.0 {
+            scene.hide_text_behind(guide_card_rect(width, height, open, row).0);
+        }
     }
-    scene.hide_text_behind(guide_download_rect(width, height, open).0);
 }
 
 /// The card in the corner of the open menu that says what is coming down.
@@ -13627,11 +13830,111 @@ fn push_download_card(scene: &mut Scene, view: &GuideView, width: f32, height: f
     let Some(coming) = view.guide.downloading().filter(|_| open > 0.0) else {
         return;
     };
-    let theme = theme();
     let (rect, alpha) = guide_download_rect(width, height, open);
     if alpha <= 0.0 {
         return;
     }
+    let picture = view
+        .slots
+        .game_icon(coming.app_id)
+        .or_else(|| view.slots.cover(coming.app_id))
+        .filter(|thumb| thumb.aspect.is_finite() && thumb.aspect > 0.0);
+    push_corner_card(
+        scene,
+        CornerCard {
+            rect,
+            alpha,
+            behind: view.behind,
+            picture,
+            // The Steam mark behind the game's own picture: a card with an
+            // empty square where a picture should be reads as a card that
+            // failed rather than as one whose picture has not landed yet.
+            glyph: icons::STEAM,
+            said: coming.said(),
+            share: coming.share,
+            stuck: coming.stuck,
+        },
+        view.slots,
+        scale,
+    );
+}
+
+/// The card beside it that says what the machine is doing to itself: an update
+/// installing while the person who pressed it is somewhere else.
+///
+/// The same card as the download's, deliberately, down to the glass and the
+/// bar — it is the same fact about the same machine, and the user asked for
+/// exactly this: "the same notification-like in the Home Menu like when the
+/// Steam is downloading a game". What it wears instead of a game's icon is the
+/// Settings column's own update mark, because that is where the press that
+/// started it was made.
+///
+/// It stands on top of the download card while there is one and comes down
+/// into the corner when there is not. Neither takes the other's place: a game
+/// coming down and a machine updating itself are two things happening, and a
+/// corner that showed one of them would be silent about the other at exactly
+/// the moment somebody opened the menu to look.
+fn push_working_card(scene: &mut Scene, view: &GuideView, width: f32, height: f32, scale: f32) {
+    let open = view.guide.working_at().clamp(0.0, 1.0);
+    let Some(working) = view.guide.working().filter(|_| open > 0.0) else {
+        return;
+    };
+    let (rect, alpha) = guide_card_rect(width, height, open, view.guide.working_row());
+    if alpha <= 0.0 {
+        return;
+    }
+    push_corner_card(
+        scene,
+        CornerCard {
+            rect,
+            alpha,
+            behind: view.behind,
+            picture: None,
+            glyph: icons::SETTING_UPDATES,
+            said: working.said.clone(),
+            share: working.share,
+            // Nothing to be stuck on: a tool that has stopped saying anything
+            // is still running, and the panel behind this says so in words.
+            stuck: false,
+        },
+        view.slots,
+        scale,
+    );
+}
+
+/// One corner card: what it stands on, what it wears and what it says.
+struct CornerCard {
+    rect: [f32; 4],
+    alpha: f32,
+    behind: f32,
+    /// The picture in the place a bubble puts the sender's, where there is
+    /// one; the glyph below stands in where there is not, or where it has not
+    /// landed yet.
+    picture: Option<crate::gpu::Thumb>,
+    glyph: &'static str,
+    said: String,
+    share: Option<f32>,
+    stuck: bool,
+}
+
+/// Draw one, whichever it is about.
+///
+/// One function for both, because they are one piece of furniture: a mark, a
+/// line of writing, a groove and a reading, on the guide's own glass. Two
+/// copies of this would be two cards that drifted apart the first time either
+/// was touched.
+fn push_corner_card(scene: &mut Scene, card: CornerCard, slots: &dyn SlotLookup, scale: f32) {
+    let CornerCard {
+        rect,
+        alpha,
+        behind,
+        picture,
+        glyph,
+        said,
+        share,
+        stuck,
+    } = card;
+    let theme = theme();
     // The words underneath go before the glass does, so the card's own do not
     // go with them.
     scene.hide_text_behind(rect);
@@ -13639,21 +13942,11 @@ fn push_download_card(scene: &mut Scene, view: &GuideView, width: f32, height: f
     let pad = TOAST_PAD * scale;
     scene
         .quads
-        .extend(sidebar_surface(rect, scale, view.behind, alpha));
+        .extend(sidebar_surface(rect, scale, behind, alpha));
 
-    // The game's own icon, in the place a bubble puts the sender's. Steam's
-    // client icon where one has been fetched, the cover behind it, and the
-    // Steam mark behind that — a card with an empty square where a picture
-    // should be reads as a card that failed rather than as one whose picture
-    // has not landed yet.
     let icon = rect[3] * ARRIVING_ICON;
     let icon_x = rect[0] + pad;
     let icon_y = rect[1] + (rect[3] - icon) * 0.5;
-    let picture = view
-        .slots
-        .game_icon(coming.app_id)
-        .or_else(|| view.slots.cover(coming.app_id))
-        .filter(|thumb| thumb.aspect.is_finite() && thumb.aspect > 0.0);
     match picture {
         Some(thumb) => scene.quads.push(Quad {
             x: icon_x,
@@ -13671,8 +13964,8 @@ fn push_download_card(scene: &mut Scene, view: &GuideView, width: f32, height: f
             ..Quad::default()
         }),
         None => scene.quads.push(icon_quad(
-            view.slots.glyph(icons::STEAM),
-            Some(icons::STEAM),
+            slots.glyph(glyph),
+            Some(glyph),
             icon_x,
             icon_y,
             icon,
@@ -13686,7 +13979,7 @@ fn push_download_card(scene: &mut Scene, view: &GuideView, width: f32, height: f
     let text_w = (rect[0] + rect[2] - text_x - pad).max(0.0);
     let title_size = 23.0 * scale;
     scene.texts.push(Text {
-        content: coming.said(),
+        content: said,
         x: text_x,
         y: rect[1] + rect[3] * TOAST_TITLE_LINE - title_size * 0.5,
         size: title_size,
@@ -13716,13 +14009,13 @@ fn push_download_card(scene: &mut Scene, view: &GuideView, width: f32, height: f
             // there is a download, and the fill says how far — so a card with
             // nothing in it is the honest picture of a client that has not said
             // anything yet, and nought per cent is not a reading.
-            share: coming.share.unwrap_or(0.0),
-            stuck: coming.stuck,
+            share: share.unwrap_or(0.0),
+            stuck,
         },
         scale,
         alpha,
     ));
-    if let Some(share) = coming.share {
+    if let Some(share) = share {
         let reading_size = 20.0 * scale;
         scene.texts.push(Text {
             content: format!("{:.0}%", share * 100.0),
@@ -18318,6 +18611,7 @@ mod tests {
             options: true,
             friends: true,
             pad: true,
+            floating: Floating::None,
         }));
         let word = |content: &str| {
             scene
@@ -21992,6 +22286,7 @@ mod tests {
                 options: true,
                 friends: true,
                 pad: true,
+                floating: Floating::None,
             },
         );
         let word = |content: &str| {
@@ -22052,7 +22347,7 @@ mod tests {
     #[test]
     fn the_guides_legend_offers_the_way_out_of_it_and_never_the_way_in() {
         let words = |options, friends| {
-            guide_hints(true, options, friends)
+            guide_hints(true, options, friends, Floating::None)
                 .into_iter()
                 .map(|hint| hint.label)
                 .collect::<Vec<_>>()
@@ -22063,7 +22358,7 @@ mod tests {
         assert_eq!(words(false, false), ["Select", "Back"]);
         for options in [true, false] {
             for friends in [true, false] {
-                let hints = guide_hints(true, options, friends);
+                let hints = guide_hints(true, options, friends, Floating::None);
                 assert!(
                     hints.iter().any(|hint| hint.label == "Back"),
                     "the way out is always offered"
@@ -22074,6 +22369,215 @@ mod tests {
                 );
             }
         }
+    }
+
+    /// A video floating over the menu is a place the buttons can be pointed at,
+    /// and the corner is where the user is told so.
+    ///
+    /// The whole of the complaint this answers: a browser puts a video in the
+    /// corner of the screen, the menu comes up over it, and nothing anywhere
+    /// said that there was a press that went to it — so the feature was
+    /// reachable only by somebody who had already read about it.
+    #[test]
+    fn the_guides_legend_names_the_way_to_a_floating_video() {
+        let row = |floating, pad| {
+            guide_hints(pad, true, true, floating)
+                .into_iter()
+                .map(|hint| (hint.label, hint.glyph))
+                .collect::<Vec<_>>()
+        };
+        let words = |floating, pad| {
+            row(floating, pad)
+                .into_iter()
+                .map(|(label, _)| label)
+                .collect::<Vec<_>>()
+        };
+
+        // Nothing floating, nothing said — the row the menu has always drawn.
+        assert_eq!(
+            words(Floating::None, true),
+            ["Select", "Options", "Friends", "Back"]
+        );
+        // And with one there, one pair more, between what is done to the card
+        // and the way out: it is somewhere else to stand rather than something
+        // done to what the light is on, which is where the friends list sits
+        // and for its reason.
+        assert_eq!(
+            words(Floating::Offered, true),
+            ["Select", "Options", "Picture-in-Picture", "Friends", "Back"]
+        );
+
+        // On the stick, because that is the press — and on the letter the key
+        // is, because that is the key. See `action_for_keysym`.
+        let glyph = |floating, pad| {
+            row(floating, pad)
+                .into_iter()
+                .find(|(label, _)| *label == "Picture-in-Picture")
+                .expect("the pair that goes to the video")
+                .1
+        };
+        assert_eq!(glyph(Floating::Offered, true), icons::PAD_STICK);
+        assert_eq!(glyph(Floating::Offered, false), icons::KEY_P);
+    }
+
+    /// With the directions on a video the row is about the video: Select has
+    /// nothing to take, and Options raises that window's own menu.
+    ///
+    /// The other half of the same complaint — somebody who found the press had
+    /// then arrived somewhere that said nothing about what the buttons did.
+    #[test]
+    fn the_legend_says_what_the_buttons_do_to_the_video_they_are_on() {
+        let words = |floating, options| {
+            guide_hints(true, options, true, floating)
+                .into_iter()
+                .map(|hint| hint.label)
+                .collect::<Vec<_>>()
+        };
+
+        // Select is gone, because the press is swallowed: there is no card
+        // under the light while the directions are on a window, and a legend
+        // naming a button that does nothing is worse than naming none.
+        assert_eq!(
+            words(Floating::Directions, true),
+            ["Options", "Friends", "Back"]
+        );
+        // And the way back out is still Back, which is what the press does from
+        // there — out of the video and into the menu behind it.
+        assert!(words(Floating::Directions, false).contains(&"Back"));
+        // The way *in* is not offered from inside: the reader is already there.
+        assert!(!words(Floating::Directions, true).contains(&"Picture-in-Picture"));
+        // Options comes and goes here on the menu's own rule, answered about
+        // the window rather than about the card.
+        assert_eq!(words(Floating::Directions, false), ["Friends", "Back"]);
+    }
+
+    /// A window following the thumb is a mode inside the mode, and its row is
+    /// the two presses that end it.
+    ///
+    /// Everything else is held back while a window is being carried — see
+    /// `Shell::floating_answers` — so everything else would be a word about a
+    /// button that does nothing.
+    #[test]
+    fn a_video_being_carried_says_how_to_put_it_down() {
+        for options in [true, false] {
+            for friends in [true, false] {
+                let hints = guide_hints(true, options, friends, Floating::Carried);
+                let words: Vec<_> = hints.iter().map(|hint| hint.label).collect();
+                assert_eq!(
+                    words,
+                    ["Done", "Cancel"],
+                    "a carried window's row is the two presses that end the carry"
+                );
+            }
+        }
+        // One leaves it where it has been put and the other puts it back, on
+        // the two buttons that mean exactly that everywhere else in the shell.
+        let hints = guide_hints(true, true, true, Floating::Carried);
+        assert_eq!(hints[0].glyph, icons::PAD_SOUTH);
+        assert_eq!(hints[1].glyph, icons::PAD_EAST);
+        let keys = guide_hints(false, true, true, Floating::Carried);
+        assert_eq!(keys[0].glyph, icons::KEY_ENTER);
+        assert_eq!(keys[1].glyph, icons::KEY_ESCAPE);
+    }
+
+    /// The corner's longest row still stands clear of the column beside it, in
+    /// every language and on the smallest display this shell is drawn on.
+    ///
+    /// Unlike a panel's foot, the guide's row is not measured against anything
+    /// before it is drawn — it is laid out from the display's own edge
+    /// leftwards and the screen has always been wider than it needs. Five pairs
+    /// is one more than the row has ever carried and one of them is the longest
+    /// word any legend in the shell says, so the room it has is worth asserting
+    /// rather than assuming. See [`legend_that_fits`], which is the rule a
+    /// *panel* would fall back on, and [`legend_ink`], which is what both
+    /// measure with.
+    #[test]
+    fn the_guides_longest_row_clears_the_column_beside_it() {
+        for language in crate::i18n::Language::CHOICES {
+            crate::i18n::set(language);
+            for (width, height) in [(1280.0, 800.0), (1920.0, 1080.0), (2560.0, 1440.0)] {
+                let scale = guide_scale(height);
+                let size = LegendSize {
+                    glyph: START_HINT_GLYPH * scale,
+                    label: START_HINT_LABEL * scale,
+                    gap: START_HINT_GAP * scale,
+                    step: START_HINT_STEP * scale,
+                };
+                // The most the row can ever carry: everything offered at once.
+                let hints = guide_hints(true, true, true, Floating::Offered);
+                assert_eq!(hints.len(), 5, "the longest row is five pairs");
+                let left = width - CORNER_INSET * scale - legend_ink(&hints, &size);
+                let [panel_x, _, panel_w, _] = sidebar_panel_rect(width, height);
+                let column = panel_x + panel_w + GUIDE_MARGIN * scale;
+                assert!(
+                    left > column,
+                    "{language:?} at {width}x{height}: the row reaches {left}, \
+                     which is into the column ending at {column}"
+                );
+            }
+        }
+        crate::i18n::set(crate::i18n::Language::British);
+    }
+
+    /// The menu steps back while a video has its directions; the row in the
+    /// corner does not, because the row is about the video.
+    ///
+    /// Dimming it with the menu it happens to be drawn on would have quieted
+    /// the only part of the screen still answering a press. See
+    /// [`Scene::fade_except`].
+    #[test]
+    fn the_legend_does_not_step_back_with_the_menu_it_is_drawn_on() {
+        let mut guide = Guide::default();
+        guide.open();
+        guide.backdate_open(1.0);
+        let cards = [card("Celeste")];
+        let legend = Legend {
+            options: true,
+            friends: true,
+            pad: true,
+            floating: Floating::Directions,
+        };
+        let scene = |elsewhere| {
+            guide_scene_with(
+                &guide,
+                Some("Celeste"),
+                None,
+                &cards,
+                None,
+                &AllSlots,
+                elsewhere,
+                Some(legend),
+            )
+        };
+        let word = |scene: &Scene, content: &str| {
+            scene
+                .texts
+                .iter()
+                .find(|text| text.content == content)
+                .unwrap_or_else(|| panic!("the legend says {content}"))
+                .color[3]
+        };
+
+        let here = scene(0.0);
+        let away = scene(1.0);
+        assert!(
+            (word(&here, "Back") - word(&away, "Back")).abs() < 0.001,
+            "the row was dimmed with the menu"
+        );
+        // And the menu itself did step back, or the assertion above is about a
+        // fade that never happened.
+        let sidebar = |scene: &Scene| {
+            scene
+                .texts
+                .iter()
+                .find(|text| text.content == "Resume")
+                .expect("the column")
+                .color[3]
+        };
+        assert!(
+            sidebar(&away) < sidebar(&here) - 0.01,
+            "the menu did not step back at all"
+        );
     }
 
     /// The download card stands in this very corner, so the legend climbs over
@@ -22089,6 +22593,7 @@ mod tests {
             options: true,
             friends: true,
             pad: true,
+            floating: Floating::None,
         };
 
         let line = |scene: &Scene| {
@@ -22127,6 +22632,78 @@ mod tests {
         assert!(
             lifted + glyph * 0.5 <= rect[1] - GUIDE_MARGIN * scale + 0.01,
             "the row still runs into the card"
+        );
+    }
+
+    /// Two cards in the corner are two cards the legend climbs over, and the
+    /// higher one is the one it clears.
+    #[test]
+    fn the_legend_climbs_over_whichever_card_reaches_highest() {
+        let (width, height) = (1920.0, 1080.0);
+        let mut guide = Guide::default();
+        guide.open();
+        guide.backdate_open(1.0);
+        let cards = [card("Celeste")];
+        let legend = Legend {
+            options: true,
+            friends: true,
+            pad: true,
+            floating: Floating::None,
+        };
+        let line = |guide: &Guide| {
+            guide_scene_legend(guide, &cards, legend)
+                .texts
+                .iter()
+                .find(|text| text.content == "Select")
+                .expect("the legend")
+                .y
+        };
+        let settled = line(&guide);
+
+        guide.set_downloading(Some(crate::steam::Coming {
+            app_id: 4711,
+            name: "Among Us".to_string(),
+            verb: "Downloading",
+            share: Some(0.33),
+            stuck: false,
+            a_download: true,
+        }));
+        guide.set_working(Some(crate::guide::Working {
+            said: "Updating System".into(),
+            share: Some(0.4),
+        }));
+        for _ in 0..240 {
+            guide.animate_download(1.0 / 60.0);
+            guide.animate_working(1.0 / 60.0);
+        }
+        let over_one = {
+            let mut alone = Guide::default();
+            alone.open();
+            alone.backdate_open(1.0);
+            alone.set_downloading(Some(crate::steam::Coming {
+                app_id: 4711,
+                name: "Among Us".to_string(),
+                verb: "Downloading",
+                share: Some(0.33),
+                stuck: false,
+                a_download: true,
+            }));
+            for _ in 0..240 {
+                alone.animate_download(1.0 / 60.0);
+            }
+            line(&alone)
+        };
+        let over_two = line(&guide);
+        assert!(over_two < over_one && over_one < settled, "it climbs twice");
+
+        // Clear of the upper card by the guide's own air, exactly as it is
+        // clear of a single one.
+        let scale = guide_scale(height);
+        let glyph = START_HINT_GLYPH * scale;
+        let (rect, _) = guide_card_rect(width, height, guide.working_at(), guide.working_row());
+        assert!(
+            over_two + glyph * 0.5 <= rect[1] - GUIDE_MARGIN * scale + 0.01,
+            "the row still runs into the upper card"
         );
     }
 
@@ -29804,6 +30381,75 @@ mod tests {
         assert_eq!(said(None), vec!["Downloading Among Us".to_string()]);
     }
 
+    /// The machine's own work gets the same card, wearing the update mark, and
+    /// it stands clear on top of the download rather than over it.
+    ///
+    /// Asked for by the user on 2026-09-22 in exactly those terms — the same
+    /// notification-shaped card an update gets as a game coming down gets — so
+    /// that a job left running in the background can be watched from the menu.
+    #[test]
+    fn the_update_card_is_the_download_card_wearing_the_update_mark() {
+        let (width, height) = (1920.0, 1080.0);
+        let mut guide = menu_with_a_download(Some(0.33), false);
+        guide.set_working(Some(crate::guide::Working {
+            said: "Updating System".into(),
+            share: Some(0.45),
+        }));
+        while guide.working_is_moving() {
+            guide.animate_working(0.05);
+        }
+        let below = guide_download_rect(width, height, guide.download()).0;
+        let above = guide_card_rect(width, height, guide.working_at(), guide.working_row()).0;
+        // One column, one width, and air between them: the bubbles' own gap,
+        // because two of one piece of furniture may not be spaced two ways.
+        assert_eq!(above[0], below[0]);
+        assert_eq!(above[2], below[2]);
+        assert!((below[1] - (above[1] + above[3]) - TOAST_GAP * guide_scale(height)).abs() < 0.01);
+        assert!(above[1] > 0.0, "and inside the display");
+
+        let scene = guide_scene_with(
+            &guide,
+            None,
+            None,
+            &[],
+            None,
+            &GamePictures {
+                icon: Some(71),
+                cover: None,
+            },
+            0.0,
+            None,
+        );
+        let inside = |rect: [f32; 4], x: f32, y: f32| {
+            x >= rect[0] && y >= rect[1] && x < rect[0] + rect[2] && y < rect[1] + rect[3]
+        };
+        let words: Vec<String> = scene
+            .texts
+            .iter()
+            .filter(|text| inside(above, text.x, text.y))
+            .map(|text| text.content.clone())
+            .collect();
+        assert_eq!(
+            words,
+            vec!["Updating System".to_string(), "45%".to_string()]
+        );
+        // The Settings column's update mark, which is where the press that
+        // started this was made — never the game's picture beside it.
+        let marks: Vec<u32> = scene
+            .quads
+            .iter()
+            .filter(|quad| inside(above, quad.x, quad.y))
+            .map(|quad| quad.slot)
+            .collect();
+        assert!(marks.contains(&Named::slot_of(icons::SETTING_UPDATES)));
+        assert!(!marks.contains(&71));
+        // And the game's card is untouched underneath it.
+        assert!(scene
+            .texts
+            .iter()
+            .any(|text| inside(below, text.x, text.y) && text.content == "Downloading Among Us"));
+    }
+
     /// A card with nothing to report draws the groove and nothing in it, and
     /// one whose download has stopped keeps its reading and goes quiet — the
     /// same two rules the bar on the game's own row is under.
@@ -29867,7 +30513,12 @@ mod tests {
             cut: Cut::Tail,
             mono: false,
         });
-        hide_text_under_guide_download(&mut scene, 1920.0, 1080.0, 1.0);
+        hide_text_under_guide_cards(
+            &mut scene,
+            &menu_with_a_download(Some(0.33), false),
+            1920.0,
+            1080.0,
+        );
         assert!(scene.texts.is_empty(), "wholly behind it, so wholly gone");
 
         // And a card that is not on screen takes nothing away.
@@ -29887,7 +30538,7 @@ mod tests {
             cut: Cut::Tail,
             mono: false,
         });
-        hide_text_under_guide_download(&mut none, 1920.0, 1080.0, 0.0);
+        hide_text_under_guide_cards(&mut none, &Guide::default(), 1920.0, 1080.0);
         assert_eq!(none.texts.len(), 1);
     }
 }

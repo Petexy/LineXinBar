@@ -5015,10 +5015,12 @@ impl Shell {
         // was pressed, so without this it would have no frames to open in.
         let pressing = self.guide.pressing()
             || self.guide.media_is_moving()
-            // And the download card, which is the same kind of thing again: it
-            // comes in because a download started and leaves because one
-            // finished, and neither of those is a press.
+            // And the corner's cards, which are the same kind of thing again:
+            // one comes in because a download started and leaves because one
+            // finished, the other because the machine began updating itself,
+            // and none of those is a press.
             || self.guide.download_is_moving()
+            || self.guide.working_is_moving()
             || self.context_menu.is_animating()
             // And the friends list, which comes in from the right edge and
             // leaves the same way: dismissed with one press, it still has to be
@@ -5318,10 +5320,12 @@ impl Shell {
         // half-way carries on from where it was, and the easing is put on it
         // at the point it becomes a picture.
         self.guide.animate_media(dt);
-        // And the card in the far corner, on its own linear position for the
-        // same reason: a download that finishes while its card is still
-        // arriving leaves from where it got to.
-        let download_open = self.guide.animate_download(dt);
+        // And the cards in the far corner, each on its own linear position for
+        // the same reason: a download that finishes while its card is still
+        // arriving leaves from where it got to. The second of them also has a
+        // row to ease between — see [`guide::Guide::working_row`].
+        self.guide.animate_download(dt);
+        self.guide.animate_working(dt);
         // The board's rise and fall, on the same terms and for the same
         // reason: it is drawn on the display being driven, and the others must
         // not run its clock on.
@@ -6062,14 +6066,14 @@ impl Shell {
                         power_open,
                     );
                 }
-                // The download card is in the same position: its glass is a
-                // quad in the guide's scene and the start card's labels are
+                // The corner's cards are in the same position: their glass is
+                // a quad in the guide's scene and the start card's labels are
                 // text in this one, so they would print straight through it.
-                ui::hide_text_under_guide_download(
+                ui::hide_text_under_guide_cards(
                     &mut scene,
+                    &self.guide,
                     width as f32,
                     height as f32,
-                    download_open,
                 );
                 let guide = ui::build_guide(
                     ui::GuideView {
@@ -7151,9 +7155,10 @@ impl Shell {
     /// cursor can go away.
     ///
     /// Silent while the right stick is aiming, and that is the whole of the
-    /// exception: with the stick pointer on, the pad *is* the mouse — `A` is
-    /// its left button and the D-pad is its wheel — and a cursor that blinked
-    /// out at every click would be one the user could not use.
+    /// exception: with the stick pointer on, the pad *is* the mouse — the
+    /// right trigger is its left button and the D-pad is its wheel — and a
+    /// cursor that blinked out at every click would be one the user could not
+    /// use.
     fn put_the_pointer_down(&mut self) {
         if self.stick_pointer_aiming() {
             return;
@@ -7202,15 +7207,22 @@ impl Shell {
             sent = true;
         }
 
-        // The buttons and the wheel are the on-screen keyboard's the moment it
-        // is up: it is driven with the D-pad, the left stick and `A`, and two
-        // things bound to one control is worse than one of them being absent.
-        // Aiming carries on regardless — the board has no use for the right
-        // stick — so the pointer is still where it was left when the board
-        // goes away.
-        if !self.stick_pointer_clicking() {
+        // The clicks, before anything the board could take. They are the two
+        // triggers and the triggers alone — see [`controller::Sticks`] — which
+        // is what lets them outlast the on-screen keyboard: the board
+        // is driven with the D-pad, the left stick and `A`, and it wants
+        // neither trigger. Clicking while it is up is the point rather than an
+        // accident, since the one thing a mouse is for with a keyboard on
+        // screen is putting the caret in the field about to be typed into.
+        if self.send_stick_clicks(&control, &poll.clicks) {
+            sent = true;
+        }
+
+        // The wheel and the arrows are the board's the moment it is up, and
+        // two things bound to one control is worse than one of them being
+        // absent. Aiming and clicking carry on regardless.
+        if !self.stick_pointer_scrolling() {
             self.scroll.rest();
-            self.release_stick_buttons(&control);
             self.release_stick_keys(&control);
             if sent {
                 let _ = self.conn.flush();
@@ -7235,7 +7247,21 @@ impl Shell {
             sent = true;
         }
 
-        for (button, down) in &poll.clicks {
+        if sent {
+            if let Err(err) = self.conn.flush() {
+                tracing::warn!(?err, "could not send the stick pointer's movement");
+            }
+        }
+    }
+
+    /// Press and release the pointer's buttons, and remember what is down.
+    ///
+    /// Returns whether anything was sent. A release for a button the
+    /// application never saw pressed is dropped, exactly as an arrow's is: the
+    /// switch can be turned on with a finger already on a trigger.
+    fn send_stick_clicks(&mut self, control: &LxbShellV1, clicks: &[(u32, bool)]) -> bool {
+        let mut sent = false;
+        for (button, down) in clicks {
             if *down {
                 if !self.stick_buttons.contains(button) {
                     self.stick_buttons.push(*button);
@@ -7258,12 +7284,7 @@ impl Shell {
             );
             sent = true;
         }
-
-        if sent {
-            if let Err(err) = self.conn.flush() {
-                tracing::warn!(?err, "could not send the stick pointer's movement");
-            }
-        }
+        sent
     }
 
     /// Let go of every button the stick is holding down.
@@ -7515,10 +7536,10 @@ impl Shell {
     ///
     /// The on-screen keyboard is not in that list. It is drawn over the
     /// application, but it is driven with the D-pad, the left stick and `A`,
-    /// and it has no use at all for the right stick — so aiming carries on
-    /// underneath it, and the pointer is still where it was left when the
-    /// board goes away. What the board does take is [everything
-    /// else](Self::stick_pointer_clicking).
+    /// and it has no use for the right stick or for either trigger — so aiming
+    /// and clicking both carry on underneath it, which is what lets a user
+    /// point at the field they are about to type into. What the board does
+    /// take is [the wheel and the arrows](Self::stick_pointer_scrolling).
     fn stick_pointer_aiming(&self) -> bool {
         pointer_aims(
             self.guide.is_over_app(),
@@ -7527,13 +7548,15 @@ impl Shell {
         )
     }
 
-    /// Whether the buttons and the wheel are the pointer's as well.
+    /// Whether the wheel and the arrows are the pointer's as well.
     ///
-    /// Everything aiming needs, and the board out of the way: `A` presses the
-    /// key under its cursor and the D-pad moves that cursor, so a pointer that
-    /// also claimed them would make one press do two things.
-    fn stick_pointer_clicking(&self) -> bool {
-        pointer_clicks(self.stick_pointer_aiming(), self.osk.is_open())
+    /// Everything aiming needs, and the board out of the way: the D-pad moves
+    /// the cursor over its keys and the left stick moves it faster, so a
+    /// pointer that also claimed them would make one press do two things. The
+    /// clicks are not in this half any more — they are the triggers, which the
+    /// board has never wanted.
+    fn stick_pointer_scrolling(&self) -> bool {
+        pointer_scrolls(self.stick_pointer_aiming(), self.osk.is_open())
     }
 
     fn on_key(&mut self, keysym: Keysym) {
@@ -15625,6 +15648,13 @@ impl Shell {
             && !self.is_leaving()
             && !self.osk.is_open()
             && !self.dialog.is_open()
+            // The power dialog on the same terms as the centred one, and it was
+            // missing: that question is modal — it takes every key so that a
+            // choice about ending the session cannot be answered by something
+            // meant for the menu behind it — and the stick press was reaching
+            // straight past it to the videos, leaving a live dialog standing on
+            // a menu that had stepped back from it.
+            && !self.guide.power_open()
             && self.carrying.is_none()
             && self.renaming.is_none()
             && !self.floating_here().is_empty()
@@ -16537,8 +16567,26 @@ impl Shell {
                 self.show_updates();
             }
             menu::Command::UpdateRestart => {
-                self.updates.restart();
+                self.updates.ask_to_restart();
                 self.show_updates();
+            }
+            // Answered yes. Two ways down, and which one it is belongs to the
+            // coordinator rather than to this: a deployment staged for the
+            // next boot has to be restarted *into*, by whatever tool staged it
+            // — `dnf5 offline reboot`, or logind for the rest — and the
+            // coordinator is the one holding that. Anything else is an
+            // ordinary restart of this machine, and it goes down the way the
+            // power menu's does, black curtain and all, through the same
+            // permit that keeps a machine from restarting out from under an
+            // update that is still running.
+            menu::Command::UpdateRestartNow => {
+                self.updates.show_overview();
+                if self.updates.snapshot.restart.is_some() {
+                    self.updates.restart();
+                    self.show_updates();
+                } else {
+                    self.activate_power(guide::PowerItem::Restart);
+                }
             }
             menu::Command::UpdateInstall => {
                 self.updates.install();
@@ -16758,9 +16806,18 @@ impl Shell {
                     self.notifications.dismiss(id);
                     self.updates.acknowledge(event.id);
                     self.context_menu.close();
-                    if event.attention
-                        || (event.restart.is_some() && self.updates.snapshot.job == event.job)
-                    {
+                    // The job's own result, which is what an announcement
+                    // about a job is about: what each source did, **Restart
+                    // now** at the top of it, and Full output under that. It
+                    // opened straight into the transcript before, and a person
+                    // who had come to restart the machine after an update
+                    // arrived instead at eighty columns of pacman.
+                    //
+                    // Only while it is still the job the coordinator holds. An
+                    // older one has no result on the snapshot to show — that
+                    // belongs to whatever ran after it — so it opens the way
+                    // Recent updates opens it, on its own transcript.
+                    if self.updates.snapshot.job == event.job {
                         self.updates.open = true;
                         self.updates.show_overview();
                     } else {
@@ -26633,6 +26690,10 @@ impl Shell {
             // it — see [`Shell::why_there_are_no_friends`].
             friends: self.why_there_are_no_friends().is_none(),
             pad: settings::controller_in_hand(),
+            // Never on the bar. The videos are reached from the guide and only
+            // from the guide, so the press this corner would be naming is the
+            // Guide it already names — see [`ui::Legend::floating`].
+            floating: ui::Floating::None,
         })
     }
 
@@ -26668,6 +26729,9 @@ impl Shell {
         if context_on_screen || dialog_on_screen {
             return None;
         }
+        // Which of the menu's three screens the buttons are pointed at, asked
+        // first because the two answers below depend on it.
+        let floating = self.floating_legend();
         Some(ui::Legend {
             // Asked by building the menu and throwing it away, exactly as the
             // start screen's Options is and for its reason: the word is on the
@@ -26679,14 +26743,46 @@ impl Shell {
             // the menu that does take a button away: that question is modal and
             // the button raises nothing over it — see
             // [`Shell::toggle_context_menu`], which refuses it there.
-            options: !self.guide.power_open() && self.window_card_menu().is_some(),
+            //
+            // **And it is a different menu while the directions are on a
+            // video**: the top face button then raises that window's own rows
+            // rather than the selected card's, so the word is asked of the
+            // window — the same `selected_floating_window` the press asks
+            // through [`Shell::open_the_floating_windows_menu`]. With a window
+            // already following the thumb there is no menu at all, which is
+            // what that row's own two words say instead.
+            options: match floating {
+                ui::Floating::Directions => self.selected_floating_window().is_some(),
+                ui::Floating::Carried => false,
+                _ => !self.guide.power_open() && self.window_card_menu().is_some(),
+            },
             // The list of people is reached from the menu on the same button it
             // is reached from the bar on, and is refused on the same terms. One
             // question, asked in one place, so the legend and the panel cannot
             // disagree — see [`Shell::why_there_are_no_friends`].
             friends: self.why_there_are_no_friends().is_none(),
             pad: settings::controller_in_hand(),
+            floating,
         })
+    }
+
+    /// Where the videos floating over the menu stand in relation to the next
+    /// press — see [`ui::Floating`].
+    ///
+    /// Asked of the same two things [`Shell::floating_answers`] branches on, in
+    /// the same order, so the row in the corner and the press it is about
+    /// cannot come to different conclusions. A hand the *menu* handed over is
+    /// the mode inside the mode; a hand the stick took by itself is not, since
+    /// the presses there still mean what the row says they mean.
+    fn floating_legend(&self) -> ui::Floating {
+        if !self.the_floating_windows_are_offered() {
+            return ui::Floating::None;
+        }
+        match (self.floating_focus, self.floating_hand) {
+            (Some(_), Some(hand)) if hand.from_menu => ui::Floating::Carried,
+            (Some(_), _) => ui::Floating::Directions,
+            (None, _) => ui::Floating::Offered,
+        }
     }
 
     /// Settle where each display's start screen flies from, for a menu that
@@ -35383,15 +35479,15 @@ fn pointer_aims(menu_over_app: bool, launching: bool, turned_on: bool) -> bool {
     turned_on && !menu_over_app && !launching
 }
 
-/// Whether the buttons and the wheel are the pointer's too.
+/// Whether the wheel and the arrows are the pointer's too.
 ///
 /// Everything aiming needs, and the on-screen keyboard out of the way. The
-/// board is driven with the D-pad, the left stick and `A` — exactly what the
-/// clicks and the scrolling would take — while the right stick means nothing
-/// to it at all. So the two halves part company for as long as it is up:
-/// aiming carries on underneath, and the pointer is still where it was left
-/// when the board goes away.
-fn pointer_clicks(aiming: bool, board_open: bool) -> bool {
+/// board is driven with the D-pad and the left stick — exactly what the
+/// scrolling would take — while the right stick and the two triggers mean
+/// nothing to it at all. So the halves part company for as long as it is up:
+/// the pointer goes on being aimed and clicked underneath, and only the wheel
+/// waits for the board to go away.
+fn pointer_scrolls(aiming: bool, board_open: bool) -> bool {
     aiming && !board_open
 }
 
@@ -40022,36 +40118,40 @@ mod flight_tests {
         assert!(keyboard_is_visible(MENU, BOARD, !HINT, !APP, HERE, !PAD));
     }
 
-    /// The regression that made the keyboard look like a picture of a
-    /// keyboard: it was on screen, and every direction and press from the
-    /// controller was being dropped before it got there.
-    /// The stick is a mouse only where there is something to point at, and
-    /// only the half of it that nothing else wants stays behind the board.
+    /// The stick is a mouse only where there is something to point at, and the
+    /// board over it takes only the half of it that it is driven with.
+    ///
+    /// The regression behind the first half: the keyboard looked like a
+    /// picture of a keyboard, because every direction and press from the
+    /// controller was being dropped before it got there. Behind the second: a
+    /// board with no way to click anything under it, which is a keyboard with
+    /// no way to choose the field it types into.
     #[test]
-    fn the_pointer_keeps_aiming_under_the_board_but_gives_up_its_buttons() {
+    fn the_pointer_keeps_pointing_under_the_board_and_gives_up_the_wheel() {
         const OFF: bool = false;
         const ON: bool = true;
 
         // Nothing turned on: nothing happens, whatever else is true.
         assert!(!pointer_aims(OFF, OFF, OFF));
-        assert!(!pointer_clicks(pointer_aims(OFF, OFF, OFF), OFF));
+        assert!(!pointer_scrolls(pointer_aims(OFF, OFF, OFF), OFF));
 
         // Turned on, with the application in front: the whole mouse.
         let aiming = pointer_aims(OFF, OFF, ON);
         assert!(aiming);
-        assert!(pointer_clicks(aiming, OFF));
+        assert!(pointer_scrolls(aiming, OFF));
 
-        // The board is up: still aiming, no longer clicking. It is driven
-        // with the D-pad, the left stick and `A`, and the right stick means
-        // nothing to it.
+        // The board is up: still aiming — and still clicking, which is not a
+        // question this rule is asked, because the clicks are the triggers and
+        // the board wants neither. What it does take is the wheel and the
+        // arrows, which are the D-pad and the left stick it is driven with.
         assert!(pointer_aims(OFF, OFF, ON));
-        assert!(!pointer_clicks(pointer_aims(OFF, OFF, ON), ON));
+        assert!(!pointer_scrolls(pointer_aims(OFF, OFF, ON), ON));
 
         // The menu is over the application, or a launch is still in flight:
         // the shell's own screens, with nothing on them to point at.
         for (menu, launching) in [(ON, OFF), (OFF, ON), (ON, ON)] {
             assert!(!pointer_aims(menu, launching, ON), "{menu} {launching}");
-            assert!(!pointer_clicks(pointer_aims(menu, launching, ON), OFF));
+            assert!(!pointer_scrolls(pointer_aims(menu, launching, ON), OFF));
         }
     }
 

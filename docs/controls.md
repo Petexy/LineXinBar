@@ -306,6 +306,10 @@ running at all.
 | `Super+K`, `XF86Keyboard` | The same, from a keyboard |
 | Any key on a real keyboard | Puts the board away, and is typed into the application |
 
+Where [the stick pointer](guide.md#the-stick-pointer) is on, the right stick and
+the two triggers keep working underneath the board: it wants none of them, and
+the field about to be typed into usually has to be clicked on first.
+
 The left-hand face button is `X` on an Xbox pad, Square on a PlayStation one
 and `Y` on a Nintendo one — the same button in all three cases. Select is
 likewise Back, View, Share, Create or `−` depending on whose pad it is, which
@@ -523,7 +527,7 @@ one and a machine with no mouse plugged into it never grows one.
 | What the user does | The cursor |
 | ------------------ | ---------- |
 | Moves a mouse or a touchpad | Appears, where the movement puts it |
-| Aims with [the stick pointer](guide.md#the-stick-pointer) | The same: that stick *is* a mouse |
+| Aims with [the stick pointer](guide.md#the-stick-pointer) | The same: that stick *is* a mouse — inside the application it was turned on for, which is as far as it goes |
 | Presses a key on a keyboard | Goes away |
 | Presses anything on a controller | Goes away |
 
@@ -539,7 +543,7 @@ while a game holds the keyboard, and it leaves nothing for the compositor to
 notice. So the shell says so, with `hide_pointer`. It says it for the presses
 it acts on itself and not for the ones the stick pointer is clicking with —
 with the stick pointer on, the whole pad is the mouse, and a cursor that
-blinked out at every click would be one the user could not use.
+blinked out at every trigger pull would be one the user could not use.
 
 Typing on the on-screen keyboard does not hide it either, for the same reason
 in reverse: those keys arrive as a virtual keyboard rather than as a seat one,

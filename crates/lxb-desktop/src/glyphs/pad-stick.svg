@@ -1,0 +1,47 @@
+<!--
+  The right stick pressed, as the object it is: the letter, a press, and the
+  stick itself in profile.
+
+  **Drawn from the side, not from above.** The first cut was a ring with a bead
+  in it — the cap sunk in its dish, seen down the thumb — and the user threw it
+  out for the only reason that matters: it did not look like a stick, and even
+  had it done, a pad has two of them and nothing said which. Seen from the side
+  a thumbstick has a silhouette nothing else on a pad has: a wide flat cap, a
+  waist, and a dome standing on the face. That is what is drawn here, as one
+  body, because a joystick *is* one body — the two notches under the cap are the
+  whole of what reads at a hint's size, so the cap overhangs the waist by better
+  than four of these units on each side and the dome's shoulders are kept low
+  enough to leave them open.
+
+  **The letter says which stick**, which is the one thing position cannot say
+  here: both sticks sit on the same face and a drawing of one is a drawing of
+  the other. R is not a button name of the kind pad-west.svg refuses — those are
+  swapped between layouts and branded differently by every maker — it is a
+  *side*, and the side is printed on the hardware of every pad sold.
+
+  **And the triangle says it is a press**, which is not decoration: the right
+  stick pushed is this shell's pointer and what carries a floating window, so
+  *move* and *press* are two different acts on one control and a mark naming
+  only the control would name both.
+
+  Three things in a cell that gives each of them about a third of thirty-four
+  points, which is why the arrangement is an L rather than the stack the
+  reference drawing uses: stacked, the stick came out a spool two pixels tall.
+  The letter takes the left, the triangle the space beside it, and the stick the
+  full width underneath.
+
+  lxb:shape — the material is computed from this outline. See
+  category-games.svg, which is where it is explained.
+-->
+
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24">
+  <path fill="none" stroke="#fff" stroke-width="1.8"
+        stroke-linecap="round" stroke-linejoin="round"
+        d="M2.9 11V2.7h2.3a2.5 2.5 0 0 1 0 5H2.9M5.4 7.7l1.9 3.3"/>
+  <g fill="#fff">
+    <path d="M12.9 4.2h7.4l-3.7 6.1z"/>
+    <rect x="5.7" y="13.9" width="14.2" height="2.7" rx="1.35"/>
+    <path d="M11 16.4h3.6l0.4 2.9h-4.4z"/>
+    <path d="M3.6 21.5a8.7 3.4 0 0 1 17.4 0v0.3a0.6 0.6 0 0 1-0.6 0.6H4.2a0.6 0.6 0 0 1-0.6-0.6z"/>
+  </g>
+</svg>

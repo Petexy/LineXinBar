@@ -115,6 +115,9 @@ pub enum View {
     Output,
     History,
     Preferences,
+    /// “Restart now?”, over the result it was pressed from. See
+    /// [`Updates::ask_to_restart`].
+    Restart,
 }
 
 /// Where the terminal frame's window is in the transcript.
@@ -345,6 +348,18 @@ impl Updates {
             job: self.snapshot.job,
         });
     }
+    /// Put the question up over the result: *restart now?*
+    ///
+    /// The press that raises it is the first button on the finished panel and
+    /// the one the highlight is already standing on — the user asked for that
+    /// on 2026-09-22, to encourage a restart after an update — so the act
+    /// itself may not also be one press. The question is a view of this panel
+    /// rather than a dialog of its own, because a dialog over a dialog is the
+    /// one thing this shell's centred glass cannot do, and because answering
+    /// *no* has somewhere obvious to go back to.
+    pub fn ask_to_restart(&mut self) {
+        self.view = View::Restart;
+    }
     pub fn restart(&mut self) {
         self.request(Request::Restart {
             job: self.snapshot.job,
@@ -367,6 +382,12 @@ impl Updates {
         self.typing = false;
         self.typed = Secret::default();
         self.buttons.clear();
+        // A question closed is a question answered *no*: the panel opened
+        // again must be the result, not the restart it was standing over when
+        // somebody backed out of it.
+        if self.view == View::Restart {
+            self.view = View::Job;
+        }
     }
     /// Take the panel off the screen for a question `polkitd` has asked,
     /// without closing it.
@@ -818,6 +839,50 @@ impl Updates {
         (rows_changed, changed)
     }
 
+    /// What the corner of the open menu says about this, or nothing when the
+    /// machine is not installing anything.
+    ///
+    /// The user asked for it in those words on 2026-09-22: the same card the
+    /// guide puts up for a game coming down, for an update going on, so that
+    /// "the user should easily be able to check how the updates are going"
+    /// without walking back into Settings for it. See
+    /// [`crate::guide::Working`].
+    ///
+    /// Installing only. A check is a few seconds of read-only queries with
+    /// nothing to count, and a card that flew in and straight back out again
+    /// every time the daily check ran would be the corner crying wolf; what
+    /// the card is for is the ten minutes a machine spends installing while
+    /// its owner is doing something else. The phase is enough to say which is
+    /// which — a check that has not been left to itself has its own panel up.
+    pub fn corner(&self) -> Option<crate::guide::Working> {
+        if self.snapshot.phase != Phase::Running {
+            return None;
+        }
+        // Before the first tool has said anything the panel shows the lights
+        // rather than a bar, and this shows the groove rather than a reading,
+        // for one reason: nought per cent is not a measurement of a job that
+        // has not started. The same condition, so the two cannot disagree —
+        // see [`Self::running`].
+        let preparing = self.snapshot.active.is_none() && self.snapshot.output.is_empty();
+        Some(crate::guide::Working {
+            // The panel's own first line, so that the corner and the panel
+            // behind it cannot describe one job two ways.
+            said: match self.snapshot.active {
+                Some(active) => {
+                    crate::message!("updates-installing-source", "source" => crate::i18n::builtin(active.name()))
+                }
+                None => crate::i18n::text("shell-preparing-your-updates").into(),
+            },
+            // The bar the panel draws, on the terms it draws it: a share where
+            // there is something to count, and an empty groove where the tools
+            // have listed nothing — see [`Self::progress`].
+            share: (!preparing)
+                .then(|| self.progress())
+                .flatten()
+                .map(|(done, total)| done as f32 / total as f32),
+        })
+    }
+
     pub fn panel(&self) -> (Vec<Line>, Vec<menu::Entry>) {
         use menu::{Command as C, Entry as E};
         let mut lines = vec![Line::Heading(
@@ -826,6 +891,7 @@ impl Updates {
                 View::Output => crate::i18n::text("shell-full-output"),
                 View::History => crate::i18n::text("shell-recent-updates"),
                 View::Preferences => crate::i18n::text("shell-update-preferences"),
+                View::Restart => crate::i18n::text("shell-restart-the-system"),
             }
             .into(),
         )];
@@ -841,7 +907,7 @@ impl Updates {
                 crate::i18n::text("shell-could-not-complete-the-request").into(),
             ));
             match self.view {
-                View::Job => lines.push(Line::Note(
+                View::Job | View::Restart => lines.push(Line::Note(
                     crate::i18n::text("shell-open-details-for-the-reason").into(),
                 )),
                 View::Output => {}
@@ -854,6 +920,37 @@ impl Updates {
         // a job is left to carry on, a result is closed.
         let mut leaving = crate::i18n::text("shell-close");
         match self.view {
+            // The one view with no Close on it, which is why it answers here
+            // rather than falling out of the match: a question has two answers
+            // and this one has them both, where a third button that also meant
+            // no would be a third thing to read on a panel whose whole job is
+            // to be answered in one press. See [`Updates::ask_to_restart`].
+            View::Restart => {
+                lines.push(Line::Note(
+                    crate::i18n::text("shell-anything-you-have-open-will-be-closed").into(),
+                ));
+                if self.snapshot.restart.is_some() {
+                    lines.push(Line::Note(
+                        crate::i18n::text("shell-the-update-finishes-while-the-machine-restarts")
+                            .into(),
+                    ));
+                }
+                lines.push(Line::Rule);
+                // On No, which is where the highlight starts: a question
+                // answered by somebody pressing accept at whatever appears in
+                // front of them has been declined, not agreed to. The rule the
+                // delete question keeps, and this one ends a session rather
+                // than a file.
+                buttons.push(E::new(C::UpdateOverview, crate::i18n::text("shell-no")));
+                // Not `grave`. The power menu marks turning the machine *off*
+                // as the answer there is no coming back from and leaves
+                // Restart ordinary — a restart is a shutdown the machine comes
+                // back from — and this is the same act asked from somewhere
+                // else. Warning somebody off the press the panel is
+                // recommending would be the shell arguing with itself.
+                buttons.push(E::new(C::UpdateRestartNow, crate::i18n::text("shell-yes")));
+                return (lines, buttons);
+            }
             View::Preferences => {
                 lines.extend(
                     wrap(crate::i18n::text("updates-daily-checks-explanation"), WIDTH)
@@ -1146,10 +1243,6 @@ impl Updates {
             lines.push(Line::Note(
                 crate::i18n::text("shell-restart-to-finish-installing-them").into(),
             ));
-            buttons.push(E::new(
-                C::UpdateRestart,
-                crate::i18n::text("shell-restart-now"),
-            ));
         } else if self.snapshot.phase == Phase::Completed
             && self
                 .snapshot
@@ -1161,16 +1254,51 @@ impl Updates {
                 crate::i18n::text("shell-a-restart-may-be-needed").into(),
             ));
         }
+        // **Restart now, first.** A machine that has just had a kernel, a
+        // driver or a library replaced under the programs using them is a
+        // machine to restart, and the person who pressed Update walked away
+        // from it — so the press they come back to is the one worth making,
+        // standing where the highlight already is. Asked for by the user on
+        // 2026-09-22 in those terms ("the default should be set to Reboot now
+        // to encourage user to reboot the system after update"), and it asks
+        // before it does it — see [`Self::ask_to_restart`].
+        //
+        // Offered for a job that installed something, whether or not a
+        // deployment was staged: a staged one *must* be restarted into and
+        // says so above, and an ordinary one should be. Not for a job where
+        // nothing went on — a failed run, a cancelled check — where the press
+        // worth offering is the one that looks again.
+        if self.restart_is_worth_offering() {
+            buttons.push(E::new(
+                C::UpdateRestart,
+                crate::i18n::text("shell-restart-now"),
+            ));
+        }
         buttons.push(E::new(
             C::UpdateOutput,
             crate::i18n::text("shell-full-output"),
         ));
-        if self.snapshot.phase != Phase::Idle {
+        if !self.restart_is_worth_offering() && self.snapshot.phase != Phase::Idle {
             buttons.push(E::new(
                 C::UpdateCheck,
                 crate::i18n::text("shell-check-again"),
             ));
         }
+    }
+
+    /// Whether the finished panel offers a restart.
+    ///
+    /// A deployment staged for the next boot has to be restarted into, and a
+    /// job that installed anything at all is worth restarting after. Both are
+    /// facts about a job that has *stopped*: while one is running the restart
+    /// belongs to nobody, and the coordinator refuses it.
+    fn restart_is_worth_offering(&self) -> bool {
+        if self.snapshot.busy() {
+            return false;
+        }
+        self.snapshot.restart.is_some()
+            || (matches!(self.snapshot.phase, Phase::Completed | Phase::Partial)
+                && self.snapshot.results.iter().any(|result| result.success))
     }
 }
 
@@ -1511,6 +1639,17 @@ impl crate::Shell {
     pub(crate) fn sync_updates(&mut self) {
         let in_settings = self.standing_in_settings();
         let (rows, panel) = self.updates.poll(in_settings);
+        // What the corner of the open menu says about it. Told every pass
+        // rather than on a change, exactly as the download card beside it is:
+        // what goes on the card is a percentage moving on somebody else's
+        // clock, and the card has to be up before the frame that would have
+        // noticed it. See [`Updates::corner`].
+        // Only while the menu is the screen: the card is drawn in the guide's
+        // scene and nowhere else, and a frame a second for a card nobody can
+        // see is a frame a second of somebody's game.
+        if self.guide.set_working(self.updates.corner()) && self.guide.is_menu() {
+            self.needs_redraw = true;
+        }
         for event in std::mem::take(&mut self.updates.events) {
             if event.attention
                 && (self.updates.snapshot.job != event.job
@@ -1531,12 +1670,16 @@ impl crate::Shell {
             } else {
                 crate::i18n::text("shell-some-updates-couldn-t-be-installed")
             };
+            // What pressing it opens. A finished job opens on its result —
+            // what each source did, Restart now, Full output — rather than
+            // straight into the transcript, which is where it used to land and
+            // where somebody who only wanted to restart had nothing to press.
             let action = if event.attention {
                 crate::i18n::text("shell-review-prompt")
             } else if event.restart.is_some() {
                 crate::i18n::text("shell-review-restart")
             } else {
-                crate::i18n::text("shell-view-output")
+                crate::i18n::text("shell-see-the-result")
             };
             let visible = self.updates.shows_job(event.job);
             let (id, raised) = self.notifications.announce_update(
@@ -2152,6 +2295,132 @@ mod tests {
         );
     }
 
+    /// The corner of the open menu says what is being installed and how far,
+    /// and only while something is being installed.
+    ///
+    /// Asked for by the user on 2026-09-22: the card a game coming down gets,
+    /// for an update going on, so that a job left to run in the background can
+    /// be looked at without walking back into Settings for it. What it says is
+    /// the panel's own first line and the panel's own bar — one job cannot be
+    /// described two ways on one screen.
+    #[test]
+    fn the_corner_says_what_is_being_installed_while_it_is_being_installed() {
+        let (send, _work) = mpsc::channel();
+        let (_done, receive) = mpsc::channel();
+        let mut updates = Updates::over(send, receive);
+        updates.snapshot.sources = vec![checked(SourceId::System, 4, 0)];
+        updates.snapshot.selected = vec![SourceId::System];
+
+        // A check is not a card: seconds of read-only queries with nothing to
+        // count, and a corner that flew a card in and out again every daily
+        // check would be crying wolf.
+        updates.snapshot.phase = Phase::Checking;
+        assert!(updates.corner().is_none());
+
+        // Nothing said yet is an empty groove and no number, exactly as a
+        // download that Valve's client has not measured is.
+        updates.snapshot.phase = Phase::Running;
+        let corner = updates.corner().unwrap();
+        assert_eq!(corner.said, "Preparing your updates…");
+        assert_eq!(corner.share, None);
+
+        updates.snapshot.active = Some(SourceId::System);
+        updates.snapshot.output = vec!["— System —".into(), "(1/4) upgrading linux".into()];
+        let corner = updates.corner().unwrap();
+        assert_eq!(corner.said, "Updating System");
+        assert_eq!(corner.share, Some(0.0));
+        updates
+            .snapshot
+            .output
+            .push("(3/4) upgrading systemd".into());
+        assert_eq!(updates.corner().unwrap().share, Some(0.5));
+
+        // And it goes when the job does. What happened next is the finished
+        // panel's to say, and the announcement's.
+        updates.snapshot.phase = Phase::Completed;
+        assert!(updates.corner().is_none());
+    }
+
+    /// An update that installed something offers the restart whether or not
+    /// anything was staged, first and under the thumb — and asks before it
+    /// takes the machine down.
+    ///
+    /// Asked for by the user on 2026-09-22: "when notification is pressed, it
+    /// should show two available options: Reboot now and Full output … The
+    /// default should be set to Reboot now to encourage user to reboot the
+    /// system after update, however, it should pop the information if the user
+    /// is sure to restart before that." Before this the finished panel offered
+    /// a restart only where a deployment had been staged for the next boot —
+    /// which on an ordinary rolling system is never — so a machine that had
+    /// just replaced its kernel offered Full output and Check again and
+    /// nothing about the restart it wanted.
+    #[test]
+    fn a_finished_update_offers_the_restart_and_asks_before_taking_it() {
+        use menu::Command as C;
+        let (send, _work) = mpsc::channel();
+        let (_done, receive) = mpsc::channel();
+        let mut updates = Updates::over(send, receive);
+        updates.open = true;
+        updates.snapshot.phase = Phase::Completed;
+        updates.snapshot.results = vec![lxb_updates::ResultEntry {
+            source: SourceId::System,
+            note: "Finished · a restart may be needed; check again to verify".into(),
+            success: true,
+        }];
+        // Nothing staged, and still offered. Two presses and the way out —
+        // Check again is gone: what is left to update is counted by the
+        // coordinator when the job ends, so the row behind this panel is
+        // already right.
+        assert_eq!(
+            commands(&updates),
+            [C::UpdateRestart, C::UpdateOutput, C::Dismiss]
+        );
+
+        // The press asks. It does not restart, and it does not leave the
+        // panel: the result is still underneath, to go back to.
+        updates.ask_to_restart();
+        let (lines, buttons) = updates.panel();
+        assert_eq!(
+            lines.first(),
+            Some(&Line::Heading("Restart the system?".into()))
+        );
+        assert!(notes(&lines).contains(&"Anything you have open will be closed.".to_owned()));
+        assert_eq!(
+            buttons.iter().map(|b| b.command).collect::<Vec<_>>(),
+            [C::UpdateOverview, C::UpdateRestartNow],
+            "no, first, which is where the highlight starts"
+        );
+        assert_eq!(buttons[0].label, "No");
+        assert_eq!(buttons[1].label, "Yes");
+
+        // A staged deployment says so on the question, because restarting is
+        // how it finishes rather than something to do afterwards.
+        assert!(!notes(&updates.panel().0)
+            .contains(&"The update finishes while the machine restarts.".to_owned()));
+        updates.snapshot.restart = Some(lxb_updates::Restart::Normal);
+        assert!(notes(&updates.panel().0)
+            .contains(&"The update finishes while the machine restarts.".to_owned()));
+
+        // Closing the panel is answering the question no: it opens again on
+        // the result, never on the restart it was standing over.
+        updates.hide();
+        assert_eq!(updates.view, View::Job);
+
+        // A job where nothing installed has nothing to restart for, and the
+        // press worth offering is the one that looks again.
+        updates.snapshot.restart = None;
+        updates.snapshot.phase = Phase::Failed;
+        updates.snapshot.results = vec![lxb_updates::ResultEntry {
+            source: SourceId::System,
+            note: "/usr/bin/pacman is not protected against replacement".into(),
+            success: false,
+        }];
+        assert_eq!(
+            commands(&updates),
+            [C::UpdateOutput, C::UpdateCheck, C::Dismiss]
+        );
+    }
+
     /// Five hundred package names go into Full output, whole, where a
     /// scrolling frame can hold them — not into a panel that pages them ten
     /// at a time. Photographed the other way on 2026-09-15: fifty-nine pages
@@ -2711,6 +2980,52 @@ mod tests {
         assert_eq!(rows[2].note, "No device updates · 1 excluded");
         assert_eq!(Tally::of(sources.iter()).headline(), "2 updates available");
         assert_eq!(Tally::of(std::iter::empty()).headline(), "Not checked yet");
+    }
+
+    /// A count that has gone down reaches the column without a press.
+    ///
+    /// The coordinator counts what is left the moment a job ends — see
+    /// `lxb_updates::service::recount` — and the page has to *notice*: `poll`
+    /// says the rows changed, and that is what rebuilds the Settings column
+    /// behind the panel. Half of the user's complaint on 2026-09-22 was this
+    /// half: "after updates has been done, the number of available updates in
+    /// the description is not changing until pressed again".
+    ///
+    /// The one test that writes the `SOURCES` the column is built from. It is
+    /// a static, so a second one would have to hold a lock with it.
+    #[test]
+    fn a_count_that_has_gone_down_rebuilds_the_column() {
+        let (send, _work) = mpsc::channel();
+        let (done, receive) = mpsc::channel();
+        let mut updates = Updates::over(send, receive);
+        let answer = |items: usize, phase: Phase| {
+            Ok(Response {
+                snapshot: Snapshot {
+                    job: 1,
+                    phase,
+                    sources: vec![checked(SourceId::System, items, 0)],
+                    selected: vec![SourceId::System],
+                    ..Snapshot::default()
+                },
+                error: None,
+                history: vec![],
+                history_requested: false,
+                log: None,
+                events: vec![],
+                daily_check: true,
+            })
+        };
+        done.send(answer(4, Phase::Reviewing)).unwrap();
+        assert!(updates.poll(true).0, "the column is told");
+        assert_eq!(rows()[0].note, "4 updates");
+        assert_eq!(overall().as_deref(), Some("4 updates available"));
+
+        // The tools ran, and what the coordinator found when it looked again
+        // is what the row says — no press, no second check asked for by hand.
+        done.send(answer(0, Phase::Completed)).unwrap();
+        assert!(updates.poll(true).0, "and told again");
+        assert_eq!(rows()[0].note, "Up to date");
+        assert_eq!(overall().as_deref(), Some("Everything is up to date"));
     }
 
     #[test]

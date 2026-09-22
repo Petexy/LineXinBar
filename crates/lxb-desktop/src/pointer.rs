@@ -18,7 +18,11 @@
 //!
 //! The movement itself goes to the compositor over `lxb_shell_v1`: only
 //! the compositor may speak for the seat, and the point is to reach the
-//! application, not to draw a cursor of the shell's own on top of it.
+//! application, not to draw a cursor of the shell's own on top of it. Where
+//! the pointer is then allowed to go is the compositor's half of the same
+//! answer — inside that application's window and nowhere else, since this
+//! stick was turned on for one application and a second display is not
+//! somewhere it was ever aimed.
 
 use std::collections::BTreeMap;
 use std::path::PathBuf;

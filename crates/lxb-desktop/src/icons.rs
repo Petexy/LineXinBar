@@ -64,6 +64,18 @@ pub const PAD_NORTH: &str = "lxb:pad-north";
 /// sphere, a house, a logo, an oval or a letter depending on whose pad it is,
 /// and not one of those is common to two of them.
 pub const PAD_GUIDE: &str = "lxb:pad-guide";
+/// And the stick, which is the one control on a pad this shell names that is
+/// not a button: the right one pressed, which is how the guide's directions are
+/// handed to the videos floating over it.
+///
+/// **The one drawing in this set that carries a letter**, and the exception is
+/// argued rather than taken: the pair above are drawn by position because A/B/
+/// X/Y move between layouts, but both sticks sit on the same face and a picture
+/// of one is a picture of the other. `R` is a *side* rather than a button name,
+/// and the side is printed on the hardware of every pad sold. Seen in profile,
+/// with a triangle over it because the stick pushed and the stick pressed are
+/// two different acts on one control here. See pad-stick.svg.
+pub const PAD_STICK: &str = "lxb:pad-stick";
 /// The right mouse button, which is what raises a menu for anybody using a
 /// pointer. Not a keyboard key: no key printed on a keyboard says "menu" to as
 /// many people as the right button does.
@@ -86,6 +98,11 @@ pub const KEY_SUPER: &str = "lxb:key-super";
 /// hollow arrow every keyboard prints on it. See key-shift.svg, and
 /// [`crate::friends`] for why this is the key.
 pub const KEY_SHIFT: &str = "lxb:key-shift";
+/// And the key the floating video is reached by on a keyboard, drawn as the
+/// letter printed on it and with no cap, on [`KEY_ESCAPE`]'s rule — a P shrunk
+/// to fit inside one has a counter too small to stay open at the size a hint is
+/// drawn. See key-p.svg.
+pub const KEY_P: &str = "lxb:key-p";
 /// The four arrow keys of the on-screen keyboard.
 ///
 /// Drawn rather than lettered because Roboto — which the shell bundles so it
@@ -936,7 +953,7 @@ pub fn letter_mark(letter: char) -> Option<&'static str> {
 /// has these whatever is installed on the machine — which is what the
 /// quick-settings bars are *for* — and they are still drawings, editable in
 /// anything that opens an SVG rather than in a string literal.
-pub const BUILTIN: [(&str, &str); 151] = [
+pub const BUILTIN: [(&str, &str); 153] = [
     (VOLUME, include_str!("glyphs/volume.svg")),
     (VOLUME_MUTED, include_str!("glyphs/volume-muted.svg")),
     (BRIGHTNESS, include_str!("glyphs/brightness.svg")),
@@ -956,12 +973,14 @@ pub const BUILTIN: [(&str, &str); 151] = [
     (PAD_START, include_str!("glyphs/pad-start.svg")),
     (PAD_NORTH, include_str!("glyphs/pad-north.svg")),
     (PAD_GUIDE, include_str!("glyphs/pad-guide.svg")),
+    (PAD_STICK, include_str!("glyphs/pad-stick.svg")),
     (MOUSE_RIGHT, include_str!("glyphs/mouse-right.svg")),
     (KEY_ESCAPE, include_str!("glyphs/key-escape.svg")),
     (KEY_SPACE, include_str!("glyphs/key-space.svg")),
     (KEY_ENTER, include_str!("glyphs/key-enter.svg")),
     (KEY_SUPER, include_str!("glyphs/key-super.svg")),
     (KEY_SHIFT, include_str!("glyphs/key-shift.svg")),
+    (KEY_P, include_str!("glyphs/key-p.svg")),
     (ARROW_LEFT, include_str!("glyphs/arrow-left.svg")),
     (ARROW_DOWN, include_str!("glyphs/arrow-down.svg")),
     (ARROW_UP, include_str!("glyphs/arrow-up.svg")),
@@ -2803,14 +2822,15 @@ pub(crate) mod tests {
     fn every_built_in_glyph_ships_and_draws_something() {
         assert_eq!(
             BUILTIN.len(),
-            151,
+            153,
             "a speaker, a struck-out one, a sun, a note, the three transport \
              buttons and the second face of the middle one, a stick pointer, a \
              mixer, a \
              moon, a \
              bell, seven \
-             controller buttons, a mouse, five keycaps — the fifth being the \
-             Shift the friends panel is raised with — four arrows, a \
+             controller buttons and the stick pressed, a mouse, six keycaps — \
+             the fifth being the Shift the friends panel is raised with and the \
+             sixth the bare P the floating video is reached by — four arrows, a \
              keyboard folding away, a power \
              symbol, one per column of the category row — the open carton with \
              an arrow coming down into it that Software wears and the head of \
@@ -2937,12 +2957,14 @@ pub(crate) mod tests {
                 PAD_START,
                 PAD_NORTH,
                 PAD_GUIDE,
+                PAD_STICK,
                 MOUSE_RIGHT,
                 KEY_ESCAPE,
                 KEY_SPACE,
                 KEY_ENTER,
                 KEY_SUPER,
                 KEY_SHIFT,
+                KEY_P,
                 ARROW_LEFT,
                 ARROW_DOWN,
                 ARROW_UP,

@@ -372,6 +372,22 @@
         shape. It is ignored while no application window exists, so a shell
         that leaves the stick on cannot walk the pointer across an empty
         desktop.
+
+        The pointer stays inside that application. A mouse belongs to the
+        session and may be pushed onto any display in it; this stick was turned
+        on for one window, and there is nothing outside that window it was
+        aimed at — least of all a second screen, where the user cannot see the
+        cursor arrive. So movement is held inside the window the compositor is
+        delivering it to: the topmost application on the display the shell says
+        it is being driven on, which is the same window set_driven_output and
+        output_app_id already agree about.
+
+        And a pointer left outside it is fetched back. A session has a mouse as
+        well, and a mouse may leave the cursor anywhere; the first movement
+        after that puts it at the nearest point of the window, so that the
+        stick always means something. That fetch is delivered as motion but
+        withheld from the relative stream — it is a pointer being retrieved,
+        not a hand moving a mouse.
       </description>
       <arg name="dx" type="fixed" summary="horizontal movement, logical pixels"/>
       <arg name="dy" type="fixed" summary="vertical movement, logical pixels"/>
@@ -381,7 +397,9 @@
       <description summary="press or release a pointer button">
         Presses or releases one of the seat's pointer buttons where the pointer
         currently is, exactly as a mouse button does — including raising and
-        focusing what it lands on.
+        focusing what it lands on. Where it is: this does not fetch the pointer
+        back the way move_pointer does, because the cursor the user is looking
+        at is what a click has to answer to.
 
         A pointer that cannot click is a cursor drawing, so this comes with
         move_pointer rather than after it. The button is a Linux input code

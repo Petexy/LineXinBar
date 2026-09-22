@@ -85,7 +85,62 @@ the clock inward; this is a narrow column with a line of its own to spend and
 nothing above the mark but the date. A long application name gives up exactly
 the room the mark takes and ends in an ellipsis rather than running under it.
 
-### What is coming down
+### What the menu's buttons do
+
+The overlay writes its own controls in the bottom-right of the display, in the
+corner and on the line [the start screen writes its own in](shell.md#what-the-buttons-do)
+— the same inset, the same ink, mirrored off the bottom. It is the same
+promise made one press further in: somebody who has learned that the filled bead
+at the foot of the cluster takes a row must not have to learn it again inside
+the menu. The same `Settings > System > Button hints` turns both off.
+
+```
+                        Select  (A)   Options  (Y)   Friends  (X)   Back  (B)
+```
+
+The way out is **Back**, not Guide: on the bar that pair names the way *in* to
+this menu, and here the reader is already in it. Options comes and goes with the
+card, on the bar's own rule — it is there while the light is on a window's card,
+which has [a menu](#the-context-menu) about that window, and gone on the
+trailing start-screen card, which is not a window. Friends is there where there
+is a Steam account for [the panel](steam.md#who-is-on-steam-and-talking-to-them) to be about. A
+context menu or the centred panel takes the row away; the power dialog does not,
+because it is part of the menu and every word the row is carrying is still true.
+
+**And it is a different row while the buttons are pointed somewhere else.** A
+[video floating over the menu](settings.md#picture-in-picture) is a second thing
+the same buttons can act on, so the corner says so:
+
+| What the buttons are on | The row |
+| ----------------------- | ------- |
+| The menu, with a video floating over this screen | Select · Options · **Picture-in-Picture** · Friends · Back |
+| One of the videos | Options · Friends · Back |
+| A video following the thumb, because its menu asked it to | Done · Cancel |
+
+The middle pair of the first row is the press that goes to the videos — the
+right stick pressed, or `P` — and it is drawn where the friends list is drawn
+and for its reason: it is somewhere else to stand rather than something done to
+what the light is on, and it is not the way out. It is there only where there is
+something floating on this screen to go to.
+
+On a video, **Select is gone**: the press is swallowed, because there is no card
+under the light to take and one that fell through would launch whatever the menu
+happened to be standing on. Options stays, and means the same thing said about
+the window instead — it raises that window's own menu, the one the right button
+raises. Back is still the way out of wherever the reader is standing, which is
+now the video and back to the menu behind it.
+
+While a window is following the thumb, everything else is held back, so the row
+is the two presses that end it: one leaves the window where it has been put and
+the other puts it back where it was picked up from.
+
+The row does **not** step back with the menu while the directions are on a
+video. Everything else in the overlay dims, which is how the shell says the
+thumb is somewhere else — but the row is then the one part of the screen that is
+*about* the live half, and dimming it would have quieted the only thing still
+answering a press.
+
+### What is coming down, and what the machine is doing to itself
 
 The far corner from the column, and the one thing here that is not part of the
 menu: while a Steam game is downloading, a card stands in the bottom right
@@ -93,6 +148,15 @@ wearing the game's own icon, with what is arriving, a bar, and the percentage.
 It is a reading and not a control — no selection stops on it and no press
 reaches it — and it is drawn only while this menu is open. It is described with
 the rest of the download in [Steam](steam.md#steam), where the numbers on it come from.
+
+An update installing in the background gets the same card, wearing the update
+mark and saying which source is being updated — see
+[Updates](updates.md#using-the-page). The two are two things happening and
+neither takes the other's place, so they stack: the download keeps the corner it
+was drawn for, the update stands on top of it, and when the download has
+finished leaving the card above comes down into the corner rather than being
+found there on the next frame. The row of button pictures in that corner climbs
+over whichever of them reaches highest.
 
 ### The cards
 
@@ -261,21 +325,23 @@ application in front:
 | Control                    | What it does |
 | -------------------------- | ------------ |
 | Right stick                | Moves the pointer |
-| `A`, or R3                 | Left click |
-| `B`, or L3                 | Right click |
+| `R2` — the right trigger   | Left click |
+| `L2` — the left trigger    | Right click |
 | Left stick, or the D-pad   | Scrolls what is under it |
 
-Two spellings for each button, because two hands reach for different ones: `A`
-and `B` are where a hand goes without being taught, and the stick presses are
-where a thumb already is while it is aiming. Nothing else is taken — the
-shoulders still move between displays, and the left-hand face button is still
-half of the keyboard's chord.
+The triggers because a handheld's desktop mode clicks with them, so somebody who
+has held one reaches for them without being told — and because they are the two
+controls a thumb on the aiming stick is not using. Nothing else is taken: the
+shoulders still move between displays, the stick presses are the floating
+video's, and the left-hand face button is still half of the keyboard's chord.
 
-`A` can be a click at all only because it is not anything else at the time: the
-shell drops every action but the guide button and the keyboard chord once an
-application is in front of it, so `A` is doing nothing there. Back on the
-shell's own screens it is Launch again, because there the pointer is switched
-off.
+They used to be `A` and `B`, and the change is not about familiarity. `A` and
+`B` are the on-screen keyboard's — one presses the key under its cursor and the
+other puts the board away — so a pointer that borrowed them had to hand them
+back for as long as the board was up, which is exactly when a mouse is wanted:
+the one thing to do with a pointer while a keyboard is on screen is to click the
+field about to be typed into. The triggers mean nothing to the shell anywhere,
+so nothing has to be shared and nothing is ever handed over.
 
 The scrolling is continuous rather than a count of wheel notches, because a
 stick is: pushed further to scroll faster, exactly as a touchpad is dragged
@@ -313,18 +379,31 @@ hands the movement over as `move_pointer` — after which it is an ordinary
 pointer movement, constraints and relative-motion stream included, so a client
 cannot tell it from a mouse.
 
+It cannot be walked out of the application either. A mouse belongs to the
+session and may be pushed onto any screen there is; this stick was turned on for
+one window, and there is nothing outside that window it was ever aimed at —
+least of all the other display, where the cursor arrives somewhere the user is
+not looking. So the movement stops at the edge of the window in front of the
+display being driven, which is the same window the setting itself is filed
+under.
+
+The mouse is still a mouse, though, and may leave the cursor anywhere. So the
+first push of the stick after that fetches it back, to the nearest point of the
+window rather than to the middle of it: the pointer is where the hand left it,
+brought just far enough to be somewhere the stick can reach. A click does not
+fetch it, because a click has to answer to the cursor the user can see.
+
 The stick goes back to being a stick the moment one of the shell's own screens
 is in front of the application — the guide menu, or a launch still waiting for
 its window. There is nothing on either to point at, and the pointer stays
 exactly where it was parked.
 
 The on-screen keyboard is the one thing drawn over an application that does
-*not* take the whole pointer away, because it does not need to: it is driven
-with the D-pad, the left stick and `A` — the clicks and the scrolling — and has
-no use at all for the right stick. So the two halves part company for as long
-as it is up. Aiming carries on underneath the board, and the pointer is still
-where it was left when the board goes away; `B` puts the board away, and hands
-the buttons back with it.
+*not* take the pointer away, because it does not need to: it is driven with the
+D-pad, the left stick and `A`, and it has no use for the right stick or for
+either trigger. So only the wheel and the arrows wait for it. Aiming and
+clicking carry on underneath the board — which is how a field is chosen before
+it is typed into — and the scrolling comes back when `B` puts the board away.
 
 One honest limitation, and it is the same one that makes the guide button work
 at all: a controller is not routed through Wayland, so the application is

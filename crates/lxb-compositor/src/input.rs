@@ -17,7 +17,7 @@ use smithay::input::touch::{DownEvent, MotionEvent as TouchMotionEvent, UpEvent}
 use smithay::output::Output;
 use smithay::reexports::calloop::timer::{TimeoutAction, Timer};
 use smithay::reexports::wayland_server::protocol::wl_surface::WlSurface;
-use smithay::utils::{IsAlive, Logical, Physical, Point, Size, SERIAL_COUNTER};
+use smithay::utils::{IsAlive, Logical, Physical, Point, Rectangle, Size, SERIAL_COUNTER};
 use smithay::wayland::compositor::RegionAttributes;
 use smithay::wayland::pointer_constraints::{with_pointer_constraint, PointerConstraint};
 use smithay::wayland::seat::WaylandFocus;
@@ -1046,11 +1046,19 @@ impl LxbState {
         utime: u64,
         time_msec: u32,
     ) {
-        self.pointer_moved_by(delta, delta_unaccel, utime, time_msec, RelativeStream::Send);
+        self.pointer_moved_by(
+            delta,
+            delta_unaccel,
+            utime,
+            time_msec,
+            RelativeStream::Send,
+            Reach::Session,
+        );
     }
 
     /// The same movement, saying whether the client hears it on the relative
-    /// stream as well. See [`RelativeStream`].
+    /// stream as well and how far it is allowed to carry the pointer. See
+    /// [`RelativeStream`] and [`Reach`].
     fn pointer_moved_by(
         &mut self,
         delta: Point<f64, Logical>,
@@ -1058,6 +1066,7 @@ impl LxbState {
         utime: u64,
         time_msec: u32,
         relative: RelativeStream,
+        reach: Reach,
     ) {
         let serial = SERIAL_COUNTER.next_serial();
         let Some(pointer) = self.lxb.seat.get_pointer() else {
@@ -1113,6 +1122,17 @@ impl LxbState {
 
         self.lxb.pointer_location = old_location + delta;
         self.clamp_pointer();
+        // And, where the movement came from the stick rather than from a hand
+        // on a mouse, no further than the window it is aiming inside. The
+        // session's own clamp above runs first and is left alone: it is about
+        // there being a screen under the pointer at all, which is true of
+        // every movement however it arrived.
+        if let Reach::Window(room) = reach {
+            let wanted = self.lxb.pointer_location;
+            let inside = held_inside(room, wanted);
+            self.lxb.pointer_location = inside;
+            watch_a_confined_pointer(&mut self.lxb, wanted, inside);
+        }
         let location = self.lxb.pointer_location;
         let hit = self.surface_under(location);
 
@@ -1853,11 +1873,6 @@ impl LxbState {
     // it is an ordinary pointer movement, because anything else would be a
     // second pointer the application has to be taught about.
 
-    /// Move the pointer by a relative amount on the shell's behalf.
-    ///
-    /// Refused while nothing is running: the stick is a mouse *inside an
-    /// application*, and a shell that left it on would otherwise walk the
-    /// cursor across a desktop that has only the launcher on it.
     /// Follow XWayland's pointer when something has moved it behind our back.
     ///
     /// An X client can synthesise pointer motion with XTEST, and XWayland
@@ -1905,22 +1920,129 @@ impl LxbState {
             u64::from(time) * 1000,
             time,
             RelativeStream::Withhold,
+            Reach::Session,
         );
         self.lxb.last_synced_pointer = Some(self.lxb.pointer_location);
     }
 
+    /// Move the pointer by a relative amount on the shell's behalf.
+    ///
+    /// Refused while nothing is running: the stick is a mouse *inside an
+    /// application*, and a shell that left it on would otherwise walk the
+    /// cursor across a desktop that has only the launcher on it.
+    ///
+    /// And it stays inside that application. A mouse belongs to the session
+    /// and may be pushed onto any screen in it; this stick belongs to one
+    /// window, which is the only thing it was turned on for and the only thing
+    /// there is to click on — the user aimed at something in a browser, not at
+    /// a second display they cannot see the cursor arrive on. So the movement
+    /// is held inside the window, and a pointer a *mouse* left somewhere else
+    /// is fetched back into it first. See [`Self::stick_pointer_room`].
     pub fn shell_move_pointer(&mut self, delta: Point<f64, Logical>) {
         if delta.x == 0.0 && delta.y == 0.0 {
             return;
         }
-        if !self.has_application_window() {
+        // Which window it is confined to, and whether there is one at all:
+        // this answers both, and its second answer is the same refusal
+        // [`Self::has_application_window`] makes for the requests beside this
+        // one — there is no application, so there is no pointer to move.
+        let Some(room) = self.stick_pointer_room() else {
             return;
-        }
+        };
+        self.fetch_the_pointer_back(room);
         let time = self.monotonic_msec();
         // The unaccelerated delta is the same number: a stick has no
         // acceleration curve of the compositor's to undo, and a game reading
         // the raw stream should see what the shell actually sent.
-        self.pointer_motion_by(delta, delta, u64::from(time) * 1000, time);
+        self.pointer_moved_by(
+            delta,
+            delta,
+            u64::from(time) * 1000,
+            time,
+            RelativeStream::Send,
+            Reach::Window(room),
+        );
+    }
+
+    /// The window the stick pointer is aiming inside, as a rectangle on the
+    /// screen.
+    ///
+    /// The topmost application on the display the shell says it is being
+    /// driven on — which is the same window, asked the same way, that the
+    /// shell files this setting under: `output_app_id` names it, and the user
+    /// turned the pointer on for that name. So the two cannot disagree about
+    /// which application the stick belongs to, however many are running.
+    ///
+    /// Falls back to the session's topmost application where the shell has
+    /// named no display, which is a shell older than version 41. That is the
+    /// one window such a session can have meant.
+    ///
+    /// `None` where nothing is running, which is the refusal every one of
+    /// these requests makes: the stick is a mouse inside an application.
+    fn stick_pointer_room(&self) -> Option<Rectangle<i32, Logical>> {
+        let driven = self.shell_driven_output();
+        let on_the_driven_display = driven
+            .as_ref()
+            .and_then(|output| self.topmost_application(Some(output)));
+        // What it covers rather than what it was configured at: a window on a
+        // display drawing applications larger than life fills more of the
+        // screen than its own geometry says, and a pointer stopped at the
+        // configured edge would stop two thirds of the way across it.
+        let Some(window) = on_the_driven_display else {
+            return crate::render::on_screen(&self.lxb, &self.topmost_application(None)?);
+        };
+        let room = crate::render::on_screen(&self.lxb, &window)?;
+        // And only the part of it that is on the display. A window is tiled to
+        // its screen here, so the two are the same rectangle nearly always —
+        // but a pointer held inside a window that overhangs its display would
+        // be held somewhere there is nothing to see it on, which is the one
+        // thing this whole rule exists to prevent.
+        let Some(screen) = driven
+            .as_ref()
+            .and_then(|output| self.lxb.space.output_geometry(output))
+        else {
+            return Some(room);
+        };
+        Some(room.intersection(screen).unwrap_or(room))
+    }
+
+    /// Put the pointer back inside `room` if something else left it outside.
+    ///
+    /// The other half of confining it. A session has a mouse as well, and a
+    /// mouse may be pushed anywhere — onto the other display, onto the bar,
+    /// onto a window behind. The cursor then sits somewhere the stick could
+    /// never have taken it, and the first push of the stick has to mean
+    /// something: what it means is *here*, at the nearest edge of the window
+    /// being aimed inside.
+    ///
+    /// Delivered as a movement rather than assigned, so that what is under the
+    /// pointer hears it arrive — a warp nothing is told about leaves the last
+    /// window highlighting whatever the cursor was over when it left.
+    ///
+    /// Withheld from the relative stream, for the reason
+    /// [`Self::follow_xwayland_pointer`] withholds it: this is a pointer being
+    /// fetched, not a hand moving a mouse, and a game reading its camera off
+    /// that stream would swing it by the width of a screen.
+    fn fetch_the_pointer_back(&mut self, room: Rectangle<i32, Logical>) {
+        let at = self.lxb.pointer_location;
+        let inside = held_inside(room, at);
+        if inside == at {
+            return;
+        }
+        tracing::debug!(
+            ?at,
+            ?inside,
+            "the stick pointer was left outside its application; fetching it back"
+        );
+        let time = self.monotonic_msec();
+        self.pointer_moved_by(
+            inside - at,
+            inside - at,
+            u64::from(time) * 1000,
+            time,
+            RelativeStream::Withhold,
+            Reach::Window(room),
+        );
     }
 
     /// Scroll under the pointer on the shell's behalf.
@@ -3447,6 +3569,42 @@ fn watch_a_clamped_pointer(
     }
 }
 
+/// Say so while the stick pointer is being held inside its application, and
+/// again once it has stopped.
+///
+/// The third way a cursor that will not move looks from the outside, and the
+/// one this compositor does on purpose: the stick is a mouse inside one window
+/// and a thumb holding it against an edge is asking for something that is not
+/// going to happen. Counted rather than edge-triggered, for the reason
+/// [`watch_a_refused_pointer`] gives — a stick pushed at a window's edge
+/// arrives here every poll, which is a hundred and twenty times a second.
+///
+/// It says where the movement wanted to go as well as where it was kept, which
+/// is what tells the two cases apart: a thumb resting against the edge asks for
+/// a pixel or two past it, and a pointer being fetched back from the next
+/// display asks for somewhere a screen away.
+fn watch_a_confined_pointer(
+    lxb: &mut crate::state::Lxb,
+    wanted: Point<f64, Logical>,
+    held_at: Point<f64, Logical>,
+) {
+    let now = std::time::Instant::now();
+    if wanted == held_at {
+        if Repeatedly::stopped(&mut lxb.pointer_confined, now) {
+            tracing::info!(at = ?held_at, "the stick pointer has come off its application's edge");
+        }
+        return;
+    }
+    if let Some(times) = Repeatedly::again(&mut lxb.pointer_confined, now) {
+        tracing::info!(
+            ?wanted,
+            ?held_at,
+            in_the_last_second = times,
+            "the stick pointer is being held inside its application"
+        );
+    }
+}
+
 /// Say so when a client puts the pointer somewhere itself.
 ///
 /// This is `set_cursor_position_hint`: a place a client may name only while it
@@ -3741,6 +3899,44 @@ fn map_window_coordinate(value: f64, source_extent: i32, target_extent: i32) -> 
     (value / source_extent as f64 * target_extent as f64).clamp(0.0, upper)
 }
 
+/// How far one movement may carry the pointer.
+///
+/// A mouse belongs to the session: it is the hand's, it can be pushed onto any
+/// screen there is, and the only thing that stops it is running out of
+/// displays. The shell's stick pointer belongs to one *window* — it is turned
+/// on for an application and there is nothing outside that application it was
+/// ever aimed at — so it is given the smaller of the two reaches, and the
+/// arithmetic that holds it there is [`held_inside`].
+#[derive(Debug, Clone, Copy, PartialEq)]
+enum Reach {
+    /// Anywhere the session has a screen, which is what a mouse does.
+    Session,
+    /// Inside one window, and no further.
+    Window(Rectangle<i32, Logical>),
+}
+
+/// The nearest point of `room` to `at`, which is `at` itself while it is
+/// already inside.
+///
+/// The last row and column are a pixel short of the far edge, exactly as
+/// [`LxbState::clamp_pointer`] keeps the pointer a pixel inside a display: a
+/// point *on* the far edge is the first point of whatever is beyond it, and a
+/// cursor parked there hits nothing at all.
+///
+/// A rectangle of no width or height would put the near edge past the far one
+/// and `clamp` would panic on the inverted range, so the far edge is never
+/// allowed below the near one. Nothing should ever map a window of no size,
+/// and a compositor that fell over when something did would be reporting that
+/// by ending the session.
+fn held_inside(room: Rectangle<i32, Logical>, at: Point<f64, Logical>) -> Point<f64, Logical> {
+    let near = room.loc.to_f64();
+    let far = (room.loc + room.size.to_point()).to_f64();
+    Point::from((
+        at.x.clamp(near.x, (far.x - 1.0).max(near.x)),
+        at.y.clamp(near.y, (far.y - 1.0).max(near.y)),
+    ))
+}
+
 /// Whether a movement is one the client hears on the relative stream too.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum RelativeStream {
@@ -3878,6 +4074,49 @@ mod tests {
             at(0.0, 1.0)
         ));
     }
+
+    /// The stick pointer cannot be walked out of the window it was turned on
+    /// for — which on a session with two displays is also what keeps it off
+    /// the other screen, since a window is on one of them.
+    #[test]
+    fn the_stick_pointer_is_held_inside_its_window() {
+        let at = |x: f64, y: f64| Point::<f64, Logical>::from((x, y));
+        // A window filling the second display of a pair of 1080p screens.
+        let room = Rectangle::<i32, Logical>::new((1920, 0).into(), (1920, 1080).into());
+
+        // Inside is left exactly where it is, to the fraction: a pointer that
+        // was rounded every poll would crawl.
+        for point in [at(1920.0, 0.0), at(2880.5, 540.25), at(3838.9, 1078.5)] {
+            assert_eq!(held_inside(room, point), point, "{point:?}");
+        }
+
+        // Pushed at the far edge it stops a pixel inside it, where there is
+        // still something under it to click.
+        assert_eq!(held_inside(room, at(4000.0, 540.0)), at(3839.0, 540.0));
+        assert_eq!(held_inside(room, at(2880.0, 2000.0)), at(2880.0, 1079.0));
+
+        // And pushed towards the first display it stops at the window's own
+        // corner rather than crossing onto it.
+        assert_eq!(held_inside(room, at(-50.0, -50.0)), at(1920.0, 0.0));
+
+        // A pointer a mouse left on the other screen entirely is fetched to
+        // the nearest point of the window, which is the edge it was left
+        // beyond — not the middle, which is a jump nobody asked for.
+        assert_eq!(held_inside(room, at(100.0, 300.0)), at(1920.0, 300.0));
+    }
+
+    /// A window of no size would invert the range the clamp is given, and a
+    /// panic here is the session ending. Nothing should map one; the point is
+    /// that nothing has to be trusted not to.
+    #[test]
+    fn a_window_of_no_size_is_survivable() {
+        let empty = Rectangle::<i32, Logical>::new((640, 480).into(), (0, 0).into());
+        assert_eq!(
+            held_inside(empty, Point::<f64, Logical>::from((0.0, 0.0))),
+            Point::<f64, Logical>::from((640.0, 480.0))
+        );
+    }
+
     use super::*;
 
     #[test]

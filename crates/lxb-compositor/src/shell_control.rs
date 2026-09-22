@@ -3369,7 +3369,7 @@ impl LxbState {
 
     /// Topmost window that takes keyboard focus, across the session or on one
     /// display.
-    fn topmost_application(&self, output: Option<&Output>) -> Option<Window> {
+    pub(crate) fn topmost_application(&self, output: Option<&Output>) -> Option<Window> {
         self.lxb
             .space
             .elements()

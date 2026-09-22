@@ -73,6 +73,14 @@ the same code, because it is the same promise: somebody who has learned that the
 filled bead at the bottom of the cluster takes a row must not have to learn it
 again in a file dialog.
 
+The stick is the one exception, and it is the exception that proves the rule.
+Both sticks sit on the same face of the pad, so a picture of one is a picture
+of the other and position says nothing — it is drawn in profile, with the `R`
+that every pad prints on that side of itself and a triangle over it, because
+the right stick *pushed* and the right stick *pressed* are two different acts
+here. A side is not a button name: it does not move between layouts and no
+maker brands it.
+
 **And named by whichever control is in hand.** The same act is South on a pad
 and Enter on a keyboard, and there is no wording that covers both without naming
 neither, so the shell says the one the user's hands are actually on — it watches
@@ -104,7 +112,14 @@ a legend, it is a pile.
 **It can be turned off** at `Settings > System > Button hints`, and it is on
 until it is. Somebody who does not need it is exactly the person who will find
 the switch; somebody who does will never go looking for a setting to reveal what
-they do not know is missing.
+they do not know is missing. One answer for the whole session: the same switch
+takes the row off the guide, the friends panel, the file question, the keyboard
+chip and the launch splash, and it reaches applications built on the toolkit
+too, through `shell.toml`.
+
+The guide draws its own row, in the mirror of this corner and by these rules —
+see [what the menu's buttons do](guide.md#what-the-menus-buttons-do), where the
+one screen that has three rows rather than one is set out.
 
 ### Music, Video and Images
 

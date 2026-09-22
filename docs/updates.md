@@ -24,7 +24,13 @@ machine's: “10 updates available”.
    afterwards” appears when the system or a device's firmware is among what
    would be installed, and a blocking condition appears as a plain sentence
    (“Storage is nearly full”, “Running on battery”), two at most, with the
-   mount paths and megabytes behind **Full output**.
+   mount paths and megabytes behind **Full output**. A filesystem is judged by
+   what it is for: half a gigabyte free on the root or `/var`, and a hundred
+   megabytes on a boot filesystem, which is sized for the few kernels it holds
+   and is most of the way full on a healthy machine. Under 16 MiB anywhere is
+   refused rather than noted. Where `/boot` is not a filesystem of its own it
+   is not asked about separately — one notice per device, judged by the
+   filesystem it is part of.
 2. **Update now** authorizes updating the sources listed, and it is the
    only confirmation. Every tool runs unattended — `pacman --noconfirm`,
    `apt-get -y`, `dnf -y`, `zypper --non-interactive`, `flatpak update -y`,
@@ -55,22 +61,48 @@ machine's: “10 updates available”.
    to reconnect. A running installation cannot be cancelled by closing the
    panel. Read-only checks can be cancelled after the current bounded query
    finishes.
+
+   While it runs, the Home menu carries a card in its corner — the one a game
+   coming down gets, wearing the update mark — with what is being updated and
+   how far it has got. A job left to itself can be looked at from there without
+   coming back to Settings for it. When a game is coming down as well, the two
+   stack: the download keeps the corner, the update stands on top of it, and it
+   comes back down when the download has finished. The card is for installing
+   only; a check is a few seconds of read-only queries and does not raise one.
+
 6. The finish is a sentence and a word a source — Finished, Staged for the
-   next boot, Deferred, Failed — with **Restart now** first when a restart was
-   staged, and the tool's reason in **Full output** when something failed.
+   next boot, Deferred, Failed — and two presses: **Restart now**, first and
+   under the thumb, and **Full output** with the tool's reason when something
+   failed. Restart now is offered whenever anything installed, not only when a
+   deployment was staged for the next boot: a machine whose kernel, drivers or
+   libraries have just been replaced under the programs using them should be
+   restarted. It asks before it does it — *Restart the system?*, opening on
+   **No** — and then restarts the way the power menu does, or, for a staged
+   deployment, through the tool that staged it. **Check again** takes its place
+   when nothing installed, because a failed or cancelled job has nothing to
+   restart for.
+
+   What is left is counted when the job ends: each source that ran is asked the
+   same bounded read-only query the check uses, so the rows behind the panel
+   stop offering updates that have just been installed without anybody pressing
+   anything. That count is the provider's own answer rather than an assumption
+   from a tool's exit status, because successful command exit is not proof that
+   every update was applied.
+
    Excluded BIOS/UEFI devices do not make an otherwise successful job read as
    partly failed; only a provider that failed does. On Arch-based systems,
    configured ignored packages also remain skipped without turning a successful
    pacman run into a failure. The post-update query is retained in Full output;
    any remaining update that is not marked ignored still requires attention. A
    log that could not be written, or authorization that could not be cleaned
-   up, is a warning beside the outcome and never the outcome itself. Successful
-   command exit is not proof that every update was applied; check again to
-   confirm.
+   up, is a warning beside the outcome and never the outcome itself.
 
    A finished background job also reaches the notification centre, with
-   **View output** — or **Review restart** when one is owed — so a job left
-   running while Settings was closed is not lost. Recognized Yes/No and masked
+   **See the result** — or **Review restart** when one is owed — so a job left
+   running while Settings was closed is not lost. Pressing it opens that job's
+   own finish: what each source did, Restart now, and Full output. An older
+   job, one the coordinator is no longer holding, opens its transcript instead,
+   the way Recent updates opens it. Recognized Yes/No and masked
    password prompts also notify background users. Answering a prompt removes its
    obsolete notification; later questions can notify again. Looking at Recent
    updates, Preferences, or another attempt's output does not silence the current
