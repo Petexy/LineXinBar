@@ -32,6 +32,9 @@ const END: [u8; 4] = [b'P', b'K', 5, 6];
 /// comment the format can carry.
 const END_SEARCH: usize = 22 + u16::MAX as usize;
 
+const MAX_FILE_SIZE: u64 = 256 * 1024 * 1024;
+const MAX_ARCHIVE_SIZE: u64 = 512 * 1024 * 1024;
+
 /// The one entry of `raw` whose name ends in `suffix`, uncompressed.
 ///
 /// `Err` with a sentence for anything this cannot read, including an archive
@@ -60,8 +63,20 @@ pub fn one_file(raw: &[u8], suffix: &str) -> Result<Vec<u8>, String> {
 /// skipped: an archive containing one is not an archive that was built the way
 /// this expects, and unpacking the rest of it and hoping is not the answer.
 pub fn every_file(raw: &[u8]) -> Result<Vec<(String, Vec<u8>)>, String> {
+    let entries = walk(raw)?;
+    let mut total = 0u64;
+    // Check the complete budget before allocating any entry. Repeated central
+    // directory entries can otherwise expand a tiny archive into gigabytes.
+    for (_, entry) in &entries {
+        total = total
+            .checked_add(entry.size)
+            .ok_or("archive size overflow")?;
+        if entry.size > MAX_FILE_SIZE || total > MAX_ARCHIVE_SIZE {
+            return Err("the archive is too large to unpack".into());
+        }
+    }
     let mut out = Vec::new();
-    for (name, entry) in walk(raw)? {
+    for (name, entry) in entries {
         if !is_safe(&name) {
             return Err(format!(
                 "the archive holds a name that reaches out of it: {name}"
@@ -104,11 +119,15 @@ fn is_safe(name: &str) -> bool {
         && !name.starts_with('/')
         && !name.contains('\\')
         && !name.contains(':')
+        && !name.contains('\0')
         && !name.split('/').any(|part| part == ".." || part == ".")
 }
 
 /// One entry's bytes, checked against what the listing promised.
 fn read(raw: &[u8], entry: &Entry) -> Result<Vec<u8>, String> {
+    if entry.size > MAX_FILE_SIZE || entry.compressed > MAX_FILE_SIZE {
+        return Err("the file inside is too large to unpack".into());
+    }
     // Bit 0 is "encrypted", and the rest of the header is then not what it
     // appears to be. Bit 3 — sizes in a trailing descriptor — is deliberately
     // *not* refused: the values read are the central directory's, which are
@@ -225,17 +244,19 @@ fn inflate(data: &[u8], size: u64) -> Result<Vec<u8>, String> {
     // Sized from the listing rather than grown: a core is several megabytes and
     // this is one allocation. Capped so that a damaged archive claiming four
     // gigabytes cannot be a way to exhaust this machine's memory.
-    const CEILING: u64 = 256 * 1024 * 1024;
-    if size > CEILING {
+    if size > MAX_FILE_SIZE {
         return Err(format!(
             "the file inside is {size} bytes, which is too large"
         ));
     }
     let mut out = Vec::with_capacity(size as usize);
     flate2::read::DeflateDecoder::new(data)
-        .take(size)
+        .take(size + 1)
         .read_to_end(&mut out)
         .map_err(|err| format!("the archive could not be unpacked: {err}"))?;
+    if out.len() as u64 > size {
+        return Err("the file expands beyond its declared size".into());
+    }
     Ok(out)
 }
 
@@ -287,6 +308,36 @@ fn crc32(data: &[u8]) -> u32 {
 mod tests {
     use super::*;
     use std::io::Write;
+
+    #[test]
+    fn a_forged_size_and_matching_prefix_crc_cannot_truncate_a_file() {
+        let mut raw = zipped("rom.bin", b"good prefix; hidden trailing data", 8);
+        let end = end_record(&raw).unwrap();
+        let central = u32(&raw, end + 16).unwrap() as usize;
+        raw[central + 24..central + 28].copy_from_slice(&4u32.to_le_bytes());
+        raw[central + 16..central + 20].copy_from_slice(&crc32(b"good").to_le_bytes());
+        assert!(single_rom(&raw).unwrap_err().contains("declared size"));
+    }
+
+    #[test]
+    fn duplicate_entries_cannot_exceed_the_total_memory_budget() {
+        let mut raw = zipped("file", b"small", 8);
+        let end = end_record(&raw).unwrap();
+        let central = u32(&raw, end + 16).unwrap() as usize;
+        raw[central + 24..central + 28].copy_from_slice(&(MAX_FILE_SIZE as u32).to_le_bytes());
+        let entry = raw[central..end].to_vec();
+        let mut trailer = raw[end..].to_vec();
+        trailer[8..10].copy_from_slice(&3u16.to_le_bytes());
+        trailer[10..12].copy_from_slice(&3u16.to_le_bytes());
+        trailer[12..16].copy_from_slice(&(entry.len() as u32 * 3).to_le_bytes());
+        raw.truncate(end);
+        raw.extend_from_slice(&entry);
+        raw.extend_from_slice(&entry);
+        raw.extend_from_slice(&trailer);
+        assert!(every_file(&raw)
+            .unwrap_err()
+            .contains("archive is too large"));
+    }
 
     /// An archive of one file, written the way the buildbot's are.
     fn zipped(name: &str, content: &[u8], method: u16) -> Vec<u8> {

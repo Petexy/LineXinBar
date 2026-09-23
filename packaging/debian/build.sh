@@ -39,13 +39,62 @@ if [[ "$output_dir" != /* ]]; then
     output_dir="$PWD/$output_dir"
 fi
 
-require_command dpkg-deb
-require_command dpkg-shlibdeps
-require_command dpkg
-require_command md5sum
-require_rust_version 1.89
+# Everything the build needs is checked here, before anything is compiled, and
+# all of it at once. A bare Debian container has none of it, and meeting the
+# gaps one per attempt — the packaging tools, then Rust, then each library a
+# minute into a release build — is how a first build takes an afternoon. Each
+# gap is named by the Debian package that fills it, so the refusal is one apt
+# line.
+#
+# The libraries are the ones this build links: probed through pkg-config by a
+# -sys crate, or named by a #[link] attribute. The longer list in
+# docs/getting-started.md also has what the binaries only open at run time,
+# which a build does not need and so is not refused over.
+#
+# Rust is rustup rather than Debian's cargo package, which is 1.85 on Debian 13
+# and older than the locked dependency graph allows. rustup's proxies go in
+# /usr/bin, and in a distrobox or toolbox they find the toolchain already in
+# the shared ~/.rustup.
+missing_packages=()
+need() {
+    local kind="$1" name="$2" package="$3"
+    case "$kind" in
+        command) command -v "$name" >/dev/null 2>&1 && return ;;
+        library) pkg-config --exists "$name" 2>/dev/null && return ;;
+    esac
+    [[ " ${missing_packages[*]} " == *" $package "* ]] || missing_packages+=("$package")
+}
+need command dpkg-deb dpkg
+need command dpkg-shlibdeps dpkg-dev
+need command md5sum coreutils
+need command cc build-essential
+need command pkg-config pkg-config
+need command clang clang
+need command cargo rustup
+need command rustc rustup
+need library alsa libasound2-dev
+need library gbm libgbm-dev
+need library libavcodec libavcodec-dev
+need library libavformat libavformat-dev
+need library libavutil libavutil-dev
+need library libinput libinput-dev
+need library libpipewire-0.3 libpipewire-0.3-dev
+need library libseat libseat-dev
+need library libswscale libswscale-dev
+need library libudev libudev-dev
+need library xkbcommon libxkbcommon-dev
+if ((${#missing_packages[@]})); then
+    package_die "the build prerequisites are not all installed; install them with:
+  sudo apt install ${missing_packages[*]}"
+fi
+require_rust_version 1.89 \
+    "Debian's cargo package is older than that; install rustup in its place: sudo apt install rustup && rustup default stable"
 
-target_dir="${CARGO_TARGET_DIR:-$PROJECT_ROOT/target}"
+# Its own target directory rather than the checkout's target/. A Debian package
+# is often built in a container that shares the checkout with a host running
+# another distribution, and sharing target/ would put binaries linked against
+# Debian's library versions where the host's own build left its binaries.
+target_dir="${CARGO_TARGET_DIR:-$PROJECT_ROOT/target/debian}"
 if [[ "$target_dir" != /* ]]; then
     target_dir="$PROJECT_ROOT/$target_dir"
 fi

@@ -838,8 +838,10 @@ fn hat_directions(x: f32, y: f32) -> [bool; Direction::COUNT] {
 /// the hardware, so which button is which is known exactly rather than guessed
 /// from an SDL entry that does not cover it.
 ///
-/// Absent on purpose: `X`, which belongs to whatever is running until `View` is
-/// held with it; `View` itself, which is only that chord's modifier and the
+/// Absent on purpose: `X`, which is who is on Steam on its own and the keyboard
+/// chord with `View` held — one button whose meaning a modifier changes, and a
+/// table lookup cannot see a modifier; `View` itself, which is only that
+/// chord's modifier and the
 /// overlay chord's other half; `Steam`, which acts on its release instead so
 /// the two chords spelled on it can claim the hold (see [`is_guide`]); the left
 /// stick press, which means nothing to this shell at all; and the whole D-pad,
@@ -919,11 +921,18 @@ fn pad_actions(frame: &crate::steam_hid::Frame, chorded: &mut bool) -> Vec<Actio
         }
         *chorded = false;
     }
-    // The keyboard chord, spelled on this pad as View with the left-hand face
-    // button — the same two controls as everywhere else. `X` is deliberately
-    // absent from `PAD_ACTIONS`, so it is this or nothing.
-    if frame.held.has(Buttons::VIEW) && frame.pressed.has(Buttons::X) {
-        actions.push(Action::Keyboard);
+    // The left-hand face button, which is the one control on this pad a
+    // modifier changes the meaning of: `View` held with it is the keyboard
+    // chord — the same two controls as everywhere else — and on its own it is
+    // the friends panel, as `X` is on every mapped pad. That is the whole of
+    // why it is absent from `PAD_ACTIONS`: a row there would spend the press
+    // before this could read what was held with it.
+    if frame.pressed.has(Buttons::X) {
+        actions.push(if frame.held.has(Buttons::VIEW) {
+            Action::Keyboard
+        } else {
+            Action::Friends
+        });
     }
     actions
 }
@@ -1022,9 +1031,10 @@ fn select_is_held(gilrs: &Gilrs) -> bool {
 /// did something would make the chord two things at once: pressing it would
 /// open the menu, the menu would close any board that was up, and the face
 /// button after it could then only ever be opening one afresh — so the chord
-/// could show the keyboard but never hide it. The menu has three ways in of
-/// its own (the guide button, `B` from the bar, and the compositor's binding),
-/// and does not need a fourth that costs the keyboard its off switch.
+/// could show the keyboard but never hide it. The menu has its own button
+/// under every spelling there is — the pad's, `Home`, `Super`, the mouse's
+/// side button, and the compositor's binding behind them — and does not need
+/// another that costs the keyboard its off switch.
 fn chord_action(button: Button, code: u32, layout: Layout, select_held: bool) -> Option<Action> {
     if !select_held {
         return None;
@@ -1239,12 +1249,15 @@ fn where_it_is(code: gilrs::ev::Code) -> Option<crate::pads::At> {
 const EV_KEY: u16 = 0x01;
 const EV_ABS: u16 = 0x03;
 
-/// Whether a press is the chord's other half: the left-hand face button, the
-/// one with `X` printed on it.
+/// Whether a press is the left-hand face button — the one with `X` printed on
+/// it, Square on a PlayStation pad, `Y` on a Nintendo one.
+///
+/// Who is on Steam, and the keyboard chord's other half while Select is held.
+/// See [`Action::Friends`] and [`chord_action`].
 fn is_left_face(button: Button, code: u32, layout: Layout) -> bool {
     match layout {
         Layout::Mapped => matches!(button, Button::West),
-        Layout::Guessed => is_middle_face(button, code),
+        Layout::Guessed => is_middle_face(button, code, Face::Left),
     }
 }
 
@@ -1254,37 +1267,52 @@ fn is_left_face(button: Button, code: u32, layout: Layout) -> bool {
 fn is_top_face(button: Button, code: u32, layout: Layout) -> bool {
     match layout {
         Layout::Mapped => matches!(button, Button::North),
-        Layout::Guessed => is_middle_face(button, code),
+        Layout::Guessed => is_middle_face(button, code, Face::Top),
     }
 }
 
-/// Whether a press is *one of* the two middle face buttons on a pad nothing
-/// knows the layout of — the left-hand one or the top one, with no way to say
-/// which.
+/// Which of the two middle face buttons a guess is about.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Face {
+    /// The left-hand one: the friends list, and the keyboard chord.
+    Left,
+    /// The top one: the context menu.
+    Top,
+}
+
+/// Whether a press is the named middle face button on a pad nothing knows the
+/// layout of.
 ///
-/// Both are therefore taken to be both, and Select is what separates the two
-/// jobs: held, the press is the keyboard chord; alone, it raises the context
-/// menu. This is what a pad missing from the SDL database used to be refused,
-/// and refusing it was the wrong way round. Nothing else on the shell's own
-/// screens wants either button — the left-hand one belongs to whatever is
-/// running, and once an application is in front every action but the guide and
-/// the chord is dropped anyway — so the whole cost of guessing is that two
-/// buttons raise the context menu instead of one. The cost of not guessing was
-/// a controller with no context menu at all.
-fn is_middle_face(button: Button, code: u32) -> bool {
-    match button {
-        // GilRs' positional table: `0x133` is North to it and `0x134` is West,
-        // and which physical button each is depends on the driver.
-        Button::North | Button::West => matches!(code, evdev::BTN_X | evdev::BTN_WEST),
-        // A pad presenting as a plain joystick has no gamepad codes at all, so
-        // GilRs can name nothing on it. Its buttons run from `BTN_TRIGGER`, and
-        // the third and fourth are where the other two face buttons sit — the
-        // same ordering [`action_for_button`] already reads the first two under.
-        Button::Unknown => matches!(
-            code,
-            evdev::BTN_X | evdev::BTN_WEST | evdev::BTN_THUMB2 | evdev::BTN_TOP
-        ),
-        _ => false,
+/// These two are the one place GilRs' namings disagree, and there is no third
+/// source to ask: `0x133` is `BTN_X` under the kernel's legacy gamepad names
+/// and `BTN_NORTH` under its positional ones, and `0x134` is the same
+/// disagreement the other way round. So the code is taken at the *legacy*
+/// names' word — which is what xpad and every driver modelled on it send —
+/// and the pair is split between the two jobs.
+///
+/// **Split, rather than both buttons doing both.** Both used to be taken to be
+/// both, and that was right for as long as the only thing either one did was
+/// raise the context menu: a wrong guess then cost nothing, because both
+/// guesses led to the same screen. Two different screens cannot share a button
+/// that way — whichever was asked first would answer every press, and the
+/// friends panel would be unreachable on exactly the pads the context menu used
+/// to be. The guess is right on every pad modelled on xpad, wrong on a pad that
+/// numbers the pair the other way *and* is missing from the SDL database, and
+/// there is nothing else to ask. Select still separates the keyboard chord from
+/// the press underneath it, which is why the left-hand button can be two things
+/// and the top one only ever the menu.
+fn is_middle_face(button: Button, code: u32, face: Face) -> bool {
+    // Either of GilRs' two namings for the pair, or a pad it could name nothing
+    // on at all — one presenting as a plain joystick, whose buttons run from
+    // `BTN_TRIGGER` and whose third and fourth are where the face pair sits.
+    // The same ordering [`action_for_button`] already reads the first two
+    // under, and a gamepad GilRs *did* name never sends those codes.
+    if !matches!(button, Button::North | Button::West | Button::Unknown) {
+        return false;
+    }
+    match face {
+        Face::Left => matches!(code, evdev::BTN_X | evdev::BTN_THUMB2),
+        Face::Top => matches!(code, evdev::BTN_WEST | evdev::BTN_TOP),
     }
 }
 
@@ -1349,6 +1377,13 @@ mod evdev {
 fn action_for_button(button: Button, code: u32, layout: Layout) -> Option<Action> {
     if is_top_face(button, code, layout) {
         return Some(Action::Menu);
+    }
+    // And the left-hand one, which is who is on Steam. Reached only once the
+    // chord in front of this has declined the press — see [`chord_action`],
+    // which is asked first precisely so that Select held with this button is
+    // still the keyboard rather than the panel.
+    if is_left_face(button, code, layout) {
+        return Some(Action::Friends);
     }
     match button {
         // Xbox A / PlayStation Cross / Nintendo B / Steam Deck A.
@@ -1670,67 +1705,80 @@ mod tests {
     }
 
     /// The bug this was written for: the context menu could not be raised from
-    /// an 8BitDo — or from any other pad GilRs found no SDL mapping for.
+    /// an 8BitDo — or from any other pad GilRs found no SDL mapping for. Both
+    /// middle face buttons were given to the keyboard chord and the menu was
+    /// left with none at all.
     ///
-    /// The two conventions GilRs names buttons under disagree about the pair of
-    /// codes the middle face buttons use, and the old rule resolved that
-    /// disagreement by giving the whole pair to the keyboard chord and leaving
-    /// the context menu with no button at all. That is the wrong way round:
-    /// Select already separates the two jobs, so both buttons can do both.
+    /// What the fix for that did — give both buttons to both jobs — lasted
+    /// only as long as there was one job. The left-hand button is the friends
+    /// panel now, so the pair is split by the codes the legacy gamepad names
+    /// give them: `0x133` is the left-hand button and `0x134` is the top one,
+    /// which is right on every pad modelled on xpad and is the only guess there
+    /// is anything to base.
     #[test]
-    fn an_unmapped_pads_middle_face_buttons_raise_the_context_menu() {
-        // GilRs' positional table names `0x133` North and `0x134` West, and
-        // which physical button each is depends on the driver — so both are
-        // taken, and a bare press of either raises the menu.
-        for (button, code) in [
-            (Button::North, evdev::BTN_X),
-            (Button::North, evdev::BTN_WEST),
-            (Button::West, evdev::BTN_X),
-            (Button::West, evdev::BTN_WEST),
-        ] {
+    fn an_unmapped_pads_middle_face_buttons_are_split_between_the_two_jobs() {
+        // Whichever of its two namings GilRs reached for, the code decides.
+        for button in [Button::North, Button::West, Button::Unknown] {
             assert_eq!(
-                action_for_button(button, code, Layout::Guessed),
-                Some(Action::Menu),
-                "{button:?} {code:#x}"
+                action_for_button(button, evdev::BTN_X, Layout::Guessed),
+                Some(Action::Friends),
+                "{button:?} 0x133"
             );
-            // And the same press with Select held is still the keyboard, which
-            // is the whole reason both buttons can be claimed.
             assert_eq!(
-                chord_action(button, code, Layout::Guessed, true),
+                action_for_button(button, evdev::BTN_WEST, Layout::Guessed),
+                Some(Action::Menu),
+                "{button:?} 0x134"
+            );
+            // And the left-hand one held with Select is still the keyboard,
+            // which is what it was worth before it was worth anything alone.
+            assert_eq!(
+                chord_action(button, evdev::BTN_X, Layout::Guessed, true),
                 Some(Action::Keyboard),
-                "{button:?} {code:#x}"
+                "{button:?} 0x133"
+            );
+            // The top one never is. Select + the context menu means nothing,
+            // and a chord that answered it would cost the board its off
+            // switch — see [`chord_action`].
+            assert_eq!(
+                chord_action(button, evdev::BTN_WEST, Layout::Guessed, true),
+                None,
+                "{button:?} 0x134"
             );
         }
 
         // A pad presenting as a plain joystick has no gamepad codes for GilRs
         // to name anything from, and its face buttons run from `BTN_TRIGGER`.
-        for code in [evdev::BTN_THUMB2, evdev::BTN_TOP] {
-            assert_eq!(
-                action_for_button(Button::Unknown, code, Layout::Guessed),
-                Some(Action::Menu),
-                "{code:#x}"
-            );
-        }
+        // The third and fourth are the same pair, split the same way.
+        assert_eq!(
+            action_for_button(Button::Unknown, evdev::BTN_THUMB2, Layout::Guessed),
+            Some(Action::Friends)
+        );
+        assert_eq!(
+            action_for_button(Button::Unknown, evdev::BTN_TOP, Layout::Guessed),
+            Some(Action::Menu)
+        );
         // But not the two below them, which are already A and B.
         for code in [evdev::BTN_TRIGGER, evdev::BTN_THUMB] {
-            assert_ne!(
-                action_for_button(Button::Unknown, code, Layout::Guessed),
-                Some(Action::Menu),
+            assert!(
+                !matches!(
+                    action_for_button(Button::Unknown, code, Layout::Guessed),
+                    Some(Action::Menu | Action::Friends)
+                ),
                 "{code:#x}"
             );
         }
     }
 
     /// A mapped pad is read by name alone, so the guesswork above can never
-    /// reach it: `X` stays the chord's and only `Y` raises the menu.
+    /// reach it: `X` is the friends panel and only `Y` raises the menu.
     #[test]
     fn a_mapped_pads_left_face_button_is_never_the_context_menu() {
         assert!(is_left_face(Button::West, evdev::BTN_X, Layout::Mapped));
         assert!(!is_top_face(Button::West, evdev::BTN_X, Layout::Mapped));
         assert_eq!(
             action_for_button(Button::West, evdev::BTN_X, Layout::Mapped),
-            None,
-            "X alone belongs to whatever is running"
+            Some(Action::Friends),
+            "X alone is who is on Steam"
         );
 
         assert!(is_top_face(Button::North, evdev::BTN_WEST, Layout::Mapped));
@@ -1778,16 +1826,17 @@ mod tests {
 
     #[test]
     fn the_keyboard_needs_select_held_with_it() {
-        // On its own the left-hand face button does nothing: it belongs to
-        // whatever is running, and taking it would break every game that uses
-        // it.
+        // On its own the left-hand face button is not the board — it is the
+        // friends panel, which is the press the chord has to be told apart
+        // from. A board that came up whenever somebody asked who was on Steam
+        // would be the modifier counting for nothing.
         assert_eq!(
             chord_action(Button::West, evdev::BTN_X, Layout::Mapped, false),
             None
         );
         assert_eq!(
             action_for_button(Button::West, evdev::BTN_X, Layout::Mapped),
-            None
+            Some(Action::Friends)
         );
 
         // Held with Select it is the keyboard.
@@ -1829,10 +1878,12 @@ mod tests {
         // `BTN_NORTH`. This is the case that did not work.
         assert!(is_left_face(Button::North, evdev::BTN_X, Layout::Guessed));
 
-        // With no mapping and no name, both codes are taken: nothing is known
-        // about the pad, and a chord that does nothing is the worse fault.
+        // With no mapping and no name the code is all there is, and it is read
+        // at the legacy gamepad names' word: `0x133` is the left-hand button
+        // and `0x134` is the top one. Both used to be taken here, which was
+        // affordable only while the two buttons wanted the same screen.
         assert!(is_left_face(Button::Unknown, evdev::BTN_X, Layout::Guessed));
-        assert!(is_left_face(
+        assert!(!is_left_face(
             Button::Unknown,
             evdev::BTN_WEST,
             Layout::Guessed
@@ -2361,8 +2412,9 @@ mod tests {
         assert!(!chorded);
     }
 
-    /// `X` belongs to whatever is running, and `View` is only the chord's
-    /// modifier. Either one acting alone would take a button from a game.
+    /// `View` is only the chord's modifier, and `X` is not a table row at all:
+    /// what it means depends on whether `View` is held with it, which is the
+    /// one thing a table lookup cannot see. See [`the_pads_left_face_button_is_who_is_on_steam`].
     #[test]
     fn the_pads_chord_halves_do_nothing_apart() {
         assert_eq!(pad_action(Buttons::X), None);
@@ -2373,6 +2425,48 @@ mod tests {
         // it is asserted here too.
         assert_eq!(pad_action(Buttons::L3), None);
         assert_eq!(pad_action(Buttons::R3), Some(Action::Floating));
+    }
+
+    /// `X` alone raises the friends panel, on this pad as on every other.
+    ///
+    /// The regression this was written for: the left-hand face button reached
+    /// nothing on a mapped pad and raised the *context menu* on an unmapped
+    /// one, while the start screen's own corner had been naming it Friends the
+    /// whole time — a legend for a button that does something else, which is
+    /// the one thing a legend must never be. See `ui::start_hints`.
+    #[test]
+    fn the_pads_left_face_button_is_who_is_on_steam() {
+        let mut chorded = false;
+        let x = pad_frame(Buttons::X, Buttons::X, Buttons::empty());
+        assert_eq!(pad_actions(&x, &mut chorded), vec![Action::Friends]);
+        assert!(!chorded, "nothing was spelled on the guide button");
+
+        // And with View held it is the board instead, which is the whole
+        // reason this is not a `PAD_ACTIONS` row.
+        let with_view = pad_frame(
+            Buttons::VIEW.union(Buttons::X),
+            Buttons::X,
+            Buttons::empty(),
+        );
+        assert_eq!(
+            pad_actions(&with_view, &mut chorded),
+            vec![Action::Keyboard]
+        );
+
+        // The same press on the pads GilRs reads, under both of its namings
+        // and under none at all. One button, one screen, whatever the pad.
+        assert_eq!(
+            action_for_button(Button::West, evdev::BTN_X, Layout::Mapped),
+            Some(Action::Friends)
+        );
+        assert_eq!(
+            action_for_button(Button::North, evdev::BTN_X, Layout::Guessed),
+            Some(Action::Friends)
+        );
+        assert_eq!(
+            action_for_button(Button::Unknown, evdev::BTN_THUMB2, Layout::Guessed),
+            Some(Action::Friends)
+        );
     }
 
     /// The pad this shell reads itself clicks with the same two controls the

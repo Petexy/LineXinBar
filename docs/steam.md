@@ -411,7 +411,7 @@ client update may rename or remove any of it — and the shape of that failure i
 a press that silently does nothing: a wizard opened with nobody listening, its
 whole patience spent, and Valve's unhelpful wording at the end of it. So the
 client is asked what it still has before any install or removal is driven, and a
-method that has gone is answered the way a game with an agreement to accept is:
+method that has gone is answered the way a game with a product key to type is:
 Steam's own window, offered plainly, rather than a failure the user could do
 nothing about.
 
@@ -531,12 +531,17 @@ a desktop one and a person holding a controller cannot reach it. Its own
 headings are left out: they are window titles — "Error - Steam" — and the head
 of the panel is the game, as it is for every other panel about a game.
 
-Not every question, and the ones left out are left out on purpose. An agreement
-has to be read and this shell will not put an OK on one; a product key has to be
-copied down; a conflict between two saves is a choice Valve shows with the date
-of each, and asking somebody to pick one blind is worse than asking them to
-reach for a mouse once. Those still give the client sight, the older answer,
-where somebody with a pointer can deal with them.
+Not every question, and the ones left out are left out on purpose. A product key
+has to be copied down; a conflict between two saves is a choice Valve shows with
+the date of each, and asking somebody to pick one blind is worse than asking them
+to reach for a mouse once. An agreement asked *at launch* — which only happens
+when a publisher rewrote its terms after the game was installed — is left to
+Valve's window too: the client puts up a dialog of its own for it the moment it
+asks, hidden here, and that dialog cannot be closed from outside, so answering on
+the shell's panel would leave Valve's standing behind for the next time the
+client is seen. Those still give the client sight, the older answer, where
+somebody with a pointer can deal with them. An agreement asked *before an
+install*, which is where nearly all of them are, is the shell's — see below.
 
 This needs the client's own interface, which the shell opens on any client it
 starts itself. A client that was already running when the session came up is not
@@ -631,14 +636,38 @@ the game is actually made of. A shell that passed its own opinion in would be a
 second implementation of that decision, able only to be wrong in ways Steam's
 is not.
 
-**Two games in five stop the flow to ask something.** An agreement to accept,
-most often; a product key or a password otherwise. Of fifteen titles taken off
-one real account, six had one — Black Mesa among them, which used to sit in
-`ShowEULAs` with no window, no download and no error. Those are reported rather
-than answered: the panel says what the game is waiting for and offers **Install
-with Steam**, which hands the whole install to Steam's own window — the only
-place the question can be put, and not one this shell will click through on
-somebody's behalf. The other three in five never see Steam at all.
+**Two games in five stop the flow to ask something**, and nearly always it is an
+agreement. Of fifteen titles taken off one real account, six had one — Black
+Mesa among them, which used to sit in `ShowEULAs` with no window, no download and
+no error. Garry's Mod has two: Facepunch's terms of service and its privacy
+policy.
+
+**An agreement is asked on the shell's own panel.** When the wizard stops on one,
+the shell asks the client for its list (`SteamClient.Apps.LoadEula`) — each
+agreement's name, its edition and where its words are — cancels the wizard, and
+fetches the words from the store the way Valve's own dialog does (the address
+with `eulaLang` and `json=1` on the end; no credentials, and English where the
+publisher wrote nothing in the shell's language). The panel is the game's name,
+one sentence, the agreement in a reading well scrolled a screen at a time with
+Left and Right — the terminal frame's well, in the shell's own face — and
+**Accept and install** above **Not now**. Several agreements are shown one after
+another, as Valve shows them, and only the last one's button installs.
+
+Nothing is accepted until that last press, and then it is recorded with
+`MarkEulaAccepted` — the call Valve's own Accept button makes, with the same three
+arguments — before the wizard is opened again, which then finds the agreements
+accepted and goes straight through. Recorded first rather than answered inside a
+parked wizard, because the client's own interface reacts to `ShowEULAs` too: it
+builds a hidden dialog of its own that cancels the install when it closes unless
+*its* workflow finished. An agreement whose words could not be read is never
+offered for accepting — the panel says so and offers to try again — and a client
+that asks again for agreements it has just been told were accepted is answered
+the older way rather than with the same panel twice.
+
+The rest — a product key, a password, a disc, an account to sign up for — are
+reported rather than answered: the panel says what the game is waiting for and
+offers **Install with Steam**, which hands the whole install to Steam's own
+window. The other three games in five never see Steam at all.
 
 **How far it has got is asked of Valve's client**, over the same loopback
 interface a shell-driven install is already being driven through, and this is

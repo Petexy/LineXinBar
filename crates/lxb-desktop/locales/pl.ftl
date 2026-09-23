@@ -187,6 +187,7 @@ shell-mirrored-about-a-vertical-axis = Odbicie względem osi pionowej
 shell-mouse = Mysz
 shell-move = Przenieś
 shell-name = Nazwa
+shell-native = Natywna
 shell-natural = Naturalnie
 shell-network = Sieć
 shell-networks = Sieci
@@ -1576,6 +1577,22 @@ steam-size-in-files = { $size } w { $count ->
 steam-library-from = { $said } · biblioteka z { $when }
 steam-refused-launch = Steam nie uruchomił tej gry: { $refusal }
 steam-app-number = Aplikacja { $app }
+steam-agreement-before-install = { $total ->
+    [1] Aby zainstalować { $game }, musisz zaakceptować tę umowę.
+    [few] Aby zainstalować { $game }, musisz zaakceptować { $total } umowy. To jest umowa nr { $at }.
+   *[other] Aby zainstalować { $game }, musisz zaakceptować { $total } umów. To jest umowa nr { $at }.
+    }
+steam-agreement-could-not-be-loaded = Aby zainstalować { $game }, musisz zaakceptować umowę, ale nie udało się jej wczytać.
+steam-accept-agreement = Akceptuj
+steam-accept-and-install = Akceptuj i zainstaluj
+steam-install-needs-first = { $what ->
+    [agreement] Ta gra najpierw wymaga zaakceptowania umowy.
+    [key] Ta gra najpierw wymaga wpisania klucza produktu.
+    [password] Ta gra najpierw wymaga wpisania hasła.
+    [disc] Ta gra najpierw wymaga zmiany płyty.
+    [signup] Ta gra najpierw wymaga założenia konta.
+   *[other] Ta gra najpierw wymaga odpowiedzi na pytanie.
+    }
 steam-downloading-first = Najpierw pobierana jest gra { $name }.
 steam-achievements-unlocked = Steam · odblokowano { $unlocked } / { $total }
 enter-password-for = Wpisz hasło dla { $name }.
@@ -1613,7 +1630,6 @@ retroarch-no-bios-for-console = Żaden plik w tym folderze nie jest plikiem, od 
 retroarch-console-games-need-more = Gry na { $console } wymagają czegoś, czego ten komputer nie ma.
 retroarch-core-missing-for = Brakuje składnika potrzebnego do uruchamiania gier na { $console }.
 retroarch-console-may-need-bios = Gry na { $console } mogą wymagać BIOS-u konsoli, którego nie można pobrać.
-retroarch-game-needs-first = Ta gra najpierw wymaga: { $what }.
 
 # Aktualizacje i terminal pod nimi.
 terminal-lines-following = Wiersze { $from }–{ $to } z { $total } · śledzenie · Lewo, aby przewinąć wstecz

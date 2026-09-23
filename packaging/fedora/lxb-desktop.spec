@@ -60,6 +60,11 @@ BuildRequires:  pkgconfig(libswscale)
 # bindgen's, for the PipeWire bindings the portal is built on and the FFmpeg
 # bindings the shell is built on.
 BuildRequires:  clang
+# %%check's. The portal's caller test starts a private bus of its own, since
+# the sender a bus stamps on a message is the thing it tests. Fedora's session
+# bus is dbus-broker, which has no stand-alone daemon to start, so the one it
+# runs is not there unless it is asked for.
+BuildRequires:  dbus-daemon
 
 # Wayland, EGL/Vulkan and the nested X libraries are loaded dynamically, so
 # RPM's ELF dependency generator cannot discover them.

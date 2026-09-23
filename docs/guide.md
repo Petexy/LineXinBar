@@ -4,6 +4,7 @@
 
 - [The guide overlay](#the-guide-overlay)
 - [The context menu](#the-context-menu)
+  - [The resolution something draws at](#the-resolution-something-draws-at)
 
 ## The guide overlay
 
@@ -432,7 +433,7 @@ Six of them exist so far:
 
 | Where | What it is about | Rows |
 | ----- | ---------------- | ---- |
-| The bar | The application on the focused tile, out of the disc it stands on | Information, Uninstall / Launch, Close |
+| The bar | The application on the focused tile, out of the disc it stands on | Information, Uninstall, [Resolution](#the-resolution-something-draws-at) / Launch, Close |
 | The bar | One of the user's own files, on a shelf | Open, Open with, Delete, [Rename](shell.md#changing-a-name) / Sort, Cancel |
 | The bar | One of the user's own files, inside a folder listing | Open, Open with, Delete, [Copy, Move](shell.md#carrying-a-file-somewhere-else), [Rename](shell.md#changing-a-name) / Sort, Cancel |
 | The bar | A folder inside a listing, out of the same disc | Copy, Move, Rename / Sort, Cancel |
@@ -459,6 +460,53 @@ straight over anything it cannot stop on, wraps at both ends, and glides between
 rows rather than jumping. A list
 longer than the display can hold scrolls under a panel that does not change
 size, with an arrow at whichever end still has rows past it.
+
+### The resolution something draws at
+
+Three of those menus carry a **Resolution** row: an installed application's, a
+Steam title's, and one of the user's own games out of their ROM folder. It is
+the same setting in all three, because what it sets is true of all three in the
+same way — they are things with windows, and the row says how many pixels those
+windows are drawn from.
+
+**Native** is the top of the list and the answer everything runs at until
+somebody says otherwise: the picture is the size of the screen it is on. Below
+it are the sizes that fit that screen, largest first — 1600 × 900, 1280 × 720
+and so on down. Choosing one is remembered, and the thing runs at it every time
+from then on; choosing Native again takes it back. The highlight opens on
+whatever is in force, so the row doubles as the answer to "what is this set to".
+
+What it does is give the application a smaller picture and put that picture over
+the whole display. A game asked for 1280 × 720 on a 4K television really does
+draw 1280 × 720 pixels — a ninth of the work of a frame — and the compositor
+enlarges the result to cover the screen. That is the opposite bargain from
+[Application scaling](settings.md#application-scaling), which also configures a
+window smaller but then asks the client to fill it with the screen's own pixels:
+one is for a screen looked at from a sofa, and this is for a machine that cannot
+quite keep up. Only one of the two is ever in force on a window, and this one
+wins.
+
+Because it is the compositor that carries it out, it works the same for all
+three kinds of thing even though three different programs start them. It also
+reaches windows under Xwayland, which application scaling deliberately does not:
+there, magnifying a window that has already been drawn is a poor substitute for
+a larger interface, and here it is exactly the request.
+
+The list is the display's own. Only sizes that are exactly the shape of the
+screen are offered, so nothing is ever pillarboxed by choosing from it, and a
+screen no familiar size fits — an ultrawide, a panel on its side — is offered
+three quarters, two thirds and a half of itself instead. What is remembered is
+two numbers rather than a row on a list, so the same machine plugged into a
+different television answers the question again from the same answer.
+
+Two things follow from where the setting is *filed*. A game out of the ROM
+folder is filed under the file it is, because every game in that folder is
+played by the same emulator under the same window name — so the shell tells the
+compositor which answer is in force on the way into each game's own launch. And
+a Steam title is filed under `steam_app_<id>`, which is what Valve's launcher
+calls the window it starts; a game that names its own windows instead is told a
+moment after it opens rather than before, since nothing can know what a program
+calls itself until it has said so once.
 
 The panel is cut from the guide sidebar's glass — the same two pools of accent
 light under one shallow refractive pane, and the same hairline over it — because

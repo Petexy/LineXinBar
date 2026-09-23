@@ -333,6 +333,15 @@ client about, so the only thing that could be done to those windows is to
 magnify pixels they have already drawn, and a blurred window is not what
 somebody asking for a larger one asked for.
 
+**The setting that looks like this one and is its opposite** is
+[Resolution](guide.md#the-resolution-something-draws-at), on the context menu
+over an application, a Steam title or one of your own games. That one also
+configures a window smaller than the screen — and then says nothing about scale,
+so the client draws *fewer* pixels and the compositor enlarges the result. This
+page is for a screen looked at from a sofa; that row is for a machine that
+cannot quite keep up. Only one of the two is ever in force on a window, and a
+resolution wins where both have been asked for.
+
 It is written to `~/.config/lxb/shell.toml`, under the screen it was set on:
 
 ```toml

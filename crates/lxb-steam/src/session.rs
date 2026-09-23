@@ -16,7 +16,7 @@
 //! they can play as that account.
 
 use std::io::Write;
-use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
+use std::os::unix::fs::{MetadataExt, OpenOptionsExt, PermissionsExt};
 use std::path::PathBuf;
 
 /// A signed-in account, as it survives a reboot.
@@ -108,30 +108,45 @@ impl Stored {
             std::fs::create_dir_all(parent)?;
             // The directory too: a token in a private file inside a directory
             // anybody may list is still a token whose existence is public.
-            let _ = std::fs::set_permissions(parent, std::fs::Permissions::from_mode(0o700));
+            //
+            // Asked of the directory the write actually lands in, which is why
+            // the link is followed rather than stopped at. What has to be true
+            // is that *this user* owns what is written into; a link is not
+            // that, it is a name for it. Somebody else's directory reached
+            // through a link somebody else planted still fails here, which is
+            // the case this refuses — and a data directory the user moved to
+            // another disk and left behind as a link, which is an ordinary
+            // thing to have done, goes on working.
+            let metadata = std::fs::metadata(parent)?;
+            if !metadata.is_dir() || metadata.uid() != unsafe { libc::geteuid() } {
+                return Err(std::io::Error::other(
+                    "the Steam session directory is not this user's own",
+                ));
+            }
+            std::fs::set_permissions(parent, std::fs::Permissions::from_mode(0o700))?;
         }
 
         let raw = serde_json::to_vec_pretty(self).map_err(std::io::Error::other)?;
-        let scratch = path.with_extension("writing");
-        {
-            let mut file = std::fs::OpenOptions::new()
-                .write(true)
-                .create(true)
-                .truncate(true)
-                .mode(0o600)
-                .open(&scratch)?;
-            file.write_all(&raw)?;
-            file.sync_all()?;
-        }
-        std::fs::rename(&scratch, &path)
+        write_privately(&path, &raw)
     }
 
     /// Forget it. Says nothing about whether there was one: signing out of a
     /// session that had already gone is not a failure.
+    ///
+    /// Every copy of it, including the ones [`Stored::save`] does not get to
+    /// clean up itself. A save that is killed between the open and the rename
+    /// leaves its scratch file behind with the whole token in it, and a
+    /// sign-out that left one of those on the disk would be a sign-out that
+    /// did not sign out. They are swept by name rather than remembered,
+    /// because the process that made one is by then gone.
     pub fn forget() {
         if let Some(path) = path() {
             let _ = std::fs::remove_file(&path);
+            // What a version before the scratch name was randomised wrote.
             let _ = std::fs::remove_file(path.with_extension("writing"));
+            for scratch in scratches(&path) {
+                let _ = std::fs::remove_file(scratch);
+            }
         }
         // Including the status it was owed. Signing out and in as somebody else
         // must not hand the next account a status this one chose.
@@ -189,8 +204,15 @@ impl Owed {
             let _ = std::fs::set_permissions(parent, std::fs::Permissions::from_mode(0o700));
         }
         match serde_json::to_vec_pretty(self) {
+            // Through [`write_privately`] rather than `fs::write`, which is
+            // what this used to be. Not because a status is a secret — it is
+            // one number and an account id — but because `fs::write` opens the
+            // name it is given and follows it wherever it leads, and this name
+            // sits in the same directory as the token beside it. A link
+            // planted here is a way to have this session write a file of
+            // somebody else's choosing; a rename over the name is not.
             Ok(raw) => {
-                if let Err(error) = std::fs::write(&path, raw) {
+                if let Err(error) = write_privately(&path, &raw) {
                     tracing::warn!(%error, path = %path.display(), "the chosen Steam status could not be written down");
                 }
             }
@@ -203,9 +225,71 @@ impl Owed {
     /// Nothing is owed any more: it landed, or the account changed.
     pub fn forget() {
         if let Some(path) = owed_path() {
-            let _ = std::fs::remove_file(path);
+            let _ = std::fs::remove_file(&path);
+            for scratch in scratches(&path) {
+                let _ = std::fs::remove_file(scratch);
+            }
         }
     }
+}
+
+/// Write `raw` where nobody but this user can read it, and leave either the
+/// whole of it or what was there before.
+///
+/// Three things at once, and each of them is why this is one function rather
+/// than a `fs::write` at either call site.
+///
+/// The mode is set on the way *in*, because a file that is briefly
+/// world-readable is a file that was world-readable — `set_permissions`
+/// afterwards is always too late.
+///
+/// The scratch name is random and the open refuses to reuse one. A fixed
+/// neighbouring name is a name anything else on this machine can work out and
+/// get to first, and `create`+`truncate` would then follow whatever it found
+/// there; `create_new` fails on a name that is taken, link or not.
+///
+/// And the last step is a rename, which replaces the destination *name* rather
+/// than writing through it. That is what makes an interrupted write leave the
+/// previous file intact, and it is also what a symbolic link at the
+/// destination cannot turn into a write somewhere else.
+fn write_privately(path: &std::path::Path, raw: &[u8]) -> std::io::Result<()> {
+    let scratch = path.with_extension(format!("writing-{:032x}", rand::random::<u128>()));
+    let mut file = std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .mode(0o600)
+        .open(&scratch)?;
+    let wrote = (|| {
+        file.write_all(raw)?;
+        file.sync_all()?;
+        std::fs::rename(&scratch, path)
+    })();
+    if wrote.is_err() {
+        let _ = std::fs::remove_file(&scratch);
+    }
+    wrote
+}
+
+/// Every scratch file [`write_privately`] may have left beside `path`.
+///
+/// Recognised by the shape of the name rather than remembered, because the
+/// process that made one is by then gone: it is the destination's own stem and
+/// then `.writing-`, which nothing else in that directory is called. A
+/// directory that cannot be read answers the same as an empty one — the caller
+/// is removing things, and has nothing to do in either case.
+fn scratches(path: &std::path::Path) -> Vec<PathBuf> {
+    let (Some(parent), Some(stem)) = (path.parent(), path.file_stem()) else {
+        return Vec::new();
+    };
+    let prefix = format!("{}.writing-", stem.to_string_lossy());
+    let Ok(entries) = std::fs::read_dir(parent) else {
+        return Vec::new();
+    };
+    entries
+        .flatten()
+        .filter(|entry| entry.file_name().to_string_lossy().starts_with(&prefix))
+        .map(|entry| entry.path())
+        .collect()
 }
 
 /// `$XDG_DATA_HOME/lxb/steam-status.json`, beside the session it belongs to.
@@ -268,9 +352,14 @@ mod tests {
             guard_data: Some("machine".to_string()),
             machine_id: new_machine_id(),
         };
-        stored.save().expect("a scratch directory is writable");
-
         let path = path().expect("a path under the scratch directory");
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        let victim = root.join("unrelated-file");
+        std::fs::write(&victim, b"must survive").unwrap();
+        std::os::unix::fs::symlink(&victim, path.with_extension("writing")).unwrap();
+        stored.save().expect("a scratch directory is writable");
+        assert_eq!(std::fs::read(&victim).unwrap(), b"must survive");
+
         let mode = std::fs::metadata(&path)
             .expect("it was written")
             .permissions()
@@ -315,12 +404,62 @@ mod tests {
         // somebody else must not inherit what the last person chose.
         assert!(Owed::load(stored.steam_id + 1).is_none());
 
+        // The status lands *over* its name rather than through it. This used
+        // to be an `fs::write`, which opens what the name leads to, so a link
+        // planted here was a way to have this session write a file of
+        // somebody else's choosing — the token's own neighbour, in the one
+        // directory this session keeps private things in.
+        let owed = owed_path().expect("a path beside the session");
+        Owed::forget();
+        std::os::unix::fs::symlink(&victim, &owed).unwrap();
+        Owed {
+            steam_id: stored.steam_id,
+            status: 3,
+        }
+        .save();
+        assert_eq!(std::fs::read(&victim).unwrap(), b"must survive");
+        assert_eq!(Owed::load(stored.steam_id).map(|owed| owed.status), Some(3));
+
+        // A save killed between the open and the rename leaves its scratch
+        // file behind with the whole token in it. A sign-out that left one of
+        // those on the disk would be a sign-out that did not sign out.
+        let left_behind = path.with_extension("writing-0123456789abcdef");
+        std::fs::write(&left_behind, br#"{"refresh_token":"a.b.c"}"#).unwrap();
+        let owed_left_behind = owed.with_extension("writing-fedcba9876543210");
+        std::fs::write(&owed_left_behind, b"{}").unwrap();
+
         Stored::forget();
         assert!(!path.exists());
         assert!(Stored::load().is_none());
         assert!(
             Owed::load(stored.steam_id).is_none(),
             "signing out left a status behind"
+        );
+        assert!(
+            !left_behind.exists(),
+            "signing out left a copy of the token behind"
+        );
+        assert!(!owed_left_behind.exists());
+
+        // A data directory moved to another disk and left behind as a link is
+        // an ordinary thing for somebody to have done. What has to be this
+        // user's own is the directory the write lands in, which is what the
+        // link leads to — not the link.
+        let elsewhere = root.join("on-another-disk");
+        std::fs::create_dir_all(&elsewhere).unwrap();
+        let parent = path.parent().unwrap();
+        std::fs::remove_dir_all(parent).unwrap();
+        std::os::unix::fs::symlink(&elsewhere, parent).unwrap();
+        stored
+            .save()
+            .expect("a linked session directory is still this user's own");
+        assert!(
+            elsewhere.join("steam.json").exists(),
+            "the session went somewhere other than through the link"
+        );
+        assert_eq!(
+            Stored::load().map(|read| read.refresh_token),
+            Some(stored.refresh_token.clone())
         );
 
         unsafe { std::env::remove_var("XDG_DATA_HOME") };

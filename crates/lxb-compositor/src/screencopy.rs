@@ -29,12 +29,9 @@
 //!
 //! ## Who may
 //!
-//! Any client of this compositor, which is the footing `lxb_shell_v1` and
-//! wlr-layer-shell are already on: the session only ever runs what the user
-//! started. Consent does not belong at this level — the portal above it is what
-//! asks the user which screen an application may see, and an application that
-//! could reach past the portal to here is one that has already been handed the
-//! session's own socket.
+//! Only the shell and portal processes started by this compositor. Ordinary
+//! Wayland clients must go through the portal's consent prompt; possession of
+//! the display socket does not authorize reading other applications' pixels.
 
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
@@ -467,6 +464,10 @@ where
 }
 
 impl GlobalDispatch<ZwlrScreencopyManagerV1, ()> for LxbState {
+    fn can_view(client: Client, _global_data: &()) -> bool {
+        crate::shell_control::may_drive_the_shell(&client)
+    }
+
     fn bind(
         _state: &mut Self,
         _handle: &DisplayHandle,
@@ -661,6 +662,21 @@ fn suitable(buffer: &WlBuffer, size: Size<i32, Physical>) -> Result<(), &'static
 mod tests {
     use super::*;
     use smithay::output::{Mode, PhysicalProperties, Scale, Subpixel};
+
+    #[test]
+    fn ordinary_clients_cannot_bypass_capture_consent() {
+        use smithay::reexports::wayland_server::Display;
+        let display = Display::<LxbState>::new().unwrap();
+        let (server, _peer) = std::os::unix::net::UnixStream::pair().unwrap();
+        let client = display
+            .handle()
+            .insert_client(
+                server,
+                std::sync::Arc::new(crate::state::ClientState::default()),
+            )
+            .unwrap();
+        assert!(!<LxbState as GlobalDispatch<ZwlrScreencopyManagerV1, ()>>::can_view(client, &()));
+    }
 
     fn output(mode: (i32, i32), transform: Transform, scale: f64) -> Output {
         let output = Output::new(

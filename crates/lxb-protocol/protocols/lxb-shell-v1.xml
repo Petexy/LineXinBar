@@ -14,7 +14,7 @@
     all copies or substantial portions of the Software.
   </copyright>
 
-  <interface name="lxb_shell_v1" version="43">
+  <interface name="lxb_shell_v1" version="44">
     <description summary="private channel between LineXinBar and its session shell">
       Layer-shell lets a shell draw itself, but says nothing about the two
       things a console-style session needs: a hardware button that reaches the
@@ -983,6 +983,72 @@
            summary="the display whose applications are being sized"/>
       <arg name="scale" type="uint"
            summary="per cent of natural size; 100 is one to one, and the floor"/>
+    </request>
+
+    <request name="set_application_resolution" since="44">
+      <description summary="how many pixels one application draws">
+        Sets the number of pixels one named application draws its picture at,
+        whatever the display it ends up on is showing. At 1280x720 on a 4K
+        screen the application lays itself out in 1280x720, renders 1280x720
+        pixels, and the compositor puts that picture over the whole display.
+
+        The opposite bargain from set_application_scale, and deliberately so.
+        That one asks for a *larger interface at the display's own sharpness*:
+        the window is made smaller and the client is told over
+        wp_fractional_scale_v1 to fill it with as many pixels as the screen
+        has. This one asks for *fewer pixels*: the window is made smaller and
+        the client is told nothing extra, so it draws exactly the picture that
+        was asked for and that picture is enlarged onto the screen. It is what a
+        console means by a game's resolution — the work of drawing a frame is
+        cut to a quarter and the frame still covers the television — and it is
+        why the two cannot be one request with a different unit.
+
+        app_id is the name a window calls itself by: an xdg_toplevel's app_id,
+        or an X11 window's class. A shell that knows an application under
+        several names sends this once per name; the compositor compares them
+        whole, ignoring case, and does not guess at what a name is short for.
+        An empty app_id is refused — nothing can be filed under nothing, and a
+        window that named itself nothing must not inherit a setting meant for
+        another.
+
+        Xwayland windows are included, unlike set_application_scale. There the
+        exclusion is honest, because there is no per-surface scale to tell an
+        X11 client about and all that could be done is to magnify what it
+        already drew. Here magnifying is the whole request: an X11 client
+        configured at 1280x720 really does draw 1280x720 pixels, and drawing
+        them over the display is what was asked for rather than a poor
+        substitute for it.
+
+        width and height are in pixels, and 0x0 means the display's own — which
+        is the answer for an application nobody has chosen for, and the way a
+        choice is taken back. A size larger than a display in either direction
+        is not carried out on that display: the window there is given the
+        display's own size, because what the size would ask for is a picture
+        shrunk to fit, which is a different setting from this one and is not one
+        this compositor offers. It is kept rather than refused all the same,
+        since a session with two screens of different sizes is one where the
+        same application can honour it on one of them and not the other.
+
+        A size that does not have the display's shape is fitted inside it, by
+        whichever of the two directions runs out first, and the window is left
+        in the display's own corner. A shell is expected to offer sizes that
+        share the shape of the screen they will be drawn on, so this is the
+        answer to a mistake rather than a feature: the picture stays the shape
+        the application drew it, which is the one thing worth protecting.
+
+        Not remembered by the compositor, for the reason set_application_scale
+        is not: every application on this session is started by the shell, the
+        shell says this before it starts one, and the shell has the menu it was
+        chosen on. A window already on screen when this arrives is configured
+        again at once, which is what makes the setting mean something while
+        somebody is looking at the application it is about.
+      </description>
+      <arg name="app_id" type="string"
+           summary="the name the application's windows call themselves by"/>
+      <arg name="width" type="uint"
+           summary="pixels across, or 0 with height for the display's own"/>
+      <arg name="height" type="uint"
+           summary="pixels down, or 0 with width for the display's own"/>
     </request>
 
     <request name="cover_in_black" since="26">

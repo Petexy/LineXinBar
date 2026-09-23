@@ -18,7 +18,12 @@
 //! Choosing a file joins nothing — it carries a question to the session shell,
 //! which is the only part of this desktop that can draw one, and carries the
 //! answer back as URIs. See [`filechooser`], and [`pick`] for the road.
+//!
+//! Both of them trust what they are handed, and both of them are published on
+//! a bus every process of this user can reach, so neither may answer anybody
+//! but the front desk. See [`caller`] for what that check is worth.
 
+mod caller;
 mod cast;
 mod consent;
 mod filechooser;

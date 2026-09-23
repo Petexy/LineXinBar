@@ -66,6 +66,9 @@ pub struct FileChooser;
 #[zbus::interface(name = "org.freedesktop.impl.portal.FileChooser")]
 impl FileChooser {
     /// Choose something that is already on the disk.
+    // Two of these are the bus's own facts, injected by `zbus` rather
+    // than sent by the caller. See [`crate::caller`].
+    #[allow(clippy::too_many_arguments)]
     async fn open_file(
         &self,
         _handle: OwnedObjectPath,
@@ -73,7 +76,13 @@ impl FileChooser {
         _parent_window: String,
         title: String,
         options: HashMap<String, OwnedValue>,
+        #[zbus(connection)] connection: &zbus::Connection,
+        #[zbus(header)] header: zbus::message::Header<'_>,
     ) -> (u32, HashMap<String, OwnedValue>) {
+        if !crate::caller::is_frontend(connection, &header).await {
+            return (FAILED, HashMap::new());
+        }
+
         let directory = flag(&options, "directory");
         let purpose = match (directory, flag(&options, "multiple")) {
             (true, _) => pick::For::AFolder,
@@ -105,6 +114,9 @@ impl FileChooser {
     }
 
     /// Choose somewhere to write, and what to call it.
+    // Two of these are the bus's own facts, injected by `zbus` rather
+    // than sent by the caller. See [`crate::caller`].
+    #[allow(clippy::too_many_arguments)]
     async fn save_file(
         &self,
         _handle: OwnedObjectPath,
@@ -112,7 +124,13 @@ impl FileChooser {
         _parent_window: String,
         title: String,
         options: HashMap<String, OwnedValue>,
+        #[zbus(connection)] connection: &zbus::Connection,
+        #[zbus(header)] header: zbus::message::Header<'_>,
     ) -> (u32, HashMap<String, OwnedValue>) {
+        if !crate::caller::is_frontend(connection, &header).await {
+            return (FAILED, HashMap::new());
+        }
+
         let kinds = kinds_of(&options);
         // `current_file` is the whole path of something being saved over, and
         // it answers both halves of the question at once: which folder, and
@@ -157,6 +175,9 @@ impl FileChooser {
     /// nothing is checked — a name already taken in that folder is the
     /// application's to notice when it writes, which is the only moment the
     /// answer is still true.
+    // Two of these are the bus's own facts, injected by `zbus` rather
+    // than sent by the caller. See [`crate::caller`].
+    #[allow(clippy::too_many_arguments)]
     async fn save_files(
         &self,
         _handle: OwnedObjectPath,
@@ -164,7 +185,13 @@ impl FileChooser {
         _parent_window: String,
         title: String,
         options: HashMap<String, OwnedValue>,
+        #[zbus(connection)] connection: &zbus::Connection,
+        #[zbus(header)] header: zbus::message::Header<'_>,
     ) -> (u32, HashMap<String, OwnedValue>) {
+        if !crate::caller::is_frontend(connection, &header).await {
+            return (FAILED, HashMap::new());
+        }
+
         let names = names_of(&options);
         if names.is_empty() {
             tracing::warn!("an application asked where to save nothing at all");

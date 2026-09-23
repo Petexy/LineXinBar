@@ -190,6 +190,7 @@ shell-mirrored-about-a-vertical-axis = En miroir autour d'un axe vertical
 shell-mouse = Souris
 shell-move = Déplacer
 shell-name = Nom
+shell-native = Native
 shell-natural = Naturel
 shell-network = Réseau
 shell-networks = Réseaux
@@ -1518,6 +1519,21 @@ steam-size-in-files = { $size } dans { $count ->
 steam-library-from = { $said } · bibliothèque datant de { $when }
 steam-refused-launch = Steam a refusé de démarrer ce jeu : { $refusal }
 steam-app-number = Application { $app }
+steam-agreement-before-install = { $total ->
+    [1] Pour installer { $game }, vous devez accepter ce contrat.
+   *[other] Pour installer { $game }, vous devez accepter { $total } contrats. Voici le contrat { $at }.
+    }
+steam-agreement-could-not-be-loaded = Pour installer { $game }, vous devez accepter un contrat, mais il n'a pas pu être chargé.
+steam-accept-agreement = Accepter
+steam-accept-and-install = Accepter et installer
+steam-install-needs-first = { $what ->
+    [agreement] Ce jeu demande d'abord d'accepter un contrat.
+    [key] Ce jeu demande d'abord de saisir une clé de produit.
+    [password] Ce jeu demande d'abord de saisir un mot de passe.
+    [disc] Ce jeu demande d'abord de changer de disque.
+    [signup] Ce jeu demande d'abord de créer un compte.
+   *[other] Ce jeu demande d'abord de répondre à une question.
+    }
 steam-downloading-first = { $name } se télécharge d'abord.
 steam-achievements-unlocked = Steam · { $unlocked } / { $total } débloqués
 enter-password-for = Saisissez le mot de passe de { $name }.
@@ -1553,7 +1569,6 @@ retroarch-no-bios-for-console = Rien là-dedans n'est un fichier à partir duque
 retroarch-console-games-need-more = Les jeux { $console } ont besoin de quelque chose que cette machine n'a pas.
 retroarch-core-missing-for = Il manque quelque chose pour jouer aux jeux { $console }.
 retroarch-console-may-need-bios = Les jeux { $console } peuvent nécessiter le BIOS de la console, qui ne peut pas être téléchargé.
-retroarch-game-needs-first = Ce jeu a d'abord { $what }.
 
 # Updates and the terminal under them.
 terminal-lines-following = Lignes { $from }–{ $to } sur { $total } · suivi en direct · Gauche pour revenir en arrière

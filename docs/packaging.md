@@ -197,14 +197,30 @@ though the workspace's older `rust-version` declaration has not been changed.
 ## Debian
 
 Build on Debian, Ubuntu, or another Debian-derived system with the development
-packages listed in [Getting started](getting-started.md#building) plus `dpkg-dev`:
+packages listed in [Getting started](getting-started.md#building) plus `dpkg-dev`
+and the PipeWire headers. On Debian 13 take Rust from `rustup` rather than
+`cargo`: the distribution's own is 1.85, older than the locked dependency graph
+allows.
 
 ```sh
+sudo apt install dpkg-dev build-essential pkg-config clang rustup \
+    libasound2-dev libgbm-dev libavcodec-dev libavformat-dev libavutil-dev \
+    libswscale-dev libinput-dev libpipewire-0.3-dev libseat-dev libudev-dev \
+    libxkbcommon-dev
 ./packaging/build.sh debian
 ```
 
+That is what the build itself links; the builder checks for all of it before
+compiling anything and, if something is missing, names the packages in one
+`apt install` line. A distrobox or toolbox container on a plain `debian` image
+is enough, and there `rustup` finds the toolchain already in the shared
+`~/.rustup`.
+
 The builder uses `dpkg-shlibdeps` on the locally linked binaries, stages a
-policy-shaped binary package, and writes it to `packaging/out/debian/`.
+policy-shaped binary package, and writes it to `packaging/out/debian/`. It
+compiles into `target/debian` rather than `target/` (or into
+`$CARGO_TARGET_DIR` when that is set), so a build made in a container that
+shares the checkout never replaces the host's own binaries.
 Wayland, EGL and X11 libraries that the application opens dynamically are
 declared explicitly because ELF dependency scanning cannot see them.
 
@@ -215,9 +231,13 @@ on Debian.
 ## Fedora
 
 Build on Fedora after installing RPM build tooling and the `BuildRequires`
-listed in `packaging/fedora/lxb-desktop.spec`:
+listed in `packaging/fedora/lxb-desktop.spec`, which `dnf builddep` reads from
+the spec itself. A distrobox or toolbox container on the `fedora-toolbox` image
+is enough:
 
 ```sh
+sudo dnf install rpm-build dnf5-plugins git-core
+sudo dnf builddep packaging/fedora/lxb-desktop.spec
 ./packaging/build.sh fedora
 ```
 

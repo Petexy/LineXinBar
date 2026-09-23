@@ -77,6 +77,20 @@ use crate::menu;
 /// What the helper is called, and what the shell looks for on `PATH`.
 pub const HELPER: &str = "lxb-retroarch";
 
+/// Every name the emulator's own windows call themselves by.
+///
+/// Two, because the emulator arrives two ways. A distribution package ships a
+/// desktop entry declaring `retroarch`, and the Flatpak — which is what this
+/// shell installs — puts its own application id on the window instead. Neither
+/// can be derived from the other, and a shell that knew only one of them would
+/// have a setting that worked on half the machines it runs on.
+///
+/// Written here rather than taken from `lxb-retroarch`, on the terms everything
+/// else this shell knows about that package is written here: a machine may have
+/// either package without the other, so what the two agree about is declared on
+/// both sides rather than shared.
+pub const WINDOW_NAMES: &[&str] = &["retroarch", "org.libretro.RetroArch"];
+
 /// The protocol revision this shell was written against.
 ///
 /// The helper says which it is speaking in every record. A number *newer* than

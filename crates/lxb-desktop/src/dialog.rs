@@ -134,6 +134,26 @@ pub enum Line {
         /// frame's foot: "Lines 121–140 of 300 · Left and Right to scroll".
         foot: String,
     },
+    /// Somebody else's prose, far longer than a panel, read a screen at a
+    /// time: an agreement a game will not install without.
+    ///
+    /// The terminal's well, its foot and its scrolling, because it is the
+    /// same problem — thousands of lines of writing that is not the shell's,
+    /// with the answers underneath — and the one way this shell already
+    /// scrolls a panel is the way it should scroll this one. What differs is
+    /// the face. A transcript keeps its columns only in a fixed-width face;
+    /// an agreement is paragraphs, and is set in the shell's own face at the
+    /// size of the panel's own sentences, wrapped to the well by whoever
+    /// raises it (see [`crate::gpu::wrap_reading`]) — never here, where a
+    /// panel being redrawn every frame would wrap fifty kilobytes each time.
+    ///
+    /// The caller hands over the window, as it does for [`Line::Terminal`],
+    /// and the well is `rows` tall however little is in it.
+    Reading {
+        lines: Vec<String>,
+        rows: usize,
+        foot: String,
+    },
 }
 
 impl Line {

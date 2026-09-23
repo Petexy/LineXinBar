@@ -232,10 +232,13 @@ const AUTHENTICATE: &[u8] = include_bytes!("sounds/polkit.ogg");
 /// pressed it precisely because what is on the screen has stopped listening.
 ///
 /// So it belongs to the button and not to the overlay. The guide opened by any
-/// other route stays silent — Back walking out of the top of the bar, a
-/// question from a portal, an authorisation panel raised over a game — because
-/// none of those is somebody asking for the guide, and a sound saying "here it
-/// is" would be answering a press that nobody made. Closing it is silent too:
+/// other route stays silent — a question from a portal, an authorisation panel
+/// raised over a game — because neither of those is somebody asking for the
+/// guide, and a sound saying "here it is" would be answering a press that
+/// nobody made. Back walking out of the top of the bar was the third of these,
+/// and it is not a route any more: a step back that opened another screen was
+/// closed on 2026-09-22, in part because this rule left it the one screen that
+/// could only ever arrive in silence. Closing the overlay is silent too:
 /// the overlay leaving is the screen behind it coming back, which is its own
 /// answer.
 const GUIDE_OPEN: &[u8] = include_bytes!("sounds/guide-open.ogg");

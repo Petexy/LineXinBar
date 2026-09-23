@@ -63,8 +63,13 @@ host_is_like() {
     )
 }
 
+# require_rust_version [MINIMUM] [HINT]
+#
+# HINT is a line added to the refusal, for a builder that knows how its own
+# distribution gets a newer Rust.
 require_rust_version() {
     local minimum="${1:-1.89}"
+    local hint="${2:-}"
     local actual
     local first
 
@@ -73,7 +78,8 @@ require_rust_version() {
     actual="$(rustc --version | awk '{print $2}')"
     first="$(printf '%s\n%s\n' "$minimum" "$actual" | sort -V | head -n 1)"
     if [[ "$first" != "$minimum" ]]; then
-        package_die "Rust $minimum or newer is required by the locked dependency graph (found $actual)"
+        package_die "Rust $minimum or newer is required by the locked dependency graph (found $actual)${hint:+
+$hint}"
     fi
 }
 

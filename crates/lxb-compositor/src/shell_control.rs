@@ -608,6 +608,17 @@ const EXACT_GAMUT_SINCE: u32 = 42;
 /// shell that only knows the old request gets exactly what it always got.
 const PER_DISPLAY_APP_SCALE_SINCE: u32 = 43;
 
+/// First version that can be told how many pixels one application draws its
+/// picture at: `set_application_resolution`.
+///
+/// Gated by nothing here, for the reason the version above it is gated by
+/// nothing: a request a shell cannot send is one this compositor never hears.
+/// What the number does is let a shell tell whether the setting can be carried
+/// out at all — below it every application draws at the size of the display it
+/// is on, and a shell's own menu still remembers what was chosen, because the
+/// file is read by whichever compositor comes next.
+const APP_RESOLUTION_SINCE: u32 = 44;
+
 /// How long a launch record is kept without anything matching it.
 ///
 /// The shell drops its own with `forget_launch` on every path out of a press,
@@ -654,7 +665,7 @@ const POINTER_REPEAT: std::time::Duration = std::time::Duration::from_secs(2);
 
 /// The version advertised, and so the highest a shell can bind. Every request
 /// below it is still served, so an older shell keeps working.
-const CURRENT_VERSION: u32 = PER_DISPLAY_APP_SCALE_SINCE;
+const CURRENT_VERSION: u32 = APP_RESOLUTION_SINCE;
 
 /// Each constant above names the one feature that arrived in its version, and
 /// the numbers only ever go up by one. Said here so that two branches each
@@ -682,6 +693,7 @@ const _: () = assert!(UNSEEN_WINDOWS_SINCE == WINDOW_PID_SINCE + 1);
 const _: () = assert!(LAUNCH_RECORDS_SINCE == UNSEEN_WINDOWS_SINCE + 1);
 const _: () = assert!(EXACT_GAMUT_SINCE == LAUNCH_RECORDS_SINCE + 1);
 const _: () = assert!(PER_DISPLAY_APP_SCALE_SINCE == EXACT_GAMUT_SINCE + 1);
+const _: () = assert!(APP_RESOLUTION_SINCE == PER_DISPLAY_APP_SCALE_SINCE + 1);
 
 /// What a client allowed onto this protocol is allowed to do with it.
 ///
@@ -2615,6 +2627,48 @@ impl LxbState {
         self.relayout_for_the_new_scale();
     }
 
+    /// Draw one named application at a fixed number of pixels, and put that
+    /// picture over whatever display it ends up on.
+    ///
+    /// The opposite bargain from [`LxbState::set_application_scale`] and
+    /// carried out by the same relayout, which is the whole reason the two live
+    /// beside each other: what changes is one entry in one table, and what has
+    /// to happen afterwards is that every window is asked again how much room
+    /// it is given and what it should fill that room with. See
+    /// [`crate::scale::Resolution`] for what the two settings each ask of a
+    /// client, and why they cannot be the same request with a different unit.
+    ///
+    /// `0` in either direction is the display's own size, which is both the
+    /// answer for an application nobody has chosen for and the way a choice is
+    /// taken back — so it removes the entry rather than storing a zero.
+    ///
+    /// A size larger than the display is not refused here. It is kept, and
+    /// ignored for as long as no screen can show it: a shell offers sizes that
+    /// fit the display the menu was raised on, and a session with two screens
+    /// of different sizes is one where the same application may be able to
+    /// honour it on one of them and not the other. See
+    /// [`crate::outputs::OutputManager::resolution_on`], which is where a
+    /// display that cannot show it falls back to its own size.
+    pub fn set_application_resolution(&mut self, app_id: &str, width: u32, height: u32) {
+        let wanted = crate::scale::Resolution::new(width, height);
+        if !self.lxb.outputs.set_application_resolution(app_id, wanted) {
+            return;
+        }
+        match wanted {
+            Some(resolution) => tracing::info!(
+                app_id,
+                width = resolution.size().w,
+                height = resolution.size().h,
+                "the shell said how many pixels this application draws"
+            ),
+            None => tracing::info!(
+                app_id,
+                "this application draws at the size of the display again"
+            ),
+        }
+        self.relayout_for_the_new_scale();
+    }
+
     /// Put every window back through the tiling, at whatever size its own
     /// display now asks for, and get the result onto a screen.
     ///
@@ -4219,6 +4273,11 @@ impl Dispatch<LxbShellV1, ()> for LxbState {
                     ),
                 }
             }
+            lxb_shell_v1::Request::SetApplicationResolution {
+                app_id,
+                width,
+                height,
+            } => state.set_application_resolution(&app_id, width, height),
             lxb_shell_v1::Request::SetPointer {
                 speed,
                 size,

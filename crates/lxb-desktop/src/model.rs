@@ -186,6 +186,17 @@ pub enum Action {
     /// not exist; what can be seen is the card, the legend, the press and the
     /// loading screen.
     PretendAnInvite,
+    /// Two agreements for a game, put up on the panel a real install puts
+    /// them on.
+    ///
+    /// **`--debug-actions agreement` only, and nothing is accepted or
+    /// installed.** The real one needs a game the account owns, has never
+    /// accepted the terms of, and is willing to download; this needs none of
+    /// that. Its words are invented, and its Accept steps to the second
+    /// agreement and then puts the panel away, recording nothing and reaching
+    /// Steam not at all. What can be seen is the panel, the well, the
+    /// scrolling and the step from one agreement to the next.
+    PretendAnAgreement,
     /// Ask Valve's own overlay to come up over the game in front.
     ///
     /// Honoured from outside for the plainest reason of the four: there is
@@ -2704,7 +2715,7 @@ fn terminal_argv_with(
     command: &str,
     mut executable_exists: impl FnMut(&OsStr) -> bool,
 ) -> Option<Vec<OsString>> {
-    if let Some(mut argv) = configured.and_then(split_terminal_command) {
+    if let Some(mut argv) = configured.and_then(split_words) {
         if argv
             .first()
             .is_some_and(|program| executable_exists(OsStr::new(program)))
@@ -2799,9 +2810,15 @@ fn push_unless_last(argv: &mut Vec<OsString>, value: &str) {
     }
 }
 
-/// Minimal POSIX-style splitting for `$TERMINAL`, including quoted arguments.
-/// An unterminated quote or escape rejects the value and triggers fallback.
-fn split_terminal_command(input: &str) -> Option<Vec<String>> {
+/// Minimal POSIX-style splitting of a command line into its words, including
+/// quoted arguments. An unterminated quote or escape rejects the value, and the
+/// caller falls back.
+///
+/// Used for `$TERMINAL`, and for reading which program an `Exec` line runs —
+/// see [`crate::apps::App::window_names`]. The second is the same question
+/// asked the same way on purpose: every `Exec` this shell starts goes through
+/// `sh -c` (see [`launch`]), so this is how the line will really be read.
+pub(crate) fn split_words(input: &str) -> Option<Vec<String>> {
     let mut out = Vec::new();
     let mut current = String::new();
     let mut chars = input.chars().peekable();

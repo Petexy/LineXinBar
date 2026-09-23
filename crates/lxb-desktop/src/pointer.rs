@@ -188,14 +188,30 @@ impl Stick {
 
 /// What the shell remembers about one application.
 ///
-/// One field today. It is a table rather than a bare boolean because the tile
-/// beside this one is a per-application volume, which belongs in exactly the
-/// same place under exactly the same key.
+/// A table rather than a bare boolean because the tile beside the first of
+/// these is a per-application volume, which belongs in exactly the same place
+/// under exactly the same key — and because the second arrived and did.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default, rename_all = "kebab-case")]
 pub struct AppPrefs {
     /// Whether the right stick moves the pointer inside this application.
+    ///
+    /// Left out of the file while it is off. Until there was a second setting
+    /// an entry existed only because this was on, so `false` was never written;
+    /// now an application can have a line for its resolution alone, and a
+    /// `stick-pointer = false` under it would be a choice nobody made.
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
     pub stick_pointer: bool,
+    /// How many pixels this application draws its picture at, where somebody
+    /// has chosen. `None` is the display's own size, which is what everything
+    /// runs at until it is told otherwise — see [`crate::resolution`].
+    ///
+    /// Two numbers rather than a named size, because what is remembered has to
+    /// go on meaning something on a screen this shell has never seen: the menu
+    /// offers what fits the display it was raised on, and a machine plugged
+    /// into a different television answers the same question again from the
+    /// same numbers.
+    pub resolution: Option<[u32; 2]>,
 }
 
 impl AppPrefs {
@@ -213,7 +229,25 @@ pub struct Prefs {
     /// Keyed by the application's own identity — the `app_id` a toplevel sets,
     /// or an X11 window's class, as the compositor reports it. Never the
     /// window title, which is a document name and changes under the setting.
+    ///
+    /// A Steam game is one of these and needs nothing special: Valve starts a
+    /// title under a class of its own making, `steam_app_<id>`, which is an
+    /// application identity like any other and is the same one every time that
+    /// game runs.
     apps: BTreeMap<String, AppPrefs>,
+    /// The same, for one of the user's own games out of their ROM folder.
+    ///
+    /// Keyed by the file the game *is*, because there is nothing else to key it
+    /// by: every game in that folder is played by the same emulator, under the
+    /// same window name, so a setting filed the way an application's is would
+    /// be a setting on the emulator and would follow whichever game was
+    /// started next. The path is what distinguishes one game from another, and
+    /// it is what the row on the bar stands for.
+    ///
+    /// Which means the shell, rather than the compositor, is what makes the
+    /// setting land on the right game: the emulator is told what to draw at on
+    /// the way into each launch. See `Shell::push_resolution_for_a_launch`.
+    games: BTreeMap<String, AppPrefs>,
     /// Where this was read from, and where it will be written back. Not part
     /// of the file.
     #[serde(skip)]
@@ -298,6 +332,73 @@ impl Prefs {
         self.set_stick_pointer(app, !self.stick_pointer(app))
     }
 
+    /// How many pixels `app` draws its picture at, or `None` for the display's
+    /// own size.
+    ///
+    /// An empty key is answered `None` on the terms [`Self::stick_pointer`]
+    /// answers `false`: an application that told nobody what it is has nothing
+    /// for a setting to be filed under.
+    pub fn resolution(&self, app: &str) -> Option<[u32; 2]> {
+        self.apps.get(app.trim()).and_then(|prefs| prefs.resolution)
+    }
+
+    /// Choose one for `app`, and write the file. `None` puts it back to the
+    /// display's own size, which leaves no entry behind.
+    ///
+    /// Answers whether anything changed, which is what the caller tells the
+    /// compositor and redraws on. A key of nothing changes nothing and writes
+    /// nothing.
+    pub fn set_resolution(&mut self, app: &str, resolution: Option<[u32; 2]>) -> bool {
+        let app = app.trim();
+        if app.is_empty() {
+            return false;
+        }
+        if self.resolution(app) == resolution {
+            return false;
+        }
+        self.apps.entry(app.to_string()).or_default().resolution = resolution;
+        self.apps.retain(|_, prefs| prefs.is_set());
+        tracing::info!(app, ?resolution, "the resolution this application draws at");
+        self.save();
+        true
+    }
+
+    /// The same, for one of the user's own games, keyed by the file it is.
+    ///
+    /// Its own pair of functions rather than a flag on the two above, because
+    /// what differs is not how the setting behaves but what it is filed under —
+    /// and a single map holding both would be a map whose keys mean two things,
+    /// one of which happens to be a path. See [`Self::games`].
+    pub fn game_resolution(&self, game: &std::path::Path) -> Option<[u32; 2]> {
+        self.games
+            .get(game.to_str()?)
+            .and_then(|prefs| prefs.resolution)
+    }
+
+    /// Choose one for a game, and write the file. `true` when it is a change.
+    ///
+    /// A path this machine cannot write down as text is refused rather than
+    /// lossily converted: a key that is not exactly the file is a key that
+    /// would answer for a different game tomorrow.
+    pub fn set_game_resolution(
+        &mut self,
+        game: &std::path::Path,
+        resolution: Option<[u32; 2]>,
+    ) -> bool {
+        let Some(key) = game.to_str() else {
+            tracing::warn!(path = %game.display(), "this game's name cannot be written down");
+            return false;
+        };
+        if self.game_resolution(game) == resolution {
+            return false;
+        }
+        self.games.entry(key.to_string()).or_default().resolution = resolution;
+        self.games.retain(|_, prefs| prefs.is_set());
+        tracing::info!(game = key, ?resolution, "the resolution this game plays at");
+        self.save();
+        true
+    }
+
     /// Write the file, through a temporary and a rename.
     ///
     /// Atomically, because this is written from the guide overlay on a machine
@@ -344,6 +445,15 @@ const PREAMBLE: &str = "\
 # Applications are keyed by the name they give themselves: an xdg_toplevel's
 # app_id, or an X11 window's class. Editing this by hand is fine; the shell
 # reads it once at startup and rewrites it whenever a setting changes.
+#
+# One application may appear under more than one of its names. A setting made
+# before it has ever run is filed under the name its desktop entry says its
+# windows will use, and the compositor is told about every name that entry
+# could go by, so the two cannot miss each other.
+#
+# The games below are the user's own, out of the ROM folder, and are keyed by
+# the file rather than by a name: every one of them is played by the same
+# emulator under the same window name.
 
 ";
 
@@ -564,5 +674,75 @@ mod tests {
 
         // And an empty file is simply nobody having chosen anything yet.
         assert_eq!(toml::from_str::<Prefs>("").unwrap(), Prefs::default());
+    }
+
+    /// A resolution is two numbers under the same key everything else about an
+    /// application is under, and it survives the round trip through the file.
+    #[test]
+    fn a_resolution_is_written_down_and_read_back() {
+        let mut prefs = Prefs::default();
+        assert_eq!(prefs.resolution("steam_app_42"), None);
+        assert!(prefs.set_resolution("steam_app_42", Some([1280, 720])));
+        assert_eq!(prefs.resolution("steam_app_42"), Some([1280, 720]));
+
+        // Saying the same thing again is not a change, which is what stops the
+        // compositor being asked to lay every window out for nothing.
+        assert!(!prefs.set_resolution("steam_app_42", Some([1280, 720])));
+
+        let written = toml::to_string_pretty(&prefs).unwrap();
+        assert_eq!(toml::from_str::<Prefs>(&written).unwrap(), prefs);
+        assert!(
+            !written.contains("stick-pointer"),
+            "a switch nobody turned on was written down:\n{written}"
+        );
+    }
+
+    /// Back at the display's own size leaves no trace. The file is a list of
+    /// what somebody has chosen, not of everything they have ever run.
+    #[test]
+    fn going_back_to_native_leaves_no_entry_behind() {
+        let mut prefs = Prefs::default();
+        prefs.set_resolution("puzzle", Some([960, 540]));
+        assert!(prefs.set_resolution("puzzle", None));
+        assert_eq!(prefs.resolution("puzzle"), None);
+        assert_eq!(prefs, Prefs::default(), "an entry was left behind");
+
+        // And an application with something *else* chosen keeps its line.
+        let mut both = Prefs::default();
+        both.set_stick_pointer("browser", true);
+        both.set_resolution("browser", Some([1280, 720]));
+        both.set_resolution("browser", None);
+        assert!(both.stick_pointer("browser"));
+    }
+
+    /// One of the user's own games is filed under the file it is, and is a
+    /// different key from anything an application could be filed under: every
+    /// game in that folder is played by the same emulator under the same
+    /// window name, so filing them together would be filing them all as one.
+    #[test]
+    fn a_game_is_remembered_by_its_file_and_not_by_the_emulator() {
+        let mut prefs = Prefs::default();
+        let one = std::path::Path::new("/games/snes/one.sfc");
+        let two = std::path::Path::new("/games/snes/two.sfc");
+        assert!(prefs.set_game_resolution(one, Some([960, 720])));
+        assert_eq!(prefs.game_resolution(one), Some([960, 720]));
+        assert_eq!(prefs.game_resolution(two), None);
+        // And it is nothing to do with the emulator's own entry.
+        assert_eq!(prefs.resolution("retroarch"), None);
+
+        let written = toml::to_string_pretty(&prefs).unwrap();
+        assert_eq!(toml::from_str::<Prefs>(&written).unwrap(), prefs);
+    }
+
+    /// A key of nothing is refused, on the terms the stick pointer refuses
+    /// one: an application that told nobody what it is has nothing for a
+    /// setting to be filed under, and one entry shared by every nameless
+    /// window would be worse than none.
+    #[test]
+    fn nothing_cannot_be_given_a_resolution() {
+        let mut prefs = Prefs::default();
+        assert!(!prefs.set_resolution("", Some([1280, 720])));
+        assert!(!prefs.set_resolution("   ", Some([1280, 720])));
+        assert_eq!(prefs, Prefs::default());
     }
 }

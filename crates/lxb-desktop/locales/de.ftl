@@ -190,6 +190,7 @@ shell-mirrored-about-a-vertical-axis = An einer senkrechten Achse gespiegelt
 shell-mouse = Maus
 shell-move = Verschieben
 shell-name = Name
+shell-native = Nativ
 shell-natural = Natürlich
 shell-network = Netzwerk
 shell-networks = Netzwerke
@@ -1518,6 +1519,21 @@ steam-size-in-files = { $size } in { $count ->
 steam-library-from = { $said } · Bibliothek von { $when }
 steam-refused-launch = Steam wollte dieses Spiel nicht starten: { $refusal }
 steam-app-number = App { $app }
+steam-agreement-before-install = { $total ->
+    [1] Um { $game } zu installieren, müssen Sie diese Vereinbarung akzeptieren.
+   *[other] Um { $game } zu installieren, müssen Sie { $total } Vereinbarungen akzeptieren. Dies ist Vereinbarung { $at }.
+    }
+steam-agreement-could-not-be-loaded = Um { $game } zu installieren, müssen Sie eine Vereinbarung akzeptieren, aber sie konnte nicht geladen werden.
+steam-accept-agreement = Akzeptieren
+steam-accept-and-install = Akzeptieren und installieren
+steam-install-needs-first = { $what ->
+    [agreement] Für dieses Spiel muss zuerst eine Vereinbarung akzeptiert werden.
+    [key] Für dieses Spiel muss zuerst ein Produktschlüssel eingegeben werden.
+    [password] Für dieses Spiel muss zuerst ein Passwort eingegeben werden.
+    [disc] Für dieses Spiel muss zuerst die Disc gewechselt werden.
+    [signup] Für dieses Spiel muss zuerst ein Konto angelegt werden.
+   *[other] Für dieses Spiel muss zuerst eine Frage beantwortet werden.
+    }
 steam-downloading-first = { $name } wird zuerst heruntergeladen.
 steam-achievements-unlocked = Steam · { $unlocked } / { $total } freigeschaltet
 enter-password-for = Geben Sie das Passwort für { $name } ein.
@@ -1553,7 +1569,6 @@ retroarch-no-bios-for-console = Nichts darin ist eine Datei, von der die { $cons
 retroarch-console-games-need-more = { $console }-Spiele brauchen etwas, das dieser Rechner nicht hat.
 retroarch-core-missing-for = Zum Spielen von { $console }-Spielen fehlt etwas.
 retroarch-console-may-need-bios = { $console }-Spiele brauchen möglicherweise das BIOS der Konsole selbst, das nicht heruntergeladen werden kann.
-retroarch-game-needs-first = Dieses Spiel braucht zuerst { $what }.
 
 # Updates and the terminal under them.
 terminal-lines-following = Zeilen { $from }–{ $to } von { $total } · folgt · Links zum Zurückblättern

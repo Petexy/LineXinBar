@@ -190,6 +190,7 @@ shell-mirrored-about-a-vertical-axis = Espelhado em torno de um eixo vertical
 shell-mouse = Mouse
 shell-move = Mover
 shell-name = Nome
+shell-native = Nativa
 shell-natural = Natural
 shell-network = Rede
 shell-networks = Redes
@@ -1518,6 +1519,21 @@ steam-size-in-files = { $size } em { $count ->
 steam-library-from = { $said } · biblioteca de { $when }
 steam-refused-launch = O Steam não quis iniciar este jogo: { $refusal }
 steam-app-number = App { $app }
+steam-agreement-before-install = { $total ->
+    [1] Para instalar { $game }, você precisa aceitar este contrato.
+   *[other] Para instalar { $game }, você precisa aceitar { $total } contratos. Este é o contrato { $at }.
+    }
+steam-agreement-could-not-be-loaded = Para instalar { $game }, você precisa aceitar um contrato, mas não foi possível carregá-lo.
+steam-accept-agreement = Aceitar
+steam-accept-and-install = Aceitar e instalar
+steam-install-needs-first = { $what ->
+    [agreement] Este jogo pede primeiro que você aceite um contrato.
+    [key] Este jogo pede primeiro que você digite uma chave de produto.
+    [password] Este jogo pede primeiro que você digite uma senha.
+    [disc] Este jogo pede primeiro que você troque o disco.
+    [signup] Este jogo pede primeiro que você crie uma conta.
+   *[other] Este jogo pede primeiro que você responda a uma pergunta.
+    }
 steam-downloading-first = { $name } está sendo baixado primeiro.
 steam-achievements-unlocked = Steam · { $unlocked } / { $total } desbloqueadas
 enter-password-for = Digite a senha de { $name }.
@@ -1553,7 +1569,6 @@ retroarch-no-bios-for-console = Nada ali é um arquivo com que o { $console } co
 retroarch-console-games-need-more = Os jogos de { $console } precisam de algo que esta máquina não tem.
 retroarch-core-missing-for = Falta algo para jogar os jogos de { $console }.
 retroarch-console-may-need-bios = Os jogos de { $console } podem precisar da BIOS do próprio console, que não pode ser baixada.
-retroarch-game-needs-first = Este jogo tem { $what } primeiro.
 
 # Updates and the terminal under them.
 terminal-lines-following = Linhas { $from }–{ $to } de { $total } · acompanhando · Esquerda para olhar para trás

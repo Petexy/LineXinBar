@@ -15,10 +15,15 @@
 //! It reports what it saw, in the events the shell draws from. A game that
 //! never comes down is reported as one, and so is one that Steam will not
 //! fetch without asking somebody something.
+//!
+//! A game with an agreement is reported with the agreement — its name, its
+//! edition, and how much text came back — and is **never accepted** from
+//! here. Accepting is somebody's answer to a question, and a diagnostic is not
+//! somebody.
 
 use std::time::{Duration, Instant};
 
-use lxb_steam::{Event, Steam};
+use lxb_steam::{Event, Reach, Steam, Stopped};
 
 fn main() {
     tracing_subscriber::fmt()
@@ -51,6 +56,10 @@ fn main() {
     println!("waiting for the stored session…");
     let deadline = Instant::now() + Duration::from_secs(60);
     let mut asked = false;
+    // The library arrives from the disk before Steam answers, and a press made
+    // then is refused as "still being reached" — so the press waits for both.
+    let mut online = false;
+    let mut library = None;
     while Instant::now() < deadline && !asked {
         for event in steam.take() {
             match event {
@@ -59,26 +68,28 @@ fn main() {
                     println!("no stored session: sign in through the shell first");
                     return;
                 }
-                Event::Library(games) => {
-                    if asked {
-                        continue;
-                    }
-                    let named = games
-                        .iter()
-                        .find(|game| game.app_id == app_id)
-                        .map(|game| format!("{} — {}", game.name, game.note()))
-                        .unwrap_or_else(|| "not in this library".to_string());
-                    println!("{} games; {app_id} is {named}", games.len());
-                    if remove {
-                        println!("asking for it to go…");
-                        steam.uninstall(app_id);
-                    } else {
-                        println!("asking for it…");
-                        steam.install(app_id);
-                    }
-                    asked = true;
+                Event::Reach(Reach::Online) => online = true,
+                Event::Library(games) => library = Some(games),
+                Event::Friends(_) => {}
+                other => say(other),
+            }
+        }
+        if online && !asked {
+            if let Some(games) = library.take() {
+                let named = games
+                    .iter()
+                    .find(|game| game.app_id == app_id)
+                    .map(|game| format!("{} — {}", game.name, game.note()))
+                    .unwrap_or_else(|| "not in this library".to_string());
+                println!("{} games; {app_id} is {named}", games.len());
+                if remove {
+                    println!("asking for it to go…");
+                    steam.uninstall(app_id);
+                } else {
+                    println!("asking for it…");
+                    steam.install(app_id, "english");
                 }
-                other => println!("  {other:?}"),
+                asked = true;
             }
         }
         std::thread::sleep(Duration::from_millis(200));
@@ -99,9 +110,46 @@ fn main() {
                         println!("  library: {} — {}", game.name, game.note());
                     }
                 }
-                other => println!("  {other:?}"),
+                Event::Friends(_) => {}
+                other => say(other),
             }
         }
         std::thread::sleep(Duration::from_millis(500));
+    }
+}
+
+/// One event, as a line — except an agreement, whose words are tens of
+/// kilobytes and are summarised rather than printed.
+fn say(event: Event) {
+    match event {
+        Event::InstallFailed {
+            app_id,
+            why: Stopped::Agreements(agreements),
+        } => {
+            println!(
+                "  {app_id} has {} agreement(s) to accept first:",
+                agreements.len()
+            );
+            for agreement in agreements {
+                let eula = &agreement.eula;
+                match &agreement.text {
+                    Some(text) => println!(
+                        "    {} edition {} for {} — {:?}, {} characters, {} lines: {:?}…",
+                        eula.id,
+                        eula.version,
+                        eula.app_id,
+                        agreement.title,
+                        text.chars().count(),
+                        text.lines().count(),
+                        text.chars().take(120).collect::<String>(),
+                    ),
+                    None => println!(
+                        "    {} edition {} for {} — could not be read from {}",
+                        eula.id, eula.version, eula.app_id, eula.url
+                    ),
+                }
+            }
+        }
+        other => println!("  {other:?}"),
     }
 }

@@ -190,6 +190,7 @@ shell-mirrored-about-a-vertical-axis = Reflejado sobre un eje vertical
 shell-mouse = Ratón
 shell-move = Mover
 shell-name = Nombre
+shell-native = Nativa
 shell-natural = Natural
 shell-network = Red
 shell-networks = Redes
@@ -1521,6 +1522,21 @@ steam-size-in-files = { $size } en { $count ->
 steam-library-from = { $said } · biblioteca de { $when }
 steam-refused-launch = Steam se negó a arrancar este juego: { $refusal }
 steam-app-number = Aplicación { $app }
+steam-agreement-before-install = { $total ->
+    [1] Para instalar { $game }, debe aceptar este acuerdo.
+   *[other] Para instalar { $game }, debe aceptar { $total } acuerdos. Este es el acuerdo { $at }.
+    }
+steam-agreement-could-not-be-loaded = Para instalar { $game }, debe aceptar un acuerdo, pero no se pudo cargar.
+steam-accept-agreement = Aceptar
+steam-accept-and-install = Aceptar e instalar
+steam-install-needs-first = { $what ->
+    [agreement] Este juego pide antes aceptar un acuerdo.
+    [key] Este juego pide antes escribir una clave de producto.
+    [password] Este juego pide antes escribir una contraseña.
+    [disc] Este juego pide antes cambiar de disco.
+    [signup] Este juego pide antes crear una cuenta.
+   *[other] Este juego pide antes responder a una pregunta.
+    }
 steam-downloading-first = { $name } se descarga primero.
 steam-achievements-unlocked = Steam · { $unlocked } / { $total } desbloqueados
 enter-password-for = Escriba la contraseña de { $name }.
@@ -1556,7 +1572,6 @@ retroarch-no-bios-for-console = Ahí dentro no hay ningún archivo desde el que 
 retroarch-console-games-need-more = Los juegos de { $console } necesitan algo que este equipo no tiene.
 retroarch-core-missing-for = Falta algo para jugar a los juegos de { $console }.
 retroarch-console-may-need-bios = Los juegos de { $console } pueden necesitar la BIOS de la propia consola, que no se puede descargar.
-retroarch-game-needs-first = Este juego tiene antes { $what }.
 
 # Updates and the terminal under them.
 terminal-lines-following = Líneas { $from }–{ $to } de { $total } · siguiendo · Izquierda para mirar atrás

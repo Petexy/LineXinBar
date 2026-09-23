@@ -70,9 +70,10 @@ passes it to a neighbour.
 | `←` inside a subcategory                    | Step back out one level             |
 | `Tab` / `Shift+Tab`, `L1` / `R1`            | Move to another display             |
 | `Alt+Tab` / `Alt+Shift+Tab`                 | Walk [the guide's cards](guide.md#the-cards) while Alt is held; letting it go switches to the one the walk landed on |
-| `Esc`, `Backspace` or controller `B`        | Step out, then open the guide overlay |
+| `Esc`, `Backspace` or controller `B`        | Step back out one level, and nothing at the top of a column |
 | `Home`, `Super`, mouse side button, controller Guide/STEAM button | Open the guide overlay |
 | `Y`, `F10`, right mouse button, controller `Y`/`Triangle` | Open [the context menu](guide.md#the-context-menu) on what is selected |
+| `Shift`, controller `X`/`Square` | Open [the friends list](steam.md#who-is-on-steam-and-talking-to-them) down the right of the screen |
 | `P`, controller right stick pressed, with the guide open | Hand the guide's directions to the [videos floating over it](settings.md#picture-in-picture), and hand them back |
 | `Print` (with anything held), `Ctrl+Shift+3`, `Alt+Shift+3`, controller Guide/STEAM + `R1` | [Photograph](desktop-integration.md#screenshots) the display being driven |
 | Controller Guide/STEAM + Select/View | Ask [Valve's own overlay](#the-guide-button-is-the-shells-alone) to come up over the Steam game in front |
@@ -91,13 +92,15 @@ it cannot name fall back to their raw Linux codes, so `BTN_SOUTH` launches and
 The two middle face buttons are the awkward case, because the naming that comes
 back for an unmapped pad is positional rather than physical — the same
 `Button::North` is the button with `X` on it under one driver and the one with
-`Y` on it under the next, and the raw code says no more than the name does. So
-an unmapped pad has *both* of them raise the context menu, and both spell the
-keyboard chord when Select is held with them. Nothing else on the shell's own
-screens wants either button, so the cost of guessing is one extra way into a
-menu; the cost of refusing to guess was a controller with no context menu at
-all. A pad the database does know is read by name only, and there `X` alone
-stays the running application's.
+`Y` on it under the next, and the raw code says no more than the name does. The
+two of them want different screens — the friends list and the context menu —
+so the pair is split by the raw code read at the *legacy* gamepad names' word:
+`0x133` is the left-hand button and `0x134` is the top one, which is what xpad
+and every driver modelled on it send. That is a guess, and on a pad that both
+numbers the pair the other way round and is missing from the database it is the
+wrong way round; there is nothing else to ask. Select held with the left-hand
+one is still the keyboard chord. A pad the database does know is read by name
+only, and the guess never reaches it.
 
 One pad escapes the gamepad API entirely. The second-generation Steam
 Controller has no kernel driver — `hid-steam` claims the original, its receiver

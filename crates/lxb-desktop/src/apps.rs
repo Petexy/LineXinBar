@@ -184,19 +184,174 @@ fn identity(name: &str) -> String {
 }
 
 /// The name of the program an `Exec` line runs, without its path or arguments.
+///
+/// An `Exec` that starts with a wrapper names the program further along, and
+/// the wrapper is nobody's window name — every flatpak would otherwise be one
+/// application, and everything started through a shell would be `sh`. What is
+/// *also* nobody's window name is whatever the wrapper takes before the
+/// program, and that is what this used to hand back: the word straight after
+/// the wrapper. `env FOO=1 thing` was an application called `FOO=1`, every
+/// flatpak was an application called `run`, and `sh -c 'thing'` was nothing
+/// at all. So each wrapper is read the way it reads its own arguments — see
+/// [`program_of`].
+///
+/// Split the way `sh -c` will split it, because that is how this shell runs
+/// every `Exec` line; a line that will not split — an unterminated quote — is
+/// read a word at a time instead, which is what this always did.
 fn program_name(exec: &str) -> Option<String> {
-    let program = exec.split_whitespace().next()?;
-    // An `Exec` that starts with an environment wrapper names the program
-    // further along; the wrapper is nobody's window name.
-    let program = match program.rsplit('/').next()? {
-        "env" | "sh" | "bash" | "flatpak" => exec.split_whitespace().nth(1)?,
-        _ => program,
-    };
-    program
-        .rsplit('/')
-        .next()
-        .filter(|name| !name.is_empty() && !name.starts_with('-'))
-        .map(str::to_string)
+    let words = crate::model::split_words(exec)
+        .unwrap_or_else(|| exec.split_whitespace().map(str::to_string).collect());
+    program_of(&words)
+}
+
+/// The program a command line runs, reading past any wrapper in front of it.
+///
+/// Four wrappers, each for what it takes before the program:
+///
+/// * `env` — its own options, the two of them that take a value (`-u`, `-C`),
+///   `-S`, whose value is a command line in its own right, and then any number
+///   of `NAME=value` assignments. Any word with an `=` in it is an assignment,
+///   which is GNU `env`'s own rule.
+/// * `sh`, `bash`, `dash`, `zsh` — with `-c`, the program is the first word of
+///   the string after it, however many options stand in front of that; without
+///   it, the first word that is not an option is a script, and the script is
+///   the program.
+/// * `flatpak run` — the application id, past `run`'s options. The id is what
+///   a flatpak's windows call themselves, and `run` is not an application.
+///   `flatpak` with any other command runs nothing with a window.
+/// * `exec` — the shell's own, which is how a `-c` string most often begins
+///   (`sh -c 'exec /usr/bin/thing'`), past its `-a NAME`, `-c` and `-l`.
+///
+/// A command string that is more than one command — `cd /opt/thing &&
+/// ./run` — is not read: which of them opens the window is not something the
+/// words say, and the first of them is what is named, as it always was.
+///
+/// A wrapper may wrap a wrapper — `env FOO=1 sh -c 'thing'` — so this walks
+/// until it reaches something that is not one. It cannot go round for ever:
+/// every step either moves along the words or reads a string that was one of
+/// them.
+fn program_of(words: &[String]) -> Option<String> {
+    let (first, rest) = words.split_first()?;
+    match first.rsplit('/').next()? {
+        "env" => program_after_env(rest),
+        "sh" | "bash" | "dash" | "zsh" => program_after_shell(rest),
+        "flatpak" => program_after_flatpak(rest),
+        "exec" => program_after_exec(rest),
+        name => Some(name)
+            .filter(|name| !name.is_empty() && !name.starts_with('-'))
+            .map(str::to_string),
+    }
+}
+
+/// What `env` runs: past its options and its assignments.
+fn program_after_env(words: &[String]) -> Option<String> {
+    let mut at = 0;
+    while let Some(word) = words.get(at) {
+        match word.as_str() {
+            // The end of the options, and of anything that could be one.
+            "--" => {
+                at += 1;
+                break;
+            }
+            // The two options that take their value as the next word.
+            "-u" | "--unset" | "-C" | "--chdir" => at += 2,
+            // A command line of its own, whose words are read as though they
+            // had been written here — assignments, options and all.
+            "-S" | "--split-string" => {
+                return program_after_split_string(words.get(at + 1)?, &words[at + 2..])
+            }
+            _ if word.starts_with("--split-string=") => {
+                let value = &word["--split-string=".len()..];
+                return program_after_split_string(value, &words[at + 1..]);
+            }
+            _ if word.starts_with("-S") => {
+                return program_after_split_string(&word[2..], &words[at + 1..]);
+            }
+            // Every other option is a flag, or carries its value with it:
+            // `-i`, `-0`, `-v`, `-uNAME`, `--unset=NAME`, and `-` on its own,
+            // which is an old spelling of `-i`.
+            _ if word.starts_with('-') => at += 1,
+            _ => break,
+        }
+    }
+    let rest = words.get(at..)?;
+    let program = rest.iter().position(|word| !word.contains('='))?;
+    program_of(&rest[program..])
+}
+
+/// `env -S`: the string is split into words, which stand where it stood.
+fn program_after_split_string(value: &str, after: &[String]) -> Option<String> {
+    let mut words = crate::model::split_words(value)?;
+    words.extend(after.iter().cloned());
+    program_after_env(&words)
+}
+
+/// What a shell runs: the command string after `-c`, or the script it is given.
+fn program_after_shell(words: &[String]) -> Option<String> {
+    let mut command = false;
+    let mut at = 0;
+    while let Some(word) = words.get(at) {
+        match word.as_str() {
+            "--" => {
+                at += 1;
+                break;
+            }
+            // The options that take their value as the next word.
+            "-o" | "+o" | "-O" | "+O" | "--rcfile" | "--init-file" => at += 2,
+            _ if word.starts_with("--") => at += 1,
+            // A cluster of short options, which is where `-c` hides in the
+            // commonest spelling there is: `bash -lc '…'`.
+            _ if word.starts_with('-') || word.starts_with('+') => {
+                command |= word.starts_with('-') && word[1..].contains('c');
+                at += 1;
+            }
+            _ => break,
+        }
+    }
+    let first = words.get(at)?;
+    match command {
+        true => program_of(&crate::model::split_words(first)?),
+        false => program_of(std::slice::from_ref(first)),
+    }
+}
+
+/// What the shell's `exec` runs: past `-a NAME`, which names the process and
+/// not the window, and its two flags.
+fn program_after_exec(words: &[String]) -> Option<String> {
+    let mut at = 0;
+    while let Some(word) = words.get(at) {
+        match word.as_str() {
+            "--" => {
+                at += 1;
+                break;
+            }
+            "-a" => at += 2,
+            _ if word.starts_with('-') => at += 1,
+            _ => break,
+        }
+    }
+    program_of(words.get(at..)?)
+}
+
+/// What `flatpak run` runs: the application id, past `run`'s own options.
+fn program_after_flatpak(words: &[String]) -> Option<String> {
+    let (command, words) = words.split_first()?;
+    if command != "run" {
+        return None;
+    }
+    let mut at = 0;
+    while let Some(word) = words.get(at) {
+        match word.as_str() {
+            // The options a generated entry writes, in the spelling that puts
+            // the value in the next word. Flatpak writes them with an `=`, but
+            // an entry written by hand need not.
+            "--branch" | "--arch" | "--command" | "--cwd" | "--runtime" | "--runtime-version"
+            | "--commit" | "--runtime-commit" => at += 2,
+            _ if word.starts_with('-') => at += 1,
+            _ => return Some(word.clone()),
+        }
+    }
+    None
 }
 
 /// One row of a column.
@@ -4430,12 +4585,94 @@ mod tests {
         assert!(flatpak.owns_window("app.zen_browser.zen"));
         assert!(!flatpak.owns_window("flatpak"));
 
+        // And not `run`, which is the word straight after the wrapper and was
+        // once taken for the program: every flatpak on the machine then owned
+        // a window called that.
+        assert!(!flatpak.owns_window("run"));
+
         let wrapped = App::parse(
             "[Desktop Entry]\nType=Application\nName=Thing\nExec=env FOO=1 thing\n",
             Path::new("/tmp/thing-entry.desktop"),
         )
         .unwrap();
         assert!(!wrapped.owns_window("env"));
+        // The assignment is not the program either — that was a window name
+        // too, and the compositor was told about it as one.
+        assert!(!wrapped.owns_window("FOO=1"));
+        assert!(wrapped.owns_window("thing"));
+        assert_eq!(
+            wrapped.window_names(),
+            ["thing-entry", "thing"],
+            "a name in the list that no window will ever use"
+        );
+    }
+
+    /// Each wrapper, read the way it reads its own arguments. The word after
+    /// the wrapper is an option, an assignment or a subcommand far more often
+    /// than it is the program, and every one of those answers used to be taken
+    /// for the program's name.
+    #[test]
+    fn every_wrapper_is_read_past_what_it_takes_before_the_program() {
+        for (exec, wanted) in [
+            // `env`: its options, the two that take a value, and assignments.
+            ("env WAYLAND_DEBUG=1 mpv --no-config", Some("mpv")),
+            ("env A=1 B=2 /usr/bin/thing", Some("thing")),
+            ("env -i PATH=/usr/bin thing", Some("thing")),
+            ("env -u DISPLAY thing", Some("thing")),
+            ("env --unset=DISPLAY thing", Some("thing")),
+            ("env -C /opt/game ./start", Some("start")),
+            ("env -- thing", Some("thing")),
+            ("/usr/bin/env FOO=bar thing", Some("thing")),
+            // `-S` is a command line of its own, assignments and all.
+            ("env -S 'FOO=1 thing --flag'", Some("thing")),
+            ("env --split-string='thing -x'", Some("thing")),
+            // Nothing after the assignments is nothing to run.
+            ("env FOO=1", None),
+            // Shells: the first word of the `-c` string, whatever stands in
+            // front of the `-c`, and a script where there is no `-c`.
+            ("sh -c /usr/bin/affinity", Some("affinity")),
+            ("sh -c 'thing --flag'", Some("thing")),
+            ("bash -lc \"exec /opt/thing/bin/thing\"", Some("thing")),
+            ("bash -o pipefail -c 'thing'", Some("thing")),
+            ("sh /opt/game/start.sh", Some("start.sh")),
+            ("sh -c 'env FOO=1 thing'", Some("thing")),
+            // `exec`, past the name it gives the process.
+            ("exec -a other thing", Some("thing")),
+            // Flatpak: the application id, past `run` and its options.
+            (
+                "flatpak run org.libretro.RetroArch",
+                Some("org.libretro.RetroArch"),
+            ),
+            (
+                "/usr/bin/flatpak run --branch=stable --arch=x86_64 --command=retroarch \
+                 --file-forwarding org.libretro.RetroArch @@u @@",
+                Some("org.libretro.RetroArch"),
+            ),
+            (
+                "flatpak run --branch stable app.zen_browser.zen",
+                Some("app.zen_browser.zen"),
+            ),
+            ("flatpak update", None),
+            // And no wrapper at all is what it always was.
+            ("/usr/lib/firefox/firefox", Some("firefox")),
+            ("gedit --new-window", Some("gedit")),
+        ] {
+            assert_eq!(program_name(exec).as_deref(), wanted, "{exec}");
+        }
+    }
+
+    /// A line that will not split — an unterminated quote — is still read a
+    /// word at a time, which is what this did before it could split at all.
+    #[test]
+    fn a_line_that_will_not_split_is_still_read() {
+        assert_eq!(
+            program_name("thing 'unterminated").as_deref(),
+            Some("thing")
+        );
+        assert_eq!(
+            program_name("env FOO=1 thing 'unterminated").as_deref(),
+            Some("thing")
+        );
     }
 
     /// Everything under Wine calls itself `something.exe`, and the extension
