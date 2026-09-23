@@ -801,6 +801,13 @@ pub enum Command {
     /// Carries the app because it is offered from a dialog that may be
     /// answered long after the cursor has moved on.
     SteamInstallWithSteam(u32),
+    /// Accept the agreement on the panel, for the game it carries: the next
+    /// agreement if the game has another, and the install once there is none.
+    ///
+    /// The only press in the shell that accepts anything on anybody's behalf,
+    /// and it is on the panel that shows the agreement's words and nowhere
+    /// else — see `Shell::offer_the_agreements`.
+    SteamAcceptAgreement(u32),
     /// Ask whether to take one game off the disk.
     ///
     /// Carries the app for the reason [`Command::SteamInstall`] does: it is
@@ -862,6 +869,30 @@ pub enum Command {
         app_id: u32,
         way: Option<&'static str>,
     },
+    /// Step into the list of sizes this application can draw its picture at.
+    ///
+    /// On three menus — an installed application's, a Steam title's and one of
+    /// the user's own games' — because what it sets is true of all three in the
+    /// same way: they are things with windows, and what the setting changes is
+    /// how many pixels those windows are drawn from. See
+    /// [`crate::resolution`].
+    ///
+    /// Carries nothing, for the reason [`Command::SteamDo`] carries nothing:
+    /// the menu is about whatever was selected when it was raised, the cursor
+    /// cannot move while it is up, and the shell can look that up again.
+    Resolution,
+    /// Draw it at this size from now on, or — with `None` — at whatever the
+    /// display it opens on is showing.
+    ///
+    /// `None` is a row rather than the absence of one, exactly as *Steam's
+    /// choice* is a row above the compatibility tools: a list of sizes with
+    /// none of them chosen would leave a setting nobody could undo.
+    ///
+    /// Nothing is asked first and nothing is put on the screen. It is a setting
+    /// on a thing, read the next time that thing is started — and read again at
+    /// once for a window already on screen, which is the compositor's doing
+    /// rather than this shell's. See `Shell::use_resolution`.
+    UseResolution(Option<[u32; 2]>),
     /// Turn on, or off, the row on the launch-option panel that says the way
     /// chosen next should be remembered.
     ///

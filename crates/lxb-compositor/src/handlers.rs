@@ -420,6 +420,35 @@ impl XdgShellHandler for LxbState {
         self.map_new_window(window);
     }
 
+    /// A window has said what application it is, which may be the first thing
+    /// anybody knows about it.
+    ///
+    /// A client creates its toplevel and is mapped and configured here before
+    /// it has sent a word about itself — `get_toplevel` is what brings
+    /// [`Self::new_toplevel`] here, and `set_app_id` comes after it — so the
+    /// first size a window is given is worked out without knowing which
+    /// application it belongs to. That is only ever wrong for one setting, and
+    /// it is wrong every time for it: a resolution is filed *by* the name a
+    /// window calls itself, so a window sized before it said its name was
+    /// sized as though nobody had chosen anything. See
+    /// [`crate::scale::Resolution`].
+    ///
+    /// So the window is put back through the tiling the moment the name
+    /// arrives. Sending a configure costs nothing where nothing differs —
+    /// `send_pending_configure` is what decides — so a session where nobody
+    /// has chosen a resolution sees one comparison per window and no traffic.
+    ///
+    /// The X11 half of this has always been here, under
+    /// [`smithay::xwayland::XwmHandler::property_notify`]: a class arriving
+    /// late re-tiles the window for a different reason, and the same call does
+    /// both jobs.
+    fn app_id_changed(&mut self, surface: ToplevelSurface) {
+        let Some(window) = self.lxb.window_for_surface(surface.wl_surface()) else {
+            return;
+        };
+        self.lxb.outputs.tile_window(&mut self.lxb.space, &window);
+    }
+
     fn new_popup(&mut self, surface: PopupSurface, _positioner: PositionerState) {
         self.unconstrain_popup(&surface);
         if let Err(err) = self.lxb.popups.track_popup(PopupKind::from(surface)) {
@@ -1041,20 +1070,26 @@ impl FractionalScaleHandler for LxbState {
         // client to fill that smaller window with the display's own pixels. See
         // [`crate::scale`].
         //
+        // [`OutputManager::told_scale_on`] rather than the factor the picture
+        // is enlarged by, and the difference is one kind of window: an
+        // application given a resolution was configured smaller in order to
+        // draw *fewer* pixels, and telling it to multiply them back up would
+        // undo the only thing that setting does.
+        //
         // Both halves come off the same display, and they have to: a surface
         // whose window is on the second screen would otherwise be told that
         // screen's density and the first one's application scale, which is a
         // buffer neither display ever asked for.
-        let scale = crate::scale::preferred_scale(
-            output
-                .as_ref()
-                .map(|output| output.current_scale().fractional_scale())
-                .unwrap_or(1.0),
-            match (window.as_ref(), output.as_ref()) {
-                (Some(window), Some(output)) => self.lxb.outputs.window_scale_on(window, output),
-                _ => 1.0,
-            },
-        );
+        let scale = match (window.as_ref(), output.as_ref()) {
+            (Some(window), Some(output)) => self.lxb.outputs.told_scale_on(window, output),
+            _ => crate::scale::preferred_scale(
+                output
+                    .as_ref()
+                    .map(|output| output.current_scale().fractional_scale())
+                    .unwrap_or(1.0),
+                1.0,
+            ),
+        };
 
         with_states(&surface, |states| {
             smithay::wayland::fractional_scale::with_fractional_scale(states, |fs| {

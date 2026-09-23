@@ -54,6 +54,7 @@
 //! | [`client`]   | Valve's client as a background process: where it is, whether it is up, whether it has signed in |
 //! | [`friends`]  | who the account knows, where each of them is, and where their pictures are |
 //! | [`webui`]    | the calls this crate makes into the client's own interface, and why they are made there |
+//! | [`agreement`] | the words of an agreement a game will not install without |
 //! | [`session`]  | what survives a reboot, and what must never be written down |
 //! | [`protobuf`] | the wire format Steam's services speak, written out by hand |
 //! | [`vdf`]      | Valve's key-values, which is what the disk answers in |
@@ -70,6 +71,7 @@ mod vdf;
 mod web;
 
 pub mod achievements;
+pub mod agreement;
 pub mod art;
 pub mod audit;
 pub mod auth;
@@ -197,6 +199,13 @@ pub enum Ask {
     /// Have Valve's client fetch one game.
     Install {
         app_id: u32,
+        /// Agreements a person has just accepted on the shell's own screen,
+        /// to be recorded before the wizard is opened. Empty for an ordinary
+        /// press. See [`webui::install`].
+        accepting: Vec<webui::Eula>,
+        /// Steam's name for the language an agreement is to be read in, if
+        /// the game turns out to have one. See [`agreement::read_all`].
+        language: &'static str,
     },
     /// Stop fetching one, and take away what had arrived.
     StopInstalling {
@@ -820,6 +829,12 @@ pub enum Stopped {
     /// Answered by offering [`Doing::Install`], which hands the whole install
     /// to Steam's own window — the only place the question can be asked.
     Asks(String),
+    /// Nothing went wrong: the game has agreements to accept first, and here
+    /// they are, words and all, for the shell to put on its own screen.
+    ///
+    /// Accepting is a second press — [`Steam::accept_and_install`] — and only
+    /// a person makes it. Nothing has been recorded by getting this.
+    Agreements(Vec<agreement::Agreement>),
     /// Nothing went wrong here either: this version of Valve's client no longer
     /// answers the calls a silent install is made of.
     ///
@@ -838,6 +853,7 @@ impl Stopped {
         match self {
             Stopped::Failed(why) => why,
             Stopped::Asks(why) => why,
+            Stopped::Agreements(_) => "agreements to accept",
             Stopped::NotFromHere(why) => why,
         }
     }
@@ -1501,8 +1517,41 @@ impl Steam {
     /// account's licences, the depots the game is actually made of — and a
     /// shell that passed its own opinion in would be a second implementation
     /// of it that could only ever be wrong in ways Steam's is not.
-    pub fn install(&self, app_id: u32) {
-        self.ask(Ask::Install { app_id });
+    ///
+    /// `language` is Steam's name for the one an agreement is read in, should
+    /// the game stop on one — see [`Stopped::Agreements`].
+    pub fn install(&self, app_id: u32, language: &'static str) {
+        self.ask(Ask::Install {
+            app_id,
+            accepting: Vec::new(),
+            language,
+        });
+    }
+
+    /// Record that a person has accepted these agreements, and fetch the game
+    /// they were standing in front of.
+    ///
+    /// The second half of [`Stopped::Agreements`], and the only way an
+    /// acceptance is ever recorded: the shell calls this from the Accept
+    /// button on the panel that showed the words, and from nowhere else. It is
+    /// recorded with the call Valve's own Accept button makes, so the client
+    /// knows it as it knows any other — see [`webui::install`].
+    ///
+    /// Answered the way [`Steam::install`] is. Should the client stop on the
+    /// same agreements again, the answer is [`Stopped::Asks`] — Steam's own
+    /// window — rather than the same panel a second time, which would be a
+    /// press that goes round in a circle.
+    pub fn accept_and_install(
+        &self,
+        app_id: u32,
+        accepting: Vec<webui::Eula>,
+        language: &'static str,
+    ) {
+        self.ask(Ask::Install {
+            app_id,
+            accepting,
+            language,
+        });
     }
 
     /// Stop fetching one game, and take away what had arrived.
@@ -2584,7 +2633,11 @@ fn answer(
             let _ = events.send(Event::Library(Vec::new()));
             State::Out
         }
-        Ask::Install { app_id } => {
+        Ask::Install {
+            app_id,
+            accepting,
+            language,
+        } => {
             let State::In { stored, .. } = &state else {
                 let _ = events.send(Event::InstallFailed {
                     app_id,
@@ -2629,6 +2682,12 @@ fn answer(
                 // Nothing to be live about yet: the client has not been asked.
                 live: None,
             });
+            for eula in &accepting {
+                audit::asked(format_args!(
+                    "accept {} edition {} for {}",
+                    eula.id, eula.version, eula.app_id
+                ));
+            }
             audit::asked(format_args!("install {app_id}"));
             let generation = watching.generation;
             let ticket = a_job_about(&state, watching);
@@ -2638,23 +2697,45 @@ fn answer(
                     generation,
                     how: match ready {
                         Err(why) => Err(Stopped::Failed(why)),
-                        Ok(standing) => match webui::install(app_id, standing.still()) {
-                            Ok(()) => {
-                                tracing::info!(app_id, "Valve's client is fetching this game");
-                                Ok(())
+                        Ok(standing) => {
+                            match webui::install(app_id, &accepting, standing.still()) {
+                                Ok(()) => {
+                                    tracing::info!(app_id, "Valve's client is fetching this game");
+                                    Ok(())
+                                }
+                                // Accepted a moment ago and asked for again: the
+                                // client did not take the answer, and asking the
+                                // same person the same thing would go round for
+                                // ever. Steam's own window can still ask it.
+                                Err(webui::Problem::Agreements(asked))
+                                    if asked.iter().any(|eula| accepting.contains(eula)) =>
+                                {
+                                    tracing::warn!(app_id, ?asked, "the client asked again for agreements it was told were accepted");
+                                    Err(Stopped::Asks("an agreement to accept".to_string()))
+                                }
+                                // Read here, in the background, so the panel
+                                // arrives with the words on it.
+                                Err(webui::Problem::Agreements(asked)) => {
+                                    tracing::info!(
+                                        app_id,
+                                        count = asked.len(),
+                                        "this game has agreements to accept first"
+                                    );
+                                    Err(Stopped::Agreements(agreement::read_all(asked, language)))
+                                }
+                                Err(webui::Problem::Asks(what)) => {
+                                    tracing::info!(app_id, %what, "this game cannot be fetched silently");
+                                    Err(Stopped::Asks(what))
+                                }
+                                // Not a failure either, and answered the same way: the
+                                // window that can still do it.
+                                Err(problem @ webui::Problem::Renamed(_)) => {
+                                    tracing::warn!(app_id, %problem, "this Steam cannot be driven from here");
+                                    Err(Stopped::NotFromHere(problem.to_string()))
+                                }
+                                Err(problem) => Err(Stopped::Failed(problem.to_string())),
                             }
-                            Err(webui::Problem::Asks(what)) => {
-                                tracing::info!(app_id, %what, "this game cannot be fetched silently");
-                                Err(Stopped::Asks(what))
-                            }
-                            // Not a failure either, and answered the same way: the
-                            // window that can still do it.
-                            Err(problem @ webui::Problem::Renamed(_)) => {
-                                tracing::warn!(app_id, %problem, "this Steam cannot be driven from here");
-                                Err(Stopped::NotFromHere(problem.to_string()))
-                            }
-                            Err(problem) => Err(Stopped::Failed(problem.to_string())),
-                        },
+                        }
                     },
                 }
             });
@@ -3393,6 +3474,7 @@ fn came_back(
                     Stopped::Asks(said) | Stopped::NotFromHere(said) => {
                         audit::How::Refused(said.clone())
                     }
+                    Stopped::Agreements(_) => audit::How::Refused(why.said().to_string()),
                 },
             );
             let _ = events.send(Event::InstallFailed { app_id, why });

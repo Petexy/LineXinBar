@@ -811,6 +811,56 @@ pub fn wrap_dialog_note(content: &str) -> Vec<String> {
     })
 }
 
+/// Break somebody's prose into the rows of a reading well — see
+/// [`crate::dialog::Line::Reading`] — with the same face, size and shaping the
+/// well is drawn with.
+///
+/// Every line of `content` is a paragraph and starts a row of its own, and an
+/// empty one is kept as an empty row: the blank line between two paragraphs is
+/// how the reader sees where one ends. Called once when an agreement is put on
+/// the screen, never per frame and never per scroll — the rows are kept and
+/// only the window onto them moves.
+pub fn wrap_reading(content: &str) -> Vec<String> {
+    thread_local! {
+        static FONTS: std::cell::RefCell<FontSystem> = std::cell::RefCell::new(shell_faces());
+    }
+    let (size, leading) = crate::ui::reading_face();
+    FONTS.with(|fonts| {
+        let mut fonts = fonts.borrow_mut();
+        let mut buffer = TextBuffer::new(&mut fonts, Metrics::new(size, size * leading));
+        buffer.set_size(Some(crate::ui::reading_width()), None);
+        let mut rows = Vec::new();
+        for paragraph in content.lines() {
+            let paragraph = paragraph.trim_end();
+            if paragraph.is_empty() {
+                rows.push(String::new());
+                continue;
+            }
+            buffer.set_text(
+                paragraph,
+                &Attrs::new().family(Family::Name(UI_FONT)),
+                Shaping::Advanced,
+                None,
+            );
+            buffer.shape_until_scroll(&mut fonts, false);
+            let before = rows.len();
+            for run in buffer.layout_runs() {
+                let start = run.glyphs.iter().map(|glyph| glyph.start).min();
+                let end = run.glyphs.iter().map(|glyph| glyph.end).max();
+                if let (Some(start), Some(end)) = (start, end) {
+                    rows.push(run.text.get(start..end).unwrap_or("").trim().to_owned());
+                }
+            }
+            // Nothing came out of the shaping — a face with none of these
+            // letters — and the paragraph is still somebody's words.
+            if rows.len() == before {
+                rows.push(paragraph.to_owned());
+            }
+        }
+        rows
+    })
+}
+
 /// How wide one line of dialog text comes out at `size`, in the shell's face.
 ///
 /// For the two halves of a [`crate::dialog::Line::Field`], so that a label

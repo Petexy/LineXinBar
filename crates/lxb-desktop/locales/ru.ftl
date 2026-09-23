@@ -190,6 +190,7 @@ shell-mirrored-about-a-vertical-axis = Зеркально относительн
 shell-mouse = Мышь
 shell-move = Переместить
 shell-name = Имя
+shell-native = Родное
 shell-natural = Естественная
 shell-network = Сеть
 shell-networks = Сети
@@ -1620,6 +1621,23 @@ steam-size-in-files = { $size } в { $count ->
 steam-library-from = { $said } · библиотека от { $when }
 steam-refused-launch = Steam отказался запускать эту игру: { $refusal }
 steam-app-number = Приложение { $app }
+steam-agreement-before-install = { $total ->
+    [1] Чтобы установить { $game }, нужно принять это соглашение.
+    [one] Чтобы установить { $game }, нужно принять { $total } соглашение. Это соглашение № { $at }.
+    [few] Чтобы установить { $game }, нужно принять { $total } соглашения. Это соглашение № { $at }.
+   *[other] Чтобы установить { $game }, нужно принять { $total } соглашений. Это соглашение № { $at }.
+    }
+steam-agreement-could-not-be-loaded = Чтобы установить { $game }, нужно принять соглашение, но его не удалось загрузить.
+steam-accept-agreement = Принять
+steam-accept-and-install = Принять и установить
+steam-install-needs-first = { $what ->
+    [agreement] Эта игра сначала просит принять соглашение.
+    [key] Эта игра сначала просит ввести ключ продукта.
+    [password] Эта игра сначала просит ввести пароль.
+    [disc] Эта игра сначала просит сменить диск.
+    [signup] Эта игра сначала просит создать учётную запись.
+   *[other] Эта игра сначала просит ответить на вопрос.
+    }
 steam-downloading-first = Сначала загружается { $name }.
 steam-achievements-unlocked = Steam · открыто { $unlocked } / { $total }
 enter-password-for = Введите пароль для { $name }.
@@ -1659,7 +1677,6 @@ retroarch-no-bios-for-console = Там нет файла, с которого { 
 retroarch-console-games-need-more = Играм { $console } нужно то, чего нет на этой машине.
 retroarch-core-missing-for = Для игр { $console } чего-то не хватает.
 retroarch-console-may-need-bios = Играм { $console } может понадобиться собственный BIOS консоли, который нельзя загрузить.
-retroarch-game-needs-first = Этой игре сначала нужно: { $what }.
 
 # Updates and the terminal under them.
 terminal-lines-following = Строки { $from }–{ $to } из { $total } · слежение · Влево, чтобы посмотреть назад

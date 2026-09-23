@@ -1408,7 +1408,7 @@ all take the one kind of picture this shell takes, and the three volume keys,
 which mean the same thing however they are reached. Reach for it sparingly: a loose binding on a letter takes that letter
 away from every application in the session, in every chord it appears in.
 Binding the same key here, decorated or not, takes the whole key back from a
-loose built-in — writing `"Print" = "spawn:grim"` leaves `Shift+Print` doing
+loose built-in — writing `"Print" = "spawn:foot"` leaves `Shift+Print` doing
 nothing rather than still photographing the screen.
 
 `guide` is the console "home" button. It is a compositor binding because a
@@ -1551,7 +1551,24 @@ document name and would change under the setting.
 # leave the application's own window. Off unless the guide's tile has been
 # switched on.
 stick-pointer = true
+
+[apps.steam_app_3812600]
+# How many pixels this draws its picture at, whatever display it opens on. The
+# compositor puts that picture over the whole screen. Absent — the ordinary
+# case — is the display's own size. Set from Resolution on the context menu.
+resolution = [1280, 720]
+
+[games."/home/you/Games/SNES/Chrono Trigger.sfc"]
+# The same, for one of your own games. Keyed by the file rather than by a name,
+# because every game in that folder is played by the same emulator under the
+# same window name.
+resolution = [960, 720]
 ```
+
+One application may appear under more than one of its names. A resolution chosen
+before it has ever run is filed under the name its desktop entry says its
+windows will use, and the compositor is told about every name that entry could
+go by, so the two cannot miss each other.
 
 Editing it by hand is fine. The shell reads it once at startup and rewrites it
 whenever a setting changes, keeping only the applications something has been

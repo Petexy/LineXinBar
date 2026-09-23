@@ -1233,6 +1233,26 @@ fn joining_url(app_id: u32, invite: &lxb_steam::chat::Invite) -> String {
     }
 }
 
+/// What an install is waiting on that only Steam's own window can ask, as the
+/// fixed word each catalog selects its sentence on — see
+/// `steam-install-needs-first`.
+///
+/// `lxb_steam` says it as an English phrase ("a product key to type"), which
+/// used to be put into the middle of a translated sentence as it stood, so a
+/// Polish shell said "Ta gra najpierw wymaga: a product key to type." Read
+/// back into a word here, and a phrase this does not know is `other`, which
+/// every catalog says as a question to answer without naming it.
+pub fn what_the_install_needs(said: &str) -> &'static str {
+    match said {
+        "an agreement to accept" => "agreement",
+        "a product key to type" => "key",
+        "a password to type" => "password",
+        "a disc to change" => "disc",
+        "an account to sign up for" => "signup",
+        _ => "other",
+    }
+}
+
 /// How one game's journey on or off the disk ended.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Ended {
@@ -3643,8 +3663,20 @@ impl Steam {
     }
 
     /// Have Valve's client fetch a game the account owns and has not got.
+    ///
+    /// Should the game have an agreement, it is read in the language the shell
+    /// is speaking, where the publisher wrote one.
     pub fn install(&mut self, app_id: u32) {
-        self.client.install(app_id);
+        self.client
+            .install(app_id, crate::i18n::spoken().steam_name());
+    }
+
+    /// Record that the person has accepted these agreements, and fetch the
+    /// game. Only ever called from the Accept button on the panel that showed
+    /// them — see `Shell::accept_the_agreement`.
+    pub fn accept_and_install(&mut self, app_id: u32, accepting: Vec<lxb_steam::webui::Eula>) {
+        self.client
+            .accept_and_install(app_id, accepting, crate::i18n::spoken().steam_name());
     }
 
     pub fn stop_installing(&mut self, app_id: u32) {
@@ -6135,6 +6167,24 @@ mod tests {
                 why: "Steam would not take it".to_string()
             }]
         );
+    }
+
+    /// Every question `lxb_steam` can say an install is waiting on reaches the
+    /// catalogs as a word they select on, and one it has never said is a
+    /// question nobody names rather than an English phrase in the middle of a
+    /// translated sentence.
+    #[test]
+    fn what_an_install_waits_on_is_a_word_for_the_catalogs() {
+        for (said, word) in [
+            ("an agreement to accept", "agreement"),
+            ("a product key to type", "key"),
+            ("a password to type", "password"),
+            ("a disc to change", "disc"),
+            ("an account to sign up for", "signup"),
+            ("something new Valve thought of", "other"),
+        ] {
+            assert_eq!(what_the_install_needs(said), word, "{said}");
+        }
     }
 
     /// The two ways an install can end without the game arriving are not the

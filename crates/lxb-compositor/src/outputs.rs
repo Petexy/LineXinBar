@@ -170,6 +170,23 @@ pub struct OutputManager {
     /// every screen it has and on every screen plugged in afterwards, and one
     /// that names a display overrules it there and nowhere else.
     session_scale: crate::scale::AppScale,
+    /// How many pixels one application draws its picture at, for each
+    /// application a shell has named — `lxb_shell_v1.set_application_resolution`.
+    ///
+    /// Keyed by the name a window calls itself by, folded to lower case, which
+    /// is the one thing about an application that is the same every time it
+    /// runs. The names are compared whole: the shell knows an application under
+    /// several of them and sends this once per name, and a compositor guessing
+    /// at what a name is short for would be a second opinion about which
+    /// windows belong to which application.
+    ///
+    /// Per application rather than per display, which is the other way round
+    /// from [`Self::scales`] above it — and the two are asking different
+    /// questions. How large an interface is drawn is a fact about a screen and
+    /// the person in front of it; how many pixels a game draws is a fact about
+    /// the game and the machine, and it does not change because the window was
+    /// carried to the screen next to it.
+    resolutions: std::collections::HashMap<String, crate::scale::Resolution>,
     /// What a browser's picture-in-picture window is given, and the mat drawn
     /// round it.
     ///
@@ -208,6 +225,61 @@ impl OutputManager {
         let changed = self.app_scale_on(output) != scale;
         self.scales.insert(name, scale);
         changed
+    }
+
+    /// Draw one named application at a fixed number of pixels, or — with
+    /// `resolution` `None` — at whatever the display it is on is showing.
+    /// `true` when that is a change, on the same terms as the scales above.
+    ///
+    /// The name is folded to lower case on the way in, so the comparison the
+    /// lookup makes is a plain one: an X11 class is conventionally capitalised
+    /// where the desktop entry that names the same program is not, and a
+    /// compositor that filed `Steam` and `steam` separately would answer
+    /// whichever the shell happened to send second.
+    ///
+    /// An empty name is refused and answers `false`. Nothing can be filed under
+    /// nothing, and a window that told us what it is must never inherit a
+    /// setting left by one that did not.
+    pub fn set_application_resolution(
+        &mut self,
+        app_id: &str,
+        resolution: Option<crate::scale::Resolution>,
+    ) -> bool {
+        let key = app_id.trim().to_lowercase();
+        if key.is_empty() {
+            return false;
+        }
+        match resolution {
+            Some(resolution) => self.resolutions.insert(key, resolution) != Some(resolution),
+            None => self.resolutions.remove(&key).is_some(),
+        }
+    }
+
+    /// The resolution `window` is to draw at on `output`, where one was asked
+    /// for and the display can still show it.
+    ///
+    /// The display is asked as well as the table, because a screen changes
+    /// under a setting that was right when it was made: a display put into a
+    /// smaller mode, or a window carried to a smaller screen, cannot show a
+    /// picture larger than itself, and the honest answer there is the display's
+    /// own size rather than arithmetic written for the other direction. See
+    /// [`crate::scale::Resolution::factor`].
+    ///
+    /// Never the floating window. A picture-in-picture is already a corner of
+    /// the screen rather than a window covering it, and the whole of this
+    /// setting is about what covering the screen costs.
+    fn resolution_on(
+        &self,
+        window: &Window,
+        output: &Output,
+    ) -> Option<(crate::scale::Resolution, f64)> {
+        if self.resolutions.is_empty() || self.floats(window) {
+            return None;
+        }
+        let app_id = crate::shell_control::window_app_id(window);
+        let resolution = *self.resolutions.get(&app_id.trim().to_lowercase())?;
+        let factor = resolution.factor(logical_size(output))?;
+        Some((resolution, factor))
     }
 
     /// How much larger than life applications on `output` draw themselves: what
@@ -435,6 +507,10 @@ impl OutputManager {
             // [`crate::scale`]. A Wayland window only — the X11 branch below
             // takes the whole area, because there is no scale to tell an X11
             // client about and a magnified window is not a larger one.
+            //
+            // Or the number of pixels one application was told to draw, which
+            // is the same first part with a different second one and reaches
+            // an X11 window too. Both come out of [`Self::room_for`].
             let room = self.room_for(window, area.size, output);
             toplevel.with_pending_state(|state| {
                 state.size = Some(room);
@@ -450,12 +526,11 @@ impl OutputManager {
                 state.bounds = Some(room);
             });
             // And the second part, sent with the size it belongs to: the scale
-            // that turns those logical pixels back into the display's own.
-            crate::scale::tell(
-                window,
-                output.current_scale().fractional_scale(),
-                self.app_scale_on(output).factor(),
-            );
+            // that turns those logical pixels back into the display's own —
+            // which for an application given a resolution is the display's own
+            // and nothing more, because there the smaller size *is* the
+            // request. See [`Self::told_scale_on`].
+            crate::scale::tell(window, self.told_scale_on(window, output));
             toplevel.send_pending_configure();
         } else if let Some(surface) = window.x11_surface() {
             // The X11 equivalent: _NET_WM_STATE_MAXIMIZED_{HORZ,VERT}, so a
@@ -464,7 +539,15 @@ impl OutputManager {
             if let Err(err) = surface.set_maximized(true) {
                 tracing::warn!(?err, "failed to mark X11 window maximized");
             }
-            if let Err(err) = surface.configure(area) {
+            // The whole usable area, unless a resolution was asked for — the
+            // one thing on this session that an X11 window is given less room
+            // for. The application scale leaves these windows alone because
+            // there is no scale to tell an X11 client about and all that could
+            // be done is to magnify what it drew; here that is what was asked
+            // for, and the client really does draw the smaller picture. See
+            // [`crate::scale::Resolution`].
+            let room = Rectangle::new(area.loc, self.room_for(window, area.size, output));
+            if let Err(err) = surface.configure(room) {
                 tracing::warn!(?err, "failed to tile X11 window");
             }
         }
@@ -493,13 +576,48 @@ impl OutputManager {
     /// already chosen one and a newly mapped window has no output association
     /// in the space yet: a window being tiled onto its second screen would
     /// otherwise be configured for the one it is leaving.
+    ///
+    /// An application given a *resolution* is answered with that resolution and
+    /// nothing is divided: the number of pixels it draws is the whole of what
+    /// was asked for, and dividing the room it is given by the factor its
+    /// picture is then enlarged by would give back a size that is not the one
+    /// anybody chose. It is also why this is not simply the scale's division
+    /// with a different number in it — see [`crate::scale::Resolution`].
     pub fn room_for(
         &self,
         window: &Window,
         area: Size<i32, Logical>,
         output: &Output,
     ) -> Size<i32, Logical> {
-        crate::scale::configured_size(area, self.window_scale_on(window, output))
+        match self.resolution_on(window, output) {
+            Some((resolution, _)) => resolution.size(),
+            None => crate::scale::configured_size(area, self.window_scale_on(window, output)),
+        }
+    }
+
+    /// The scale `window`'s client is told to draw at on `output`, as opposed
+    /// to the factor its picture is enlarged by once it has drawn it.
+    ///
+    /// The same number for every window but one kind, and the exception is the
+    /// whole reason there are two questions. An application drawing larger than
+    /// life is told the higher scale, because the point of that setting is a
+    /// buffer with as many pixels as the screen has laid out in a smaller
+    /// interface. An application given a resolution is told nothing of the
+    /// kind: the point of *that* setting is a buffer with fewer pixels in it,
+    /// and a client told to multiply them back up would draw exactly the
+    /// picture the setting exists to avoid.
+    /// The display's own density is part of the answer, because it is part of
+    /// the same sentence: a client is told one number, and the two settings
+    /// disagree about what belongs in it rather than about how to combine it
+    /// with something else.
+    pub fn told_scale_on(&self, window: &Window, output: &Output) -> f64 {
+        match self.resolution_on(window, output).is_some() {
+            true => 1.0,
+            false => crate::scale::preferred_scale(
+                output.current_scale().fractional_scale(),
+                self.window_scale_on(window, output),
+            ),
+        }
     }
 
     /// How much larger than life `window` draws itself on `output`: that
@@ -515,9 +633,17 @@ impl OutputManager {
     /// `wp_fractional_scale_v1`, where its pixels are drawn, and where a press
     /// on them lands — asks this one question.
     pub fn window_scale_on(&self, window: &Window, output: &Output) -> f64 {
-        match self.floats(window) {
-            true => 1.0,
-            false => crate::scale::window_scale(self.app_scale_on(output), window),
+        if self.floats(window) {
+            return 1.0;
+        }
+        // A resolution before the display's own scale, and never both. A
+        // number of pixels is an answer to how hard this application is to
+        // draw and a percentage is an answer to how far away the user is
+        // sitting; the two cannot be multiplied together into anything either
+        // of them meant. See [`crate::scale`].
+        match self.resolution_on(window, output) {
+            Some((_, factor)) => factor,
+            None => crate::scale::window_scale(self.app_scale_on(output), window),
         }
     }
 
@@ -642,7 +768,7 @@ impl OutputManager {
             });
             // Told the display's own scale and no application scale, which is
             // the buffer this window's size really asks for.
-            crate::scale::tell(window, output.current_scale().fractional_scale(), 1.0);
+            crate::scale::tell(window, output.current_scale().fractional_scale());
             toplevel.send_pending_configure();
             // What it has been told to be, so that it drawing exactly this is
             // read as agreement rather than as a fresh answer.

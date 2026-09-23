@@ -91,8 +91,12 @@ also what paces a recording, so nothing has to guess the refresh rate. What
 lands in the buffer is the composite, out of the same element list the display
 draws, and whether the pointer is in it is the client's choice —
 `copy_with_damage` really does wait, so a recorder pointed at a still screen is
-given one frame and then nothing until something moves. Any tool that speaks
-this protocol works: `grim`, `wf-recorder`, `wl-screenrec`.
+given one frame and then nothing until something moves. Only the compositor's
+own shell and portal may bind this protocol. Applications must use the screen
+sharing portal and obtain consent. Direct capture tools such as `grim` and
+`wf-recorder` are unavailable in a normal session; the compositor's explicit
+`--insecure-trust-program` development option can grant them access, along with
+the session control privileges that option carries.
 
 **`lxb-portal` is the session's xdg-desktop-portal backend.** No application
 speaks Wayland to share a screen: it asks `xdg-desktop-portal` over D-Bus, and
@@ -497,4 +501,3 @@ the panel is free. And **the agent registers for the login session** where there
 is one, falling back to the shell's own process — which is what a machine with no
 `logind` gets, and what a LineXinBar started inside another desktop gets, since
 `polkitd` allows one agent per session and that desktop's got there first.
-

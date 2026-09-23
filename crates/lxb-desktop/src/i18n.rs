@@ -106,6 +106,26 @@ impl Language {
         }
     }
 
+    /// Steam's own name for the language — what its web services take as
+    /// `l=` and its agreements as `eulaLang=`.
+    ///
+    /// Steam has no Hindi, so a Hindi shell is answered in English, which is
+    /// what Steam itself falls back to; the two Englishes are one language to
+    /// it. Spanish is Spain's, which is the catalog this shell writes.
+    pub fn steam_name(self) -> &'static str {
+        match self {
+            Self::British | Self::American | Self::Hindi => "english",
+            Self::French => "french",
+            Self::Spanish => "spanish",
+            Self::Polish => "polish",
+            Self::German => "german",
+            Self::Portuguese => "brazilian",
+            Self::Russian => "russian",
+            Self::Chinese => "schinese",
+            Self::System => spoken().steam_name(),
+        }
+    }
+
     /// The same tag in the form gettext's `LANGUAGE` list is written in.
     ///
     /// That list holds *locale* names, and glibc splits one into a language
@@ -1177,6 +1197,38 @@ mod tests {
         assert_eq!(
             crate::message!("count-selected", "count" => 5),
             "Zaznaczono 5 elementów"
+        );
+        // One agreement is "this one", and a count of them is declined with
+        // the count.
+        for (total, expected) in [
+            (
+                1,
+                "Aby zainstalować Garry's Mod, musisz zaakceptować tę umowę.",
+            ),
+            (
+                2,
+                "Aby zainstalować Garry's Mod, musisz zaakceptować 2 umowy. To jest umowa nr 1.",
+            ),
+            (
+                5,
+                "Aby zainstalować Garry's Mod, musisz zaakceptować 5 umów. To jest umowa nr 1.",
+            ),
+        ] {
+            assert_eq!(
+                crate::message!(
+                    "steam-agreement-before-install",
+                    "game" => "Garry's Mod",
+                    "at" => 1,
+                    "total" => total
+                ),
+                expected
+            );
+        }
+        // What an install waits on is a word the catalog makes a sentence of,
+        // never an English phrase inside a Polish one.
+        assert_eq!(
+            crate::message!("steam-install-needs-first", "what" => "key"),
+            "Ta gra najpierw wymaga wpisania klucza produktu."
         );
         assert_eq!(
             crate::message!("count-files-and-folders", "files" => 3, "folders" => 1),

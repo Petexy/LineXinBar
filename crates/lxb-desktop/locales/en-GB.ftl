@@ -190,6 +190,7 @@ shell-mirrored-about-a-vertical-axis = Mirrored about a vertical axis
 shell-mouse = Mouse
 shell-move = Move
 shell-name = Name
+shell-native = Native
 shell-natural = Natural
 shell-network = Network
 shell-networks = Networks
@@ -1518,6 +1519,21 @@ steam-size-in-files = { $size } in { $count ->
 steam-library-from = { $said } · library from { $when }
 steam-refused-launch = Steam would not start this game: { $refusal }
 steam-app-number = App { $app }
+steam-agreement-before-install = { $total ->
+    [1] To install { $game }, you need to accept this agreement.
+   *[other] To install { $game }, you need to accept { $total } agreements. This is agreement { $at }.
+    }
+steam-agreement-could-not-be-loaded = To install { $game }, you need to accept an agreement, but it could not be loaded.
+steam-accept-agreement = Accept
+steam-accept-and-install = Accept and install
+steam-install-needs-first = { $what ->
+    [agreement] This game has an agreement to accept first.
+    [key] This game has a product key to type first.
+    [password] This game has a password to type first.
+    [disc] This game has a disc to change first.
+    [signup] This game has an account to sign up for first.
+   *[other] This game has a question to answer first.
+    }
 steam-downloading-first = { $name } is downloading first.
 steam-achievements-unlocked = Steam · { $unlocked } / { $total } unlocked
 enter-password-for = Enter the password for { $name }.
@@ -1553,7 +1569,6 @@ retroarch-no-bios-for-console = Nothing in there is a file the { $console } can 
 retroarch-console-games-need-more = { $console } games need something this machine has not got.
 retroarch-core-missing-for = Something is missing to play { $console } games.
 retroarch-console-may-need-bios = { $console } games may need the console's own BIOS, which cannot be downloaded.
-retroarch-game-needs-first = This game has { $what } first.
 
 # Updates and the terminal under them.
 terminal-lines-following = Lines { $from }–{ $to } of { $total } · following · Left to look back

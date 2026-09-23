@@ -82,6 +82,9 @@ pub struct ScreenCast {
 impl ScreenCast {
     /// Open a conversation. Nothing is decided here and nothing is shared;
     /// what comes back is a session object the two later calls hang off.
+    // Two of these are the bus's own facts, injected by `zbus` rather
+    // than sent by the caller. See [`crate::caller`].
+    #[allow(clippy::too_many_arguments)]
     async fn create_session(
         &self,
         _handle: OwnedObjectPath,
@@ -89,7 +92,13 @@ impl ScreenCast {
         app_id: String,
         _options: HashMap<String, OwnedValue>,
         #[zbus(object_server)] server: &zbus::ObjectServer,
+        #[zbus(connection)] connection: &zbus::Connection,
+        #[zbus(header)] header: zbus::message::Header<'_>,
     ) -> (u32, HashMap<String, OwnedValue>) {
+        if !crate::caller::is_frontend(connection, &header).await {
+            return (FAILED, HashMap::new());
+        }
+
         tracing::info!(%app_id, session = %session_handle, "an application wants to see the screen");
         self.shares.lock().unwrap().insert(
             session_handle.clone(),
@@ -102,6 +111,7 @@ impl ScreenCast {
         let session = Session {
             path: session_handle.clone(),
             shares: self.shares.clone(),
+            opened_by: header.sender().map(|sender| sender.to_owned().into()),
         };
         if let Err(err) = server.at(&session_handle, session).await {
             tracing::warn!(?err, "could not open a session");
@@ -119,7 +129,13 @@ impl ScreenCast {
         session_handle: OwnedObjectPath,
         app_id: String,
         options: HashMap<String, OwnedValue>,
+        #[zbus(connection)] connection: &zbus::Connection,
+        #[zbus(header)] header: zbus::message::Header<'_>,
     ) -> (u32, HashMap<String, OwnedValue>) {
+        if !crate::caller::is_frontend(connection, &header).await {
+            return (FAILED, HashMap::new());
+        }
+
         let cursor = options
             .get("cursor_mode")
             .and_then(|mode| u32::try_from(mode).ok())
@@ -155,6 +171,9 @@ impl ScreenCast {
     /// executor, so a `Start` parked on the panel took `CreateSession` and
     /// every other call down with it, and the next application to ask got
     /// nothing at all. Nothing on screen said why.
+    // Two of these are the bus's own facts, injected by `zbus` rather
+    // than sent by the caller. See [`crate::caller`].
+    #[allow(clippy::too_many_arguments)]
     async fn start(
         &self,
         _handle: OwnedObjectPath,
@@ -162,7 +181,13 @@ impl ScreenCast {
         app_id: String,
         _parent_window: String,
         _options: HashMap<String, OwnedValue>,
+        #[zbus(connection)] connection: &zbus::Connection,
+        #[zbus(header)] header: zbus::message::Header<'_>,
     ) -> (u32, HashMap<String, OwnedValue>) {
+        if !crate::caller::is_frontend(connection, &header).await {
+            return (FAILED, HashMap::new());
+        }
+
         let cursor = {
             let shares = self.shares.lock().unwrap();
             match shares.get(&session_handle) {
@@ -244,6 +269,9 @@ impl ScreenCast {
 struct Session {
     path: OwnedObjectPath,
     shares: Shares,
+    /// The connection that asked for this session, by the unique name the bus
+    /// gave it — see [`Session::close`].
+    opened_by: Option<zbus::names::OwnedUniqueName>,
 }
 
 #[zbus::interface(name = "org.freedesktop.impl.portal.Session")]
@@ -251,11 +279,41 @@ impl Session {
     /// The application went away, or stopped sharing. Either way the cast ends
     /// here: a screen that goes on being read after the thing reading it has
     /// gone is the failure this whole arrangement exists to prevent.
+    ///
+    /// ## Who may end it
+    ///
+    /// The connection that opened it, first — and that is the stricter of the
+    /// two tests, not the looser one. A unique name belongs to one connection
+    /// for the life of the bus and is never handed out again, so it names the
+    /// front desk that actually asked for this session rather than whoever
+    /// holds a well-known name at the moment the question is put.
+    ///
+    /// Whoever currently answers for the portal is accepted as well, because a
+    /// front desk started after this one is entitled to tidy up after it.
+    ///
+    /// Both, rather than only the second, because of what this method does
+    /// when it refuses: nothing, and *nothing* here means the cast goes on
+    /// running. Every other check in this file fails safe by refusing; this
+    /// one would fail dangerous, leaving a screen being read with no way left
+    /// to stop it. `org.freedesktop.portal.Desktop` moves between processes
+    /// whenever the front desk is replaced or restarted — which is the
+    /// documented repair for a stale portal — and a `Close` arriving from the
+    /// outgoing one in that window has to land.
     async fn close(
         &self,
         #[zbus(object_server)] server: &zbus::ObjectServer,
         #[zbus(signal_emitter)] emitter: SignalEmitter<'_>,
+        #[zbus(connection)] connection: &zbus::Connection,
+        #[zbus(header)] header: zbus::message::Header<'_>,
     ) {
+        if !crate::caller::may_close(connection, &header, self.opened_by.as_ref()).await {
+            tracing::warn!(
+                session = %self.path,
+                "something that did not open this share tried to close it"
+            );
+            return;
+        }
+
         tracing::info!(session = %self.path, "the share was closed");
         if let Some(mut share) = self.shares.lock().unwrap().remove(&self.path) {
             share.end();

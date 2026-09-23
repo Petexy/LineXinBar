@@ -190,6 +190,7 @@ shell-mirrored-about-a-vertical-axis = 沿竖直轴镜像
 shell-mouse = 鼠标
 shell-move = 移动
 shell-name = 名称
+shell-native = 原生
 shell-natural = 自然
 shell-network = 网络
 shell-networks = 网络列表
@@ -1362,6 +1363,21 @@ steam-size-in-files = { $count } 个文件共 { $size }
 steam-library-from = { $said } · 游戏库来自{ $when }
 steam-refused-launch = Steam 不肯启动此游戏：{ $refusal }
 steam-app-number = 应用 { $app }
+steam-agreement-before-install = { $total ->
+    [1] 要安装 { $game }，需要接受这份协议。
+   *[other] 要安装 { $game }，需要接受 { $total } 份协议。这是第 { $at } 份。
+    }
+steam-agreement-could-not-be-loaded = 要安装 { $game }，需要接受一份协议，但无法加载该协议。
+steam-accept-agreement = 接受
+steam-accept-and-install = 接受并安装
+steam-install-needs-first = { $what ->
+    [agreement] 此游戏需要先接受一份协议。
+    [key] 此游戏需要先输入产品密钥。
+    [password] 此游戏需要先输入密码。
+    [disc] 此游戏需要先更换光盘。
+    [signup] 此游戏需要先注册账户。
+   *[other] 此游戏需要先回答一个问题。
+    }
 steam-downloading-first = 正在先下载 { $name }。
 steam-achievements-unlocked = Steam · 已解锁 { $unlocked } / { $total }
 enter-password-for = 输入 { $name } 的密码。
@@ -1391,7 +1407,6 @@ retroarch-no-bios-for-console = 那里没有 { $console } 可以启动的文件�
 retroarch-console-games-need-more = { $console } 游戏需要这台机器没有的东西。
 retroarch-core-missing-for = 缺少运行 { $console } 游戏所需的组件。
 retroarch-console-may-need-bios = { $console } 游戏可能需要主机自己的 BIOS，它无法下载。
-retroarch-game-needs-first = 此游戏需要先有 { $what }。
 
 # Updates and the terminal under them.
 terminal-lines-following = 第 { $from }–{ $to } 行，共 { $total } 行 · 跟随中 · 按左键回看

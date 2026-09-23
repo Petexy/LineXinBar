@@ -50,6 +50,16 @@
 //! pixels that have already been drawn. A blurred window is not what somebody
 //! asking for a larger one asked for, so an X11 window keeps its own size.
 
+//! And one application at a time can be given a *resolution* instead — see
+//! [`Resolution`], and `lxb_shell_v1.set_application_resolution`. It is the
+//! same three parts with the second one dropped: the window is configured at
+//! the number of pixels that were asked for, told nothing about scale, and its
+//! picture is drawn back out over the display. So the two cannot both be in
+//! force on one window, and the resolution wins where a shell has asked for
+//! both — a number of pixels is an answer to "how hard is this to draw", and a
+//! percentage is an answer to "how far away am I sitting", and only the first
+//! of those can be said about one application.
+
 use smithay::desktop::Window;
 use smithay::utils::{Logical, Point, Rectangle};
 
@@ -105,6 +115,84 @@ impl AppScale {
     /// The factor itself, which is what every calculation actually wants.
     pub fn factor(self) -> f64 {
         self.0 as f64 / NATURAL_PERCENT as f64
+    }
+}
+
+/// How many pixels one application draws its picture at, whatever the display
+/// it lands on is showing.
+///
+/// The other half of this module, and the opposite bargain from [`AppScale`].
+/// That one is a *larger interface at the display's own sharpness*: the window
+/// is made smaller and the client is told over `wp_fractional_scale_v1` to fill
+/// it with as many pixels as the screen has, so nothing is resampled. This one
+/// is *fewer pixels*: the window is made smaller and the client is told
+/// nothing extra, so it draws exactly the picture that was asked for and that
+/// picture is enlarged onto the screen.
+///
+/// Which is to say the two share parts 1 and 3 above and differ in part 2, and
+/// that difference is the whole of what a console means by a game's
+/// resolution: the work of drawing a frame is cut to a quarter and the frame
+/// still covers the television. A setting that did part 2 as well would cut
+/// nothing at all — the client would be asked for the same number of pixels it
+/// was drawing before, laid out in a smaller interface, which is the one thing
+/// nobody asks for a resolution in order to get.
+///
+/// Xwayland windows are included here, and left out of [`AppScale`]. The
+/// exclusion there is honest: X11 has no per-surface scale, so all that could
+/// be done is to magnify pixels that were already drawn, and a blurred window
+/// is not a larger one. Here magnifying *is* the request — an X11 client
+/// configured at 1280×720 really does draw 1280×720 pixels — so the thing that
+/// made it wrong there is what makes it right here.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Resolution {
+    size: smithay::utils::Size<i32, Logical>,
+}
+
+impl Resolution {
+    /// The size a shell asked for, or `None` for the display's own.
+    ///
+    /// `None` for a zero in either direction, which is how the protocol says
+    /// "the display's own" and so how a choice is taken back. A negative size
+    /// cannot arrive — the request carries two unsigned numbers — and one past
+    /// what a signed pixel count can hold is refused here rather than wrapped,
+    /// because the arithmetic below it is the arithmetic nobody tests.
+    pub fn new(width: u32, height: u32) -> Option<Self> {
+        let (width, height) = (i32::try_from(width).ok()?, i32::try_from(height).ok()?);
+        (width > 0 && height > 0).then_some(Self {
+            size: smithay::utils::Size::from((width, height)),
+        })
+    }
+
+    /// The size itself, which is what a window carrying this is configured at.
+    pub fn size(self) -> smithay::utils::Size<i32, Logical> {
+        self.size
+    }
+
+    /// How far a picture this size is enlarged to cover a display of `screen`,
+    /// or `None` where it does not fit inside one.
+    ///
+    /// Whichever of the two directions runs out first, so a size that is not
+    /// the shape of the screen keeps the shape the application drew it in and
+    /// leaves the rest of the display uncovered. A shell is expected to offer
+    /// sizes that share the shape of the screen they will be drawn on — see
+    /// the shell's own `resolution` module — so this is the answer to a
+    /// mistake rather than a feature, and the thing worth protecting in a
+    /// mistake is the picture's proportions.
+    ///
+    /// `None` rather than a factor below one for a size larger than the
+    /// screen. Shrinking a picture to fit is a different setting from this one,
+    /// every path below [`Mapping`] and [`visual_geometry`] is written for a
+    /// factor of one or more, and a display that has since been put into a
+    /// smaller mode has to fall back to its own size rather than to arithmetic
+    /// nothing was written for.
+    pub fn factor(self, screen: smithay::utils::Size<i32, Logical>) -> Option<f64> {
+        if screen.w <= 0 || screen.h <= 0 || screen.w < self.size.w || screen.h < self.size.h {
+            return None;
+        }
+        let factor = (screen.w as f64 / self.size.w as f64)
+            .min(screen.h as f64 / self.size.h as f64)
+            .max(1.0);
+        Some(factor)
     }
 }
 
@@ -256,6 +344,13 @@ pub fn preferred_scale(output_scale: f64, factor: f64) -> f64 {
 
 /// Tell every surface of `window` the scale it should draw at.
 ///
+/// The finished scale, not the two halves of it: an application given a
+/// resolution is told exactly one whatever the display's density is, because
+/// the whole of that setting is the number of pixels in the buffer and a
+/// density multiplied into it would be the display's pixel count back again.
+/// See [`crate::outputs::OutputManager::told_scale_on`], which is the one place
+/// that decides.
+///
 /// Every surface, not the toplevel alone: a menu is a popup with a surface of
 /// its own and a text field may be a subsurface, and a window whose menus drew
 /// at a different scale from the window they hang off would be worse than one
@@ -268,8 +363,7 @@ pub fn preferred_scale(output_scale: f64, factor: f64) -> f64 {
 /// knows which display it belongs to. The handler's answer is the best one
 /// available at that moment; this is the one that is right, and it is sent
 /// alongside the configure that carries the matching size.
-pub fn tell(window: &Window, output_scale: f64, factor: f64) {
-    let scale = preferred_scale(output_scale, factor);
+pub fn tell(window: &Window, scale: f64) {
     window.with_surfaces(|_, states| {
         smithay::wayland::fractional_scale::with_fractional_scale(states, |fractional| {
             // Idempotent inside smithay: a surface already drawing at this
@@ -317,6 +411,90 @@ mod tests {
                 "{percent}%: the far corner of the screen lands at {inside:?} in a {configured:?} window"
             );
         }
+    }
+
+    /// The whole of what a resolution asks for, in one line of arithmetic: a
+    /// picture of that size, enlarged by exactly enough to cover the screen.
+    #[test]
+    fn a_resolution_is_enlarged_to_exactly_cover_the_screen() {
+        let screen = Size::<i32, Logical>::from((1920, 1080));
+        for (size, expected) in [
+            ([1600, 900], 1.2),
+            ([1280, 720], 1.5),
+            ([960, 540], 2.0),
+            ([640, 360], 3.0),
+        ] {
+            let resolution = Resolution::new(size[0], size[1]).expect("a real size");
+            let factor = resolution.factor(screen).expect("it fits");
+            assert!((factor - expected).abs() < 1e-9, "{size:?}: {factor}");
+            let drawn = visual_geometry(
+                Rectangle::new(Point::from((0, 0)), resolution.size()),
+                factor,
+            );
+            assert_eq!(drawn.size, screen, "{size:?} does not cover the screen");
+        }
+    }
+
+    /// A size the display cannot show is not answered with arithmetic written
+    /// for the other direction. It happens without anybody choosing it — a
+    /// display put into a smaller mode, a window carried to a smaller screen —
+    /// and the honest answer there is the display's own size.
+    #[test]
+    fn a_picture_larger_than_the_screen_is_refused_rather_than_shrunk() {
+        let resolution = Resolution::new(2560, 1440).expect("a real size");
+        assert_eq!(resolution.factor(Size::from((1920, 1080))), None);
+        assert_eq!(resolution.factor(Size::from((2560, 1080))), None);
+        assert_eq!(resolution.factor(Size::from((0, 0))), None);
+        // Its own size is not larger than itself, and is drawn one to one.
+        assert_eq!(resolution.factor(Size::from((2560, 1440))), Some(1.0));
+    }
+
+    /// A size that is not the shape of the screen keeps the shape the
+    /// application drew it in. The shell offers no such size — see the shell's
+    /// own `resolution` module — so this is what a mistake comes to, and what
+    /// it must not come to is a stretched picture.
+    #[test]
+    fn a_picture_of_the_wrong_shape_keeps_its_proportions() {
+        let resolution = Resolution::new(1280, 960).expect("a real size");
+        let factor = resolution
+            .factor(Size::from((1920, 1080)))
+            .expect("it fits inside");
+        // The direction that runs out first is the height: 1080 / 960.
+        assert!((factor - 1.125).abs() < 1e-9, "{factor}");
+        let drawn = visual_geometry(
+            Rectangle::new(Point::from((0, 0)), resolution.size()),
+            factor,
+        );
+        assert_eq!(drawn.size.h, 1080, "the picture should fill the height");
+        assert!(drawn.size.w < 1920, "and leave the width uncovered");
+    }
+
+    /// Nothing is a size. Zero in either direction is how the protocol says
+    /// "the display's own", and it has to come back as the absence of a
+    /// setting rather than as a window of no width a client cannot draw into.
+    #[test]
+    fn nothing_is_not_a_size() {
+        assert_eq!(Resolution::new(0, 0), None);
+        assert_eq!(Resolution::new(1280, 0), None);
+        assert_eq!(Resolution::new(0, 720), None);
+        assert_eq!(Resolution::new(u32::MAX, u32::MAX), None);
+    }
+
+    /// And a press still lands where it was aimed, which is the one property
+    /// every factor in this module has to keep.
+    #[test]
+    fn a_press_lands_where_it_was_aimed_at_a_resolution_too() {
+        let screen = Size::<i32, Logical>::from((1920, 1080));
+        let resolution = Resolution::new(1280, 720).expect("a real size");
+        let factor = resolution.factor(screen).expect("it fits");
+        let corner = Point::<f64, Logical>::from((0.0, 0.0));
+        let mapping = Mapping::of(corner, factor);
+        let far = Point::from((screen.w as f64, screen.h as f64));
+        let inside = mapping.into_window(far);
+        assert!(
+            (inside.x - 1280.0).abs() < 1e-9 && (inside.y - 720.0).abs() < 1e-9,
+            "the far corner of the screen lands at {inside:?}"
+        );
     }
 
     /// And it comes back out again: a client's own cursor hint is a point in its

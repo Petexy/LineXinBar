@@ -190,6 +190,7 @@ shell-mirrored-about-a-vertical-axis = खड़ी धुरी पर दर�
 shell-mouse = माउस
 shell-move = ले जाएँ
 shell-name = नाम
+shell-native = मूल
 shell-natural = प्राकृतिक
 shell-network = नेटवर्क
 shell-networks = नेटवर्क
@@ -1518,6 +1519,21 @@ steam-size-in-files = { $count ->
 steam-library-from = { $said } · लाइब्रेरी { $when } की
 steam-refused-launch = Steam ने यह गेम शुरू करने से मना कर दिया: { $refusal }
 steam-app-number = ऐप { $app }
+steam-agreement-before-install = { $total ->
+    [1] { $game } इंस्टॉल करने के लिए आपको यह अनुबंध स्वीकार करना होगा।
+   *[other] { $game } इंस्टॉल करने के लिए आपको { $total } अनुबंध स्वीकार करने होंगे। यह अनुबंध { $at } है।
+    }
+steam-agreement-could-not-be-loaded = { $game } इंस्टॉल करने के लिए आपको एक अनुबंध स्वीकार करना होगा, लेकिन उसे लोड नहीं किया जा सका।
+steam-accept-agreement = स्वीकार करें
+steam-accept-and-install = स्वीकार करें और इंस्टॉल करें
+steam-install-needs-first = { $what ->
+    [agreement] इस गेम के लिए पहले एक अनुबंध स्वीकार करना होगा।
+    [key] इस गेम के लिए पहले एक प्रोडक्ट की डालनी होगी।
+    [password] इस गेम के लिए पहले एक पासवर्ड डालना होगा।
+    [disc] इस गेम के लिए पहले डिस्क बदलनी होगी।
+    [signup] इस गेम के लिए पहले एक खाता बनाना होगा।
+   *[other] इस गेम के लिए पहले एक सवाल का जवाब देना होगा।
+    }
 steam-downloading-first = { $name } पहले डाउनलोड हो रहा है।
 steam-achievements-unlocked = Steam · { $unlocked } / { $total } अनलॉक
 enter-password-for = { $name } का पासवर्ड दर्ज करें।
@@ -1553,7 +1569,6 @@ retroarch-no-bios-for-console = वहाँ ऐसी कोई फ़ाइल
 retroarch-console-games-need-more = { $console } के गेम को कुछ ऐसा चाहिए जो इस मशीन पर नहीं है।
 retroarch-core-missing-for = { $console } के गेम खेलने के लिए कुछ गायब है।
 retroarch-console-may-need-bios = { $console } के गेम को कंसोल के अपने BIOS की ज़रूरत हो सकती है, जो डाउनलोड नहीं किया जा सकता।
-retroarch-game-needs-first = इस गेम को पहले { $what } चाहिए।
 
 # Updates and the terminal under them.
 terminal-lines-following = { $total } में से पंक्तियाँ { $from }–{ $to } · अनुसरण जारी · पीछे देखने के लिए बाएँ दबाएँ

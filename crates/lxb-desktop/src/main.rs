@@ -29,6 +29,7 @@ fn skipped(why: &str) {
     eprintln!("skipped: {name}: {why}");
 }
 
+mod agreement;
 mod appinfo;
 mod apps;
 mod archive;
@@ -64,6 +65,7 @@ mod playing;
 mod pointer;
 mod polkit;
 mod power;
+mod resolution;
 mod retroachievements;
 mod retroarch;
 mod reveal;
@@ -480,6 +482,18 @@ const EXACT_GAMUT_SHELL_VERSION: u32 = 42;
 /// moved together would be saying something untrue about the one it was not
 /// pressed on.
 const APP_SCALE_PER_DISPLAY_SHELL_VERSION: u32 = 43;
+
+/// First version that can be told how many pixels one application draws its
+/// picture at: `set_application_resolution`. Being the newest this shell knows
+/// of, it is also the version it asks to bind.
+///
+/// Gated on where it is sent, and the fallback is silence — not the application
+/// scale wearing this setting's name, which is the other thing that could have
+/// been sent and is the wrong thing: that one asks a client for the *same*
+/// number of pixels laid out in a smaller interface, and this one exists to ask
+/// for fewer. The choice is still remembered below this version, for whichever
+/// compositor comes next, and the menu row still says what it is set to.
+const APP_RESOLUTION_SHELL_VERSION: u32 = 44;
 
 /// What `answer_pick` says when no kind of file was in force. The protocol's
 /// own number for it, quoted here so the two halves cannot disagree about which
@@ -1192,7 +1206,7 @@ fn main() -> anyhow::Result<()> {
     // shell simply falls back to what it can do as an ordinary client.
     let shell_control = match globals.bind::<LxbShellV1, _, _>(
         &qh,
-        1..=APP_SCALE_PER_DISPLAY_SHELL_VERSION,
+        1..=APP_RESOLUTION_SHELL_VERSION,
         (),
     ) {
         Ok(control) => Some(control),
@@ -1318,6 +1332,7 @@ fn main() -> anyhow::Result<()> {
         trophy_browser: trophies::Browser::default(),
         retroachievement_buttons: Vec::new(),
         updates: updates::Updates::default(),
+        agreements: None,
         retroarch_setup: false,
         retroarch_offer: None,
         retroarch_play: None,
@@ -4181,6 +4196,9 @@ struct Shell {
     trophy_browser: trophies::Browser,
     retroachievement_buttons: Vec<menu::Command>,
     updates: updates::Updates,
+    /// The agreements a Steam game stopped on before it would install, while
+    /// they are being read on the shell's own panel. See [`agreement`].
+    agreements: Option<agreement::Agreements>,
     /// Whether the folder now being read was *just chosen*, so the cores its
     /// games need are fetched when the reading is done.
     ///
@@ -7643,6 +7661,18 @@ impl Shell {
                 return;
             }
         }
+        // And over an agreement, which is read the same way.
+        if self.agreement_is_up() {
+            let forward = match keysym {
+                Keysym::Page_Up | Keysym::KP_Page_Up => Some(false),
+                Keysym::Page_Down | Keysym::KP_Page_Down => Some(true),
+                _ => None,
+            };
+            if let Some(forward) = forward {
+                self.scroll_the_agreement(forward);
+                return;
+            }
+        }
         if let Some(action) = action_for_keysym(keysym) {
             // Enter and the space bar are one key everywhere in this shell, and
             // the file panel is the one screen where they are two acts. Told
@@ -7911,6 +7941,13 @@ impl Shell {
             let game = pid
                 .and_then(lxb_steam::process::game_of)
                 .or_else(|| game_a_window_is_named_after(&app_id));
+            // A game that has just said which game it is may also have said
+            // that its windows are called something other than Steam's own
+            // name for them, and a resolution somebody chose for it was filed
+            // under Steam's. This is the one moment the two can be joined up.
+            if let Some(game) = game {
+                self.this_game_calls_its_windows_something_else(game, &app_id);
+            }
             self.asked_which_game
                 .insert(id, AskedWhichGame { pid, app_id, game });
             let Some(game) = game else {
@@ -7925,6 +7962,45 @@ impl Shell {
                 );
             }
         }
+    }
+
+    /// Say a Steam game's resolution again, under the name its windows really
+    /// use, for a game that does not use Steam's.
+    ///
+    /// A resolution chosen for a Steam title is filed under `steam_app_<id>`,
+    /// because before the game has ever run that is the only name anybody has
+    /// for it — Valve's launcher puts it on the window, which a live client was
+    /// measured doing. A game that names its own windows instead is one that
+    /// name never reaches, and there is nothing to be done about that in
+    /// advance: the shell cannot know what a program calls itself until it has
+    /// seen it say so.
+    ///
+    /// So it is said again here, at the first moment both halves are known: the
+    /// window has told the shell which game it is, by way of its own process,
+    /// and it has told the compositor what it calls itself. The window on
+    /// screen is re-tiled by it, which is a game that came up at the size of
+    /// the display and settles into the size it was set to a moment later —
+    /// late rather than wrong, which is the best answer available and better
+    /// than a setting that silently does nothing.
+    ///
+    /// Nothing at all for the ordinary case, where the window is called what
+    /// Steam calls it: that name was sent before the launch, and sending it
+    /// twice would ask the compositor to lay every window out again for no
+    /// change.
+    fn this_game_calls_its_windows_something_else(&self, game: u32, app_id: &str) {
+        let steams_name = format!("steam_app_{game}");
+        if app_id.trim().is_empty() || apps::same_application(app_id, &steams_name) {
+            return;
+        }
+        let Some(size) = self.prefs.resolution(&steams_name) else {
+            return;
+        };
+        tracing::debug!(
+            game,
+            app_id,
+            "this game calls its windows something other than Steam does"
+        );
+        self.push_resolution(&[app_id.to_string()], Some(size));
     }
 
     /// What a window said about itself when it was asked, if it was asked and
@@ -8270,6 +8346,7 @@ impl Shell {
             // [`Action::PretendAMessage`] — and it reaches Steam not at all.
             Action::PretendAMessage => self.pretend_a_message_arrived(),
             Action::PretendAnInvite => self.pretend_an_invitation_arrived(),
+            Action::PretendAnAgreement => self.pretend_an_agreement(),
             Action::VolumeUp => self.change_volume(1),
             Action::VolumeDown => self.change_volume(-1),
             Action::VolumeMute => self.mute_volume(),
@@ -9020,25 +9097,29 @@ impl Shell {
                 self.needs_redraw = true;
             }
             // On the bar, Back is a step out of the path the user has walked
-            // into a category before it is anything else. One level at a time
-            // and the same way round as everywhere else in the shell: the menu
-            // is reached from the top of a column, not from three levels down
-            // inside one.
+            // into a category, and that is the whole of what it is. One level
+            // at a time, and nothing at all at the top of a column: there is
+            // no further out to go.
+            //
+            // The top of a column used to be a second door into the Home
+            // Menu, and the user asked for it to be shut on 2026-09-22 —
+            // pressing `B` on the start screen brought the menu up. It reads
+            // as a fault however it is explained: a step *back* that arrives
+            // somewhere new, on the one screen whose corner says what every
+            // button does and never said this, answered by the one silence
+            // the sound contract insists on — the guide's clip belongs to the
+            // guide's own button and no other route may spend it, so a menu
+            // that appeared this way could only ever appear without a sound.
+            // The menu keeps the Home button, `Home`, `Super`, the mouse's
+            // side button and the compositor's binding behind them, which is
+            // five ways in and not one of them ambiguous.
             Mode::Bar | Mode::BarOverApp => {
-                let left = self
+                if self
                     .panels
                     .get_mut(self.focused_panel)
-                    .is_some_and(|panel| panel.cursor.leave());
-                if left {
+                    .is_some_and(|panel| panel.cursor.leave())
+                {
                     self.stepped_back();
-                } else if self.guide_answers_the_press() {
-                    // The other door into the same menu, and it is held shut
-                    // by the same rule. A launch left this one open would make
-                    // "the menu does not come up during a launch" false, and
-                    // in the worst way: the bar the step is out of is under
-                    // the splash, so the menu would be raised unseen and be
-                    // there when the application arrived.
-                    self.open_guide();
                 }
             }
         }
@@ -9047,12 +9128,13 @@ impl Shell {
     /// Whether a press of the user's may raise the menu at all.
     ///
     /// The rule is [`guide_answers`]; this reads the two facts it needs off
-    /// the shell. Both of the places the user can open the menu from ask —
-    /// the Home button and a step back from the top of the bar — and nothing
-    /// else does, which is the point: a portal's question and an
-    /// authorisation raise the menu through [`Self::open_guide`] without
-    /// coming past here, because those are not the user asking and they need
-    /// an answer whatever else is going on.
+    /// the shell. The place the user opens the menu from asks — the Home
+    /// button, under every one of its spellings — and nothing else does,
+    /// which is the point: a portal's question and an authorisation raise the
+    /// menu through [`Self::open_guide`] without coming past here, because
+    /// those are not the user asking and they need an answer whatever else is
+    /// going on. The walk along the applications asks as well, which is the
+    /// one other press that is somebody reaching for this screen.
     fn guide_answers_the_press(&self) -> bool {
         guide_answers(
             self.splash_on_screen(self.focused_panel),
@@ -9370,6 +9452,14 @@ impl Shell {
             tracing::debug!(app = %name, "this is already starting, so the press was spent");
             return;
         }
+        // What this row draws its picture at, before anything is started and
+        // before the press is handed to anybody — see
+        // [`Shell::push_resolution_for_a_launch`], where the *before* is the
+        // whole point. Here rather than beside each of the three forks below
+        // it, because the three are an application, a Steam title and one of
+        // the user's own games, and this is the one question all three answer
+        // the same way.
+        self.push_resolution_for_a_launch();
         // Say where this is being launched from before starting it, so the
         // answer cannot be overtaken by the window itself. This display rather
         // than [`Self::launch_display`]: a press is what moves the answer, and
@@ -11172,12 +11262,186 @@ impl Shell {
                 )
                 .glyph(icons::UNINSTALL)
                 .grave(),
+                // A setting on the application rather than something done to
+                // it, which is why it is in this band rather than beside
+                // Launch: those two are about the installation, and so is this
+                // — it is read the next time the application starts, and it is
+                // still true of it while nothing is running. See
+                // [`Shell::offer_resolution`].
+                menu::Entry::new(
+                    menu::Command::Resolution,
+                    crate::i18n::text("shell-resolution"),
+                )
+                .glyph(icons::SETTING_RESOLUTION),
                 menu::Entry::new(menu::Command::Launch, crate::i18n::text("label-launch"))
                     .glyph(icons::LAUNCH)
                     .group(1),
                 menu::Entry::new(menu::Command::Dismiss, crate::i18n::text("shell-close")).group(1),
             ],
         ))
+    }
+
+    // --- how many pixels an application draws ------------------------------
+
+    /// What the menu that is up is choosing a resolution for, if it is a thing
+    /// that can be given one.
+    ///
+    /// Three kinds of row, asked in the order the menus themselves are chosen
+    /// in — see [`Shell::bar_entry_menu`]. Everything else on this bar is
+    /// `None`: a song has no resolution, a folder is not a program, and a
+    /// settings row is not a thing with windows at all.
+    ///
+    /// Looked up again at the press rather than carried in the command, for the
+    /// reason [`menu::Command::SteamDo`] carries no title: the menu is about
+    /// whatever was selected when it was raised, and the cursor cannot move
+    /// while it is up.
+    fn resolution_subject(&self) -> Option<resolution::Subject> {
+        if let Some(game) = self.selected_game() {
+            // Valve starts a title under a class of its own making, which is
+            // the same string every time that game runs and is therefore both
+            // the key and the only name — see [`game_a_window_is_named_after`],
+            // which reads it back the other way.
+            let name = format!("steam_app_{}", game.app_id);
+            return Some(resolution::Subject::Application {
+                key: name.clone(),
+                names: vec![name],
+            });
+        }
+        if let Some(rom) = self.selected_rom() {
+            return Some(resolution::Subject::Game {
+                path: rom.path.clone(),
+                names: retroarch::WINDOW_NAMES
+                    .iter()
+                    .map(|name| (*name).to_string())
+                    .collect(),
+            });
+        }
+        let app = self
+            .panels
+            .get(self.focused_panel)?
+            .cursor
+            .current_app(&self.lattice)?;
+        let names = app.window_names();
+        Some(resolution::Subject::Application {
+            // The best of the names, which is what the entry itself declares
+            // where it declares anything. Filed under one and sent under all of
+            // them, because a desktop entry saying what its windows will be
+            // called is sometimes wrong and there is nothing else to go on
+            // before the application has ever run.
+            key: names.first()?.clone(),
+            names,
+        })
+    }
+
+    /// Step into the list of sizes this application can draw its picture at.
+    ///
+    /// Built from the display the menu was raised on, because that is the
+    /// screen the picture will be fitted to and a list measured against any
+    /// other would be a list of sizes this screen cannot use. Which also means
+    /// the same application offers a different list on a different television,
+    /// and answers with the same numbers on both — the choice is two numbers,
+    /// not a row on a list. See [`resolution::offered`].
+    fn offer_resolution(&mut self) {
+        let Some(subject) = self.resolution_subject() else {
+            return;
+        };
+        let Some(panel) = self.panels.get(self.focused_panel) else {
+            return;
+        };
+        let (rows, at) = resolution_rows(
+            resolution::offered([panel.width, panel.height]),
+            subject.chosen(&self.prefs),
+        );
+        // Opened on the size in force rather than at the top, the way a list of
+        // values is: what the row leads to is a question about what this is set
+        // to, and the highlight arriving on the answer is half of the reply.
+        if !self.context_menu.descend_selecting(None, rows, at) {
+            return;
+        }
+        self.needs_redraw = true;
+    }
+
+    /// Draw it at this size from now on, or — with `None` — at whatever the
+    /// display it opens on is showing.
+    ///
+    /// Nothing is asked first and nothing is put on the screen, exactly as
+    /// [`Shell::run_under`] does nothing: it is a setting on a thing, and it is
+    /// taken back by pressing the row at the top of the same list.
+    ///
+    /// The compositor is told at once, rather than only on the next launch.
+    /// A window already on the screen is re-tiled by it, which is what makes
+    /// the setting mean something to somebody who chose it with the
+    /// application open — and for a window that is not there yet it is simply
+    /// the answer arriving early, since the launch says it again.
+    fn use_resolution(&mut self, size: Option<[u32; 2]>) {
+        let Some(subject) = self.resolution_subject() else {
+            return;
+        };
+        let changed = subject.choose(&mut self.prefs, size);
+        if changed {
+            self.push_resolution(subject.names(), size);
+        }
+        // The tick has to move under the press whether or not anything was
+        // written — a second press on the row already chosen is not a change —
+        // and the list it is drawn from has not moved, so the rows are rebuilt
+        // rather than asked for again.
+        let Some(panel) = self.panels.get(self.focused_panel) else {
+            return;
+        };
+        let (rows, _) = resolution_rows(resolution::offered([panel.width, panel.height]), size);
+        if self.context_menu.refresh(rows) {
+            self.needs_redraw = true;
+        }
+    }
+
+    /// Tell the compositor how many pixels one thing's windows draw.
+    ///
+    /// Once per name it might use, because that is the whole of the bargain:
+    /// the compositor compares the names whole and does not guess at what one
+    /// is short for, so the guessing is done here where the desktop entry is.
+    ///
+    /// **Nothing at all below [`APP_RESOLUTION_SHELL_VERSION`]**, which is the
+    /// same silence [`Shell::sync_app_scale`] keeps below its own version and
+    /// for the same reason: the choice is still remembered, the file is read by
+    /// whichever compositor comes next, and a shell cannot make an older one
+    /// draw a window smaller by asking it twice.
+    fn push_resolution(&self, names: &[String], size: Option<[u32; 2]>) {
+        let Some(control) = self.shell_control.as_ref() else {
+            return;
+        };
+        if control.version() < APP_RESOLUTION_SHELL_VERSION {
+            return;
+        }
+        let [width, height] = size.unwrap_or([0, 0]);
+        for name in names {
+            control.set_application_resolution(name.clone(), width, height);
+        }
+        if let Err(err) = self.conn.flush() {
+            tracing::warn!(?err, "could not send the application resolution");
+        }
+    }
+
+    /// Say it again on the way into a launch, for whatever is about to start.
+    ///
+    /// Sent before the fork rather than once at startup, and that is what makes
+    /// the setting land on the right thing. A game out of somebody's ROM folder
+    /// is played by an emulator whose windows have the same name whichever game
+    /// it is playing, so the answer the emulator is running under has to be the
+    /// one belonging to the game being started — and the only moment that is
+    /// known is this one.
+    ///
+    /// It also carries every choice made in some earlier session, which nothing
+    /// else would: the compositor writes none of this down, on the argument
+    /// that every application here is started by the shell and the shell says
+    /// this first. This is the shell saying it first.
+    ///
+    /// Called with whatever the *selection* is, so it answers a tile press, a
+    /// game press and a ROM press with one line each.
+    fn push_resolution_for_a_launch(&self) {
+        let Some(subject) = self.resolution_subject() else {
+            return;
+        };
+        self.push_resolution(subject.names(), subject.chosen(&self.prefs));
     }
 
     // --- the menu over one of the user's own files -------------------------
@@ -16523,14 +16787,18 @@ impl Shell {
                     self.stepped();
                 }
             }
-            // The one panel with something to scroll on it: the transcript
-            // in the updates' terminal frame. Up and Down are the buttons'
-            // — a panel's answers are a column — so the axis a column does
-            // not use is the one the frame's window moves on.
+            // The two panels with something to scroll on them: the
+            // transcript in the updates' terminal frame, and an agreement a
+            // game will not install without. Up and Down are the buttons' — a
+            // panel's answers are a column — so the axis a column does not
+            // use is the one the well's window moves on.
             Action::Left | Action::Right => {
-                if self.updates_panel_is_up() && self.updates.scroll(action == Action::Right) {
+                let forward = action == Action::Right;
+                if self.updates_panel_is_up() && self.updates.scroll(forward) {
                     self.stepped();
                     self.show_updates();
+                } else {
+                    self.scroll_the_agreement(forward);
                 }
             }
             Action::Launch => {
@@ -16740,6 +17008,8 @@ impl Shell {
             menu::Command::CancelBiosFolder => self.cancel_bios_folder(),
             menu::Command::RetroArchRescan => self.rescan_roms(),
             menu::Command::RetroArchCores => self.get_cores(self.retroarch.missing_cores()),
+            menu::Command::Resolution => self.offer_resolution(),
+            menu::Command::UseResolution(size) => self.use_resolution(size),
             menu::Command::RetroArchOpen => self.open_retroarch(),
             menu::Command::RetroArchArt => self.fetch_this_art(),
             menu::Command::RetroArchConsoleArt => self.fetch_console_art(),
@@ -16975,6 +17245,7 @@ impl Shell {
             menu::Command::SteamInstallWithSteam(app_id) => {
                 self.steam_hand_over(app_id, lxb_steam::Doing::Install)
             }
+            menu::Command::SteamAcceptAgreement(app_id) => self.accept_the_agreement(app_id),
             menu::Command::SteamUninstall(app_id) => self.offer_to_uninstall(app_id),
             menu::Command::SteamUninstallNow(app_id) => self.uninstall_steam_game(app_id),
             menu::Command::SteamStartClient(app_id) => {
@@ -23503,6 +23774,21 @@ impl Shell {
                 tracing::info!(?answer, "a game finished moving");
                 return;
             }
+            // Nothing went wrong: the game has agreements to accept first, and
+            // they came back with their words, so they are asked here on the
+            // shell's own panel rather than in a window of Steam's.
+            steam::Ended::Failed {
+                app_id,
+                why: lxb_steam::Stopped::Agreements(agreements),
+            } => {
+                tracing::info!(
+                    app_id,
+                    count = agreements.len(),
+                    "this game has agreements to accept first"
+                );
+                self.offer_the_agreements(app_id, agreements);
+                return;
+            }
             // Nothing went wrong: the game wants something answered that only
             // Steam's own window can ask, so that is what is offered. The
             // wording is Steam's question rather than a failure, and the rows
@@ -23515,9 +23801,10 @@ impl Shell {
                 (
                     app_id,
                     vec![
-                        dialog::Line::Note(
-                            crate::message!("retroarch-game-needs-first", "what" => what),
-                        ),
+                        dialog::Line::Note(crate::message!(
+                            "steam-install-needs-first",
+                            "what" => steam::what_the_install_needs(&what)
+                        )),
                         dialog::Line::Note(
                             crate::i18n::text("shell-steam-has-to-ask-that-itself").to_string(),
                         ),
@@ -24154,6 +24441,16 @@ impl Shell {
             command: command.join(" "),
         };
         tracing::info!(command = %opening.command, "opening RetroArch's own interface");
+        // The emulator, as itself, at the size of the display. Whatever it was
+        // last told is the answer for the *game* it was last playing — its
+        // windows have one name whichever game that is, which is why a game's
+        // answer is sent on the way into the game's own launch — and this press
+        // is not about a game at all. See [`crate::resolution::Subject::Game`].
+        let names: Vec<String> = retroarch::WINDOW_NAMES
+            .iter()
+            .map(|name| (*name).to_string())
+            .collect();
+        self.push_resolution(&names, None);
         let (name, icon) = (opening.name.clone(), opening.icon.clone());
         self.open_with_a_loading_screen(name, icon, |lattice| lattice.open_command(opening));
     }
@@ -31680,12 +31977,14 @@ fn steam_service_menu_rows(
 /// a Wayland session.
 ///
 /// Two bands, for the reason the menu over one of the user's files has two —
-/// see [`media_rows`]. Everything above the rule is done to the *game*, and
-/// every one of those needs Valve's client, so a machine without one offers
-/// none of them rather than rows that can only refuse. Nothing below the rule
-/// is about the game at all: Sort is about the column, Cancel is about the
-/// menu, and neither has anything to ask Steam — which is why the shorter menu
-/// on a machine with no client is still worth raising.
+/// see [`media_rows`]. Everything above the rule is about the *game*, and all
+/// but one of those needs Valve's client, so a machine without one offers none
+/// of them rather than rows that can only refuse. The exception is Resolution,
+/// which is the shell's own answer carried out by the compositor and has
+/// nothing to ask Steam. Nothing below the rule is about the game at all: Sort
+/// is about the column, Cancel is about the menu, and neither has anything to
+/// ask Steam — which is why the shorter menu on a machine with no client is
+/// still worth raising.
 fn steam_game_menu_rows(game: &apps::Game) -> Vec<menu::Entry> {
     use lxb_steam::library::Standing;
 
@@ -31822,6 +32121,20 @@ fn steam_game_menu_rows(game: &apps::Game) -> Vec<menu::Entry> {
             );
         }
     }
+    // How many pixels it draws, which is a setting on the game in the way
+    // Compatibility above it is — and the one row in this band that asks
+    // nothing of Valve's client, which is why it is outside the gate the rest
+    // of the band is behind. The list is the display's and what carries it out
+    // is the compositor; a machine with no client can still have somebody's
+    // library on it and somebody's answer about this game. See
+    // [`crate::resolution`].
+    rows.push(
+        menu::Entry::new(
+            menu::Command::Resolution,
+            crate::i18n::text("shell-resolution"),
+        )
+        .glyph(icons::SETTING_RESOLUTION),
+    );
     rows.push(
         menu::Entry::new(menu::Command::SteamSort, crate::i18n::text("shell-sort"))
             .glyph(icons::SORT)
@@ -32157,6 +32470,153 @@ fn steam_compat_rows(app_id: u32, known: Option<&steam::Compat>) -> Vec<menu::En
     }
     rows.push(menu::Entry::new(menu::Command::Dismiss, crate::i18n::text("shell-cancel")).group(1));
     rows
+}
+
+/// The rows under Resolution: the display's own size, the sizes that fit it,
+/// and the tick on whichever is in force — plus which row that is, so the
+/// highlight arrives on it.
+///
+/// **Native is the first row and is always there.** It is what everything runs
+/// at until somebody says otherwise, and it is the way back from having said
+/// so: a list of sizes with none of them chosen would leave a setting nobody
+/// could undo. It is a word rather than a pair of numbers because what it means
+/// is "whatever this screen is", which goes on being true when the screen is
+/// changed underneath it.
+///
+/// A size that was chosen on some other screen and does not fit this one is
+/// still drawn, in its place in the order. It is what the application is set to
+/// and the user has to be able to see that and take it back; leaving it out
+/// would be a list with a tick on nothing and no way to explain why.
+///
+/// Free of `self` so the shape of the list can be asserted without a session,
+/// which is the half worth asserting: the tick, the order, and the row the
+/// highlight lands on.
+fn resolution_rows(
+    mut offered: Vec<[u32; 2]>,
+    chosen: Option<[u32; 2]>,
+) -> (Vec<menu::Entry>, usize) {
+    if let Some(size) = chosen.filter(|size| !offered.contains(size)) {
+        offered.push(size);
+        offered.sort_by_key(|[width, height]| std::cmp::Reverse(*width as u64 * *height as u64));
+    }
+    let mut rows = vec![chosen_when(
+        menu::Entry::new(
+            menu::Command::UseResolution(None),
+            crate::i18n::text("shell-native"),
+        ),
+        chosen.is_none(),
+    )];
+    rows.extend(offered.iter().map(|size| {
+        chosen_when(
+            menu::Entry::new(
+                menu::Command::UseResolution(Some(*size)),
+                resolution::label(*size),
+            ),
+            chosen == Some(*size),
+        )
+    }));
+    let at = match chosen {
+        None => 0,
+        Some(size) => offered
+            .iter()
+            .position(|offered| *offered == size)
+            .map_or(0, |index| index + 1),
+    };
+    rows.push(menu::Entry::new(menu::Command::Dismiss, crate::i18n::text("shell-cancel")).group(1));
+    (rows, at)
+}
+
+#[cfg(test)]
+mod resolution_menu_tests {
+    use super::*;
+
+    fn labels(rows: &[menu::Entry]) -> Vec<String> {
+        rows.iter().map(|row| row.label.clone()).collect()
+    }
+
+    fn ticked(rows: &[menu::Entry]) -> Vec<String> {
+        rows.iter()
+            .filter(|row| row.glyph == Some(icons::CHOSEN))
+            .map(|row| row.label.clone())
+            .collect()
+    }
+
+    /// Native is the first row and the way back, and the sizes under it are
+    /// the display's own, largest first.
+    #[test]
+    fn native_leads_the_list_and_is_ticked_until_something_is_chosen() {
+        let (rows, at) = resolution_rows(resolution::offered([1920, 1080]), None);
+        assert_eq!(rows.first().map(|row| row.label.as_str()), Some("Native"));
+        assert_eq!(rows.last().map(|row| row.label.as_str()), Some("Cancel"));
+        assert_eq!(ticked(&rows), ["Native"]);
+        assert_eq!(at, 0, "the highlight opens on the answer in force");
+        assert!(
+            labels(&rows).contains(&"1280 × 720".to_string()),
+            "{:?}",
+            labels(&rows)
+        );
+    }
+
+    /// And the tick moves to whatever was chosen, with the highlight opening
+    /// on it: what the row leads to is a question about what this is set to,
+    /// and the answer should be under the thumb.
+    #[test]
+    fn the_size_in_force_is_ticked_and_opened_on() {
+        let offered = resolution::offered([1920, 1080]);
+        let wanted = [1280, 720];
+        let (rows, at) = resolution_rows(offered.clone(), Some(wanted));
+        assert_eq!(ticked(&rows), ["1280 × 720"]);
+        assert_eq!(rows[at].label, "1280 × 720");
+        assert_eq!(
+            rows[at].command,
+            menu::Command::UseResolution(Some(wanted)),
+            "the row under the highlight is the one in force"
+        );
+    }
+
+    /// A size chosen on some other screen is still drawn, in its place in the
+    /// order. It is what the application is set to; leaving it out would be a
+    /// list with a tick on nothing and no way to explain why.
+    #[test]
+    fn a_size_this_screen_does_not_offer_is_still_shown() {
+        let odd = [1280, 800];
+        let (rows, at) = resolution_rows(resolution::offered([1920, 1080]), Some(odd));
+        assert_eq!(ticked(&rows), ["1280 × 800"]);
+        assert_eq!(rows[at].label, "1280 × 800");
+        // And it stands where its size puts it, rather than being pushed onto
+        // the end of a list that is otherwise descending.
+        let sizes: Vec<String> = labels(&rows);
+        let here = sizes
+            .iter()
+            .position(|label| label == "1280 × 800")
+            .unwrap();
+        assert_eq!(sizes[here - 1], "1440 × 810");
+        assert_eq!(sizes[here + 1], "1280 × 720");
+    }
+
+    /// A panel the shell has not been told the shape of still offers the one
+    /// row that is always true, and the menu is still worth opening — a list
+    /// with nothing choosable in it is refused by the panel itself.
+    #[test]
+    fn a_screen_of_no_size_still_offers_native() {
+        let (rows, at) = resolution_rows(resolution::offered([0, 0]), None);
+        assert_eq!(labels(&rows), ["Native", "Cancel"]);
+        assert_eq!(at, 0);
+        assert!(rows.iter().any(|row| row.enabled));
+    }
+
+    /// Cancel is below the rule, as it is on every menu in this shell: the
+    /// rows above it are about the application, and it is about the menu.
+    #[test]
+    fn the_way_out_is_in_a_band_of_its_own() {
+        let (rows, _) = resolution_rows(resolution::offered([1920, 1080]), None);
+        let bands: Vec<u8> = rows.iter().map(|row| row.group).collect();
+        assert!(
+            bands[..bands.len() - 1].iter().all(|band| *band == 0),
+            "{bands:?}"
+        );
+        assert_eq!(bands.last(), Some(&1));
+    }
 }
 
 /// The answer a game's remembered way of starting picks out of a question, if
@@ -32796,7 +33256,7 @@ mod steam_game_menu_tests {
         quiet.updating = true;
         assert_eq!(
             labels(&quiet),
-            vec!["Compatibility", "Sort", "Cancel"],
+            vec!["Compatibility", "Resolution", "Sort", "Cancel"],
             "the menu offered what the row a finger's width away refused"
         );
 
@@ -32831,23 +33291,34 @@ mod steam_game_menu_tests {
             ),
             (Standing::Uninstalling, vec!["Compatibility"]),
         ] {
+            // Resolution is on every one of them: it is the shell's own
+            // answer about the game rather than something asked of Steam, so
+            // no standing can take it away.
             let wanted: Vec<String> = expected
                 .into_iter()
-                .chain(["Sort", "Cancel"])
+                .chain(["Resolution", "Sort", "Cancel"])
                 .map(String::from)
                 .collect();
             assert_eq!(labels(&doing(standing, true)), wanted, "for {standing:?}");
         }
     }
 
-    /// Every row that acts on a game needs Valve's client, so a machine
+    /// Every row that *acts* on a game needs Valve's client, so a machine
     /// without one offers none of them rather than rows that can only refuse.
-    /// What is left is the band that was never about the game: the column's
-    /// order, which is the shell's own to change, and the way out.
+    /// What is left is Resolution, which is the shell's own answer carried out
+    /// by the compositor and has nothing to ask Steam, and then the band that
+    /// was never about the game: the column's order, which is the shell's own
+    /// to change, and the way out.
     #[test]
     fn without_a_client_there_is_nothing_to_do_to_the_game() {
-        assert_eq!(labels(&game(true, false)), vec!["Sort", "Cancel"]);
-        assert_eq!(labels(&game(false, false)), vec!["Sort", "Cancel"]);
+        assert_eq!(
+            labels(&game(true, false)),
+            vec!["Resolution", "Sort", "Cancel"]
+        );
+        assert_eq!(
+            labels(&game(false, false)),
+            vec!["Resolution", "Sort", "Cancel"]
+        );
     }
 
     /// The two halves of the column are two situations and not two states of
@@ -32862,6 +33333,7 @@ mod steam_game_menu_tests {
                 "Verify with Steam",
                 "Compatibility",
                 "Uninstall",
+                "Resolution",
                 "Sort",
                 "Cancel"
             ]
@@ -32872,7 +33344,7 @@ mod steam_game_menu_tests {
         // is not on the machine too.
         assert_eq!(
             labels(&game(false, true)),
-            vec!["Install", "Compatibility", "Sort", "Cancel"]
+            vec!["Install", "Compatibility", "Resolution", "Sort", "Cancel"]
         );
     }
 
@@ -33553,7 +34025,7 @@ mod steam_game_menu_tests {
         // always was: a row that could only refuse is worse than no row.
         let mut none = doing(lxb_steam::library::Standing::Updating, false);
         none.waiting_for_steam = true;
-        assert_eq!(labels(&none), vec!["Sort", "Cancel"]);
+        assert_eq!(labels(&none), vec!["Resolution", "Sort", "Cancel"]);
 
         // A game Steam is actually updating is not offered it.
         let updating = doing(lxb_steam::library::Standing::Updating, true);
@@ -34508,6 +34980,18 @@ fn rom_rows(deletable: bool, fetching: bool, emulated: bool, own: [bool; 2]) -> 
         } else {
             settings.disabled()
         },
+        // And how many pixels the emulator draws while it is playing *this*
+        // game, which is above the rule for the same reason: it is a setting on
+        // the game rather than something done to the file. Not greyed with the
+        // row above it — that one leads into a core's own options and there is
+        // no core until a console has one, while this is answered by the
+        // compositor and is true of a game nothing can play yet. See
+        // [`crate::resolution`].
+        menu::Entry::new(
+            menu::Command::Resolution,
+            crate::i18n::text("shell-resolution"),
+        )
+        .glyph(icons::SETTING_RESOLUTION),
         // The band break: above it is what to do with the *game*, below it is
         // what to do to the file it is.
         menu::Entry::new(menu::Command::Rename, crate::i18n::text("shell-rename"))
@@ -37093,6 +37577,7 @@ fn parse_timed_action(raw: &str) -> Result<(f32, Action), String> {
         "screenshot" => Action::Screenshot,
         "message" => Action::PretendAMessage,
         "invite" => Action::PretendAnInvite,
+        "agreement" => Action::PretendAnAgreement,
         "steam-overlay" => Action::SteamOverlay,
         "volume-up" => Action::VolumeUp,
         "volume-down" => Action::VolumeDown,
@@ -42855,6 +43340,7 @@ mod file_menu_tests {
                 "Choose a cover",
                 "Choose a background",
                 "Emulator settings",
+                "Resolution",
                 "Rename",
                 "Delete",
                 "Cancel"
@@ -42864,7 +43350,7 @@ mod file_menu_tests {
         let bands: Vec<u8> = rows.iter().map(|row| row.group).collect();
         assert_eq!(
             bands,
-            [0, 0, 0, 0, 0, 1, 1, 1],
+            [0, 0, 0, 0, 0, 0, 1, 1, 1],
             "the rule falls between the game and the file it is"
         );
         assert!(

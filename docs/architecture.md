@@ -93,6 +93,7 @@ inject key presses and pointer clicks, and end the session.
 | event `output_transform` | Which way up a display's picture is drawn — and, by being sent at all, that this compositor is the one turning it. |
 | request `set_output_transform` | Turn one display's picture, for a screen standing on its side. |
 | request `set_output_application_scale` | How much larger than life the applications on one display draw their own interfaces. Not a magnification: each window is configured smaller than the screen and told to fill that with the screen's own pixels. `set_application_scale` beside it says the same thing for every display a shell has not named. |
+| request `set_application_resolution` | How many pixels one named application draws its picture at, whatever display it ends up on. The opposite bargain from the scale above it: the window is configured smaller and the client is told *nothing* about scale, so it draws fewer pixels and the compositor puts that picture over the whole screen. `0×0` is the display's own size. |
 | request `hide_pointer` | Take the cursor off screen, because the user has picked up the controller. |
 | request `ask_to_share` | The desktop portal asking whether an application may see a display. |
 | event `share_request` | That question, on its way to the shell — the only client that can draw it. |
@@ -262,9 +263,9 @@ answer cannot be "look at the screen and see": it may have been pressed exactly
 because what is on the screen has stopped listening. It sounds when that press
 *opens* the overlay and at no other time. Closing it is silent, because the
 overlay leaving is the screen behind it coming back. So is the guide arriving by
-any other route — Back walking out of the top of the bar, a portal's question
-about sharing a screen, an authorisation panel raised over a game — because none
-of those is somebody asking for the guide.
+any other route — a portal's question about sharing a screen, an authorisation
+panel raised over a game — because neither of those is somebody asking for the
+guide.
 
 `screenshot.ogg` is one of the two sounds here that answer something the shell
 *did* rather than something the user pressed. It is the pair of the white flash the
@@ -449,8 +450,8 @@ crates/lxb-compositor/
   flash.rs        the white a display gives when it has just been photographed
   blackout.rs     the black one display rests behind while another one is
                   being used — see OLED protection
-  screencopy.rs   wlr-screencopy: the standard way anything else reads the
-                  screen, and what the portal is built on
+  screencopy.rs   wlr-screencopy: what the portal is built on, and offered to
+                  the shell and the portal alone
   hdr.rs          the connector's metadata and the CRTC's colour pipeline
   xwayland.rs     private XWayland server's X window manager and selections
   render.rs       render element assembly, shared by every backend

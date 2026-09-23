@@ -10169,6 +10169,33 @@ const TERMINAL_FOOT: f32 = 0.85;
 /// hairline, with a little air above it so the last row does not sit on
 /// it, and the line of writing under it.
 const TERMINAL_FOOT_BAND: f32 = 1.4;
+/// The size an agreement is set at in its reading well, in reference pixels:
+/// the size of the panel's own sentences, so what the panel says and what it
+/// is asking about read as one voice at one distance.
+const READING_TEXT: f32 = 21.0;
+/// The leading of a row of prose in the well. Looser than a terminal's rows:
+/// a paragraph is read along its lines, not down a column.
+const READING_LEADING: f32 = 1.4;
+
+/// How wide a line of prose in the reading well may run, in reference pixels:
+/// the wide panel's inner width, less the well's inset on each side. What
+/// [`crate::gpu::wrap_reading`] wraps to.
+pub fn reading_width() -> f32 {
+    DIALOG_TERMINAL_WIDTH - GUIDE_MARGIN * 2.0 - TERMINAL_INSET * 2.0
+}
+
+/// The face an agreement is wrapped and drawn in, as `(size, leading)`.
+pub fn reading_face() -> (f32, f32) {
+    (READING_TEXT, READING_LEADING)
+}
+
+/// How tall a reading well of `rows` is altogether, foot and padding
+/// included, in reference pixels — [`terminal_height`] in the prose face.
+fn reading_height(rows: usize) -> f32 {
+    TERMINAL_PADDING * 2.0
+        + TERMINAL_INSET * 2.0
+        + READING_TEXT * READING_LEADING * (rows as f32 + TERMINAL_FOOT_BAND)
+}
 
 /// How large the terminal frame's face is, in reference pixels: what fits
 /// exactly [`lxb_updates::COLUMNS`] characters of the fixed-width face across
@@ -10197,6 +10224,123 @@ fn terminal_height(rows: usize) -> f32 {
     TERMINAL_PADDING * 2.0
         + TERMINAL_INSET * 2.0
         + terminal_row() * (rows as f32 + TERMINAL_FOOT_BAND)
+}
+
+/// The face a well of somebody else's writing is set in: the terminal's
+/// fixed-width one for a program's output, the shell's own for prose.
+struct WellFace {
+    /// In reference pixels.
+    size: f32,
+    /// A row's height, as a share of `size`.
+    leading: f32,
+    mono: bool,
+}
+
+/// A dark well sunk into the panel, the way the password's is and for the
+/// same reason — it is a hole in the glass that something else writes into,
+/// not a control — with `rows` rows of writing laid down it and a foot along
+/// the bottom saying where in the whole they are. [`Line::Terminal`] and
+/// [`Line::Reading`] are both drawn as one.
+///
+/// Dark rather than the glass's tint, and more opaque than any other well: a
+/// transcript is read against black on every terminal there is, and small
+/// type over a wallpaper is type nobody can read. That is as true of an
+/// agreement as of a transcript.
+#[allow(clippy::too_many_arguments)]
+fn draw_well(
+    scene: &mut Scene,
+    rect: [f32; 4],
+    lines: &[String],
+    rows: usize,
+    foot: &str,
+    face: WellFace,
+    theme: &crate::theme::RenderedTheme,
+    scale: f32,
+) {
+    let padding = TERMINAL_PADDING * scale;
+    let [lx, ly, lw, lh] = rect;
+    let well = [lx, ly + padding, lw, (lh - padding * 2.0).max(0.0)];
+    let radius = 10.0 * scale;
+    scene.quads.push(Quad {
+        x: well[0],
+        y: well[1],
+        w: well[2],
+        h: well[3],
+        slot: SOLID_SLOT,
+        color: theme.glass.a(0.86),
+        radius,
+        ..Quad::default()
+    });
+    scene.quads.push(Quad {
+        x: well[0],
+        y: well[1],
+        w: well[2],
+        h: well[3],
+        slot: SOLID_SLOT,
+        color: theme.accent_soft.a(0.22),
+        radius,
+        border: (1.0 * scale).max(1.0),
+        ..Quad::default()
+    });
+
+    let size = face.size * scale;
+    let row = face.size * face.leading * scale;
+    let inset = TERMINAL_INSET * scale;
+    let left = well[0] + inset;
+    let top = well[1] + inset;
+    let width = (well[2] - inset * 2.0).max(0.0);
+    for (index, line) in lines.iter().take(rows).enumerate() {
+        if line.is_empty() {
+            continue;
+        }
+        scene.texts.push(Text {
+            content: line.clone(),
+            x: left,
+            y: top + index as f32 * row + (row - size) * 0.5 - size * 0.12,
+            size,
+            color: theme.text.a(0.9),
+            bold: false,
+            max_width: width,
+            align: TextAlign::Left,
+            clip: None,
+            halo: 0.0,
+            lines: 1,
+            cut: Cut::Tail,
+            mono: face.mono,
+        });
+    }
+    // The foot: a hairline under the rows, and the line along it
+    // in the same face, dimmer and smaller — a status line, as a
+    // terminal's own would be.
+    let foot_top = top + rows as f32 * row;
+    let foot_h = row * TERMINAL_FOOT_BAND;
+    let rule_h = (1.0 * scale).max(1.0);
+    let air = row * (TERMINAL_FOOT_BAND - 1.0) * 0.5;
+    scene.quads.push(Quad {
+        x: left,
+        y: foot_top + air,
+        w: width,
+        h: rule_h,
+        slot: SOLID_SLOT,
+        color: theme.accent_soft.a(0.18),
+        ..Quad::default()
+    });
+    let foot_size = size * TERMINAL_FOOT;
+    scene.texts.push(Text {
+        content: foot.to_owned(),
+        x: left,
+        y: foot_top + air + rule_h + (foot_h - air - foot_size) * 0.5 - foot_size * 0.12,
+        size: foot_size,
+        color: theme.text_soft.a(0.62),
+        bold: false,
+        max_width: width,
+        align: TextAlign::Left,
+        clip: None,
+        halo: 0.0,
+        lines: 1,
+        cut: Cut::Tail,
+        mono: face.mono,
+    });
 }
 
 /// How wide the groove is where the panel counts something up.
@@ -10243,15 +10387,17 @@ fn dialog_line_height(line: &Line) -> f32 {
         Line::Progress(_) => DIALOG_WAITING,
         Line::Rule => DIALOG_RULE,
         Line::Terminal { rows, .. } => terminal_height(*rows),
+        Line::Reading { rows, .. } => reading_height(*rows),
     }
 }
 
-/// Whether the panel has a terminal on it, and so takes the wider width.
+/// Whether the panel has a terminal or a reading well on it, and so takes the
+/// wider width.
 fn dialog_has_terminal(dialog: &Dialog) -> bool {
     dialog
         .lines()
         .iter()
-        .any(|line| matches!(line, Line::Terminal { .. }))
+        .any(|line| matches!(line, Line::Terminal { .. } | Line::Reading { .. }))
 }
 
 /// Everything on the panel, in settled display coordinates, worked out in one
@@ -10829,107 +10975,47 @@ pub fn build_dialog(view: DialogView, width: f32, height: f32) -> Scene {
                     ..Quad::default()
                 });
             }
-            // A terminal: a dark well sunk into the panel, the way the
-            // password's is and for the same reason — it is a hole in the
-            // glass that something else writes into, not a control — with
-            // the lines laid down it in the fixed-width face, each on its
-            // own row, and where the window is written along the foot.
+            // A terminal: the lines laid down the well in the fixed-width
+            // face, each on its own row, and where the window is written
+            // along the foot.
             //
-            // Dark rather than the glass's tint, and more opaque than any
-            // other well: a transcript is read against black on every
-            // terminal there is, and eighty columns of small type over a
-            // wallpaper would be eighty columns nobody can read.
-            Line::Terminal { lines, rows, foot } => {
-                let padding = TERMINAL_PADDING * scale;
-                let well = [*lx, ly + padding, *lw, (lh - padding * 2.0).max(0.0)];
-                let radius = 10.0 * scale;
-                inside.quads.push(Quad {
-                    x: well[0],
-                    y: well[1],
-                    w: well[2],
-                    h: well[3],
-                    slot: SOLID_SLOT,
-                    color: theme.glass.a(0.86),
-                    radius,
-                    ..Quad::default()
-                });
-                inside.quads.push(Quad {
-                    x: well[0],
-                    y: well[1],
-                    w: well[2],
-                    h: well[3],
-                    slot: SOLID_SLOT,
-                    color: theme.accent_soft.a(0.22),
-                    radius,
-                    border: (1.0 * scale).max(1.0),
-                    ..Quad::default()
-                });
-
-                // The face is sized from the panel's *reference* width, so
-                // that a line of eighty columns lands exactly across the
-                // frame; on a display too narrow for the full panel the
-                // frame is narrower and the line is cut at its edge rather
-                // than shrunk, which is what a terminal does too.
-                let size = terminal_text_size() * scale;
-                let row = terminal_row() * scale;
-                let inset = TERMINAL_INSET * scale;
-                let left = well[0] + inset;
-                let top = well[1] + inset;
-                let width = (well[2] - inset * 2.0).max(0.0);
-                for (index, line) in lines.iter().take(*rows).enumerate() {
-                    if line.is_empty() {
-                        continue;
-                    }
-                    inside.texts.push(Text {
-                        content: line.clone(),
-                        x: left,
-                        y: top + index as f32 * row + (row - size) * 0.5 - size * 0.12,
-                        size,
-                        color: theme.text.a(0.9),
-                        bold: false,
-                        max_width: width,
-                        align: TextAlign::Left,
-                        clip: None,
-                        halo: 0.0,
-                        lines: 1,
-                        cut: Cut::Tail,
-                        mono: true,
-                    });
-                }
-                // The foot: a hairline under the rows, and the line along it
-                // in the same face, dimmer and smaller — a status line, as a
-                // terminal's own would be.
-                let foot_top = top + *rows as f32 * row;
-                let foot_h = row * TERMINAL_FOOT_BAND;
-                let rule_h = (1.0 * scale).max(1.0);
-                let air = row * (TERMINAL_FOOT_BAND - 1.0) * 0.5;
-                inside.quads.push(Quad {
-                    x: left,
-                    y: foot_top + air,
-                    w: width,
-                    h: rule_h,
-                    slot: SOLID_SLOT,
-                    color: theme.accent_soft.a(0.18),
-                    ..Quad::default()
-                });
-                let foot_size = size * TERMINAL_FOOT;
-                inside.texts.push(Text {
-                    content: foot.clone(),
-                    x: left,
-                    y: foot_top + air + rule_h + (foot_h - air - foot_size) * 0.5
-                        - foot_size * 0.12,
-                    size: foot_size,
-                    color: theme.text_soft.a(0.62),
-                    bold: false,
-                    max_width: width,
-                    align: TextAlign::Left,
-                    clip: None,
-                    halo: 0.0,
-                    lines: 1,
-                    cut: Cut::Tail,
+            // The face is sized from the panel's *reference* width, so that a
+            // line of eighty columns lands exactly across the frame; on a
+            // display too narrow for the full panel the frame is narrower and
+            // the line is cut at its edge rather than shrunk, which is what a
+            // terminal does too.
+            Line::Terminal { lines, rows, foot } => draw_well(
+                &mut inside,
+                [*lx, *ly, *lw, *lh],
+                lines,
+                *rows,
+                foot,
+                WellFace {
+                    size: terminal_text_size(),
+                    leading: TERMINAL_LEADING,
                     mono: true,
-                });
-            }
+                },
+                &theme,
+                scale,
+            ),
+            // The same well with somebody's prose in it rather than a
+            // program's output: the shell's own face, at the size of the
+            // panel's own sentences, wrapped to the well by whoever raised
+            // it — see [`crate::gpu::wrap_reading`].
+            Line::Reading { lines, rows, foot } => draw_well(
+                &mut inside,
+                [*lx, *ly, *lw, *lh],
+                lines,
+                *rows,
+                foot,
+                WellFace {
+                    size: READING_TEXT,
+                    leading: READING_LEADING,
+                    mono: false,
+                },
+                &theme,
+                scale,
+            ),
         }
     }
 

@@ -456,6 +456,16 @@ pub enum Problem {
     /// can be asked is Steam's own window. See [`crate::Doing::Install`],
     /// which is what the shell offers instead.
     Asks(String),
+    /// The client will not go on until these agreements are accepted, and it
+    /// has said which they are.
+    ///
+    /// Kept apart from [`Problem::Asks`] because this one the shell *can*
+    /// put on its own screen: an agreement is a text to read and a yes to
+    /// give, and both of those are things a panel with a thumbstick can do.
+    /// Nothing is accepted by getting this — the wizard was cancelled on the
+    /// way out — and what accepts is a later [`install`] that is handed the
+    /// same list back, which only a person pressing Accept makes.
+    Agreements(Vec<Eula>),
     /// The ground the flow was standing on moved before it acted, so it did
     /// not act. Carries the caller's own account of what moved.
     ///
@@ -483,6 +493,11 @@ impl std::fmt::Display for Problem {
             Problem::Asks(what) => write!(
                 f,
                 "This game has {what} first, which only Steam's own window can ask for."
+            ),
+            Problem::Agreements(listed) => write!(
+                f,
+                "This game has {} agreement(s) to accept first.",
+                listed.len()
             ),
             // Short, because it is drawn as one line of a panel. Which methods
             // went is a fact for the log, and it is already there.
@@ -2129,10 +2144,30 @@ fn which_are_missing(wanted: &[&str]) -> Result<Vec<String>, Problem> {
 /// It is not a rare corner. `ShowEULAs` is the state a game with an agreement
 /// stops in, and of fifteen titles taken off one real account, six had one —
 /// Black Mesa among them, which sat in that state with no window, no download
-/// and no error. Those are [`Problem::Asks`] now, because a shell that clicked
-/// through somebody's licence agreement for them would be answering a question
-/// it was never asked. The wizard is cancelled on the way out, so the next
-/// press does not walk into a flow that is still standing.
+/// and no error. The other four questions are [`Problem::Asks`], and the
+/// wizard is cancelled on the way out, so the next press does not walk into a
+/// flow that is still standing.
+///
+/// ## An agreement comes back as the agreements
+///
+/// `ShowEULAs` is answered with [`Problem::Agreements`]: the list the client's
+/// own dialog would have walked (`SteamClient.Apps.LoadEula`), read *before*
+/// the wizard is cancelled, so the shell can put each one on its own screen.
+/// Nothing is accepted here. A shell that clicked through somebody's licence
+/// agreement for them would be answering a question it was never asked; what
+/// it may do is ask it, and pass on the answer.
+///
+/// That answer is `accepting`: the agreements a person has just pressed Accept
+/// on, recorded with `MarkEulaAccepted` — the call Valve's own Accept button
+/// makes, with the same three arguments — before the wizard is opened. The
+/// wizard then finds them accepted and does not stop. Recorded first rather
+/// than answered inside a parked wizard, because the client's own interface
+/// reacts to `ShowEULAs` too: it builds a dialog of its own, hidden here, that
+/// **cancels the install when it closes** unless its own workflow was the one
+/// that finished. A wizard continued from outside that workflow is a wizard
+/// that dialog cancels a moment later. Cancelling first and asking the next
+/// wizard is the way round it, and it leaves nothing standing while somebody
+/// reads for as long as they like.
 ///
 /// Driving it from the events is also what makes the ordering right rather
 /// than lucky: `ShowConfig` is the one state where continuing means anything,
@@ -2152,17 +2187,31 @@ fn which_are_missing(wanted: &[&str]) -> Result<Vec<String>, Problem> {
 /// The install folder is deliberately not chosen: the client's default is the
 /// one the user set in the client, and a shell that overrode it would put games
 /// somewhere they did not ask for and did not expect.
-pub fn install(app_id: u32, still: Still<'_>) -> Result<(), Problem> {
+pub fn install(app_id: u32, accepting: &[Eula], still: Still<'_>) -> Result<(), Problem> {
     let (_turn, socket) = ready_to_drive_the_wizard(&INSTALLING_NEEDS, still)?;
     // `SetCreateShortcuts(false, false)` because the two it makes are a
     // desktop file and a start-menu entry on a machine that may have neither
     // — this shell *is* the menu, and the game is already a row on it.
+    //
+    // The two agreement calls are asked about here rather than in
+    // `INSTALLING_NEEDS`, because most games have no agreement: a client that
+    // renamed them should still install those, and only the one press that
+    // needs them falls back to Steam's own window.
     let call = format!(
         "(async () => {{ \
            {knows} \
+           const accepting = {accepting}; \
+           if (accepting.length) {{ \
+             if (typeof SteamClient.Apps.MarkEulaAccepted !== 'function') \
+               return JSON.stringify({{ asks: 'an agreement to accept' }}); \
+             for (const agreement of accepting) {{ \
+               await SteamClient.Apps.MarkEulaAccepted(agreement.app, agreement.id, agreement.version); \
+             }} \
+           }} \
            const answer = await new Promise(settle => {{ \
              let done = false; \
              let going = false; \
+             let reading = false; \
              let watch = null; \
              const finish = said => {{ \
                if (done) return; \
@@ -2178,6 +2227,17 @@ pub fn install(app_id: u32, still: Still<'_>) -> Result<(), Problem> {
                SteamClient.Installs.CancelInstall(); \
                finish({{ failed: said, error }}); \
              }}; \
+             const agreements = async app => {{ \
+               let listed = null; \
+               if (typeof SteamClient.Apps.LoadEula === 'function') {{ \
+                 try {{ listed = await SteamClient.Apps.LoadEula(app); }} catch (ignored) {{}} \
+               }} \
+               if (!Array.isArray(listed) || !listed.length) return asks('an agreement to accept'); \
+               SteamClient.Installs.CancelInstall(); \
+               finish({{ agreements: listed.map(one => ({{ \
+                 app, id: one.id, version: one.version, url: one.url \
+               }})) }}); \
+             }}; \
              watch = SteamClient.Installs.RegisterForShowInstallWizard(async where => {{ \
                switch (where.eInstallState) {{ \
                  case {config}: \
@@ -2192,7 +2252,10 @@ pub fn install(app_id: u32, still: Still<'_>) -> Result<(), Problem> {
                    where.eAppError || 0 \
                  ); \
                  case {canceled}: return failed('Steam stopped it', 0); \
-                 case {eulas}: return asks('an agreement to accept'); \
+                 case {eulas}: \
+                   if (reading) return; \
+                   reading = true; \
+                   return agreements(where.currentAppID || {app_id}); \
                  case {cd_key}: return asks('a product key to type'); \
                  case {password}: return asks('a password to type'); \
                  case {media}: return asks('a disc to change'); \
@@ -2205,6 +2268,7 @@ pub fn install(app_id: u32, still: Still<'_>) -> Result<(), Problem> {
            return JSON.stringify(answer); \
          }})()",
         knows = knows_the_game(app_id),
+        accepting = accepting_literal(accepting),
         config = state::SHOW_CONFIG,
         complete = state::COMPLETE,
         failed_state = state::FAILED,
@@ -2221,6 +2285,85 @@ pub fn install(app_id: u32, still: Still<'_>) -> Result<(), Problem> {
     // reported as a client that did not answer.
     let patience = UNTIL_IT_KNOWS_THE_GAME + UNTIL_THE_WIZARD_ANSWERS + PATIENCE;
     evaluate_within(&socket, &call, patience).and_then(|answer| wizard_said(&answer))
+}
+
+/// One agreement Valve's client will not install a game without, as the
+/// client lists it (`SteamClient.Apps.LoadEula`).
+///
+/// Only what it takes to find the text and to record the answer. The text
+/// itself is not the client's to give — its own dialog fetches it from `url`
+/// — and is read by [`crate::agreement`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Eula {
+    /// The app it belongs to: the wizard's `currentAppID`, which is nearly
+    /// always the game that was pressed, and is carried rather than assumed
+    /// because the wizard walks every app an install is made of.
+    pub app_id: u32,
+    /// Valve's name for it — `4000_eula_0` — which is also the key an
+    /// acceptance is recorded under.
+    pub id: String,
+    /// Which edition of it this is. Accepting one edition does not accept the
+    /// next: a publisher that rewrites its terms raises the number, and the
+    /// client asks again.
+    pub version: u32,
+    /// Where its words are.
+    pub url: String,
+}
+
+/// The agreements an [`install`] is to record as accepted, as a JavaScript
+/// array literal.
+fn accepting_literal(accepting: &[Eula]) -> String {
+    serde_json::Value::Array(
+        accepting
+            .iter()
+            .map(|eula| {
+                serde_json::json!({
+                    "app": eula.app_id,
+                    "id": eula.id,
+                    "version": eula.version,
+                })
+            })
+            .collect(),
+    )
+    .to_string()
+}
+
+/// Read the list the wizard brought back when it stopped on an agreement.
+///
+/// `None` for anything that is not all there, so the caller falls back to
+/// Steam's own window rather than putting half an agreement on the screen — or
+/// recording an acceptance under a name or an edition nobody was shown.
+fn agreements_said(listed: &serde_json::Value) -> Option<Vec<Eula>> {
+    let listed = listed.as_array()?;
+    if listed.is_empty() {
+        return None;
+    }
+    listed
+        .iter()
+        .map(|one| {
+            let version = one.get("version")?;
+            Some(Eula {
+                app_id: u32::try_from(one.get("app")?.as_u64()?).ok()?,
+                id: one
+                    .get("id")?
+                    .as_str()
+                    .filter(|id| !id.is_empty())?
+                    .to_string(),
+                // A number in every one seen, and a number in the file the
+                // client records it in; written out as text is taken too,
+                // because the call it is handed back to does not mind which.
+                version: version
+                    .as_u64()
+                    .and_then(|number| u32::try_from(number).ok())
+                    .or_else(|| version.as_str()?.trim().parse().ok())?,
+                url: one
+                    .get("url")?
+                    .as_str()
+                    .filter(|url| !url.is_empty())?
+                    .to_string(),
+            })
+        })
+        .collect()
 }
 
 /// JavaScript that waits for the client to know what one game is, and gives up
@@ -2689,6 +2832,18 @@ fn wizard_said(answer: &str) -> Result<(), Problem> {
     if let Some(what) = parsed.get("asks").and_then(serde_json::Value::as_str) {
         return Err(Problem::Asks(what.to_string()));
     }
+    // An agreement the wizard stopped on, with the client's list of what it
+    // wants accepted. A list that cannot be read in full is the older answer:
+    // Steam's own window, which can still ask it.
+    if let Some(listed) = parsed.get("agreements") {
+        return Err(match agreements_said(listed) {
+            Some(eulas) => Problem::Agreements(eulas),
+            None => {
+                tracing::warn!(%listed, "the client listed agreements this shell could not read");
+                Problem::Asks("an agreement to accept".to_string())
+            }
+        });
+    }
     if parsed.get("ok").and_then(serde_json::Value::as_bool) == Some(true) {
         return Ok(());
     }
@@ -2920,6 +3075,65 @@ mod tests {
             wizard_said(r#"{"failed":"Steam stopped it","asks":"a product key to type"}"#),
             Err(Problem::Asks("a product key to type".to_string()))
         );
+    }
+
+    /// An agreement comes back as what it is, so the shell can put it on its
+    /// own screen — and only when all of it is there. An edition written as
+    /// text is still an edition; one that is missing, or an agreement with no
+    /// name, is Steam's own window, because an acceptance recorded under the
+    /// wrong name or edition is one nobody gave.
+    #[test]
+    fn an_agreement_comes_back_as_the_agreements() {
+        let garrys_mod = Eula {
+            app_id: 4000,
+            id: "4000_eula_0".to_string(),
+            version: 3,
+            url: "http://store.steampowered.com/eula/4000_eula_0".to_string(),
+        };
+        assert_eq!(
+            wizard_said(
+                r#"{"agreements":[{"app":4000,"id":"4000_eula_0","version":3,
+                    "url":"http://store.steampowered.com/eula/4000_eula_0"}]}"#
+            ),
+            Err(Problem::Agreements(vec![garrys_mod.clone()]))
+        );
+        assert_eq!(
+            wizard_said(
+                r#"{"agreements":[{"app":4000,"id":"4000_eula_0","version":"3",
+                    "url":"http://store.steampowered.com/eula/4000_eula_0"}]}"#
+            ),
+            Err(Problem::Agreements(vec![garrys_mod]))
+        );
+        for broken in [
+            r#"{"agreements":[]}"#,
+            r#"{"agreements":[{"app":4000,"id":"4000_eula_0","url":"https://x"}]}"#,
+            r#"{"agreements":[{"app":4000,"id":"","version":1,"url":"https://x"}]}"#,
+            r#"{"agreements":[{"app":4000,"id":"a","version":1,"url":"https://x"},{"app":4000}]}"#,
+        ] {
+            assert_eq!(
+                wizard_said(broken),
+                Err(Problem::Asks("an agreement to accept".to_string())),
+                "{broken}"
+            );
+        }
+    }
+
+    /// What an install records as accepted is exactly what was read, under the
+    /// names the client's own call takes them by.
+    #[test]
+    fn accepting_is_handed_over_as_it_was_read() {
+        let literal = accepting_literal(&[Eula {
+            app_id: 4000,
+            id: "4000_eula_0".to_string(),
+            version: 3,
+            url: "https://store.steampowered.com/eula/4000_eula_0".to_string(),
+        }]);
+        let read: serde_json::Value = serde_json::from_str(&literal).expect("an array literal");
+        assert_eq!(
+            read,
+            serde_json::json!([{ "app": 4000, "id": "4000_eula_0", "version": 3 }])
+        );
+        assert_eq!(accepting_literal(&[]), "[]");
     }
 
     /// A download that would not start is not a credential that was not
