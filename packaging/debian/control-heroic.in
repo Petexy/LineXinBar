@@ -1,0 +1,20 @@
+Package: lxb-heroic
+Version: @VERSION@-1
+Architecture: @ARCH@
+Maintainer: Piotr Lewandowski <piotr.petexiness@gmail.com>
+Section: x11
+Priority: optional
+Depends: @SHLIB_DEPENDS@, lxb-desktop (= @VERSION@-1), flatpak
+Installed-Size: @INSTALLED_SIZE@
+Homepage: https://github.com/Petexy/LineXinBar
+Description: Epic Games integration for the LineXinBar shell, through Heroic
+ Adds Epic Games to the LineXinBar shell, through Heroic Games Launcher's
+ flatpak: a row under Steam in the Games column, a sign-in with a code for the
+ phone, a column of the account's games with their covers, installing,
+ updating, playing and uninstalling them from the bar, cloud saves, and their
+ achievements in the Trophies column.
+ .
+ The shell looks for this package on PATH and mentions Epic Games only when it
+ is installed. Where Heroic itself is missing, the shell offers to install the
+ Flathub build into the user's own flatpak installation, which needs no
+ administrative rights.

@@ -312,6 +312,9 @@ pub const SETTING_ACCENT: &str = "lxb:setting-accent";
 pub const SETTING_THEME: &str = "lxb:setting-theme";
 pub const SETTING_WALLPAPER: &str = "lxb:setting-wallpaper";
 pub const SETTING_ICONS: &str = "lxb:setting-icons";
+/// Theme > Particles: a large four-pointed star, a smaller one and a bead —
+/// the sparkles the wallpaper's current carries.
+pub const SETTING_PARTICLES: &str = "lxb:setting-particles";
 /// Settings > Language: a speech bubble with a letter cut through it.
 ///
 /// The two marks that might have said "language" are both spoken for — a
@@ -489,6 +492,12 @@ pub const SETTING_SCALE: &str = "lxb:setting-scale";
 /// *this fits that* looks like, which is the whole of what a Steam Play tool
 /// is. See setting-compatibility.svg.
 pub const SETTING_COMPATIBILITY: &str = "lxb:setting-compatibility";
+/// The drum a disk is drawn as with an arrow coming down into it: Settings >
+/// Games > Steam > Storage > Install games to, which says where a new game goes.
+/// Every other row of that page is a drive, so this one is told from them by
+/// its outline — a shorter drum set low, and the arrow standing over it. See
+/// setting-install-to.svg.
+pub const SETTING_INSTALL_TO: &str = "lxb:setting-install-to";
 
 /// Settings > Input, and the on-screen keyboard's page inside it.
 ///
@@ -953,7 +962,7 @@ pub fn letter_mark(letter: char) -> Option<&'static str> {
 /// has these whatever is installed on the machine — which is what the
 /// quick-settings bars are *for* — and they are still drawings, editable in
 /// anything that opens an SVG rather than in a string literal.
-pub const BUILTIN: [(&str, &str); 153] = [
+pub const BUILTIN: [(&str, &str); 155] = [
     (VOLUME, include_str!("glyphs/volume.svg")),
     (VOLUME_MUTED, include_str!("glyphs/volume-muted.svg")),
     (BRIGHTNESS, include_str!("glyphs/brightness.svg")),
@@ -1069,6 +1078,10 @@ pub const BUILTIN: [(&str, &str); 153] = [
     ),
     (SETTING_ICONS, include_str!("glyphs/setting-icons.svg")),
     (
+        SETTING_PARTICLES,
+        include_str!("glyphs/setting-particles.svg"),
+    ),
+    (
         SETTING_LANGUAGE,
         include_str!("glyphs/setting-language.svg"),
     ),
@@ -1154,6 +1167,10 @@ pub const BUILTIN: [(&str, &str); 153] = [
     (
         SETTING_COMPATIBILITY,
         include_str!("glyphs/setting-compatibility.svg"),
+    ),
+    (
+        SETTING_INSTALL_TO,
+        include_str!("glyphs/setting-install-to.svg"),
     ),
     (SETTING_INPUT, include_str!("glyphs/setting-input.svg")),
     (SETTING_KEYS, include_str!("glyphs/setting-keys.svg")),
@@ -2822,7 +2839,7 @@ pub(crate) mod tests {
     fn every_built_in_glyph_ships_and_draws_something() {
         assert_eq!(
             BUILTIN.len(),
-            153,
+            155,
             "a speaker, a struck-out one, a sun, a note, the three transport \
              buttons and the second face of the middle one, a stick pointer, a \
              mixer, a \
@@ -2839,14 +2856,15 @@ pub(crate) mod tests {
              folders that stand for System's Files with the folder, page, lidded \
              carton, drum \
              and house its own rows are drawn with, the \
-             fifty-eight marks the Settings column is drawn from — the one \
+             fifty-nine marks the Settings column is drawn from — the one \
              rising arrow of its Updates page in each of the five things it \
              updates, a disc at the head of the page, a cycle of two arrows \
              for the row that does the whole of it, and a screen, three \
              application tiles and a chip's die for the three parts, the brush at \
              the head of its Theme page, and under it the wave for the \
-             wallpaper's own material and four of the shell's marks in one \
-             cell for the material of the marks, the speech bubble with a \
+             wallpaper's own material, four of the shell's marks in one \
+             cell for the material of the marks and the sparkles for the \
+             particles, the speech bubble with a \
              letter cut through it that Language wears, the small window a video \
              floats in with the two sizes it is offered at and the four \
              corners of a screen it can be put in, the keyboard the Input \
@@ -2855,7 +2873,8 @@ pub(crate) mod tests {
              the flag for the layout that board is set to and the map pin every \
              continent and country of that layout's tree carries, the jigsaw \
              piece under Games that says which compatibility tool a game runs \
-             under, the mouse its other page wears and the four \
+             under and the drum with an arrow coming down into it that says \
+             which library a new game goes into, the mouse its other page wears and the four \
              marks on that page — a pointer and an arrow, each once with the \
              air going past it for a speed and once with a second copy of \
              itself for a size and for a direction — the two figures the \
@@ -3003,6 +3022,7 @@ pub(crate) mod tests {
                 SETTING_THEME,
                 SETTING_WALLPAPER,
                 SETTING_ICONS,
+                SETTING_PARTICLES,
                 SETTING_LANGUAGE,
                 SETTING_DISPLAY,
                 SETTING_RESOLUTION,
@@ -3039,6 +3059,7 @@ pub(crate) mod tests {
                 SETTING_SYSTEM,
                 SETTING_SCALE,
                 SETTING_COMPATIBILITY,
+                SETTING_INSTALL_TO,
                 SETTING_INPUT,
                 SETTING_KEYS,
                 SETTING_LAYOUT,

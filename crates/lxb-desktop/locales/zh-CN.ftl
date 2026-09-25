@@ -255,6 +255,7 @@ shell-orientation = 方向
 shell-other = 其他
 shell-output-device = 输出设备
 shell-paired = 已配对
+shell-particles = 粒子
 shell-password = 密码
 shell-paste = 粘贴
 shell-peak-brightness = 峰值亮度
@@ -302,6 +303,7 @@ shell-size = 大小
 shell-software = 软件
 shell-sort = 排序
 shell-sounds = 声音
+shell-sparkles-drifting-along-the-wallpaper = 在壁纸上飘动的光点
 shell-square-pixels = 方形像素
 shell-standard = 标准
 shell-start-music = 启动音乐
@@ -1085,6 +1087,7 @@ integration-top-right = 右上
 integration-bottom-left = 左下
 integration-bottom-right = 右下
 integration-update-the-system = 更新系统
+integration-update-linexinbar = 更新 LineXinBar
 integration-update-flatpaks = 更新 Flatpak
 integration-update-aur = 更新 AUR
 integration-update-snaps = 更新 Snap
@@ -1379,9 +1382,86 @@ steam-install-needs-first = { $what ->
    *[other] 此游戏需要先回答一个问题。
     }
 steam-downloading-first = 正在先下载 { $name }。
+
+# Steam：游戏安装到哪个库。
+steam-install-to = 游戏安装位置
+steam-ask-every-time = 每次询问
+steam-ask-every-time-note = 每个游戏的安装位置都由您选择
+steam-library-not-connected = 未连接
+steam-library-gone = 已不是 Steam 库
+steam-install-to-unavailable = { $library } · 不可用，因此每次都会询问
+steam-library-on-drive = { $drive } · { $folder }
+steam-choose-library = 请选择安装位置。
+steam-choose-library-size = 请选择安装位置。需要 { $size }。
+steam-game-needs = 需要 { $size }。
+steam-no-library-has-room = 任何位置的空间都不足。需要 { $size }。
+steam-chosen-library-not-connected = { $library } 未连接，请选择其他位置。
+steam-chosen-library-full = { $library } 空间不足，请选择其他位置。
+steam-library-free = { $library } · { $free } 可用
+steam-library-too-small = { $library } · 空间不足
+steam-installs-into = 将安装到 { $library }。
+steam-you-choose-where-next = 接下来由您选择安装位置。
 steam-achievements-unlocked = Steam · 已解锁 { $unlocked } / { $total }
 enter-password-for = 输入 { $name } 的密码。
 progress-of = { $at } / { $of }
+
+steam-storage = 存储
+steam-storage-note = { $count } 个库
+steam-library-games = { $count ->
+    [0] 没有游戏
+   *[other] { $count } 个游戏
+    }
+steam-library-summary = { $games } · { $room }
+steam-library-connect = 连接该驱动器即可查看其中的游戏。
+steam-repair-library = 修复文件夹
+steam-repair-library-note = 如果游戏无法从这里安装或启动
+steam-remove-library = 移除驱动器
+steam-remove-library-note = Steam 将不再使用它。其中的内容不会被删除。
+steam-remove-library-has-games = 请先移动或卸载其中的游戏
+steam-remove-library-default = 新游戏会安装到这里
+steam-remove-library-ask = 不再将此驱动器用于 Steam 游戏？其中的内容不会被删除。
+steam-add-drive = 添加驱动器
+steam-add-drive-note = 将游戏放在另一个驱动器上
+steam-add-library-elsewhere = 选择文件夹
+steam-add-library-elsewhere-note = 任意驱动器上的空文件夹
+steam-add-library-here = 将 Steam 游戏放在此文件夹中
+steam-game-busy = { $size } · Steam 正在处理
+steam-move-progress = 查看进度
+steam-move-choose = 请选择要移动到的位置。需要 { $size }。
+steam-move-nowhere = 其他驱动器的空间都不足。需要 { $size }。
+steam-move-no-other-library = 没有其他可移动到的位置。请先添加驱动器。
+steam-moving-to = 正在移动到 { $library }
+steam-moving-to-percent = 正在移动到 { $library } · { $percent }%
+steam-moving-stopping = 正在停止…
+steam-move-hide = 隐藏
+steam-move-stop = 停止
+steam-moved-note = 它现在位于 { $library }。
+steam-move-failed = 未能移动。
+steam-library-adding = 正在添加到 Steam…
+steam-library-removing = 正在从 Steam 中移除…
+steam-library-repairing = 正在修复…
+steam-library-repaired = 已修复。
+steam-library-not-added = 未能添加。
+steam-library-not-removed = 未能移除。
+steam-library-not-repaired = 未能修复。
+steam-could-not-be-reached = 无法连接到 Steam。请稍后再试。
+steam-refused-in-use-by = { $game } 正在使用它。请在其结束后再试。
+steam-refused = { $why ->
+    [drive-root] Steam 不能使用驱动器的根目录。请选择其中的文件夹。
+    [not-empty] 该文件夹中有其他文件。请选择一个空文件夹。
+    [not-writable] 无法在那里保存任何内容。
+    [not-executable] 无法从该驱动器启动游戏。
+    [already] 该驱动器上已有 Steam 库。
+    [not-listed] Steam 中已没有该库。
+    [in-use] Steam 正在使用它。请稍后再试。
+    [folder-there] 那里已有此游戏的文件夹。
+    [shared] 它与其他游戏共享文件，因此无法移动。
+    [no-room] 那里的空间不足。
+    [running] 请先关闭游戏。
+    [unmovable] Steam 无法移动此游戏。
+    [another-move] 正在移动另一个游戏。请等待其完成。
+   *[other] Steam 无法完成此操作。请稍后再试。
+    }
 
 # Achievements.
 signed-in-as = 已登录为 { $name }
@@ -1439,6 +1519,47 @@ screen-share-request = { $application } 想要共享您的屏幕
 device-connected = { $name } 已连接
 device-paired = { $name } 已配对
 device-would-not-pair = { $name } 无法配对
+
+# Settings > Storage. A partition is named by what it is for (System, Home,
+# Startup), else by its own label, else storage-unnamed with its size. `whole`
+# and `size` are sizes already written out, like "237 GiB".
+storage-title = 存储
+storage-description = 每个驱动器还剩多少空间
+storage-startup = 启动
+storage-unnamed = { $size } 驱动器
+storage-not-in-use = 未使用 · { $whole }
+storage-extra-memory = 用作额外内存 · { $whole }
+storage-cannot-check = 无法检查可用空间 · { $whole }
+storage-checking = 正在检查驱动器…
+storage-none = 未找到驱动器
+storage-free = 可用
+storage-used = 已用
+storage-capacity = 容量
+storage-file-system = 文件系统
+storage-location = 位置
+storage-drive = 驱动器
+
+# 挂载驱动器：在“文件”中，以及在“设置 > 存储”中某个驱动器的页面上。
+# `size` 是已写好的大小。“卸载”已用于卸载软件，所以这里用“取消挂载”。
+drive-not-mounted = 未挂载 · { $size }
+drive-mounting = 正在挂载…
+drive-unmounting = 正在取消挂载…
+shell-mount = 挂载
+shell-unmount = 取消挂载
+shell-safely-remove = 安全移除
+drive-mount-note = 在“文件”中使用它
+drive-unmount-note = 再次打开前不可用
+drive-safely-remove-note = 取消挂载并关闭，以便拔出
+drive-at-startup = 启动时挂载
+drive-at-startup-on-note = 电脑一启动即可使用，对所有人可用
+drive-at-startup-off-note = 仅在“文件”中打开时挂载
+drive-at-startup-failed = 无法更改
+drive-information = 驱动器信息
+drive-can-unplug = 您现在可以拔出它了。
+drive-mount-failed = 无法挂载此驱动器。
+drive-unmount-failed = 无法取消挂载此驱动器。
+drive-in-use = 此驱动器仍在使用中。请关闭正在使用它的程序，然后重试。
+drive-not-allowed = 此账户无权执行此操作。
 
 # Countries, by ISO 3166 code, as the keyboard-layout column names them.
 country-none = 无国家/地区
@@ -1691,3 +1812,75 @@ country-yt = 马约特
 country-za = 南非
 country-zm = 赞比亚
 country-zw = 津巴布韦
+
+# Epic Games, through Heroic Games Launcher: the optional lxb-heroic package.
+# `address` is Epic's own activation address, as the helper gives it.
+epic-looking = 正在查找 Heroic
+epic-press-to-finish-setting-up = 按下以完成设置
+epic-sign-in-to-play = 登录后即可在此畅玩您的 Epic Games 游戏库
+epic-asking-for-a-code = 正在向 Epic 请求代码
+epic-scan-with-your-phone = 请用手机扫描此码以登录。
+epic-or-enter-the-code = 或在任意设备上访问 { $address } 并输入此代码：
+epic-may-say-fortnite = Epic 的页面可能会显示请求来自 Fortnite，这是正常的。
+epic-sign-in-on-this-screen = 在此屏幕上登录
+epic-signing-in = 正在登录
+epic-close-heroic-first = Heroic 已打开。请关闭它，然后重试。
+epic-could-not-be-reached = 无法连接到 Epic。请检查网络连接，然后重试。
+epic-code-ran-out = 代码在使用前已过期。
+epic-confirm-first = Epic 需要您先确认一些内容。请用手机扫描此码，然后重试。
+epic-sign-in-did-not-work = 登录未成功。
+epic-open-heroic = 打开 Heroic
+epic-getting-ready = 正在准备
+epic-downloading-heroic = 正在下载 Heroic
+epic-downloading-proton = 正在下载游戏运行所需的组件
+epic-plays-through-ubisoft = 通过 Ubisoft Connect 运行
+epic-plays-through-ea = 通过 EA 应用运行
+epic-plays-your-library = Epic Games 通过 Heroic Games Launcher 运行您在 Epic 上拥有的游戏。
+epic-install-explanation = 它是免费的，这台机器上的其他内容不会改变。
+epic-one-more-download = 游戏还需要再下载一项内容才能启动。
+epic-sign-out-question = 要退出 Epic Games 吗？已安装的游戏会保留在这台机器上。
+# Installing and uninstalling one game of the Epic Games column. `download`,
+# `disk` and `size` are sizes already written out.
+epic-download-and-disk = 需下载 { $download }，安装后占用 { $disk }。
+epic-not-enough-space = 空间不足。需要 { $size }。
+epic-no-space = 空间不足。
+epic-ubisoft-downloads-it = 您第一次玩时，Ubisoft Connect 会下载游戏，并请您在其中登录。
+epic-ea-downloads-it = 您第一次玩时，EA 应用会下载游戏，并请您在其中登录。
+epic-stopping-keeps-what-arrived = 停止后已下载的内容会保留。再次安装时会从这里继续。
+epic-heroic-is-busy = Heroic 已打开，或有通过它启动的游戏正在运行。请关闭它，然后重试。
+epic-waits-for-heroic = Heroic 及其游戏关闭后开始
+epic-update-waiting = 有可用更新
+epic-may-need-a-connection = 可能需要联网才能游玩
+epic-no-connection = 无网络连接
+epic-it-may-need-a-connection = 它可能需要联网才能启动。
+epic-verify-and-repair = 验证并修复
+epic-asking-heroic = 正在询问 Heroic…
+epic-heroics-default = Heroic 的默认设置
+epic-heroics-default-is = Heroic 的默认设置（{ $tool }）
+epic-tool-not-changed = 运行游戏所用的工具未更改。
+epic-checking-percent = 正在检查文件… { $percent }%
+epic-repairing = 正在修复…
+epic-repairing-percent = 正在修复… { $percent }%
+epic-files-checked = 所有文件均已检查。
+epic-files-not-checked = 无法检查其文件。
+epic-how-heroic-works-with-the-shell = Heroic 如何与界面配合
+epic-off-heroic-is-an-application-like-any-other = 关 — Heroic 与其他应用程序一样
+epic-heroic-is-an-application-like-any-other-with-its-own-icon = Heroic 与其他应用程序一样，有自己的图标
+epic-heroic-is-started-in-the-background-as-the-session-comes-up = 会话启动时在后台启动 Heroic
+epic-heroic-is-started-when-the-first-game-is-pressed = 按下第一个游戏时启动 Heroic
+epic-leave-heroic-running = 让 Heroic 继续运行
+epic-heroic-stays-up-after-a-game-so-the-next-one-starts-sooner = 游戏结束后 Heroic 保持运行，下一个游戏启动更快
+epic-heroic-closes-with-the-game-and-the-memory-comes-back = Heroic 随游戏一起关闭，内存随之释放
+epic-run-games-with = 运行游戏所用工具
+epic-updating = 正在更新…
+epic-updating-percent = 正在更新… { $percent }%
+epic-updating-percent-of = 正在更新… { $size } 的 { $percent }%
+# Settings > Games > Epic Games.
+epic-install-games-here = 将 Epic 游戏安装到此文件夹
+epic-folder-not-changed = 文件夹未更改。
+epic-cloud-saves = 云存档
+epic-cloud-saves-on = 存档保存在 Epic，您在任何机器上玩都能用
+epic-cloud-saves-off = 存档只保留在这台机器上
+epic-cloud-saves-not-changed = 云存档未更改。
+epic-achievement-summary = { $description } · { $xp } XP · { $state }
+epic-players-who-have-it = 拥有它的玩家

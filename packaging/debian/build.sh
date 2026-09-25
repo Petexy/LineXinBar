@@ -216,3 +216,4 @@ build_deb desktop lxb-desktop control.in lxb-desktop lxb-portal lxb-updates
 # and a helper out of step with the shell beside it is refused rather than half
 # understood.
 build_deb retroarch lxb-retroarch control-retroarch.in lxb-retroarch
+build_deb heroic lxb-heroic control-heroic.in lxb-heroic

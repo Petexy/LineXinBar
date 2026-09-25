@@ -7,7 +7,13 @@
 # the coordinator may ask; it no longer discovers anything to update, since the
 # shell does not build locally built packages at all.
 printf 'pacman %s\n' "$*" >> "${LXB_FIXTURE_LOG:-${HOME:-/tmp}/fixture-calls.log}"
+# A shell installed from a release page, when $HOME/fixture-family lists one
+# ("lxb-desktop 0.9.0-1" a line): installed, and offered by no repository,
+# which is what makes Update LineXinBar appear. See ../releases.
+family="${HOME:-/nonexistent}/fixture-family"
 case "$1" in
+-Q) [ -f "$family" ] && cat "$family" ;;
+-Qqm) [ -f "$family" ] && cut -d' ' -f1 "$family" ;;
 -Qm) printf 'lxb-fixture-git 1.0-1\nparu 2.1.0-1\n' ;;
 -Qu) exit 1 ;;
 -Syu) printf 'FIXTURE: a root step reached the fake pacman; this must never happen\n' >&2; exit 99 ;;

@@ -255,6 +255,7 @@ shell-orientation = Orientation
 shell-other = Other
 shell-output-device = Output device
 shell-paired = Paired
+shell-particles = Particles
 shell-password = Password
 shell-paste = Paste
 shell-peak-brightness = Peak brightness
@@ -302,6 +303,7 @@ shell-size = Size
 shell-software = Software
 shell-sort = Sort
 shell-sounds = Sounds
+shell-sparkles-drifting-along-the-wallpaper = Sparkles drifting along the wallpaper
 shell-square-pixels = Square pixels
 shell-standard = Standard
 shell-start-music = Start music
@@ -1115,6 +1117,7 @@ integration-top-right = Top right
 integration-bottom-left = Bottom left
 integration-bottom-right = Bottom right
 integration-update-the-system = Update the system
+integration-update-linexinbar = Update LineXinBar
 integration-update-flatpaks = Update Flatpaks
 integration-update-aur = Update AUR
 integration-update-snaps = Update Snaps
@@ -1535,9 +1538,103 @@ steam-install-needs-first = { $what ->
    *[other] This game has a question to answer first.
     }
 steam-downloading-first = { $name } is downloading first.
+
+# Steam: which library a game is installed into, on a machine with more than
+# one — the Install games to row under Settings > Games > Steam, and the panel
+# that asks when a game is installed. `library` is a library's name: the one it
+# was given in Steam, else the name of the drive it is on as Settings > Storage
+# says it (System, Home, a drive's own label). `drive` and `folder` tell apart
+# two libraries on the same drive. `size` and `free` are sizes already written
+# out, like "46 GB".
+steam-install-to = Install games to
+steam-ask-every-time = Ask every time
+steam-ask-every-time-note = You choose where each game goes
+steam-library-not-connected = Not connected
+steam-library-gone = No longer a Steam library
+steam-install-to-unavailable = { $library } · not available, so you are asked each time
+steam-library-on-drive = { $drive } · { $folder }
+steam-choose-library = Choose where to install it.
+steam-choose-library-size = Choose where to install it. It needs { $size }.
+steam-game-needs = It needs { $size }.
+steam-no-library-has-room = There is not enough space for it anywhere. It needs { $size }.
+steam-chosen-library-not-connected = { $library } is not connected, so choose another place.
+steam-chosen-library-full = There is not enough space on { $library }, so choose another place.
+steam-library-free = { $library } · { $free } free
+steam-library-too-small = { $library } · not enough space
+steam-installs-into = It will be installed on { $library }.
+steam-you-choose-where-next = Next, you choose where to install it.
 steam-achievements-unlocked = Steam · { $unlocked } / { $total } unlocked
 enter-password-for = Enter the password for { $name }.
 progress-of = { $at } of { $of }
+
+# Steam: Settings > Games > Steam > Storage — the libraries Steam keeps games
+# in, the games in each, and adding one, as Steam's own Storage page has them.
+# A library is named as above (`library`); `game` is a game's name; `count` is
+# a number; `size`, `free` and `whole` are sizes already written out; `percent`
+# is a whole number; `games` and `room` are the two halves of a library's row,
+# already written out. `steam-refused` says why Steam would not do something:
+# every `why` is one reason, and each catalogue needs all of them.
+steam-storage = Storage
+steam-storage-note = { $count ->
+    [one] { $count } library
+   *[other] { $count } libraries
+    }
+steam-library-games = { $count ->
+    [0] No games
+    [one] { $count } game
+   *[other] { $count } games
+    }
+steam-library-summary = { $games } · { $room }
+steam-library-connect = Connect the drive to see its games.
+steam-repair-library = Repair folder
+steam-repair-library-note = If games will not install or start from here
+steam-remove-library = Remove drive
+steam-remove-library-note = Steam stops using it. Nothing on it is deleted.
+steam-remove-library-has-games = Move or uninstall its games first
+steam-remove-library-default = New games are installed here
+steam-remove-library-ask = Stop using this drive for Steam games? Nothing on it is deleted.
+steam-add-drive = Add drive
+steam-add-drive-note = Keep games on another drive
+steam-add-library-elsewhere = Choose a folder
+steam-add-library-elsewhere-note = An empty folder on any drive
+steam-add-library-here = Keep Steam games in this folder
+steam-game-busy = { $size } · Steam is working on it
+steam-move-progress = Show progress
+steam-move-choose = Choose where to move it. It needs { $size }.
+steam-move-nowhere = No other drive has room for it. It needs { $size }.
+steam-move-no-other-library = There is nowhere else to move it. Add a drive first.
+steam-moving-to = Moving to { $library }
+steam-moving-to-percent = Moving to { $library } · { $percent }%
+steam-moving-stopping = Stopping…
+steam-move-hide = Hide
+steam-move-stop = Stop
+steam-moved-note = It is now on { $library }.
+steam-move-failed = It was not moved.
+steam-library-adding = Adding it to Steam…
+steam-library-removing = Removing it from Steam…
+steam-library-repairing = Repairing it…
+steam-library-repaired = It was repaired.
+steam-library-not-added = It was not added.
+steam-library-not-removed = It was not removed.
+steam-library-not-repaired = It was not repaired.
+steam-could-not-be-reached = Steam could not be reached. Try again in a moment.
+steam-refused-in-use-by = { $game } is using it. Try again once it has finished.
+steam-refused = { $why ->
+    [drive-root] Steam cannot use the top of a drive. Choose a folder on it.
+    [not-empty] That folder has other files in it. Choose an empty one.
+    [not-writable] Nothing can be saved there.
+    [not-executable] Games cannot be started from that drive.
+    [already] That drive already has a Steam library.
+    [not-listed] Steam no longer has that library.
+    [in-use] Steam is using it. Try again later.
+    [folder-there] There is already a folder for this game there.
+    [shared] It shares files with another game, so it cannot be moved.
+    [no-room] There is not enough space there.
+    [running] Close the game first.
+    [unmovable] Steam cannot move this game.
+    [another-move] Another game is being moved. Wait until it has finished.
+   *[other] Steam could not do it. Try again later.
+    }
 
 # Achievements.
 signed-in-as = Signed in as { $name }
@@ -1604,6 +1701,50 @@ screen-share-request = { $application } wants to share your screen
 device-connected = { $name } is connected
 device-paired = { $name } is paired
 device-would-not-pair = { $name } would not pair
+
+# Settings > Storage. A partition is named by what it is for (System, Home,
+# Startup), else by its own label, else storage-unnamed with its size. `whole`
+# and `size` are sizes already written out, like "237 GiB".
+storage-title = Storage
+storage-description = How much space is left on each drive
+storage-startup = Startup
+storage-unnamed = { $size } drive
+storage-not-in-use = Not in use · { $whole }
+storage-extra-memory = Used as extra memory · { $whole }
+storage-cannot-check = Could not check the free space · { $whole }
+storage-checking = Checking the drives…
+storage-none = No drives found
+storage-free = Free
+storage-used = Used
+storage-capacity = Capacity
+storage-file-system = File system
+storage-location = Location
+storage-drive = Drive
+
+# Drives: mounting what nothing has mounted, from Files and from a drive's own
+# page under Settings > Storage. `size` is a size already written out, like
+# "931 GiB". A drive's name is never inside one of these: a panel puts it on a
+# line of its own above them. "Mount at startup" is the machine's setting, for
+# every account, not this shell's.
+drive-not-mounted = Not mounted · { $size }
+drive-mounting = Mounting…
+drive-unmounting = Unmounting…
+shell-mount = Mount
+shell-unmount = Unmount
+shell-safely-remove = Safely remove
+drive-mount-note = Make it available in Files
+drive-unmount-note = Unavailable until it is opened again
+drive-safely-remove-note = Unmount it and turn it off so it can be unplugged
+drive-at-startup = Mount at startup
+drive-at-startup-on-note = Available as soon as the computer starts, for everyone
+drive-at-startup-off-note = Mounted only when it is opened in Files
+drive-at-startup-failed = Could not be changed
+drive-information = Drive information
+drive-can-unplug = You can unplug it now.
+drive-mount-failed = This drive could not be mounted.
+drive-unmount-failed = This drive could not be unmounted.
+drive-in-use = Something is still using this drive. Close it and try again.
+drive-not-allowed = This account is not allowed to do that.
 
 # Countries, by ISO 3166 code, as the keyboard-layout column names them.
 country-none = No country
@@ -1856,3 +1997,75 @@ country-yt = Mayotte
 country-za = South Africa
 country-zm = Zambia
 country-zw = Zimbabwe
+
+# Epic Games, through Heroic Games Launcher: the optional lxb-heroic package.
+# `address` is Epic's own activation address, as the helper gives it.
+epic-looking = Looking for Heroic
+epic-press-to-finish-setting-up = Press to finish setting it up
+epic-sign-in-to-play = Sign in to play your Epic Games library here
+epic-asking-for-a-code = Asking Epic for a code
+epic-scan-with-your-phone = Scan this with your phone to sign in.
+epic-or-enter-the-code = Or go to { $address } on any device and enter this code:
+epic-may-say-fortnite = Epic's page may say Fortnite is asking. That is expected.
+epic-sign-in-on-this-screen = Sign in on this screen
+epic-signing-in = Signing in
+epic-close-heroic-first = Heroic is open. Close it, then try again.
+epic-could-not-be-reached = Epic could not be reached. Check the connection, then try again.
+epic-code-ran-out = The code ran out before it was used.
+epic-confirm-first = Epic needs you to confirm something first. Scan this with your phone, then try again.
+epic-sign-in-did-not-work = Signing in did not work.
+epic-open-heroic = Open Heroic
+epic-getting-ready = Getting ready
+epic-downloading-heroic = Downloading Heroic
+epic-downloading-proton = Downloading what games need to run
+epic-plays-through-ubisoft = Plays through Ubisoft Connect
+epic-plays-through-ea = Plays through the EA app
+epic-plays-your-library = Epic Games plays the games you own on Epic, through Heroic Games Launcher.
+epic-install-explanation = It is free, and nothing else on this machine is changed.
+epic-one-more-download = Games need one more download before they can start.
+epic-sign-out-question = Sign out of Epic Games? Installed games stay on this machine.
+# Installing and uninstalling one game of the Epic Games column. `download`,
+# `disk` and `size` are sizes already written out.
+epic-download-and-disk = { $download } to download, { $disk } once installed.
+epic-not-enough-space = There is not enough space for it. It needs { $size }.
+epic-no-space = There is not enough space for it.
+epic-ubisoft-downloads-it = Ubisoft Connect downloads the game the first time you play it, and asks you to sign in to it.
+epic-ea-downloads-it = The EA app downloads the game the first time you play it, and asks you to sign in to it.
+epic-stopping-keeps-what-arrived = Stopping keeps what has arrived. Installing again carries on from there.
+epic-heroic-is-busy = Heroic is open, or a game from it is running. Close it, then try again.
+epic-waits-for-heroic = Starts when Heroic and its games are closed
+epic-update-waiting = Update waiting
+epic-may-need-a-connection = May need a connection to play
+epic-no-connection = No connection
+epic-it-may-need-a-connection = It may need a connection to start.
+epic-verify-and-repair = Verify and repair
+epic-asking-heroic = Asking Heroic…
+epic-heroics-default = Heroic's default
+epic-heroics-default-is = Heroic's default ({ $tool })
+epic-tool-not-changed = What runs the games was not changed.
+epic-checking-percent = Checking files… { $percent }%
+epic-repairing = Repairing…
+epic-repairing-percent = Repairing… { $percent }%
+epic-files-checked = Every file has been checked.
+epic-files-not-checked = Its files could not be checked.
+epic-how-heroic-works-with-the-shell = How Heroic works with the shell
+epic-off-heroic-is-an-application-like-any-other = Off — Heroic is an application like any other
+epic-heroic-is-an-application-like-any-other-with-its-own-icon = Heroic is an application like any other, with its own icon
+epic-heroic-is-started-in-the-background-as-the-session-comes-up = Heroic is started in the background as the session comes up
+epic-heroic-is-started-when-the-first-game-is-pressed = Heroic is started when the first game is pressed
+epic-leave-heroic-running = Leave Heroic running
+epic-heroic-stays-up-after-a-game-so-the-next-one-starts-sooner = Heroic stays up after a game, so the next one starts sooner
+epic-heroic-closes-with-the-game-and-the-memory-comes-back = Heroic is closed with the game, and the memory comes back
+epic-run-games-with = Run games with
+epic-updating = Updating…
+epic-updating-percent = Updating… { $percent }%
+epic-updating-percent-of = Updating… { $percent }% of { $size }
+# Settings > Games > Epic Games.
+epic-install-games-here = Install Epic games in this folder
+epic-folder-not-changed = The folder was not changed.
+epic-cloud-saves = Cloud saves
+epic-cloud-saves-on = Saves are kept with Epic, and are there on any machine you play on
+epic-cloud-saves-off = Saves stay on this machine
+epic-cloud-saves-not-changed = Cloud saves were not changed.
+epic-achievement-summary = { $description } · { $xp } XP · { $state }
+epic-players-who-have-it = Players who have it

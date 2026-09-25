@@ -128,6 +128,12 @@ pub enum Want {
     /// three hundred pixels tall, and a wall of squares if it is enlarged
     /// honestly. See [`crate::art::blurred_scenery_from`].
     Snapshot,
+    /// A game's logo, at its own shape inside [`crate::art::LOGO_SIZE`] rather
+    /// than inside [`SIZE`]: the loading screen draws it a third of a display
+    /// wide, and a thumbnail blown up that far is a smear. An Epic game's,
+    /// which is a file the helper fetched into this shell's cache — a Steam
+    /// game's comes through [`crate::art`] instead. Nothing is cached.
+    Logo,
 }
 
 /// One finished picture of a file.
@@ -139,6 +145,7 @@ pub enum Made {
     /// it is filed under downstream differs, and a backdrop put into the
     /// snapshot's layer would be a photograph nobody asked to have blurred.
     Snapshot(crate::art::Scenery),
+    Logo(Picture),
 }
 
 /// The worker pool, and what it has been asked for.
@@ -285,6 +292,10 @@ fn produce(path: &Path, want: Want) -> Option<Made> {
         Want::Thumbnail => thumbnail(path).map(Made::Thumbnail),
         Want::Backdrop => backdrop(path).map(Made::Backdrop),
         Want::Snapshot => snapshot(path).map(Made::Snapshot),
+        Want::Logo => std::fs::read(path)
+            .ok()
+            .and_then(|bytes| crate::art::logo(&bytes))
+            .map(Made::Logo),
     }
 }
 

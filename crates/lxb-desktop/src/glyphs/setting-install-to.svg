@@ -1,0 +1,45 @@
+<!--
+  The drum a disk is drawn as, with an arrow coming down into it: Settings >
+  Games > Steam > Storage > Install games to, the row that says which library a
+  new game goes into.
+
+  It stands at the head of a page whose every other row is a drive — the
+  libraries, each wearing file-drive.svg — so it cannot be the drum alone, and
+  it cannot be the drum with something drawn inside it either: at the size a
+  row is read at, what tells two marks apart is their outline, and a mark
+  pierced through the drum's own wall has the drum's outline. So the drum is
+  made shorter and set low, with one rib round its waist where the drive has
+  two, and the arrow stands over it and comes down into its lid — the same
+  arrow Software's carton takes, which is what "this is where things go in"
+  already looks like in this set.
+
+  The arrow's point overlaps the lid, and two bodies that touch are one body to
+  the material. So a crevice is cut round it in the mask — the arrow swollen in
+  black, then laid down again in white — and the water bevels both sides of it:
+  the arrow reads as sinking into the drum rather than as part of its top.
+
+  lxb:shape — the material is computed from this outline. See
+  category-games.svg, which is where it is explained.
+-->
+
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32">
+  <defs>
+    <ellipse id="lid" cx="16" cy="16.2" rx="10" ry="3.6"/>
+    <ellipse id="foot" cx="16" cy="25.8" rx="10" ry="3.6"/>
+    <rect id="wall" x="6" y="16.2" width="20" height="9.6"/>
+    <path id="rib" d="M6.7 20.8a9.3 3.2 0 0 0 18.6 0" fill="none" stroke-width="0.9" stroke-linecap="round"/>
+    <path id="arrow" d="M14.2 2.4H17.8V9.6H21.4L16 16.6L10.6 9.6H14.2Z"/>
+    <g id="bead"><use href="#lid"/><use href="#wall"/><use href="#foot"/></g>
+    <mask id="pierced">
+      <use href="#bead" fill="#ffffff"/>
+      <use href="#rib" stroke="#000000"/>
+      <use href="#arrow" fill="#000000" stroke="#000000" stroke-width="1.7" stroke-linejoin="round"/>
+      <use href="#arrow" fill="#ffffff"/>
+    </mask>
+  </defs>
+
+  <g mask="url(#pierced)">
+    <use href="#bead" fill="#ffffff"/>
+    <use href="#arrow" fill="#ffffff"/>
+  </g>
+</svg>

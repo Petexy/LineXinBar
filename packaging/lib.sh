@@ -75,10 +75,13 @@ require_rust_version() {
 
     require_command rustc
     require_command cargo
-    actual="$(rustc --version | awk '{print $2}')"
+    # Empty when rustc does not answer, which is how rustup reads before a
+    # toolchain has been chosen — and `|| true` because under the builders'
+    # pipefail that failure would otherwise end the script before a word is said.
+    actual="$(rustc --version 2>/dev/null | awk '{print $2}')" || true
     first="$(printf '%s\n%s\n' "$minimum" "$actual" | sort -V | head -n 1)"
     if [[ "$first" != "$minimum" ]]; then
-        package_die "Rust $minimum or newer is required by the locked dependency graph (found $actual)${hint:+
+        package_die "Rust $minimum or newer is required by the locked dependency graph (found ${actual:-none})${hint:+
 $hint}"
     fi
 }

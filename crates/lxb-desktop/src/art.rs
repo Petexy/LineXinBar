@@ -959,7 +959,7 @@ fn cover(bytes: &[u8]) -> Option<Picture> {
 /// Scaled down only. Nearly every logo Valve holds is already at the ceiling
 /// or under it, and stretching a small one would be storing invented pixels in
 /// an atlas block that is measured in megabytes.
-fn logo(bytes: &[u8]) -> Option<Picture> {
+pub fn logo(bytes: &[u8]) -> Option<Picture> {
     let image = decode(bytes)?;
     let scaled = if image.width() > LOGO_SIZE || image.height() > LOGO_SIZE {
         image.resize(LOGO_SIZE, LOGO_SIZE, image::imageops::FilterType::Lanczos3)

@@ -1,0 +1,34 @@
+[package]
+name = "lxb-heroic"
+description = "The shell's Epic Games integration through Heroic Games Launcher: whether Heroic is here, installing it, signing an Epic account in with a code for the phone, and what the library holds"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[[bin]]
+name = "lxb-heroic"
+path = "src/main.rs"
+
+[dependencies]
+clap.workspace = true
+serde.workspace = true
+
+# The whole of what passes between this binary and the shell: one JSON object
+# per line on stdout, as `lxb-retroarch` does, and the format every file of
+# Heroic's and legendary's that this reads is written in.
+serde_json = "1"
+
+# Epic's account service for the code on the phone, and GitHub for Heroic's own
+# default Proton. Blocking, with a TLS stack of its own, for the reasons the
+# RetroArch helper gives: this process has nothing else to do while it waits.
+# Already in the lock, so it costs this tree no new package.
+ureq = "3"
+
+# Checking a downloaded Proton against the `.sha512sum` published beside it —
+# exactly the check Heroic's own Wine Manager makes. Already in the lock.
+sha2 = "0.10"
+
+[dev-dependencies]
+tempfile = "3"

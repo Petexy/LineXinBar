@@ -93,6 +93,12 @@ impl Backend {
         crate::library::libraries_below(self.root())
     }
 
+    /// Every library it lists, the ones not there today included, with the
+    /// names they were given. See [`crate::library::listed_below`].
+    pub fn listed_libraries(&self) -> Vec<crate::library::Listed> {
+        crate::library::listed_below(self.root())
+    }
+
     /// Where this client keeps the pictures it has already fetched.
     ///
     /// Read where it lies and never written to: it is Valve's cache, and a

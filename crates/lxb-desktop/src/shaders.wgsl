@@ -32,9 +32,11 @@ struct Globals {
     // Which material each half of the shell is drawn in — 0 for its own, 1 for
     // the plain one a slow machine asks for under Settings > Appearance > Theme.
     // x is the wallpaper and y is every mark the shell draws; they are separate
-    // settings and either may be either way round. The other two are spare; a
-    // uniform struct is laid out in sixteen-byte lots and this is the cheapest
-    // honest way to carry two numbers.
+    // settings and either may be either way round. z is the shape of the user's
+    // own picture where there is one — see `paper()`. w is one where the
+    // sparkles the current carries are turned on, under Theme > Particles, and
+    // nought where they are not, so a writer that has never heard of them
+    // leaves them off and only one that asks the setting draws them.
     style: vec4<f32>,
 };
 
@@ -293,6 +295,50 @@ fn paper(uv: vec2<f32>, aspect: f32, lod: f32) -> vec3<f32> {
     return mix(ground, sampled.rgb, sampled.a);
 }
 
+// Where the current runs at `u` across the display: how much of the band's
+// spread survives there, the height of the one curve it is stacked along, and
+// how steeply that curve climbs, in the same physical-screen units as y.
+//
+// One curve with two things riding it — the band of water, stacked along it,
+// and the sparkles it sheds — so it is worked out once, here,
+// rather than by each of them, where one copy could drift from the other.
+struct Spine {
+    gather: f32,
+    height: f32,
+    slope: f32,
+};
+
+// Where the spine rests, down the display, when nothing is swinging it: below
+// the cross point, in the lane the whole current runs through.
+const SPINE_REST: f32 = 0.62;
+
+fn spine_at(u: f32, t: f32, aspect: f32) -> Spine {
+    // Everything the band is made of is gathered in towards its lane at both
+    // ends of the display: the ribbons come off the left edge close together,
+    // open apart across the middle, and close again on the way off the right.
+    // Never all the way to nothing, or the band would leave as one line.
+    let gather = 0.28 + 0.72 * sin(PI * u);
+    let gather_slope = 0.72 * PI * cos(PI * u);
+
+    // The spine: the one curve the band is stacked along, and so the only one
+    // whose slope has to be measured.
+    let spine_a = u * 6.8 + t * 0.56;
+    let spine_b = u * 3.4 - t * 0.39 + 0.8;
+    let swing = sin(spine_a) * 0.055 + sin(spine_b) * 0.085;
+    let swing_slope = cos(spine_a) * 0.055 * 6.8 + cos(spine_b) * 0.085 * 3.4;
+
+    var spine: Spine;
+    spine.gather = gather;
+    spine.height = SPINE_REST + swing * gather;
+    // Measure across the curve rather than vertically. Without this correction
+    // a steep section grows visibly thicker than a flat one. In the same
+    // physical-screen units as y, so wide outputs do not over-correct either
+    // the width or the light angle. The gathering is part of the curve, and so
+    // is its slope.
+    spine.slope = (swing_slope * gather + swing * gather_slope) / aspect;
+    return spine;
+}
+
 // The current as the shell's own material: one band of water, three ribbons
 // thick, drifting through a broad lane below the cross point.
 //
@@ -306,6 +352,7 @@ fn water(
     t: f32,
     soften: f32,
     footprint: vec2<f32>,
+    spine: Spine,
 ) -> vec3<f32> {
     var color = into;
     // The current: one band of water, three ribbons thick, drifting
@@ -352,30 +399,14 @@ fn water(
     let key = normalize(KEY_LIGHT);
     let half_vector = normalize(key + vec3<f32>(0.0, 0.0, 1.0));
 
-    // Everything the band is made of is gathered in towards its lane at both
-    // ends of the display: the ribbons come off the left edge close together,
-    // open apart across the middle, and close again on the way off the right.
-    // Never all the way to nothing, or the band would leave as one line.
-    let gather = 0.28 + 0.72 * sin(PI * uv.x);
-    let gather_slope = 0.72 * PI * cos(PI * uv.x);
-
-    // The spine: the one curve the band is stacked along, and so the only one
-    // whose slope has to be measured.
-    let spine_a = uv.x * 6.8 + t * 0.56;
-    let spine_b = uv.x * 3.4 - t * 0.39 + 0.8;
-    let swing = sin(spine_a) * 0.055 + sin(spine_b) * 0.085;
-    let swing_slope = cos(spine_a) * 0.055 * 6.8 + cos(spine_b) * 0.085 * 3.4;
-    let spine = 0.62 + swing * gather;
-    // Measure across the curve rather than vertically. Without this correction
-    // a steep section grows visibly thicker than a flat one. In the same
-    // physical-screen units as y, so wide outputs do not over-correct either
-    // the width or the light angle. The gathering is part of the curve, and so
-    // is its slope.
-    let slope = (swing_slope * gather + swing * gather_slope) / aspect;
+    // The curve the band is stacked along, and how much of its spread
+    // survives here. See `spine_at`.
+    let gather = spine.gather;
+    let slope = spine.slope;
     let across = normalize(vec2<f32>(slope, -1.0));
     // And along the band, in those same units.
     let along = vec2<f32>(-across.y, across.x);
-    let band = (uv.y - spine) / sqrt(1.0 + slope * slope);
+    let band = (uv.y - spine.height) / sqrt(1.0 + slope * slope);
     // How far across the band one sample reaches, in those same units: the
     // sample's own two sides, each as much of them as points across the curve.
     // Nothing else in this picture needs it — every other term here is a field
@@ -638,6 +669,409 @@ fn silk(into: vec3<f32>, uv: vec2<f32>, aspect: f32, t: f32, soften: f32) -> vec
     return color;
 }
 
+// Where the middle of the plainer current runs: the curve `silk` draws its
+// middle ribbon along, as a spine. What the sparkles are shed from when the
+// wallpaper is drawn in that material — they come out of the ribbon on the
+// screen, not out of the band of water that is not there.
+fn silk_spine(u: f32, t: f32, aspect: f32) -> Spine {
+    let speed = 0.56;
+    let x_scale = 2.6;
+    let x = u * x_scale;
+    let phase_a = x * 2.6 + t * speed + 2.1;
+    let phase_b = x * 1.3 - t * speed * 0.7 + 0.8;
+    var spine: Spine;
+    spine.gather = 1.0;
+    spine.height = SPINE_REST + sin(phase_a) * 0.055 + sin(phase_b) * 0.085;
+    spine.slope = (cos(phase_a) * 0.055 * 2.6 + cos(phase_b) * 0.085 * 1.3) * x_scale / aspect;
+    return spine;
+}
+
+// How far out from the ribbon a sparkle can still be seen, in display heights,
+// where the band is widest. Narrower where the band gathers towards the edges
+// of the display, as the ribbons themselves do.
+const SPARKLE_LANE: f32 = 0.28;
+
+// How far from the middle of the ribbon a sparkle may first appear. Close:
+// every sparkle starts in the heart of the band and is on its way out of it
+// from then on, so the middle is where they are always coming from and never
+// empty.
+const SPARKLE_BIRTH: f32 = 0.03;
+
+// The most a row of cells is ever squeezed on the screen, as a share of its
+// height in the grid. Each depth's hold squeezes the rows nearest the ribbon as
+// it swings into them and its push stretches them (see `SparkleLayer`), and
+// between the two a row is never shorter than this — which is what the cells'
+// height is measured against, so that no glow reaches past the rows a point
+// asks.
+const SPARKLE_SQUEEZE: f32 = 0.85;
+
+// Sparkles shed below the ribbon sink at this share of the pace the ones above
+// it rise. They leave in both directions, but slowly downwards: specks falling
+// through the picture read as snow, which is what this scene drew once and was
+// taken out for.
+const SPARKLE_SINK: f32 = 0.6;
+
+// The steepest the spine is taken to climb where a sparkle is placed against
+// it. No display wider than it is tall comes near it; a monitor turned on its
+// side can ask for more, and there a sparkle on the steepest stretches is
+// placed a little off the true curve rather than cut off by its cell's edge.
+const SPARKLE_STEEPEST: f32 = 0.95;
+
+// One depth of sparkles.
+//
+// `cell` is how long a cell is along the display and how tall across the
+// spine, in display heights; each holds at most one sparkle. `drift` is how
+// fast the rows drift along the display and `rise` how fast they move out of
+// the ribbon, in display heights a second, before each row's own share of
+// either. `density` is how many cells have a sparkle in them. `core` is the
+// radius of the largest core and `reach` the furthest the largest glow goes.
+// `travel` is the shortest and the longest way a sparkle goes before it has
+// faded out. `smallest` is how small the smallest of them is, as a share of
+// the largest, and `brightness` how bright their cores and their glows are.
+//
+// `push` is how hard the ribbon throws them off: a sparkle leaves it
+// `1 + push.x / push.y` times faster than it later drifts, and the push is
+// spent over about `push.y` of its own drift — so the ribbon throws them and
+// they coast, rather than seeping out of it at an even pace nobody could see
+// against its swing. `hold` is how much of the ribbon's swing a sparkle still
+// moves with once it is far from it, and over how far from it the hold
+// slackens: at the ribbon it moves with all of it — the band is shoving it —
+// and a sparkle thrown clear with only `hold.x`, so the ribbon swings into what
+// it has shed and drives it on, rather than carrying the whole cloud about as
+// one sheet. Both are stretches of the distance from the spine that
+// `lxb-protocol`'s `the_hold_and_the_push_never_squeeze_a_row_past_its_share`
+// holds to `SPARKLE_SQUEEZE`.
+struct SparkleLayer {
+    seed: u32,
+    cell: vec2<f32>,
+    drift: f32,
+    rise: f32,
+    density: f32,
+    core: f32,
+    reach: f32,
+    travel: vec2<f32>,
+    smallest: f32,
+    brightness: vec2<f32>,
+    push: vec2<f32>,
+    hold: vec2<f32>,
+};
+
+// The fine glitter the ribbon is full of: many and small, pushed gently and
+// held, so the band stays full of it.
+const SPARKLE_DUST: SparkleLayer = SparkleLayer(
+    0u,
+    vec2<f32>(0.020, 0.023),
+    0.018,
+    0.016,
+    0.90,
+    0.0020,
+    0.0070,
+    vec2<f32>(0.05, 0.14),
+    0.60,
+    vec2<f32>(1.00, 0.15),
+    vec2<f32>(0.03, 0.03),
+    vec2<f32>(0.45, 0.15),
+);
+
+// And the few that carry a glow round them, which the ribbon throws hard and
+// lets go of.
+const SPARKLE_GLINTS: SparkleLayer = SparkleLayer(
+    1013904223u,
+    vec2<f32>(0.075, 0.085),
+    0.022,
+    0.018,
+    0.60,
+    0.0048,
+    0.026,
+    vec2<f32>(0.07, 0.18),
+    0.35,
+    vec2<f32>(0.85, 0.22),
+    vec2<f32>(0.06, 0.02),
+    vec2<f32>(0.35, 0.15),
+);
+
+// A number that looks nothing like the one it was made from, and is the same
+// number on every machine: the permutation PCG finishes its output with. Whole
+// numbers rather than the sine-of-a-large-number every shader reaches for,
+// because the compositor draws this same scene on the CPU before the shell is
+// up, and a sine that far out is a different number on every implementation.
+fn sparkle_hash(value: u32) -> u32 {
+    let state = value * 747796405u + 2891336453u;
+    let word = ((state >> ((state >> 28u) + 4u)) ^ state) * 277803737u;
+    return (word >> 22u) ^ word;
+}
+
+// That number as a share, 0 up to but never 1. Twenty-four bits of it, which
+// is every bit an f32 can hold exactly.
+fn sparkle_unit(value: u32) -> f32 {
+    return f32(value >> 8u) / 16777216.0;
+}
+
+// A share out of some of its bits: `mask` of them, from `shift` up. One hash
+// holds a sparkle's position both ways, and one more everything else about it,
+// which is two of these per sparkle rather than one per question asked of it.
+fn sparkle_bits(value: u32, shift: u32, mask: u32) -> f32 {
+    return f32((value >> shift) & mask) / f32(mask + 1u);
+}
+
+// How far from the spine a sparkle `drift` of the way out has really come,
+// pushed as `push` says. Odd, so behind the spine is the same stretch
+// mirrored, and never shallower than one to one.
+fn sparkle_pushed(drift: f32, push: vec2<f32>) -> f32 {
+    return drift + push.x * drift / (push.y + abs(drift));
+}
+
+// And back: how far out in the grid a point `out` from the spine is. The root
+// of the quadratic `sparkle_pushed` comes to, in whichever of its two forms
+// does not cancel itself away.
+fn sparkle_unpushed(out: f32, push: vec2<f32>) -> f32 {
+    let d = abs(out);
+    let b = push.y + push.x - d;
+    let root = sqrt(b * b + 4.0 * d * push.y);
+    let drift = select(0.5 * (root - b), 2.0 * d * push.y / (b + root), b > 0.0);
+    return sign(out) * drift;
+}
+
+// How much of the ribbon's swing a sparkle `out` from it moves with. All of it
+// at the ribbon and behind it, easing to `hold.x` far from it.
+fn sparkle_hold(out: f32, hold: vec2<f32>) -> f32 {
+    let a = max(out, 0.0);
+    return (hold.y + hold.x * a) / (hold.y + a);
+}
+
+// How far out from the ribbon a point is, on one side of it, where the ribbon
+// has swung `held` towards that side and the point stands `offset` out from
+// where the ribbon rests: the one distance `out` for which `out` plus the part
+// of the swing a sparkle there moves with lands on the point. The root of the
+// quadratic that comes to, in whichever of its two forms does not cancel
+// itself away; behind the ribbon, where the hold is whole, a straight line.
+fn sparkle_unheld(offset: f32, held: f32, hold: vec2<f32>) -> f32 {
+    if (offset <= held) {
+        return offset - held;
+    }
+    let b = hold.y + held * hold.x - offset;
+    let c = 4.0 * hold.y * (offset - held);
+    let root = sqrt(b * b + c);
+    return select(0.5 * (root - b), 2.0 * hold.y * (offset - held) / (b + root), b > 0.0);
+}
+
+// A soft round bump that is exactly nothing from `x = 1` outwards — the shape
+// of a Gaussian without its tail, and it is the missing tail that lets a cell
+// be sure no sparkle but its own and its three nearest neighbours' can reach it.
+fn sparkle_bump(x: f32) -> f32 {
+    let q = max(1.0 - x * x, 0.0);
+    return q * q * q;
+}
+
+// The sparkles shed on one side of the ribbon — `side` is one below it and
+// minus one above it — at a point `offset` below where the ribbon rests, with
+// the ribbon swung `swing` below its rest: their cores and their glows, before
+// either is coloured.
+//
+// The cells are laid out across the ribbon in rows that move out of it, so
+// every sparkle's distance from the spine grows at the row's pace — and each
+// one is dark until it has come out as far as its own birth, somewhere inside
+// the body of the band, so it appears *in* the ribbon, leaves it, and fades.
+//
+// No sparkle reaches further than `reach`, and no cell is shorter than twice
+// that however steeply the spine climbs up to `SPARKLE_STEEPEST`, so the four
+// cells nearest a point are the only ones on its side that can light it — and
+// of those, only the ones whose edge is within that reach are asked at all.
+// `lxb-protocol`'s `no_sparkle_is_cut_off_by_the_edge_of_its_cell` is what
+// holds that promise, and it is what keeps this cheap.
+fn sparkle_half(
+    layer: SparkleLayer,
+    side: f32,
+    offset: f32,
+    swing: f32,
+    along: f32,
+    slope: f32,
+    lane: f32,
+    t: f32,
+    sample: f32,
+    soften: f32,
+) -> vec2<f32> {
+    var light = vec2<f32>(0.0);
+    let reach_across = layer.reach * sqrt(1.0 + slope * slope);
+    let rise = layer.rise * select(SPARKLE_SINK, 1.0, side < 0.0);
+    let half_seed = layer.seed ^ select(0u, 0x9e3779b9u, side < 0.0);
+    let out_here = sparkle_unheld(side * offset, side * swing, layer.hold);
+    let row_at = (sparkle_unpushed(out_here, layer.push) - rise * t) / layer.cell.y;
+    let row_here = floor(row_at);
+    let row_in = row_at - row_here;
+    let row_side = select(-1.0, 1.0, row_in >= 0.5);
+    // The row beyond is only worth asking when something standing on its near
+    // edge could reach this far — which it does from further off the steeper
+    // the spine, since the rows lie along it, and the more the row between is
+    // squeezed.
+    let row_gap = select(row_in, 1.0 - row_in, row_in >= 0.5) * layer.cell.y;
+    let rows = select(1, 2, row_gap * SPARKLE_SQUEEZE < reach_across);
+    for (var r = 0; r < rows; r = r + 1) {
+        let row = row_here + f32(r) * row_side;
+        let row_seed = sparkle_hash(bitcast<u32>(i32(row)) + half_seed);
+        let drifted = along - layer.drift * (0.6 + 0.8 * sparkle_unit(row_seed)) * t;
+        let column_at = drifted / layer.cell.x;
+        let column_here = floor(column_at);
+        let column_in = column_at - column_here;
+        let column_side = select(-1.0, 1.0, column_in >= 0.5);
+        let column_gap = select(column_in, 1.0 - column_in, column_in >= 0.5) * layer.cell.x;
+        let columns = select(1, 2, column_gap < layer.reach);
+        for (var c = 0; c < columns; c = c + 1) {
+            let column = column_here + f32(c) * column_side;
+            let cell_seed = sparkle_hash(row_seed + bitcast<u32>(i32(column)));
+            if (sparkle_unit(cell_seed) >= layer.density) {
+                continue;
+            }
+
+            // Where it floats: somewhere in its cell, and about that place with
+            // a slow sway to and fro and a slow drift up and down of its own,
+            // on clocks that are not its row's — as far as either can carry
+            // it, which is never out of the cell. Asked in the order that lets
+            // a sparkle out of reach be passed over soonest — past its reach it
+            // lights nothing at all.
+            let shape = sparkle_hash(cell_seed);
+            let look = sparkle_hash(shape);
+            let phase = 2.0 * PI * sparkle_bits(look, 24u, 0xffu);
+            let sway = sin(t * (0.12 + 0.20 * sparkle_bits(cell_seed, 0u, 0xffu)) + 2.0 * phase + 1.0)
+                * 0.18;
+            let d_along = (column + 0.5 + 0.60 * (sparkle_bits(shape, 0u, 0xffffu) - 0.5) + sway)
+                * layer.cell.x - drifted;
+            if (abs(d_along) >= layer.reach) {
+                continue;
+            }
+            let strength = sparkle_bits(look, 0u, 0xffu);
+            let grain = sparkle_bits(look, 8u, 0xffu);
+            let pace = sparkle_bits(look, 16u, 0xffu);
+            let wander = sin(t * (0.15 + 0.25 * pace) + phase) * 0.22;
+            // How far out of the ribbon it has come by now, pushed.
+            let out = sparkle_pushed((row + 0.5 + 0.56 * (sparkle_bits(shape, 16u, 0xffffu) - 0.5)
+                + wander) * layer.cell.y + rise * t, layer.push);
+            // Where it is on the screen: that far out on its side, plus the part
+            // of the ribbon's swing it still moves with — and the ribbon climbs,
+            // so that part climbs with it, `slope` higher for every step along.
+            let hold = sparkle_hold(out, layer.hold);
+            let d_across = hold * swing + side * out - offset + hold * slope * d_along;
+            let apart = sqrt(d_along * d_along + d_across * d_across);
+            // Mostly small and faint, now and then large and bright.
+            let size = mix(layer.smallest, 1.0, grain * grain);
+            let reach = layer.reach * size;
+            if (apart >= reach) {
+                continue;
+            }
+
+            // Its journey: dark until it has come out as far as its birth,
+            // close to the middle of the band, then lit quickly — and from
+            // there on more and more see-through the further it goes, until it
+            // is gone — and behind it the next row is already coming out of the
+            // middle. It twinkles while it is lit.
+            let fate = sparkle_hash(look);
+            let birth = SPARKLE_BIRTH * sparkle_bits(fate, 0u, 0xffffu);
+            let travel = mix(layer.travel.x, layer.travel.y, sparkle_bits(fate, 16u, 0xffffu));
+            let journey = out - birth;
+            let left = clamp(1.0 - journey / travel, 0.0, 1.0);
+            let life = smoothstep(0.0, 0.015, journey) * left * left * (3.0 - 2.0 * left);
+            let twinkle = 0.75 + 0.25 * sin(t * (1.5 + 2.5 * grain) + phase);
+            let fade = sparkle_bump(out / lane);
+            let amount = (0.35 + 0.65 * strength * strength) * life * twinkle * fade * size;
+
+            // The core is never drawn smaller than a sample or two, and never
+            // brighter for being drawn small: spread wider, it is dimmer by
+            // exactly the area it gained. Softened, it is spread most of the way
+            // to its glow and is little more than the glow.
+            let radius = layer.core * size;
+            let spread = min(sqrt(radius * radius + 2.25 * sample * sample
+                + 0.25 * reach * reach * soften * soften), reach);
+            let kept = radius / spread;
+            let fall = 1.0 - apart / reach;
+            light += amount * vec2<f32>(
+                sparkle_bump(apart / spread) * kept * kept,
+                fall * fall * fall,
+            );
+        }
+    }
+    return light;
+}
+
+// One depth of sparkles at a point `offset` below where the ribbon rests: its
+// own side of the ribbon, and the other side's too where the point is close
+// enough to the ribbon for something just born over there to reach it.
+fn sparkle_layer(
+    layer: SparkleLayer,
+    offset: f32,
+    swing: f32,
+    along: f32,
+    slope: f32,
+    lane: f32,
+    t: f32,
+    sample: f32,
+    soften: f32,
+) -> vec2<f32> {
+    let side = select(-1.0, 1.0, offset >= swing);
+    let reach_across = layer.reach * sqrt(1.0 + slope * slope);
+    // Nothing of this depth reaches past the lane — and on the side the ribbon
+    // has swung away from, past the part of the swing a sparkle out there lags
+    // behind. On the side it has swung towards, its hold keeps them inside.
+    let lag = select(0.0, (1.0 - layer.hold.x) * abs(swing), side * swing < 0.0);
+    if (abs(offset - swing) >= lane + lag + reach_across) {
+        return vec2<f32>(0.0);
+    }
+    var light = sparkle_half(layer, side, offset, swing, along, slope, lane, t, sample, soften);
+    if (abs(offset - swing) < reach_across) {
+        light += sparkle_half(layer, -side, offset, swing, along, slope, lane, t, sample, soften);
+    }
+    return light;
+}
+
+// The sparkles: glitter the current sheds, the way the original bar's wave
+// carried it.
+//
+// They come out of the ribbon itself. Each is dark until it is inside the body
+// of the band, lights there, and moves out of it — up above the ribbon and,
+// more slowly, down below it — drifting along the current as it goes and
+// fading on the way, so the band is full of them and they thin out around it
+// into nothing. Anchored, because every one of them is born in the ribbon and
+// carried by it as it swings; loose, because none of them stays where it was
+// born. The lane they are shed from is `spine`, which is whichever ribbon the
+// wallpaper is drawn with.
+//
+// Two depths: a fine glitter of many small quick points, and a few larger ones
+// with a glow round them. The light is the accent's own soft rung, the core
+// washed towards white the way a small bright light overexposes, and nothing
+// in it as bright as a label's own light.
+fn sparkles(
+    into: vec3<f32>,
+    uv: vec2<f32>,
+    aspect: f32,
+    t: f32,
+    soften: f32,
+    footprint: vec2<f32>,
+    spine: Spine,
+) -> vec3<f32> {
+    let offset = uv.y - SPINE_REST;
+    let swing = spine.height - SPINE_REST;
+    let slope = clamp(spine.slope, -SPARKLE_STEEPEST, SPARKLE_STEEPEST);
+    // Narrower where the band gathers, as the ribbons are.
+    let lane = SPARKLE_LANE * (0.45 + 0.55 * spine.gather);
+    // Past the edge of the lane — and, on the side the ribbon has swung away
+    // from, of the part of the swing a sparkle out there lags behind — and of
+    // the reach of any sparkle standing there, there is nothing to find.
+    let behind = (offset - swing) * swing < 0.0;
+    let lag = select(0.0, (1.0 - min(SPARKLE_DUST.hold.x, SPARKLE_GLINTS.hold.x)) * abs(swing),
+                     behind);
+    if (abs(offset - swing) >= lane + lag + SPARKLE_GLINTS.reach * sqrt(1.0 + slope * slope)) {
+        return into;
+    }
+    let along = uv.x * aspect;
+    let sample = max(footprint.x * aspect, footprint.y);
+    let dust = sparkle_layer(SPARKLE_DUST, offset, swing, along, slope, lane, t, sample, soften);
+    let glints = sparkle_layer(SPARKLE_GLINTS, offset, swing, along, slope, lane, t, sample, soften);
+    let core = dust.x * SPARKLE_DUST.brightness.x + glints.x * SPARKLE_GLINTS.brightness.x;
+    let glow = dust.y * SPARKLE_DUST.brightness.y + glints.y * SPARKLE_GLINTS.brightness.y;
+    let hot = mix(globals.accent[1].rgb, vec3<f32>(1.0), 0.45);
+    let haze = mix(globals.accent[0].rgb, globals.accent[1].rgb, 0.5);
+    return into + (hot * core + haze * glow) * mix(1.0, 0.5, soften);
+}
+
 // The wallpaper, as a function of where you look rather than as a picture.
 //
 // Being analytic is what lets anything re-create it: the sliver outside a
@@ -741,11 +1175,20 @@ fn wallpaper(
         * mix(1.0, 0.40, soften);
 
     // The current: the moving thing in the middle of the picture, in
-    // whichever material this shell is set to draw it in.
+    // whichever material this shell is set to draw it in, and the sparkles it
+    // carries — which are the same in either, being light and not material,
+    // and which are a setting of their own: `style.w` is one where somebody
+    // has turned them on, and nought — which is what every writer of this
+    // block that has never heard of them sends — where they are off.
+    var spine = spine_at(uv.x, t, aspect);
     if (globals.style.x > 0.5) {
         color = silk(color, uv, aspect, t, soften);
+        spine = silk_spine(uv.x, t, aspect);
     } else {
-        color = water(color, uv, aspect, t, soften, footprint);
+        color = water(color, uv, aspect, t, soften, footprint, spine);
+    }
+    if (globals.style.w > 0.5) {
+        color = sparkles(color, uv, aspect, t, soften, footprint, spine);
     }
 
     // Two aurora veils sweep through different thirds of the display. Their

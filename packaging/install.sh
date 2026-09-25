@@ -17,7 +17,7 @@ target_dir="${CARGO_TARGET_DIR:-$PROJECT_ROOT/target}"
 usage() {
     cat <<'EOF'
 Usage: packaging/install.sh --destdir DIR [--prefix PREFIX] [--target-dir DIR]
-                            [--component compositor|desktop|retroarch|all]
+                            [--component compositor|desktop|retroarch|heroic|all]
 
 Stages one part of LineXinBar, or all of them. PREFIX defaults to /usr and
 --component to all.
@@ -33,6 +33,10 @@ Stages one part of LineXinBar, or all of them. PREFIX defaults to /usr and
               optional RetroArch integration. Nothing else needs it, the shell
               looks for it on PATH, and a machine without it has a shell that
               never mentions RetroArch at all.
+  heroic      lxb-heroic and the mark it draws its rows with: the optional
+              Epic Games integration, through Heroic Games Launcher's flatpak.
+              Found on PATH the same way; without it the shell never
+              mentions Epic Games.
   all         Every part, as one tree.
 EOF
 }
@@ -68,8 +72,8 @@ while (($#)); do
 done
 
 case "$component" in
-    compositor|desktop|retroarch|all) ;;
-    *) package_die "unknown component: $component (compositor, desktop, retroarch or all)" ;;
+    compositor|desktop|retroarch|heroic|all) ;;
+    *) package_die "unknown component: $component (compositor, desktop, retroarch, heroic or all)" ;;
 esac
 
 [[ -n "$destdir" ]] || package_die "--destdir is required"
@@ -130,6 +134,15 @@ stage_desktop() {
     local locale_policy="$install_root/share/polkit-1/actions/org.linexinbar.locale.policy"
     install -Dm0644 "$PACKAGING_DIR/files/org.linexinbar.locale.policy.in" "$locale_policy"
     sed -i "s|@HELPER@|$prefix/bin/lxb-desktop|g" "$locale_policy"
+
+    # And the third: the privileged half of Settings > Storage > a drive >
+    # Mount at startup. Writing the mount table and mounting an internal disk
+    # are two polkit actions of UDisks' that do not remember each other, so the
+    # shell does both as root behind this one question — see
+    # crates/lxb-desktop/src/drives.rs, and the flag the action is bound to.
+    local drives_policy="$install_root/share/polkit-1/actions/org.linexinbar.drives.policy"
+    install -Dm0644 "$PACKAGING_DIR/files/org.linexinbar.drives.policy.in" "$drives_policy"
+    sed -i "s|@HELPER@|$prefix/bin/lxb-desktop|g" "$drives_policy"
     install -Dm0644 "$PROJECT_ROOT/docs/updates.md" "$install_root/share/doc/lxb-desktop/updates.md"
 
     install -Dm0755 "$PACKAGING_DIR/files/lxb-session" "$install_root/bin/lxb-session"
@@ -213,6 +226,16 @@ stage_retroarch() {
     ((staged > 0)) || package_die "no glyphs to stage from $glyphs"
 }
 
+# The other optional half, on the same terms: Epic Games, through Heroic Games
+# Launcher's flatpak. See `crates/lxb-heroic` and `lxb-desktop`'s
+# `src/heroic.rs`.
+stage_heroic() {
+    install_binary lxb-heroic
+    local mark="$PROJECT_ROOT/crates/lxb-heroic/glyphs/epic.svg"
+    [[ -f "$mark" ]] || package_die "no mark to stage at $mark"
+    install -Dm0644 "$mark" "$install_root/share/lxb/glyphs/epic.svg"
+}
+
 if [[ "$component" == compositor || "$component" == all ]]; then
     stage_compositor
 fi
@@ -221,4 +244,7 @@ if [[ "$component" == desktop || "$component" == all ]]; then
 fi
 if [[ "$component" == retroarch || "$component" == all ]]; then
     stage_retroarch
+fi
+if [[ "$component" == heroic || "$component" == all ]]; then
+    stage_heroic
 fi

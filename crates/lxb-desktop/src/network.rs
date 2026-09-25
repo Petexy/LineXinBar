@@ -601,6 +601,10 @@ struct State {
     /// wireless network — which is what makes the corner draw nothing rather
     /// than draw an empty fan.
     signal: Option<Signal>,
+    /// Whether this machine can reach the internet, as NetworkManager judges
+    /// it, or `None` where it has not said. Read with the corner's mark and on
+    /// the same terms — see [`Net::online`].
+    online: Option<bool>,
     /// Presses waiting to be carried out, in the order they were made.
     ///
     /// A queue rather than one slot, unlike the quick settings' bars: those are
@@ -662,6 +666,19 @@ impl Net {
     /// it against what it drew last frame for the cost of the comparison.
     pub fn signal(&self) -> Option<Signal> {
         self.held().signal
+    }
+
+    /// Whether this machine can reach the internet: `Some(false)` where
+    /// NetworkManager says there is no way out at all (or only as far as a
+    /// sign-in page or the local network), `Some(true)` where there is, and
+    /// `None` where it has not been asked or could not say.
+    ///
+    /// Read on the corner's pass, so it is as fresh as the wireless mark:
+    /// true whenever the start screen is showing, which is where anything is
+    /// pressed that depends on it. `None` is never taken for offline — a
+    /// machine with no NetworkManager is not a machine with no network.
+    pub fn online(&self) -> Option<bool> {
+        self.held().online
     }
 
     /// Say whether the start screen's corner is on screen.
@@ -983,8 +1000,25 @@ impl Worker {
         if corner {
             let signal = self.read_signal();
             self.publish_signal(signal);
+            let online = self.read_online();
+            self.held_state().online = online;
         }
         true
+    }
+
+    /// NetworkManager's own judgement of whether the internet is there — one
+    /// property of the manager, `Connectivity`. With its check turned off, as
+    /// many machines have it, that is full wherever there is a way out and
+    /// none where there is not, which is the difference that matters here.
+    fn read_online(&self) -> Option<bool> {
+        let bus = self.bus.as_ref()?;
+        let reply = call(bus, NM_PATH, PROPERTIES, "Get", &(NM_IFACE, "Connectivity"))?;
+        let value: OwnedValue = reply.body().deserialize().ok()?;
+        online_from(u32::try_from(value).ok()?)
+    }
+
+    fn held_state(&self) -> std::sync::MutexGuard<'_, State> {
+        self.shared.state.lock().unwrap_or_else(|e| e.into_inner())
     }
 
     /// Sleep until something happens, or until it is time to look again.
@@ -2405,6 +2439,17 @@ fn saved(bus: &zbus::blocking::Connection, device: &str) -> Vec<(String, String)
         .collect()
 }
 
+/// `NMConnectivityState`, as an answer to "is the internet there": 1 is
+/// none, 2 a sign-in page in the way, 3 only the local network, 4 all of it,
+/// and 0 not known.
+fn online_from(connectivity: u32) -> Option<bool> {
+    match connectivity {
+        1..=3 => Some(false),
+        4 => Some(true),
+        _ => None,
+    }
+}
+
 /// Every property of one interface on one object, in one call.
 fn get_all(
     bus: &zbus::blocking::Connection,
@@ -2601,6 +2646,18 @@ fn object(path: &str) -> Option<zbus::zvariant::ObjectPath<'static>> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// NetworkManager's four answers about the internet, and the one that is
+    /// not an answer.
+    #[test]
+    fn connectivity_is_read_as_online_offline_or_not_known() {
+        assert_eq!(online_from(0), None, "not known is not offline");
+        assert_eq!(online_from(1), Some(false), "no way out");
+        assert_eq!(online_from(2), Some(false), "a sign-in page in the way");
+        assert_eq!(online_from(3), Some(false), "only the local network");
+        assert_eq!(online_from(4), Some(true));
+        assert_eq!(online_from(9), None);
+    }
 
     /// Every one of these is written by hand from the numbers in
     /// `NetworkManager`'s own headers. Nothing this machine is on belongs in

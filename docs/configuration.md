@@ -129,7 +129,7 @@ later — and an inherited copy is removed at every one of those boundaries.
 The record is `key=value` pairs joined by `;`, ASCII, at most 1024 bytes:
 
 ```text
-v=1;visual=lxb-wallpaper-v2;clock=linux-monotonic;boot=<boot id>;sample-ns=<n>;scene-ns=<n>;accent=<palette>[;theme=<Default|Simple>]
+v=1;visual=lxb-wallpaper-v6;clock=linux-monotonic;boot=<boot id>;sample-ns=<n>;scene-ns=<n>;accent=<palette>[;theme=<Default|Simple>][;particles=<on|off>]
 ```
 
 `sample-ns` is `CLOCK_MONOTONIC` when the record was written and `scene-ns` is
@@ -138,8 +138,8 @@ difference to recover the other. `boot` is `/proc/sys/kernel/random/boot_id`,
 which is what makes a monotonic sample meaningful to another process. `accent`
 is one of the palette names Settings offers.
 
-`theme` is the one optional field, and the one field whose absence means
-something: it names the material the wallpaper was being drawn in — see the
+`theme` and `particles` are the two optional fields, and the two whose
+absence means something. `theme` names the material the wallpaper was being drawn in — see the
 `theme-wallpaper` key below — for the benefit of a reader that cannot consult the
 account's own settings. Only the wallpaper's half of that setting; the marks the
 shell draws are no part of a wallpaper, so the reader this is written for has no
@@ -151,6 +151,14 @@ reader falls back to the settings it can read. The session shell ignores it
 outright — the shell is the account and has already read its own file — but it
 accepts a record carrying one rather than refusing the phase over a field that
 is none of its business.
+
+`particles` is the same thing said about the sparkles the current carries —
+`on` where the login screen was drawing them, `off` where it was not; see
+`theme-particles` below. It is handed over the way the material is and for the
+same reader: a bridge frame in front of a login screen draws them as the greeter
+did rather than as the greeter's own account is set, and the session shell
+accepts the field and keeps to its own file. Anything but `on` or `off` is read
+as absent.
 
 Bump `visual` if the wallpaper
 changes in a way that would draw a different frame at the same clock:
@@ -220,15 +228,17 @@ bodies, and every one of the shell's own marks is a bead of water shaded out of
 its own distance field. `Simple` stands that down — the current becomes the three
 fine glass-silk ribbons the shell drew before the band, and a mark becomes the
 flat shape of itself in white, tinted with the accent. The *drawings* do not
-change; only what they are made of does.
+change; only what they are made of does. The sparkles the current carries are
+the same in both — they are light, not material.
 
 Two keys rather than one, and either may be either way round. They are separate
 settings because they are separate expenses and separate tastes: the wallpaper is
 one evaluation of a long function for every pixel of every screen on every frame,
 and a mark is a few dozen pixels of a settings row. Measured on an RX 9060 XT,
-one full-screen evaluation of the wallpaper is **0.38 ms** at 1080p in `Default`
-and **0.20 ms** in `Simple`, and a mark goes from six reads of its distance field
-to one. A machine that cannot pay for the first can very well pay for the second.
+one full-screen evaluation of the wallpaper is about **0.44 ms** at 1080p in
+`Default` and **0.32 ms** in `Simple` — the sparkles, which both draw, are about
+0.18 ms of either, and `theme-particles = false` gives all of it back — and a mark goes from six reads of its distance field to one.
+A machine that cannot pay for the first can very well pay for the second.
 
 They are written from Settings > Appearance > Theme, which is a page with a row
 for each. An unknown name is read as `Default`.
@@ -247,6 +257,28 @@ its own marks. So a machine set to `Simple` is in `Simple` from the moment the
 greeter appears, and never changes material in front of the user. A greeter
 drawing for somebody else's account passes the wallpaper's answer along in the
 hand-over record; see `theme` under `LXB_BACKGROUND_HANDOFF`.
+
+## `theme-particles`, in `shell.toml`
+
+```toml
+theme-particles = false
+```
+
+Whether the wallpaper's current carries its sparkles, `true` or `false`; a file
+that says nothing — or says something that is not `true` or `false` — leaves
+them on. Written from Settings > Appearance > Theme > Particles. It is the
+fourth value in the shader's `style` block (`style.w`), one where they are drawn
+and nought where they are not, so anything that fills that block has to ask the
+setting to draw them.
+
+The same readers as the theme, for the same reason. The shell reads it at
+startup; the display manager takes it from the account's published look, so the
+login screen draws or leaves out the sparkles the session will; the compositor
+reads it for its bridge frame; and an lxb-toolkit application reads it so that
+its wallpaper is the shell's. The display manager hands its answer over in the
+record, beside the material — see `particles` under `LXB_BACKGROUND_HANDOFF` — so
+a bridge frame in front of a login screen, where the compositor can read only
+the greeter's own settings, draws what the greeter drew.
 
 ## `retroarch-roms`, in `shell.toml`
 

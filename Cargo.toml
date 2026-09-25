@@ -7,6 +7,7 @@ members = [
     "crates/lxb-portal",
     "crates/lxb-steam",
     "crates/lxb-retroarch",
+    "crates/lxb-heroic",
     "crates/lxb-updates",
 ]
 # The two forked crates in `third_party/` are dependencies, not members: the
@@ -45,7 +46,7 @@ exclude = [
 ]
 
 [workspace.package]
-version = "0.9.0"
+version = "0.9.1"
 edition = "2021"
 rust-version = "1.85"
 license = "GPL-3.0-only"

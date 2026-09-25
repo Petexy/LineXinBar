@@ -1,0 +1,28 @@
+<!--
+  Sparkles, at the foot of Theme, on the row that says whether the wallpaper's
+  current carries its own.
+
+  The mark everybody already reads as "something that glitters": a large
+  four-pointed star, a smaller one over its shoulder, and a bead beside them.
+  Drawn as three bodies with open ground between them rather than one, because
+  what the setting is about is a scatter of separate lights — and it is a
+  silhouette nothing else under Theme has, between the wallpaper's wave above
+  it and the marks' four little shapes.
+
+  The arms are fuller than a sparkle's usually are. A point much finer than the
+  bevel is deep comes out as a melted thread under this material; drawn this
+  wide, each arm beads over into a small dome of its own, which is what a spark
+  of light on water looks like anyway. The points are turned by a round-joined
+  stroke of the same white, like every corner in the set.
+
+  lxb:shape — the material is computed from this outline. See
+  category-games.svg, which is where it is explained.
+-->
+
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32">
+  <g fill="#ffffff" stroke="#ffffff" stroke-width="1.4" stroke-linejoin="round">
+    <path d="M13 8.5Q15.8 15.7 23 18.5Q15.8 21.3 13 28.5Q10.2 21.3 3 18.5Q10.2 15.7 13 8.5Z"/>
+    <path d="M23.2 3.4Q24.75 7.45 28.8 9Q24.75 10.55 23.2 14.6Q21.65 10.55 17.6 9Q21.65 7.45 23.2 3.4Z"/>
+    <circle cx="26.2" cy="24.6" r="1.8"/>
+  </g>
+</svg>

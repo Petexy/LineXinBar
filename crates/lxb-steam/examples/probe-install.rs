@@ -9,8 +9,15 @@
 //!
 //! ```console
 //! $ cargo run -p lxb-steam --example probe-install -- 1812820
+//! $ cargo run -p lxb-steam --example probe-install -- --to /mnt/games/SteamLibrary 1812820
 //! $ cargo run -p lxb-steam --example probe-install -- --remove 1812820
 //! ```
+//!
+//! On a machine with more than one Steam library a plain press is asked where
+//! to go, as a press with the settings on "Ask every time" is — and the probe
+//! reports the libraries and how much room the game needs, and fetches
+//! nothing. `--to` names the library, as the panel's button does, and that
+//! one fetches the game.
 //!
 //! It reports what it saw, in the events the shell draws from. A game that
 //! never comes down is reported as one, and so is one that Steam will not
@@ -23,7 +30,7 @@
 
 use std::time::{Duration, Instant};
 
-use lxb_steam::{Event, Reach, Steam, Stopped};
+use lxb_steam::{webui::Place, Event, Reach, Steam, Stopped};
 
 fn main() {
     tracing_subscriber::fmt()
@@ -38,8 +45,20 @@ fn main() {
     if remove {
         arguments.next();
     }
+    let mut place = Place::Ask;
+    if arguments.peek().is_some_and(|first| first == "--to") {
+        arguments.next();
+        let Some(path) = arguments.next() else {
+            println!("--to wants the path of a Steam library");
+            return;
+        };
+        place = Place::In {
+            path,
+            by_default: false,
+        };
+    }
     let Some(app_id) = arguments.next().and_then(|raw| raw.parse::<u32>().ok()) else {
-        println!("usage: probe-install [--remove] <app id> [seconds]");
+        println!("usage: probe-install [--remove] [--to <library>] <app id> [seconds]");
         return;
     };
     // How long to watch afterwards, because a cold client is most of a minute
@@ -87,7 +106,7 @@ fn main() {
                     steam.uninstall(app_id);
                 } else {
                     println!("asking for it…");
-                    steam.install(app_id, "english");
+                    steam.install(app_id, place.clone(), "english");
                 }
                 asked = true;
             }
@@ -149,6 +168,38 @@ fn say(event: Event) {
                     ),
                 }
             }
+        }
+        Event::InstallFailed {
+            app_id,
+            why: Stopped::WhereTo(choice),
+        } => {
+            println!(
+                "  {app_id} could go into any of {} libraries, and needs {} bytes:",
+                choice.libraries.len(),
+                choice.needs
+            );
+            for library in choice.libraries {
+                println!(
+                    "    {}{} — {} bytes free{}{}",
+                    library.path,
+                    match library.label.is_empty() {
+                        true => String::new(),
+                        false => format!(" ({})", library.label),
+                    },
+                    library.free,
+                    if library.default {
+                        ", Steam's default"
+                    } else {
+                        ""
+                    },
+                    if library.fits(choice.needs) {
+                        ""
+                    } else {
+                        ", too small"
+                    },
+                );
+            }
+            println!("  (nothing was fetched; --to <library> fetches it into one of them)");
         }
         other => println!("  {other:?}"),
     }

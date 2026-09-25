@@ -1,0 +1,39 @@
+[
+  {
+    "tag_name": "v0.9.2-alpha",
+    "draft": false,
+    "prerelease": true,
+    "assets": [
+      {
+        "name": "lxb-compositor-0.9.2-1-x86_64.pkg.tar.zst",
+        "size": 4800000,
+        "digest": "sha256:0000000000000000000000000000000000000000000000000000000000000000",
+        "browser_download_url": "https://github.com/Petexy/LineXinBar/releases/download/v0.9.2-alpha/lxb-compositor-0.9.2-1-x86_64.pkg.tar.zst"
+      },
+      {
+        "name": "lxb-desktop-0.9.2-1-x86_64.pkg.tar.zst",
+        "size": 4800000,
+        "digest": "sha256:0000000000000000000000000000000000000000000000000000000000000000",
+        "browser_download_url": "https://github.com/Petexy/LineXinBar/releases/download/v0.9.2-alpha/lxb-desktop-0.9.2-1-x86_64.pkg.tar.zst"
+      },
+      {
+        "name": "lxb-compositor-0.9.2-1-aarch64.pkg.tar.zst",
+        "size": 4800000,
+        "digest": "sha256:0000000000000000000000000000000000000000000000000000000000000000",
+        "browser_download_url": "https://github.com/Petexy/LineXinBar/releases/download/v0.9.2-alpha/lxb-compositor-0.9.2-1-aarch64.pkg.tar.zst"
+      },
+      {
+        "name": "lxb-desktop-0.9.2-1-aarch64.pkg.tar.zst",
+        "size": 4800000,
+        "digest": "sha256:0000000000000000000000000000000000000000000000000000000000000000",
+        "browser_download_url": "https://github.com/Petexy/LineXinBar/releases/download/v0.9.2-alpha/lxb-desktop-0.9.2-1-aarch64.pkg.tar.zst"
+      }
+    ]
+  },
+  {
+    "tag_name": "v0.9.0-alpha",
+    "draft": false,
+    "prerelease": true,
+    "assets": []
+  }
+]

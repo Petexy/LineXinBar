@@ -50,6 +50,11 @@ in
     services.graphical-desktop.enable = true;
     services.dbus.enable = true;
     services.fwupd.enable = true;
+    # What mounts a drive from Files and Settings > Storage, and writes the
+    # mount table when a drive is set to mount at startup. A default rather
+    # than forced: a machine that has chosen otherwise lists no drive it could
+    # not mount anyway.
+    services.udisks2.enable = lib.mkDefault true;
     security.polkit.enable = true;
     hardware.graphics.enable = lib.mkDefault true;
   };

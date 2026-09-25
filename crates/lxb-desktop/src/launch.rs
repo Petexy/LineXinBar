@@ -23,6 +23,7 @@
 //! application has arrived, and when there is nothing left to draw. Where and
 //! what it looks like belongs to [`crate::ui`].
 
+use std::path::{Path, PathBuf};
 use std::time::Instant;
 
 // The two words the guide's card already uses for work that is not a download,
@@ -90,6 +91,18 @@ const STEAM_WATCHING: f32 = 8.0;
 /// bar wondering whether their press did anything. A launch that dies is
 /// caught by its process exiting rather than by this.
 const PATIENCE: f32 = 20.0;
+
+/// How long a game started through Heroic gets to show a window.
+///
+/// Measured on 2026-09-24: a cold Heroic had Cat Quest launching eleven
+/// seconds after the press, first-run Wine prefix included — but that first
+/// run also fetched two anti-cheat runtimes by itself, a game may install its
+/// redistributables through Proton, and an EA or Ubisoft title opens its own
+/// store's window first. Two minutes, on [`STEAM_PATIENCE`]'s argument: the
+/// cost of waiting too long is a loading screen somebody watches for a while,
+/// and the cost of too short is the shell saying a game did not start and the
+/// game then opening over it.
+const HEROIC_PATIENCE: f32 = 120.0;
 
 /// And how long for a game started through Valve's client.
 ///
@@ -410,6 +423,28 @@ pub struct Launch {
     /// that carries the request exits at once and the game is a child of the
     /// client, so liveness says nothing here and only the window counts.
     through_steam: bool,
+    /// Whether Heroic is starting this. The same two differences as
+    /// [`Self::through_steam`] and for the same reason: a Heroic that is
+    /// already running takes the request and the process that carried it exits
+    /// at once, so only the window counts — and it is allowed
+    /// [`HEROIC_PATIENCE`].
+    through_heroic: bool,
+    /// Whether no Heroic was running when this was pressed, so the process
+    /// that carried the request is Heroic itself, there for as long as the
+    /// game is. Its going before any window came is then the launch over —
+    /// Heroic gave up, most often at something it needed the network for —
+    /// rather than a hand-over to a Heroic already running.
+    heroic_carries_it: bool,
+    /// Whether this is a game opening on its own picture although Valve's
+    /// client is not starting it — an Epic game, whose backdrop is standing
+    /// behind the display the way a Steam game's is. Drawn the way a Steam
+    /// game's launch is: no panel, the logo or the name in the middle of the
+    /// picture, the ring in a corner, and a dip through black onto the game.
+    /// See [`Self::drawn_as_a_game`].
+    own_picture: bool,
+    /// That game's wordmark on this disk, where it has one. A Steam game's is
+    /// asked for by app id instead; see [`crate::ui::LaunchView::logo`].
+    logo: Option<PathBuf>,
     /// What Valve's client is doing to the game instead of starting it, in the
     /// words the row on the bar uses — "Updating · 33% of 1.3 GB".
     ///
@@ -540,6 +575,10 @@ impl Launch {
             from,
             pid,
             through_steam: false,
+            through_heroic: false,
+            heroic_carries_it: false,
+            own_picture: false,
+            logo: None,
             said: None,
             fetched: 0,
             game: None,
@@ -569,6 +608,56 @@ impl Launch {
         self.game = Some(game);
         self.doing = Some(Doing::Steam);
         self
+    }
+
+    /// Mark this as a game Heroic is starting. See the field of the same name.
+    pub fn through_heroic(mut self) -> Self {
+        self.through_heroic = true;
+        self
+    }
+
+    /// And say whether a Heroic was running already when it was pressed —
+    /// which decides what the process that carried the request is. See the
+    /// `heroic_carries_it` field.
+    pub fn heroic_already_running(mut self, running: bool) -> Self {
+        self.heroic_carries_it = self.through_heroic && !running;
+        self
+    }
+
+    /// Whether a game Heroic was asked to start never appeared: Heroic went
+    /// without opening a window, or the wait ran out. Answered with a panel,
+    /// the way a Steam game that never appeared is — a loading screen that
+    /// simply goes is a press nobody answered.
+    pub fn heroic_never_started_it(&self) -> bool {
+        self.through_heroic && matches!(self.arrived, Some((_, Arrival::Gone | Arrival::GaveUp)))
+    }
+
+    /// Mark this as a game opening on its own picture, with its own logo where
+    /// it has one — see the `own_picture` field. The line beside the ring says
+    /// the game is starting, which is the one step there is to name: Heroic
+    /// says nothing about how far along it is.
+    pub fn on_its_own_picture(mut self, logo: Option<PathBuf>) -> Self {
+        self.own_picture = true;
+        self.logo = logo;
+        self.doing = Some(Doing::Game);
+        self
+    }
+
+    /// Whether Heroic is starting this.
+    pub fn is_through_heroic(&self) -> bool {
+        self.through_heroic
+    }
+
+    /// Whether this is drawn as a game opens — on its own picture, dipping
+    /// through black — rather than as an application's panel. Every Steam
+    /// game, and a game [`Self::on_its_own_picture`] was said of.
+    pub fn drawn_as_a_game(&self) -> bool {
+        self.game.is_some() || self.own_picture
+    }
+
+    /// The game's own logo on this disk, for a game that is not Steam's.
+    pub fn logo_file(&self) -> Option<&Path> {
+        self.logo.as_deref()
     }
 
     /// Mark this as Valve's client itself being opened, and say what for.
@@ -889,6 +978,7 @@ impl Launch {
         }
         let waited = now.duration_since(self.waiting_since).as_secs_f32();
         let patience = match (self.through_steam, self.doing) {
+            _ if self.through_heroic => HEROIC_PATIENCE,
             // Waiting on Valve's client, which has not been asked for the game
             // yet and cannot be until it is up.
             (true, Some(Doing::Steam)) => STEAM_CLIENT_PATIENCE,
@@ -905,11 +995,14 @@ impl Launch {
             Arrival::Window
         } else if !foreground.is_empty() && foreground != self.foreground {
             Arrival::Raised
-        } else if !alive && !self.through_steam {
+        } else if !alive && !self.through_steam && (!self.through_heroic || self.heroic_carries_it)
+        {
             // Not for a Steam launch. The process that carried the request
             // exits within milliseconds of being started — it has done its
             // whole job by then — and reading that as the game dying would
-            // take the splash away before the game had begun to load.
+            // take the splash away before the game had begun to load. Nor for
+            // one Heroic took from an instance already running, for the same
+            // reason; but where the process is Heroic itself, its going is.
             Arrival::Gone
         } else if waited >= patience {
             Arrival::GaveUp
@@ -941,7 +1034,7 @@ impl Launch {
     /// wrong.
     fn dipping(&self, now: Instant) -> Option<f32> {
         match self.arrived {
-            Some((at, Arrival::Window | Arrival::Raised)) if self.game.is_some() => {
+            Some((at, Arrival::Window | Arrival::Raised)) if self.drawn_as_a_game() => {
                 Some(now.duration_since(at).as_secs_f32())
             }
             _ => None,
@@ -1041,7 +1134,7 @@ impl Launch {
         if matches!(how, Arrival::Gone | Arrival::GaveUp | Arrival::Left) {
             return true;
         }
-        let watching = if self.through_steam {
+        let watching = if self.through_steam || self.through_heroic {
             STEAM_WATCHING
         } else {
             WATCHING
@@ -1959,6 +2052,90 @@ mod tests {
             Some(Arrival::Window)
         );
         assert!(!splash.steam_never_appeared());
+    }
+
+    /// A game started through Heroic, on both of the terms a Steam launch
+    /// has: the process that carried the request exits at once where Heroic
+    /// is already running, which is not the game dying, and the wait is
+    /// Heroic's two minutes rather than an application's twenty seconds.
+    #[test]
+    fn a_heroic_launch_outlives_its_courier_and_waits_its_own_patience() {
+        let t0 = Instant::now();
+        let mut splash = launch(t0).through_heroic();
+
+        assert_eq!(splash.advance(at(t0, 0.5), &[7], "", false), None);
+        assert_eq!(
+            splash.advance(at(t0, PATIENCE + 5.0), &[7], "", false),
+            None,
+            "it gave up at an ordinary launch's patience"
+        );
+        assert_eq!(
+            splash.advance(at(t0, HEROIC_PATIENCE - 1.0), &[7, 9], "", false),
+            Some(Arrival::Window)
+        );
+
+        let mut never = launch(t0).through_heroic();
+        assert_eq!(
+            never.advance(at(t0, HEROIC_PATIENCE + 1.0), &[7], "", false),
+            Some(Arrival::GaveUp)
+        );
+        assert!(never.heroic_never_started_it(), "and that is said");
+        assert!(!splash.heroic_never_started_it());
+    }
+
+    /// Where no Heroic was running, the process the shell started is Heroic,
+    /// and it going with no window is the launch over — said at once, not
+    /// two minutes later. Where one was, its going means nothing.
+    #[test]
+    fn a_heroic_that_goes_without_a_window_is_a_game_that_did_not_start() {
+        let t0 = Instant::now();
+        let mut cold = launch(t0).through_heroic().heroic_already_running(false);
+        assert_eq!(cold.advance(at(t0, 1.0), &[7], "", true), None);
+        assert_eq!(
+            cold.advance(at(t0, 2.6), &[7], "", false),
+            Some(Arrival::Gone)
+        );
+        assert!(cold.heroic_never_started_it());
+
+        let mut handed = launch(t0).through_heroic().heroic_already_running(true);
+        assert_eq!(handed.advance(at(t0, 2.6), &[7], "", false), None);
+        assert_eq!(
+            handed.advance(at(t0, 20.0), &[7, 9], "", false),
+            Some(Arrival::Window)
+        );
+        assert!(!handed.heroic_never_started_it());
+
+        // Only ever a Heroic launch.
+        let plain = launch(t0).heroic_already_running(false);
+        assert!(!plain.heroic_never_started_it());
+    }
+
+    /// An Epic game opens the way a Steam game does — on its own picture,
+    /// with its logo, dipping through black onto its window — without being
+    /// a Steam game: nothing Steam-shaped is asked of it.
+    #[test]
+    fn an_epic_game_opens_on_its_own_picture_like_a_steam_game() {
+        let t0 = Instant::now();
+        let logo = PathBuf::from("/cache/lxb/epic-art/Quail/logo.png");
+        let mut splash = launch(t0)
+            .through_heroic()
+            .on_its_own_picture(Some(logo.clone()));
+        assert!(splash.drawn_as_a_game());
+        assert_eq!(splash.game(), None, "not a Steam game");
+        assert_eq!(splash.logo_file(), Some(logo.as_path()));
+        assert_eq!(splash.doing(), Some(Doing::Game));
+        assert!(!launch(t0).drawn_as_a_game(), "an application is a panel");
+
+        assert_eq!(
+            splash.advance(at(t0, 30.0), &[7, 9], "", false),
+            Some(Arrival::Window)
+        );
+        assert_eq!(splash.blackout(at(t0, 30.0)), 0.0);
+        assert!(
+            splash.blackout(at(t0, 30.0 + BLACK_IN)) > 0.99,
+            "it dips through black onto the game, as a Steam game's does"
+        );
+        assert!(splash.uncovering(at(t0, 30.0 + BLACK_IN + BLACK_HOLD + 0.1)));
     }
 
     /// It waits far longer than an ordinary launch: the client may update the

@@ -1,0 +1,33 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE policyconfig PUBLIC "-//freedesktop//DTD PolicyKit Policy Configuration 1.0//EN" "http://www.freedesktop.org/standards/PolicyKit/1/policyconfig.dtd">
+<policyconfig>
+  <vendor>LineXinBar</vendor>
+  <action id="org.linexinbar.drives.startup">
+    <description>Choose which drives are mounted at startup</description>
+    <description xml:lang="fr">Choisir les disques montés au démarrage</description>
+    <description xml:lang="es">Elegir qué unidades se montan al iniciar</description>
+    <description xml:lang="pl">Wybór dysków montowanych przy uruchamianiu</description>
+    <description xml:lang="de">Festlegen, welche Laufwerke beim Start eingehängt werden</description>
+    <description xml:lang="hi">चुनें कि स्टार्टअप पर कौन-सी ड्राइव माउंट हों</description>
+    <description xml:lang="pt_BR">Escolher quais unidades são montadas ao iniciar</description>
+    <description xml:lang="ru">Выбор дисков, монтируемых при запуске</description>
+    <description xml:lang="zh_CN">选择启动时挂载的驱动器</description>
+    <message>Authentication is required to change which drives this computer mounts when it starts.</message>
+    <message xml:lang="fr">Une authentification est nécessaire pour changer les disques que cet ordinateur monte au démarrage.</message>
+    <message xml:lang="es">Hace falta autenticarse para cambiar qué unidades monta este equipo al iniciar.</message>
+    <message xml:lang="pl">Zmiana dysków montowanych przy uruchamianiu tego komputera wymaga uwierzytelnienia.</message>
+    <message xml:lang="de">Um zu ändern, welche Laufwerke dieser Computer beim Start einhängt, ist eine Authentifizierung erforderlich.</message>
+    <message xml:lang="hi">यह बदलने के लिए कि यह कंप्यूटर शुरू होते समय कौन-सी ड्राइव माउंट करे, प्रमाणीकरण आवश्यक है।</message>
+    <message xml:lang="pt_BR">É necessária autenticação para alterar quais unidades este computador monta ao iniciar.</message>
+    <message xml:lang="ru">Чтобы изменить, какие диски этот компьютер монтирует при запуске, требуется аутентификация.</message>
+    <message xml:lang="zh_CN">更改此电脑启动时挂载哪些驱动器需要进行身份验证。</message>
+    <icon_name>drive-harddisk</icon_name>
+    <defaults>
+      <allow_any>auth_admin</allow_any>
+      <allow_inactive>auth_admin</allow_inactive>
+      <allow_active>auth_admin</allow_active>
+    </defaults>
+    <annotate key="org.freedesktop.policykit.exec.path">@HELPER@</annotate>
+    <annotate key="org.freedesktop.policykit.exec.argv1">--mount-at-startup</annotate>
+  </action>
+</policyconfig>

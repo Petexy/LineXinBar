@@ -30,6 +30,17 @@
 //! resync; black pixels on an OLED panel are already an unlit panel, which is
 //! the whole of what this is for.
 //!
+//! ## What is under it
+//!
+//! Once a sheet is all the way down, nothing on that display can be seen, and
+//! it is treated exactly as a display something else covers: its windows are
+//! off screen for [`crate::render::windows_on_screen`], so they are sent no
+//! frames and the applications they belong to are stopped by [`crate::sleep`]
+//! until the sheet is asked back up — which the shell does on input, and which
+//! continues them before the first frame of the way up. See
+//! [`Blackouts::is_black`]. A window arriving on a black display is still let
+//! run, and what it paints wakes the display the way painting always has.
+//!
 //! ## Frames
 //!
 //! Like the flash and the curtain, how black a display is now is a pure
@@ -144,6 +155,26 @@ impl Blackouts {
             black,
             CommitCounter::from(commit_of(sheet, now)),
         ))
+    }
+
+    /// Whether `output` is all the way black and staying there: the sheet has
+    /// finished coming down and nobody has asked for it back.
+    ///
+    /// The moment nothing on that display can be seen, which is when what is on
+    /// it stops being on screen — see [`crate::render::windows_on_screen`]. Not
+    /// a moment earlier, because a display on its way down is still showing its
+    /// picture through a fading sheet; and not a moment later, because the
+    /// instant a sheet is asked back up the user is waiting for what is under
+    /// it, and it has to be running by the time it is uncovered.
+    pub fn is_black(&self, output: &Output, now: Instant) -> bool {
+        let name = output.name();
+        // Read off the clock rather than off the alpha: every leg takes the
+        // whole of its length however far it has to travel, so a sheet that
+        // has been coming down for that long is black, including one that was
+        // turned round halfway — whose alpha may land a rounding short of one.
+        self.sheets
+            .iter()
+            .any(|sheet| sheet.output == name && sheet.down && elapsed(sheet, now) >= DOWN)
     }
 
     /// Drop the sheets that have finished coming back up, and the ones whose
@@ -325,6 +356,29 @@ mod tests {
             commit(&black, landed + Duration::from_millis(16)).distance(Some(later)) > Some(0),
             "the way back carries on from where the way down stopped"
         );
+    }
+
+    /// All the way black is the end of the way down and nothing else: not the
+    /// fade on its way there, and not a sheet that has been asked back up, even
+    /// on the very frame it was asked — what is under it has to be running by
+    /// the time it can be seen.
+    #[test]
+    fn a_display_is_black_only_once_it_is_all_the_way_down() {
+        let (a, b) = (output("A"), output("B"));
+        let mut black = Blackouts::default();
+        let t0 = Instant::now();
+        assert!(!black.is_black(&a, t0), "a display nobody rested");
+
+        black.cover(&a, true, t0);
+        assert!(!black.is_black(&a, t0 + DOWN / 2), "still fading down");
+        assert!(black.is_black(&a, t0 + DOWN));
+        assert!(black.is_black(&a, t0 + DOWN * 20));
+        assert!(!black.is_black(&b, t0 + DOWN), "and only that display");
+
+        let woken = t0 + DOWN * 20;
+        black.cover(&a, false, woken);
+        assert!(!black.is_black(&a, woken), "asked back up is not black");
+        assert!(!black.is_black(&a, woken + UP / 2));
     }
 
     /// Asking again for what is already happening does not restart it, which is

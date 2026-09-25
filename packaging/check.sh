@@ -69,14 +69,14 @@ grep -Fqx 'pkgver=@VERSION@' "$PACKAGING_DIR/arch/PKGBUILD.in" \
     || package_die "arch/PKGBUILD.in no longer reads its version from VERSION"
 grep -Fq 'builtins.readFile ../../VERSION' "$PACKAGING_DIR/nix/package.nix" \
     || package_die "nix/package.nix no longer reads its version from VERSION"
-for control in control.in control-compositor.in control-retroarch.in; do
+for control in control.in control-compositor.in control-retroarch.in control-heroic.in; do
     grep -Fq 'Version: @VERSION@-1' "$PACKAGING_DIR/debian/$control" \
         || package_die "debian/$control no longer reads its version from VERSION"
 done
 # The two binaries read the same file, and each says so for itself: a build
 # script that has stopped looking is a `--version` free to drift from the
 # package it ships in, which is what this whole section exists to prevent.
-for component in lxb-compositor lxb-desktop lxb-retroarch; do
+for component in lxb-compositor lxb-desktop lxb-retroarch lxb-heroic; do
     build_script="$PROJECT_ROOT/crates/$component/build.rs"
     [[ -f "$build_script" ]] \
         || package_die "crates/$component/build.rs is gone, and with it the check that it builds as the version in VERSION"
@@ -90,6 +90,8 @@ grep -Fq 'lxb-compositor (= @VERSION@-1)' "$PACKAGING_DIR/debian/control.in" \
     || package_die "debian/control.in no longer depends on the matching lxb-compositor"
 grep -Fq 'lxb-desktop (= @VERSION@-1)' "$PACKAGING_DIR/debian/control-retroarch.in" \
     || package_die "debian/control-retroarch.in no longer depends on the matching lxb-desktop"
+grep -Fq 'lxb-desktop (= @VERSION@-1)' "$PACKAGING_DIR/debian/control-heroic.in" \
+    || package_die "debian/control-heroic.in no longer depends on the matching lxb-desktop"
 grep -Fq '"lxb-desktop=$pkgver-$pkgrel"' "$PACKAGING_DIR/arch/PKGBUILD.in" \
     || package_die "arch/PKGBUILD.in no longer version-locks lxb-retroarch to the shell"
 grep -Fq '"lxb-compositor=$pkgver-$pkgrel"' "$PACKAGING_DIR/arch/PKGBUILD.in" \
@@ -140,6 +142,7 @@ stage="$work/stage"
 "$PACKAGING_DIR/install.sh" --destdir "$work/compositor" --component compositor
 "$PACKAGING_DIR/install.sh" --destdir "$work/desktop" --component desktop
 "$PACKAGING_DIR/install.sh" --destdir "$work/retroarch" --component retroarch
+"$PACKAGING_DIR/install.sh" --destdir "$work/heroic" --component heroic
 
 package_note "checking the staged desktop and session payload"
 for binary in lxb lxb-desktop lxb-updates lxb-session; do
@@ -212,7 +215,33 @@ grep -q 'pub const APPLY_FLAG: &str = "--apply-language";' \
     "$PROJECT_ROOT/crates/lxb-desktop/src/locale.rs" \
     || package_die "the shell no longer names --apply-language as its privileged flag"
 
-package_note "checking the three components partition the payload"
+# And the one that lets Settings > Storage mount a drive at startup: one line
+# of the machine's mount table, for one filesystem, added or removed.
+package_note "checking the drives polkit action is staged and bound"
+policy="$work/desktop/usr/share/polkit-1/actions/org.linexinbar.drives.policy"
+[[ -f "$policy" ]] \
+    || package_die "the desktop component does not stage the drives polkit action"
+grep -q 'id="org.linexinbar.drives.startup"' "$policy" \
+    || package_die "the drives policy does not declare org.linexinbar.drives.startup"
+grep -q '<annotate key="org.freedesktop.policykit.exec.path">/usr/bin/lxb-desktop</annotate>' "$policy" \
+    || package_die "the drives policy is not bound to the installed shell path"
+grep -q '<annotate key="org.freedesktop.policykit.exec.argv1">--mount-at-startup</annotate>' "$policy" \
+    || package_die "the drives policy is not bound to the --mount-at-startup argument"
+grep -q '@HELPER@' "$policy" \
+    && package_die "the drives policy still carries its @HELPER@ placeholder"
+grep -q 'auth_admin_keep' "$policy" \
+    && package_die "the drives policy caches its authorization with auth_admin_keep"
+grep -q '<allow_active>auth_admin</allow_active>' "$policy" \
+    || package_die "the drives policy does not require administrator authentication"
+if command -v xmllint >/dev/null 2>&1; then
+    xmllint --noout "$policy" \
+        || package_die "the drives policy is not well-formed XML"
+fi
+grep -q 'pub const STARTUP_FLAG: &str = "--mount-at-startup";' \
+    "$PROJECT_ROOT/crates/lxb-desktop/src/drives.rs" \
+    || package_die "the shell no longer names --mount-at-startup as its privileged flag"
+
+package_note "checking the four components partition the payload"
 # The compositor is a package of its own so a display manager can depend on a
 # Wayland session without pulling in this project's shell, and the RetroArch
 # integration is one so that a machine which will never emulate a console does
@@ -223,11 +252,12 @@ staged_paths() {
     (cd "$1" && find . -mindepth 1 \( -type f -o -type l \) -printf '%P\n' | sort)
 }
 staged_paths "$stage" > "$work/all.list"
-for component in compositor desktop retroarch; do
+for component in compositor desktop retroarch heroic; do
     staged_paths "$work/$component" > "$work/$component.list"
 done
 
-for pair in "compositor desktop" "compositor retroarch" "desktop retroarch"; do
+for pair in "compositor desktop" "compositor retroarch" "desktop retroarch" \
+    "compositor heroic" "desktop heroic" "retroarch heroic"; do
     read -r one other <<< "$pair"
     comm -12 "$work/$one.list" "$work/$other.list" > "$work/both.list"
     if [[ -s "$work/both.list" ]]; then
@@ -235,9 +265,9 @@ for pair in "compositor desktop" "compositor retroarch" "desktop retroarch"; do
     fi
 done
 sort -u "$work/compositor.list" "$work/desktop.list" "$work/retroarch.list" \
-    > "$work/union.list"
+    "$work/heroic.list" > "$work/union.list"
 if ! diff -q "$work/all.list" "$work/union.list" >/dev/null; then
-    package_die "--component all differs from the three components together: $(
+    package_die "--component all differs from the four components together: $(
         diff "$work/all.list" "$work/union.list" | tr '\n' ' ')"
 fi
 
@@ -282,6 +312,13 @@ for mark in "$marks"/*.svg; do
     grep -Fq 'lxb:shape' "$mark" \
         || package_die "$(basename "$mark") no longer says it ships as the shape of itself"
 done
+# The Epic Games integration, on the same terms: its own package, its own mark.
+[[ ! -e "$work/desktop/usr/bin/lxb-heroic" ]] \
+    || package_die "the desktop component stages lxb-heroic, which is a package of its own"
+[[ -x "$work/heroic/usr/bin/lxb-heroic" ]] \
+    || package_die "the heroic component does not stage lxb-heroic"
+grep -Fq 'lxb:shape' "$work/heroic/usr/share/lxb/glyphs/epic.svg" 2>/dev/null \
+    || package_die "the heroic component does not stage its mark as the shape of itself"
 session="$stage/usr/share/wayland-sessions/lxb.desktop"
 [[ -f "$session" ]] || package_die "Wayland session entry was not staged"
 for line in Exec=lxb-session TryExec=lxb-session DesktopNames=LineXinBar; do
@@ -425,6 +462,19 @@ Teach spec_entries the macro rather than leaving the entry unchecked."
         # covers nothing: a file under it still needs an entry of its own.
         [[ -d "$stage$entry" ]] \
             || package_die "fedora/lxb-desktop.spec packages the directory $entry, which nothing creates"
+        continue
+    fi
+    # A pattern — the console marks, which grow whenever `consoles.rs` learns
+    # another machine — is expanded against what was staged, and has to match
+    # something: a pattern matching nothing is RPM's "File not found" too.
+    if [[ "$entry" == *'*'* ]]; then
+        matched=0
+        while IFS= read -r found; do
+            printf '%s\n' "${found#"$stage"/}" >> "$work/spec.list"
+            matched=$((matched + 1))
+        done < <(compgen -G "$stage$entry" || true)
+        ((matched > 0)) \
+            || package_die "fedora/lxb-desktop.spec packages $entry, which matches nothing any component installs"
         continue
     fi
     if [[ -d "$stage$entry" ]]; then

@@ -17,6 +17,9 @@ pub enum Key {
     SteamGame(u32),
     SteamAchievement(u32, String),
     Status(u32, &'static str),
+    /// An Epic game, by Epic's own name for it — see [`crate::heroic`].
+    EpicGame(String),
+    EpicAchievement(String, String),
 }
 
 /// The machine a game is for, as the column groups by it.
@@ -572,7 +575,7 @@ fn status(app: u32, key: &'static str, title: &str, comment: &str) -> Entry {
     })
 }
 
-fn unlocked_at(seconds: u64) -> Option<String> {
+pub(crate) fn unlocked_at(seconds: u64) -> Option<String> {
     if seconds == 0 {
         return None;
     }
@@ -1525,6 +1528,7 @@ fn shelved(games: Vec<Entry>) -> Vec<Entry> {
             over_the_list: false,
             person: None,
             portrait: None,
+            used: None,
         })
     }));
     loose
@@ -1612,6 +1616,7 @@ impl Browser {
                 over_the_list,
                 person: None,
                 portrait: None,
+                used: None,
             })
         };
         let index = folder(

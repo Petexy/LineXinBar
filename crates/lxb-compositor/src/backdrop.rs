@@ -151,8 +151,8 @@ impl Backdrop {
     /// display: they are usually the same shape, and a bridge frame stretched
     /// across an unusual second monitor for a third of a second is still the
     /// right colours in the right places.
-    pub fn start(accent: &str, style: wallpaper::Style, scene: Duration, aspect: f32) -> Self {
-        let painter = Arc::new(Painter::new(accent, style, scene, aspect));
+    pub fn start(look: &Look, scene: Duration, aspect: f32) -> Self {
+        let painter = Arc::new(Painter::new(look, scene, aspect));
         // Drawn here, on the way up, rather than waited for: the next thing
         // this compositor does is present a frame, and there is no earlier
         // picture to show while a thread starts.
@@ -284,7 +284,7 @@ struct Work {
 }
 
 impl Painter {
-    fn new(accent: &str, style: wallpaper::Style, scene: Duration, aspect: f32) -> Self {
+    fn new(look: &Look, scene: Duration, aspect: f32) -> Self {
         Self {
             // A scene time longer than this machine has been running cannot be
             // subtracted from now. Nothing this compositor is handed should
@@ -293,7 +293,8 @@ impl Painter {
             origin: Instant::now()
                 .checked_sub(scene)
                 .unwrap_or_else(Instant::now),
-            sky: Sky::styled(wallpaper::palette(accent), style),
+            sky: Sky::styled(wallpaper::palette(&look.accent), look.style)
+                .with_particles(look.particles),
             aspect: if aspect.is_finite() && aspect > 0.0 {
                 aspect
             } else {
@@ -423,23 +424,19 @@ impl Opening {
         })
     }
 
-    /// Draw it, for a display of this shape.
-    ///
-    /// The accent and the clock can come from the display manager's record; the
-    /// material never does. A theme is a standing fact about the account whose
-    /// session this is — the shell reads it out of `shell.toml` at startup and
-    /// the login screen reads the same key — so this reads it there too rather
-    /// than taking it from a hand-over that may have been written by a greeter
-    /// drawing for somebody else.
+    /// Draw it, for a display of this shape — in the look [`opening_look`]
+    /// settles on, which says where the display manager's record outranks this
+    /// account's own settings and why.
     pub fn start(&self, aspect: f32) -> Backdrop {
-        let (accent, style, scene) = opening_look(self.handoff.as_deref());
+        let (look, scene) = opening_look(self.handoff.as_deref());
         tracing::info!(
-            %accent,
-            theme = style.name(),
+            accent = %look.accent,
+            theme = look.style.name(),
+            particles = look.particles,
             scene_secs = scene.as_secs_f32(),
             "drawing the startup wallpaper"
         );
-        Backdrop::start(&accent, style, scene, aspect)
+        Backdrop::start(&look, scene, aspect)
     }
 }
 
@@ -464,16 +461,57 @@ impl Opening {
 /// One material rather than two: the shell's Theme setting has a half about the
 /// wallpaper and a half about the marks it draws, and nothing here draws a mark.
 /// The record's `theme` field is the wallpaper's half and has always been.
-pub fn opening_look(handoff: Option<&std::ffi::OsStr>) -> (String, wallpaper::Style, Duration) {
+///
+/// The particles follow the material's rule for the material's reason: the
+/// record's `particles` where the greeter wrote one — it is the only process in
+/// front of a login screen that knows whether that account's current carries
+/// its sparkles — and this account's own file otherwise.
+pub fn opening_look(handoff: Option<&std::ffi::OsStr>) -> (Look, Duration) {
+    let configured = configured_look();
     match handoff.and_then(|record| record.to_str()).and_then(read) {
-        Some((accent, style, scene)) => {
-            (accent, style.unwrap_or_else(|| configured_look().1), scene)
-        }
-        None => {
-            let (accent, style) = configured_look();
-            (accent, style, Duration::ZERO)
+        Some(handed) => (
+            Look {
+                accent: handed.accent,
+                style: handed.style.unwrap_or(configured.style),
+                particles: handed.particles.unwrap_or(configured.particles),
+            },
+            handed.scene,
+        ),
+        None => (configured, Duration::ZERO),
+    }
+}
+
+/// What a bridge frame is drawn with: the accent, the wallpaper's material, and
+/// whether the current carries its sparkles — the three answers out of the
+/// shell's settings that decide a frame of its wallpaper.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Look {
+    pub accent: String,
+    pub style: wallpaper::Style,
+    pub particles: bool,
+}
+
+impl Default for Look {
+    /// The shell's own look, which is what a session with nothing to read comes
+    /// up in: sparkles and all, until somebody turns them off.
+    fn default() -> Self {
+        Self {
+            accent: wallpaper::PALETTES[0].name.to_string(),
+            style: wallpaper::Style::default(),
+            particles: true,
         }
     }
+}
+
+/// What a display manager's record says about the frame it was drawing: the
+/// palette and the clock always, and the material and the sparkles where it
+/// said so.
+#[derive(Debug)]
+struct Handed {
+    accent: String,
+    style: Option<wallpaper::Style>,
+    particles: Option<bool>,
+    scene: Duration,
 }
 
 /// Read the accent and the continuing clock out of a display manager's record.
@@ -492,7 +530,7 @@ pub fn opening_look(handoff: Option<&std::ffi::OsStr>) -> (String, wallpaper::St
 /// first frame then jumps away from — which is the seam this whole module
 /// exists to remove. Refused here, both ends of that boot start the animation
 /// from zero together.
-fn read(record: &str) -> Option<(String, Option<wallpaper::Style>, Duration)> {
+fn read(record: &str) -> Option<Handed> {
     // The same bound the shell applies, so a malformed environment cannot
     // make the compositor walk a long string before the session starts.
     if record.len() > 1024 || !record.is_ascii() {
@@ -504,12 +542,22 @@ fn read(record: &str) -> Option<(String, Option<wallpaper::Style>, Duration)> {
     let mut scene_ns = None;
     let mut visual = None;
     let mut theme = None;
+    let mut particles = None;
     for field in record.split(';') {
         let (key, value) = field.split_once('=')?;
         match key {
             "accent" => accent = Some(value),
             "visual" => visual = Some(value),
             "theme" => theme = Some(value),
+            // Anything but the two answers is no answer, and leaves the
+            // question to this account's settings rather than the phase.
+            "particles" => {
+                particles = match value {
+                    "on" => Some(true),
+                    "off" => Some(false),
+                    _ => None,
+                }
+            }
             "sample-ns" => sample_ns = Some(value.parse::<u64>().ok()?),
             "scene-ns" => scene_ns = Some(value.parse::<u64>().ok()?),
             _ => {}
@@ -533,11 +581,12 @@ fn read(record: &str) -> Option<(String, Option<wallpaper::Style>, Duration)> {
     // rather than from where it was a login ago.
     let elapsed_ns = monotonic_now_ns()?.checked_sub(sample_ns?)?;
     let scene_ns = scene_ns?.checked_add(elapsed_ns)?;
-    Some((
-        accent.to_string(),
-        theme.map(wallpaper::style),
-        Duration::from_nanos(scene_ns),
-    ))
+    Some(Handed {
+        accent: accent.to_string(),
+        style: theme.map(wallpaper::style),
+        particles,
+        scene: Duration::from_nanos(scene_ns),
+    })
 }
 
 fn monotonic_now_ns() -> Option<u64> {
@@ -578,11 +627,8 @@ fn monotonic_now_ns() -> Option<u64> {
 /// written under before they were split, and is read where the wallpaper has no
 /// key of its own — a machine set to `Simple` before an update must not come up
 /// in the water for the seconds before the shell's first frame.
-fn configured_look() -> (String, wallpaper::Style) {
-    let default = (
-        wallpaper::PALETTES[0].name.to_string(),
-        wallpaper::Style::default(),
-    );
+fn configured_look() -> Look {
+    let default = Look::default();
     let Some(path) = shell_settings_path() else {
         return default;
     };
@@ -603,12 +649,12 @@ fn configured_look() -> (String, wallpaper::Style) {
     look_in(&table)
 }
 
-/// The same two answers, out of a parsed settings file.
+/// The same answers, out of a parsed settings file.
 ///
 /// Split from [`configured_look`] so the keys can be exercised without the
 /// environment this compositor is normally started in: everything above this is
 /// about finding a file and refusing to read one that is not a settings file.
-fn look_in(table: &toml::Table) -> (String, wallpaper::Style) {
+fn look_in(table: &toml::Table) -> Look {
     let accent = table
         .get("accent")
         .and_then(toml::Value::as_str)
@@ -621,7 +667,17 @@ fn look_in(table: &toml::Table) -> (String, wallpaper::Style) {
         .and_then(toml::Value::as_str)
         .map(wallpaper::style)
         .unwrap_or_default();
-    (accent, style)
+    // On where the file says nothing, or says something that is not a switch:
+    // that is what the shell does with the same file.
+    let particles = table
+        .get(wallpaper::PARTICLES_KEY)
+        .and_then(toml::Value::as_bool)
+        .unwrap_or(true);
+    Look {
+        accent,
+        style,
+        particles,
+    }
 }
 
 fn shell_settings_path() -> Option<std::path::PathBuf> {
@@ -640,7 +696,7 @@ mod tests {
     /// canonical encoder, and to the shell's consumer fixture.
     fn record(accent: &str, sample_ns: u64, scene_ns: u64) -> String {
         format!(
-            "v=1;visual=lxb-wallpaper-v2;clock=linux-monotonic;\
+            "v=1;visual=lxb-wallpaper-v6;clock=linux-monotonic;\
              boot=01234567-89ab-cdef-0123-456789abcdef;\
              sample-ns={sample_ns};scene-ns={scene_ns};accent={accent}"
         )
@@ -649,16 +705,17 @@ mod tests {
     #[test]
     fn a_records_accent_and_clock_reach_the_bridge_frame() {
         let sample_ns = monotonic_now_ns().expect("monotonic clock");
-        let (accent, style, scene) =
-            read(&record("Green", sample_ns, 42_000_000_000)).expect("record");
-        // A record that says nothing about the material leaves the question to
-        // this account's own settings, which is what `opening_look` then asks.
-        assert_eq!(style, None);
-        assert_eq!(accent, "Green");
+        let handed = read(&record("Green", sample_ns, 42_000_000_000)).expect("record");
+        // A record that says nothing about the material or the sparkles leaves
+        // the question to this account's own settings, which is what
+        // `opening_look` then asks.
+        assert_eq!(handed.style, None);
+        assert_eq!(handed.particles, None);
+        assert_eq!(handed.accent, "Green");
         // At least the handed-over scene time, plus however long this test
         // took to get here — never less, which would run the clock backwards.
-        assert!(scene >= Duration::from_secs(42));
-        assert!(scene < Duration::from_secs(43));
+        assert!(handed.scene >= Duration::from_secs(42));
+        assert!(handed.scene < Duration::from_secs(43));
     }
 
     /// The material the login screen was drawing in reaches the bridge frame in
@@ -677,10 +734,10 @@ mod tests {
             "{};theme=Simple",
             record("Purple", sample_ns, 42_000_000_000)
         );
-        let (_, style, _) = read(&plain).expect("a record with a material is still a record");
-        assert_eq!(style, Some(wallpaper::Style::Simple));
+        let handed = read(&plain).expect("a record with a material is still a record");
+        assert_eq!(handed.style, Some(wallpaper::Style::Simple));
         assert_eq!(
-            opening_look(Some(std::ffi::OsStr::new(&plain))).1,
+            opening_look(Some(std::ffi::OsStr::new(&plain))).0.style,
             wallpaper::Style::Simple,
             "what the greeter said, not what this account's file says"
         );
@@ -691,8 +748,35 @@ mod tests {
             "{};theme=Glass",
             record("Purple", sample_ns, 42_000_000_000)
         );
-        let (_, style, _) = read(&odd).expect("an unknown material is not a broken record");
-        assert_eq!(style, Some(wallpaper::Style::Default));
+        let handed = read(&odd).expect("an unknown material is not a broken record");
+        assert_eq!(handed.style, Some(wallpaper::Style::Default));
+    }
+
+    /// The sparkles the login screen was drawing reach the bridge frame in front
+    /// of it, for the material's reason: this compositor, running as the
+    /// greeter's account, cannot read whether the person signing in turned them
+    /// on. Both answers, and anything else is no answer rather than a broken
+    /// record.
+    #[test]
+    fn the_sparkles_the_greeter_drew_reach_the_bridge_frame() {
+        let sample_ns = monotonic_now_ns().expect("monotonic clock");
+        let handed = |particles: &str| {
+            let record = format!(
+                "{};particles={particles}",
+                record("Purple", sample_ns, 42_000_000_000)
+            );
+            (
+                read(&record)
+                    .expect("a record with sparkles is still a record")
+                    .particles,
+                opening_look(Some(std::ffi::OsStr::new(&record)))
+                    .0
+                    .particles,
+            )
+        };
+        assert_eq!(handed("on"), (Some(true), true));
+        assert_eq!(handed("off"), (Some(false), false));
+        assert_eq!(handed("sometimes").0, None);
     }
 
     /// The wallpaper's half of the shell's Theme setting, and the key both
@@ -706,30 +790,57 @@ mod tests {
     fn the_bridge_frame_reads_the_wallpapers_half_of_the_theme() {
         let look = |settings: &str| look_in(&settings.parse().expect("a settings file"));
 
-        assert_eq!(look("").1, wallpaper::Style::Default);
+        assert_eq!(look("").style, wallpaper::Style::Default);
         assert_eq!(
-            look("theme-wallpaper = \"Simple\"").1,
+            look("theme-wallpaper = \"Simple\"").style,
             wallpaper::Style::Simple
         );
         assert_eq!(
-            look("theme = \"Simple\"").1,
+            look("theme = \"Simple\"").style,
             wallpaper::Style::Simple,
             "a file from before the split still says what it said"
         );
         assert_eq!(
-            look("theme = \"Simple\"\ntheme-wallpaper = \"Default\"").1,
+            look("theme = \"Simple\"\ntheme-wallpaper = \"Default\"").style,
             wallpaper::Style::Default,
             "and the newer, narrower key outranks it"
         );
         assert_eq!(
-            look("theme-icons = \"Simple\"").1,
+            look("theme-icons = \"Simple\"").style,
             wallpaper::Style::Default,
             "the marks are the shell's own business, and nothing here draws one"
         );
         assert_eq!(
             look("accent = \"Green\"\ntheme-wallpaper = \"Simple\""),
-            ("Green".to_string(), wallpaper::Style::Simple),
+            Look {
+                accent: "Green".to_string(),
+                style: wallpaper::Style::Simple,
+                particles: true,
+            },
             "both keys, in one read: they are one answer about one frame"
+        );
+    }
+
+    /// Theme > Particles, out of the same file: the sparkles the current
+    /// carries are the shell's to turn off, and a bridge frame that drew them
+    /// in front of a shell that does not would be the seam this module removes.
+    /// A file that says nothing — or says something that is not a switch —
+    /// leaves them on, which is what the shell does with it.
+    #[test]
+    fn the_bridge_frame_leaves_the_sparkles_out_where_the_shell_does() {
+        let look = |settings: &str| look_in(&settings.parse().expect("a settings file"));
+        assert!(look("").particles);
+        assert!(!look(&format!("{} = false", wallpaper::PARTICLES_KEY)).particles);
+        assert!(look(&format!("{} = true", wallpaper::PARTICLES_KEY)).particles);
+        assert!(look(&format!("{} = \"off\"", wallpaper::PARTICLES_KEY)).particles);
+        assert_eq!(
+            look(&format!(
+                "theme-wallpaper = \"Simple\"\n{} = false",
+                wallpaper::PARTICLES_KEY
+            ))
+            .style,
+            wallpaper::Style::Simple,
+            "and it is a key beside the material, not instead of it"
         );
     }
 
@@ -745,7 +856,7 @@ mod tests {
     fn a_custom_wallpaper_bridges_with_the_shells_own_scene() {
         let look = |settings: &str| look_in(&settings.parse().expect("a settings file"));
 
-        let style = look(&format!("theme-wallpaper = \"{}\"", wallpaper::CUSTOM)).1;
+        let style = look(&format!("theme-wallpaper = \"{}\"", wallpaper::CUSTOM)).style;
         assert_eq!(style, wallpaper::Style::Custom);
         assert_eq!(style.analytic(), wallpaper::Style::Default);
     }
@@ -790,7 +901,7 @@ mod tests {
 
     #[test]
     fn a_session_with_no_record_still_gets_a_palette_and_a_clock() {
-        let (accent, style, scene) = opening_look(None);
+        let (Look { accent, style, .. }, scene) = opening_look(None);
         assert_eq!(wallpaper::palette(&accent).name, accent);
         // And a material, which without a record is whatever this account's own
         // settings say.
@@ -820,16 +931,20 @@ mod tests {
     /// A display whose size the compositor could not read yet must not turn
     /// the bridge frame into transparent or `NaN` pixels — that would be the
     /// black screen back again, by another route.
+    /// The shell's own look in this accent, for the tests that are about the
+    /// painter rather than about what it was told to paint.
+    fn look(accent: &str) -> Look {
+        Look {
+            accent: accent.to_string(),
+            ..Look::default()
+        }
+    }
+
     #[test]
     fn a_nonsensical_aspect_still_draws_a_wallpaper() {
         let sky = Sky::new(wallpaper::palette("Purple"));
         for aspect in [f32::NAN, 0.0, -2.0, f32::INFINITY] {
-            let backdrop = Backdrop::start(
-                "Purple",
-                wallpaper::Style::Default,
-                Duration::from_secs(3),
-                aspect,
-            );
+            let backdrop = Backdrop::start(&look("Purple"), Duration::from_secs(3), aspect);
             assert_eq!(backdrop.source_size(), (WIDTH as f64, HEIGHT as f64).into());
         }
         // And the fallback shape is the one a sane aspect would have drawn.
@@ -842,12 +957,7 @@ mod tests {
     /// clock, and it arrives at whatever that clock says by then.
     #[test]
     fn the_frame_on_screen_follows_the_wallpaper_clock() {
-        let backdrop = Backdrop::start(
-            "Purple",
-            wallpaper::Style::Default,
-            Duration::ZERO,
-            16.0 / 9.0,
-        );
+        let backdrop = Backdrop::start(&look("Purple"), Duration::ZERO, 16.0 / 9.0);
 
         // Wait for two frames rather than one, and time the second: what the
         // frame on screen may be behind the clock is what the painter *can* do
@@ -892,12 +1002,7 @@ mod tests {
     /// what is behind it.
     #[test]
     fn the_painter_stops_when_the_wallpaper_leaves_the_screen() {
-        let backdrop = Backdrop::start(
-            "Blue",
-            wallpaper::Style::Default,
-            Duration::ZERO,
-            16.0 / 9.0,
-        );
+        let backdrop = Backdrop::start(&look("Blue"), Duration::ZERO, 16.0 / 9.0);
         backdrop.catch_up();
 
         // Long enough for the grace period to pass and for whatever was
@@ -918,8 +1023,7 @@ mod tests {
     /// every frame on top of that.
     #[test]
     fn only_a_stopped_painter_is_woken_by_the_frame_that_needs_it() {
-        let backdrop =
-            Backdrop::start("Red", wallpaper::Style::Default, Duration::ZERO, 16.0 / 9.0);
+        let backdrop = Backdrop::start(&look("Red"), Duration::ZERO, 16.0 / 9.0);
         // The first frame a wallpaper comes back on screen in.
         assert!(!backdrop.painter.wanted_for(KEEP_PAINTING));
         // And every frame after it, for as long as it stays there.
@@ -931,12 +1035,7 @@ mod tests {
     /// reach the screen even once.
     #[test]
     fn a_frame_left_over_from_a_session_ago_is_never_shown() {
-        let backdrop = Backdrop::start(
-            "Green",
-            wallpaper::Style::Default,
-            Duration::from_secs(3600),
-            16.0 / 9.0,
-        );
+        let backdrop = Backdrop::start(&look("Green"), Duration::from_secs(3600), 16.0 / 9.0);
         // As if the shell had had the screen for an hour.
         let long_ago = backdrop.painter.scene() - Duration::from_secs(3600);
         backdrop.drawn_at.set(long_ago);

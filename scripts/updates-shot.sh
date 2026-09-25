@@ -45,6 +45,9 @@ display="${LXB_SHOT_DISPLAY:-:7}"
 fixture=$(cd "$root" && cargo test -p lxb-updates --test coordinator --no-run --offline --message-format=json \
     | python3 -c 'import json,sys; print(next(x["executable"] for x in map(json.loads,sys.stdin) if x.get("executable") and x.get("target",{}).get("name")=="coordinator"))')
 export PATH="$root/scripts/updates-fixture/bin:/usr/bin:/bin"
+# What LineXinBar has "released", for Update LineXinBar: read by the check
+# only, and only once the fake pacman reports a hand-installed shell.
+export LXB_UPDATES_RELEASE_FIXTURES="$root/scripts/updates-fixture/releases"
 export RUST_LOG="${RUST_LOG:-lxb_desktop=debug,lxb_updates=debug}"
 export XDG_STATE_HOME="$out/home/.local/state"
 host_runtime="${XDG_RUNTIME_DIR:-}"

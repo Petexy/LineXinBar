@@ -935,7 +935,7 @@ fn ask_root_to_apply(locale: &str) -> Root {
 
 /// Where polkit's `pkexec` is, the wrapped one first: on NixOS the one on
 /// `PATH` is not the setuid copy.
-fn pkexec() -> Option<std::path::PathBuf> {
+pub(crate) fn pkexec() -> Option<std::path::PathBuf> {
     let wrapped = std::path::Path::new("/run/wrappers/bin/pkexec");
     if wrapped.is_file() {
         return Some(wrapped.to_path_buf());

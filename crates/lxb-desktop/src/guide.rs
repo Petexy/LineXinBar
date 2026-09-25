@@ -3505,7 +3505,7 @@ mod tests {
     /// A download, for the card in the corner.
     fn coming(app_id: u32, name: &str, share: Option<f32>) -> crate::steam::Coming {
         crate::steam::Coming {
-            app_id,
+            whose: crate::steam::Whose::Steam(app_id),
             name: name.to_string(),
             verb: "Downloading",
             share,

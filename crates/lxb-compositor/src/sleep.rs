@@ -10,6 +10,13 @@
 //! goes for a simulation running ahead of its renderer, a download, a chat
 //! client's timers, and every other thing a program does that is not painting.
 //!
+//! The same is true of a display resting behind OLED protection's black once
+//! the sheet is all the way down: nothing on it can be seen, so what is on it
+//! is stopped like anything else nobody can see, and continued the moment the
+//! shell asks for the sheet back — which it does on input, so the application
+//! is running again before the first frame of the display coming back. See
+//! [`crate::blackout`].
+//!
 //! So a console does what a console does: it stops the process. `SIGSTOP` on
 //! everything the application is, `SIGCONT` when it comes back — the same tree
 //! [`crate::teardown`] works out for Close, since "what is this application"
@@ -75,6 +82,10 @@ pub struct Sleepers {
     refused: HashSet<i32>,
     /// What was on screen when `refused` was last filled in.
     last_shown: HashSet<i32>,
+    /// The displays that were all the way black at the last look, by name —
+    /// kept only to say so in the log when that changes, since it is the one
+    /// reason for stopping something that is not another window.
+    black: HashSet<String>,
     /// Applications that have been asked to end. They are never stopped again,
     /// however invisible they become: a `SIGTERM` is *queued* for a stopped
     /// process and acted on only when it is continued, so an application
@@ -106,6 +117,7 @@ impl LxbState {
     /// hand, and `/proc` is read only when there is something new to stop.
     pub(crate) fn refresh_application_sleep(&mut self) {
         let outputs: Vec<Output> = self.lxb.space.outputs().cloned().collect();
+        self.note_the_black_displays(&outputs);
         let mut shown: HashSet<i32> = HashSet::new();
         for output in &outputs {
             for window in crate::render::windows_on_screen(&self.lxb, output) {
@@ -148,6 +160,35 @@ impl LxbState {
             return;
         }
         self.put_these_to_sleep(fresh, &shown);
+    }
+
+    /// Say when a display resting behind OLED protection's black has gone all
+    /// the way black, or been asked back — the moments what is on it stops
+    /// being on screen and starts again. Nothing is decided here; that is
+    /// [`crate::render::windows_on_screen`]'s, which asks the same question.
+    fn note_the_black_displays(&mut self, outputs: &[Output]) {
+        let now = std::time::Instant::now();
+        let black: HashSet<String> = outputs
+            .iter()
+            .filter(|output| self.lxb.blackouts.is_black(output, now))
+            .map(Output::name)
+            .collect();
+        if black == self.lxb.sleepers.black {
+            return;
+        }
+        for name in black.difference(&self.lxb.sleepers.black) {
+            tracing::info!(
+                display = %name,
+                "a resting display is all the way black, so what is on it is off screen"
+            );
+        }
+        for name in self.lxb.sleepers.black.difference(&black) {
+            tracing::info!(
+                display = %name,
+                "a resting display is coming back, so what is on it is on screen again"
+            );
+        }
+        self.lxb.sleepers.black = black;
     }
 
     /// Continue everything that is stopped and should not be — because it is on

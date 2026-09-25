@@ -6,6 +6,7 @@
 - [Display](#display)
 - [Sounds](#sounds)
 - [Network](#network)
+- [Storage](#storage)
 - [System](#system)
 
 ## Appearance
@@ -19,7 +20,7 @@ Each is drawn in itself, and the one in force carries a tick.
 An accent is a whole palette rather than one colour. Previewing one smoothly
 changes the selection glow, the lit rim of a chosen pane, the glass and the
 bloom under the icon the cursor is on — and the wallpaper with them, since its
-ribbons and aurora are drawn *in* the accent, and a sky that no longer belonged
+ribbons, aurora and sparkles are drawn *in* the accent, and a sky that no longer belonged
 to it would read as two themes fighting. Nothing is reloaded to make that
 happen: every colour in the shell is read as it is drawn, so every display
 travels through the same transition at once.
@@ -38,7 +39,7 @@ An unknown name there is reported and ignored, and the shell comes up violet.
 `Settings > Appearance > Theme` is what the shell is *made of*, and it is a page
 rather than a list: **Wallpaper** and **Icons**, each offering **Default** and
 **Simple** — and the wallpaper one thing more, [a picture or a film of your
-own](#custom-wallpaper).
+own](#custom-wallpaper) — and **Particles**, which is **On** or **Off**.
 
 Under `Default` the wallpaper's current is a band of water three sheets thick,
 lit as bodies, and every one of the shell's own marks is a bead of water shaded
@@ -46,14 +47,22 @@ out of its own distance field. `Simple` stands that down — the current becomes
 the three fine glass-silk ribbons the shell drew before the band, and a mark
 becomes the flat shape of itself. The *drawings* never change, only what they
 are made of, which is what keeps the shell recognisable rather than reduced.
+Either way the current can carry the same sparkles — glitter that appears in
+the middle of the ribbon, is pushed out of it and grows more see-through the
+further it goes, the way the PlayStation 3's wave carried it — since they are
+light and not material. They are **On** until **Particles** turns them off, and
+like the rows above it, highlighting Off shows the wallpaper without them before
+anything is chosen. The login screen, the start of the session and lxb-toolkit
+applications follow it too.
 
 The two are separate settings because they are separate expenses and separate
 tastes. The wallpaper is one evaluation of a long function for every pixel of
 every screen on every frame; a mark is a few dozen pixels of a row. On an
-RX 9060 XT one full-screen evaluation is 0.38 ms at 1080p under `Default` and
-0.20 ms under `Simple`, and a mark goes from six reads of its distance field to
-one — so a machine that cannot pay for the water behind everything can very well
-keep the beads in front of it, and somebody who simply prefers flat marks can
+RX 9060 XT one full-screen evaluation is about 0.44 ms at 1080p under `Default`
+and 0.32 ms under `Simple` — the sparkles, which both draw, are about 0.18 ms of
+either, and Particles Off gives all of it back — and a mark goes from six reads of its distance field to one. So a
+machine that cannot pay for the water behind everything can very well keep the
+beads in front of it, and somebody who simply prefers flat marks can
 have those over the moving water.
 
 Both rows preview: highlighting a value draws the shell in it without choosing
@@ -80,7 +89,7 @@ carries one `theme` key; it is still read, and both halves take it.
 answer under Wallpaper, and it is not a material: it is a picture or a film of
 your own, standing where the shell's scene would be. Choosing it stops the
 background shader drawing a scene at all — no gradient, no lights, no aurora, no
-band of water — and puts your file there instead.
+band of water, no sparkles — and puts your file there instead.
 
 The row opens the shell's own file browser, on the same three places Files opens
 on: your home directory, the machine from `/`, and every drive that is mounted.
@@ -648,6 +657,15 @@ taking input the whole time it is down, which is what makes moving the pointer
 onto the screen the way to get it back. A second going down, a quarter of a
 second coming back, and it reverses from wherever it has got to.
 
+Once the black is all the way down, the screen sleeps. The shell stops drawing
+it, and every application on it is stopped exactly as one covered by another
+application would be — no frames, no processor time, nothing running — until
+input brings the screen back, at which point they are continued before the
+first frame of the black lifting. The same exceptions hold as everywhere else:
+Valve's client and something audibly playing music are never stopped. A window
+that newly appears on a resting screen is let run, and what it paints wakes the
+screen.
+
 Three things stop a screen being rested, and none of them is a setting:
 
 | | |
@@ -993,6 +1011,119 @@ Proxies, VPNs, hotspots and enterprise credentials are deliberately absent.
 Those are not one press and a value, they are forms, and a console shell
 offering half a form would be worse than one that says plainly that the network
 it cannot join has to be set up elsewhere.
+
+## Storage
+
+`Settings > Storage`, between Users and System, lists every partition on the
+machine. The highlighted one says how much room is left on it and draws the
+same thing as a bar under the words — the bar a game's row draws while it
+downloads, filled with what is taken, so the empty part is what is left:
+
+```
+Settings > Storage
+
+    System       26 GiB free of 233 GiB    ██████████████████▌──
+    Home
+    GamesHDD
+    GamesSSD
+    Startup
+```
+
+A partition is named by what it is for where that is something a person would
+recognise — **System** for the one mounted at `/`, **Home** for `/home` (wearing
+the Files column's home mark), **Startup** for `/boot` or `/efi` — and otherwise
+by the label somebody gave the filesystem, then by the last part of where it is
+mounted, then by the partition table's own name for it ("Basic data
+partition"), and last by its size ("400 GiB drive"). The system comes first,
+then everybody's files, the drives somebody mounted, what the machine starts
+from, swap, and partitions nothing is using.
+
+Two kinds of row carry no bar, because how full a filesystem is can only be
+asked of one that is mounted: swap reads **Used as extra memory**, and a
+partition nothing is using reads **Not in use**, each with its size. Pressing
+one of the system's own partitions — System, Home, Startup — or swap opens a
+panel of its facts — free, used, capacity, file system, location and the drive
+it is on — dismissed with `Close`.
+
+### A drive's own page
+
+Every other drive somebody could mount is a way in rather than a panel: one
+nothing has mounted (**Not mounted · 932 GiB**), and one mounted somewhere a
+drive goes rather than where the system keeps itself.
+
+```
+Settings > Storage > GamesHDD
+
+    Mount                 Make it available in Files
+    Mount at startup      Off
+    Drive information     WDC WD10EZEX
+```
+
+- **Mount** / **Unmount** mounts it, or unmounts it. A drive that can be
+  unplugged has **Safely remove** instead, which unmounts it and turns it off.
+  While a press is being carried out the row says so and cannot be pressed
+  again; a refusal is a panel in plain words, as in [Files](shell.md#files).
+- **Mount at startup** is **On** or **Off**, with what each means under it:
+  on, the drive is there as soon as the computer starts, for every account;
+  off, it is mounted when somebody opens it. It is not offered for a stick,
+  which is mounted as soon as it is plugged in.
+- **Drive information** is the panel of facts the row used to open.
+
+Mount at startup is the machine's setting, not the shell's: it is a line in
+`/etc/fstab`, written through UDisks exactly as GNOME Disks writes one —
+
+```
+/dev/disk/by-uuid/<uuid> /mnt/<label> auto nosuid,nodev,nofail,x-gvfs-show 0 0
+```
+
+— with `uid=`/`gid=` of the person who turned it on added for FAT, exFAT and
+NTFS, which have no owners of their own. The drive goes under `/mnt`, by its
+own name, so it is at the same place every time the machine starts, which is
+what keeps a Steam library on it valid. `nofail` means a machine that cannot
+find the drive one morning still starts. A folder of that name that already
+exists is used, full or not, as systemd does. Its contents are hidden while
+the drive is mounted over it, and not touched.
+
+Turning it on asks for an administrator's password **once**. Writing the mount
+table and mounting an internal disk are two separate UDisks permissions that do
+not remember each other, so the shell does both as root behind one question:
+`lxb-desktop --mount-at-startup <uuid> on|off`, started through `pkexec` for the
+polkit action `org.linexinbar.drives.startup`
+(`packaging/files/org.linexinbar.drives.policy.in`, bound to that flag by
+name). It takes a filesystem's UUID and can do two things with it: add the line
+above, or remove the lines that already mount that filesystem. It cannot choose
+where a drive goes or give it other options. If the drive was mounted somewhere
+else, it is moved to its new place straight away. If something is using it, the
+row says **A restart may be needed.** Turning it off removes the line and leaves
+the drive mounted until the next start. On NixOS the mount table is generated
+from the system configuration and cannot be written, so the row says **Could
+not be changed** and the drive belongs in `fileSystems` instead.
+
+What is listed is read out of the kernel rather than asked of UDisks, on the
+bargain the battery mark makes: `/sys/class/block` for the partitions and the
+drive's model, `/proc/self/mountinfo` for where each is mounted, `/proc/swaps`,
+and `statvfs` for the room. The one thing taken from a daemon is the
+filesystem's label, out of udev's `/run/udev/data`, and a machine without it
+still gets every partition. Which of them get a page of their own is UDisks'
+answer, because UDisks is what mounts them, joined to this reading by the
+device's name; a machine without UDisks gets the panels. A filesystem mounted
+several times — a btrfs root at `/`, `/home` and `/var/log` — is one row, and
+on an encrypted disk the row is the opened container, which is where the files
+are. Loop devices (every snap is one), RAM disks, compressed swap in memory and
+optical discs are not drives and are left out, and so are the few-megabyte
+partitions with no filesystem on them that are firmware plumbing: a BIOS boot
+partition, Windows' reserved partition, an extended partition's container.
+
+Steam's libraries are on a page of their own, Settings > Games > Steam >
+Storage, with the same drive names and the same bar — see
+[Steam](steam.md#storage-libraries-and-moving-games-between-them).
+
+The reading happens on a worker thread, once when Settings is arrived at and
+every three seconds while this page or Steam's is open, and nothing is read at
+all while the session is anywhere else. `statvfs` on a drive that has spun down can
+block, and a frame must not wait for it. The column is rebuilt only when a row
+would look different, so a disk being written to does not rebuild the page on
+every reading.
 
 ## System
 

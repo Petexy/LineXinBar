@@ -259,6 +259,19 @@ pub fn discover() -> Vec<Source> {
         Provider::Firmware,
         "fwupd · BIOS/UEFI excluded",
     ));
+    // Second, after the system: listed only where some of the family is
+    // installed in a way no repository of this system will ever update.
+    if !crate::releases::find(&host).is_empty() {
+        let after_system = usize::from(sources.first().is_some_and(|s| s.id == SourceId::System));
+        sources.insert(
+            after_system,
+            source(
+                SourceId::Linexinbar,
+                Provider::Releases { operations: vec![] },
+                "Released on GitHub · for what this system's repositories do not carry",
+            ),
+        );
+    }
     sources
 }
 
@@ -518,6 +531,7 @@ fn check_inner(source: &mut Source) -> Result<()> {
                 "Flatpak applications, runtimes and extensions · all installed scopes".into();
             Ok(())
         }
+        Provider::Releases { .. } => crate::releases::check(source),
         Provider::Aur { .. } => bail!("AUR packages must be updated manually"),
         Provider::Snap => preview(
             source,
@@ -724,6 +738,7 @@ pub fn steps(source: &Source) -> Result<Vec<Step>> {
         // editor, and this is a press on a panel. The helper's sudo asks for
         // its password on the PTY, which the panel opens its field for.
         Provider::Aur { .. } => bail!("AUR packages must be updated manually"),
+        Provider::Releases { operations } => crate::releases::steps(operations)?,
         Provider::Snap => vec![Step::new("snap", &["refresh"], true)],
         Provider::Nix => vec![Step::new("nix", &["profile", "upgrade", "--all"], false)],
         Provider::Guix => vec![

@@ -36,6 +36,16 @@ use crate::icons::Icon;
 /// Edge length, in pixels, of one atlas cell.
 const CELL: u32 = 128;
 
+/// Whose logo a block of the atlas's logo band holds.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub enum LogoOf {
+    /// A Steam game's, out of Valve's cache or its content network.
+    Steam(u32),
+    /// A picture on this disk: an Epic game's, which the helper fetched into
+    /// the shell's cache.
+    File(PathBuf),
+}
+
 /// A textured or solid rectangle, in physical pixels with the origin top-left.
 #[derive(Debug, Clone, Copy)]
 pub struct Quad {
@@ -1437,8 +1447,9 @@ struct Globals {
     /// shader never has to ask whether the texture it is about to read holds
     /// anything. `z` is that picture's own shape, width over height, which is
     /// what the crop to the display is worked out from; it is nought when there
-    /// is none. `w` is spare, and a uniform block is laid out in sixteen-byte
-    /// lots, so it costs nothing to leave it there.
+    /// is none. `w` is one where the sparkles the current carries are turned
+    /// on, under Theme > Particles, and nought where they are not — see
+    /// [`crate::theme::particles_flag`].
     style: [f32; 4],
 }
 
@@ -1816,11 +1827,12 @@ pub struct Gpu {
     /// part of its block, and [`Self::uv_for`] has to be told which part.
     thumbs: HashMap<PathBuf, Thumb>,
     /// The band under it, holding game logos, and which game each block is
-    /// holding. Filed by app id rather than by path: a logo is asked for by
-    /// the game it names, and nothing downstream ever sees the file.
-    logo_blocks: Vec<Option<u32>>,
+    /// holding. A Steam game's is filed by app id, because it is asked for by
+    /// the game it names and nothing downstream ever sees the file; an Epic
+    /// game's by the file the helper fetched it into. See [`LogoOf`].
+    logo_blocks: Vec<Option<LogoOf>>,
     logo_band: u32,
-    logos: HashMap<u32, Thumb>,
+    logos: HashMap<LogoOf, Thumb>,
 
     /// The pictures that stand behind a display, one per layer of an array
     /// texture, and what each layer is a picture of. `None` is a free layer.
@@ -2823,8 +2835,8 @@ impl Gpu {
     }
 
     /// The logo resident in the atlas for a game, if there is one.
-    pub fn logo(&self, app_id: u32) -> Option<Thumb> {
-        self.logos.get(&app_id).copied()
+    pub fn logo(&self, of: &LogoOf) -> Option<Thumb> {
+        self.logos.get(of).copied()
     }
 
     /// Put a game's logo into the atlas, taking a free block of the band that
@@ -2833,20 +2845,20 @@ impl Gpu {
     /// Answers false when there is no room, which leaves the launch splash
     /// showing the game's name — the same thing it shows for a game Valve has
     /// no logo for.
-    pub fn put_logo(&mut self, app_id: u32, picture: &crate::thumbs::Picture) -> bool {
-        if self.logos.contains_key(&app_id) {
+    pub fn put_logo(&mut self, of: LogoOf, picture: &crate::thumbs::Picture) -> bool {
+        if self.logos.contains_key(&of) {
             return false;
         }
         let Some(block) = self.logo_blocks.iter().position(Option::is_none) else {
-            tracing::debug!(app_id, "no free logo block; the splash uses the name");
+            tracing::debug!(?of, "no free logo block; the splash uses the name");
             return false;
         };
         let cell = Self::band_cell(self.atlas_cells_per_row, self.logo_band, LOGO_CELLS, block);
         let Some(logo) = self.write_block(LOGO_CELLS, cell, picture) else {
             return false;
         };
-        self.logo_blocks[block] = Some(app_id);
-        self.logos.insert(app_id, logo);
+        self.logo_blocks[block] = Some(of.clone());
+        self.logos.insert(of, logo);
         true
     }
 
@@ -2855,13 +2867,13 @@ impl Gpu {
     /// The thumbnails' policy again, and the scenery's: what these hold is
     /// what is about to be drawn, and a logo the cursor has left is one
     /// nothing will draw until it is asked for again.
-    pub fn retain_logos(&mut self, wanted: &HashSet<u32>) {
+    pub fn retain_logos(&mut self, wanted: &HashSet<LogoOf>) {
         for block in &mut self.logo_blocks {
-            if block.is_some_and(|app_id| !wanted.contains(&app_id)) {
+            if block.as_ref().is_some_and(|of| !wanted.contains(of)) {
                 *block = None;
             }
         }
-        self.logos.retain(|app_id, _| wanted.contains(app_id));
+        self.logos.retain(|of, _| wanted.contains(of));
     }
 
     /// Write one picture into a block of `cells` cells a side, whose top-left
@@ -3324,7 +3336,7 @@ impl Gpu {
                     self.wallpaper_flag(),
                     crate::theme::style_flag(crate::theme::Part::Icons),
                     self.paper_shape(),
-                    0.0,
+                    crate::theme::particles_flag(),
                 ],
             }),
         );

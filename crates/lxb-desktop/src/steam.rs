@@ -300,6 +300,17 @@ pub struct Steam {
     /// answered and put away on the press, so with nothing here it would be a
     /// press that silently did nothing.
     forcing: std::collections::BTreeSet<lxb_steam::webui::Which>,
+    /// Which library each game pressed this session was sent to, where one was
+    /// named.
+    ///
+    /// Kept for the one press that comes back and has to go on where the last
+    /// one left off: an agreement accepted on the shell's panel opens the
+    /// wizard again, and a game whose library was chosen a moment before must
+    /// not lose that answer on the way through. See [`Steam::accept_and_install`].
+    places: BTreeMap<u32, lxb_steam::webui::Place>,
+    /// The game this session is moving into another library, while it is.
+    /// See [`Relocation`].
+    moving: Option<Relocation>,
     /// Who the account knows, and where each of them is, as Steam last said.
     ///
     /// Empty for a session with nobody signed in, and emptied again when
@@ -673,6 +684,18 @@ pub struct Preflight {
 }
 
 impl Preflight {
+    /// How many Steam libraries are there today.
+    pub fn libraries_present(&self) -> usize {
+        self.room.len()
+    }
+
+    /// Whether this library, by the path Steam lists it under, is one of them.
+    pub fn has_library(&self, path: &str) -> bool {
+        self.room
+            .iter()
+            .any(|room| crate::settings::same_library(&room.path.to_string_lossy(), path))
+    }
+
     /// The room line, or nothing where no library would say.
     ///
     /// One library is the ordinary machine and gets an exact answer. Several
@@ -787,7 +810,7 @@ impl Fetching {
 /// this is what the card says in that gap. Downloading rather than Installing,
 /// because the card is about bytes arriving — the row beside it is the one that
 /// says what is being *installed*.
-const DOWNLOADING: &str = "Downloading";
+pub(crate) const DOWNLOADING: &str = "Downloading";
 
 /// And what it says over a game Steam is reading back off the disk rather than
 /// fetching. A check on a large game is twenty minutes, and calling that a
@@ -856,7 +879,8 @@ fn verb_for(standing: lxb_steam::library::Standing) -> &'static str {
 /// id by whatever is drawing, exactly as a row's cover is.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Coming {
-    pub app_id: u32,
+    /// Whose game it is, which is where the card's picture comes from.
+    pub whose: Whose,
     pub name: String,
     /// "Downloading" or "Updating" — see [`verb_for`].
     pub verb: &'static str,
@@ -884,6 +908,20 @@ pub struct Coming {
 
 /// Format typed library facts at the shell boundary; wire values and game
 /// names remain untouched. Keep size conventions consistent with Steam.
+/// Where a game pressed on the bar goes, as Settings > Games > Steam > Install
+/// games to has it: asked, or into the library chosen there — which is made
+/// Steam's own default on the way, because that is what the row promises. See
+/// [`crate::settings::SteamValue::InstallTo`].
+pub fn place_from_the_settings() -> lxb_steam::webui::Place {
+    match crate::settings::steam_install_to() {
+        None => lxb_steam::webui::Place::Ask,
+        Some(path) => lxb_steam::webui::Place::In {
+            path,
+            by_default: true,
+        },
+    }
+}
+
 pub fn format_size(bytes: u64) -> String {
     crate::i18n::decimal(lxb_steam::library::said(bytes))
 }
@@ -934,7 +972,38 @@ fn game_note(game: &Game) -> String {
     }
 }
 
+/// Whose game a download card is about.
+///
+/// The card is one fact about the machine — something is coming down — so an
+/// Epic game's download stands on the same card as a Steam game's rather than
+/// on one of its own. What differs is only where its picture is found.
+#[derive(Debug, Clone, PartialEq)]
+pub enum Whose {
+    /// A Steam game, whose client icon (else its cover) is looked up by app id
+    /// by whatever is drawing, exactly as a row's cover is.
+    Steam(u32),
+    /// An Epic game, by Heroic's name for it, with the file its cover is in.
+    /// Epic publishes no icon for a game, so the cover stands in for one the
+    /// way a Steam cover does for a game Valve gave none.
+    Epic {
+        app_name: String,
+        cover: Option<std::path::PathBuf>,
+    },
+}
+
 impl Coming {
+    /// The Steam game the card is about, where it is one.
+    ///
+    /// What the finish is keyed on: a Steam download ending is noticed by its
+    /// card losing it, while an Epic one is an event the helper reports — see
+    /// `Shell::epic_download_ended` — and must not be announced twice.
+    pub fn steam_app_id(&self) -> Option<u32> {
+        match self.whose {
+            Whose::Steam(app_id) => Some(app_id),
+            Whose::Epic { .. } => None,
+        }
+    }
+
     /// What the card's one line says.
     pub fn said(&self) -> String {
         format!("{} {}", crate::i18n::builtin(self.verb), self.name)
@@ -1137,6 +1206,21 @@ pub struct Changed {
     /// notification about a thing that just happened on screen is noise. See
     /// `Shell::say_steam_is_ready`.
     pub steam_is_ready: bool,
+    /// How far the move under way has got is different, so the row and the
+    /// panel showing it have to be redrawn.
+    pub moving: bool,
+    /// Moves that ended, however they ended: the game, where it was sent, and
+    /// how it went. A list for the reason `installed` is one.
+    pub moved: Vec<(
+        u32,
+        String,
+        Result<lxb_steam::webui::Moved, lxb_steam::StorageRefused>,
+    )>,
+    /// And libraries added, removed or repaired, or not.
+    pub shelved: Vec<(
+        lxb_steam::webui::Shelving,
+        Result<(), lxb_steam::StorageRefused>,
+    )>,
 }
 
 impl Changed {
@@ -1180,6 +1264,9 @@ impl Changed {
             reconnected,
             handed_over,
             steam_is_ready,
+            moving,
+            moved,
+            shelved,
         } = one;
         self.trophies |= trophies;
         self.library |= library;
@@ -1191,6 +1278,10 @@ impl Changed {
         self.reconnected |= reconnected;
         self.handed_over = handed_over.or(self.handed_over.take());
         self.steam_is_ready |= steam_is_ready;
+        self.moving |= moving;
+        // Nor any of these: two things can end in one pass.
+        self.moved.extend(moved);
+        self.shelved.extend(shelved);
         // None of these may be dropped either: two friends writing in one pass
         // is two announcements.
         self.messages.extend(messages);
@@ -1212,6 +1303,19 @@ impl Changed {
         self.compat_refused = compat_refused.or(self.compat_refused.take());
         self.ways = ways.or(self.ways.take());
     }
+}
+
+/// A game this session is moving from one Steam library to another.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Relocation {
+    pub app_id: u32,
+    /// Where it is going, by the path Steam lists that library under.
+    pub to: String,
+    /// How far along, 0 to 100, once Valve's client has said — `None` for the
+    /// second or two before it has, and for the whole of a wake before that.
+    pub percent: Option<f32>,
+    /// Whether Stop has been pressed and the move has not yet ended.
+    pub stopping: bool,
 }
 
 /// The `steam:` URL that accepts one invitation — see [`Steam::join`], where
@@ -1338,6 +1442,8 @@ impl Steam {
             compat: BTreeMap::new(),
             ways: BTreeMap::new(),
             forcing: std::collections::BTreeSet::new(),
+            places: BTreeMap::new(),
+            moving: None,
             roster: lxb_steam::Roster::default(),
             conversations: lxb_steam::chat::Conversations::default(),
             client_running,
@@ -1379,6 +1485,8 @@ impl Steam {
             compat: BTreeMap::new(),
             ways: BTreeMap::new(),
             forcing: std::collections::BTreeSet::new(),
+            places: BTreeMap::new(),
+            moving: None,
             roster: lxb_steam::Roster::default(),
             conversations: lxb_steam::chat::Conversations::default(),
             client_running: false,
@@ -2537,6 +2645,40 @@ impl Steam {
                 changed.library = true;
                 changed.installed.push(Ended::RemoveFailed { app_id, why });
             }
+            // How far a move has got. Only the one this session asked for: a
+            // word about any other game is a word about a move this shell is
+            // not showing anybody.
+            Event::Moving(said) => {
+                if let Some(moving) = self
+                    .moving
+                    .as_mut()
+                    .filter(|moving| moving.app_id == said.app_id)
+                {
+                    let percent = Some(said.percent);
+                    changed.moving = moving.percent != percent;
+                    moving.percent = percent;
+                }
+            }
+            // It ended. The game's manifest is somewhere else now, or it is
+            // where it was, and either way the disk is looked at again now
+            // rather than at the next interval.
+            Event::Moved { app_id, to, how } => {
+                if self
+                    .moving
+                    .as_ref()
+                    .is_some_and(|moving| moving.app_id == app_id)
+                {
+                    self.moving = None;
+                }
+                self.client.refresh();
+                changed.library = true;
+                changed.moved.push((app_id, to, how));
+            }
+            Event::Shelved { job, how } => {
+                self.client.refresh();
+                changed.library = true;
+                changed.shelved.push((job, how));
+            }
             // Nothing to announce and nothing to explain: somebody asked for
             // this and the machine is as they left it. The row stops counting
             // and goes back to being a game that is not installed, which is
@@ -2967,6 +3109,22 @@ impl Steam {
         matching: &[&Game],
         make_row: impl Fn(&Game) -> crate::apps::Entry,
     ) -> crate::apps::Entry {
+        Self::index(
+            matching.iter().map(|game| (game.initial(), make_row(game))),
+            crate::icons::STEAM,
+        )
+    }
+
+    /// The index at the head of a library of games, out of its rows and the
+    /// letter each is filed under — Steam's column's, and Epic's, which is
+    /// the same index over another store's games. See [`Self::alphabetical`].
+    ///
+    /// `fallback` is the mark a heading wears where the shell has no letter
+    /// cut for it, which is the store's own.
+    pub(crate) fn index(
+        games: impl IntoIterator<Item = (Option<char>, crate::apps::Entry)>,
+        fallback: &str,
+    ) -> crate::apps::Entry {
         // `None` is everything that does not start with one of the headings the
         // shell cuts, and it goes first because that is where nearly all of it
         // already is in the column's own order — a digit sorts before a letter
@@ -2975,9 +3133,9 @@ impl Steam {
         // it there by itself, `None` before every `Some`, which is the whole
         // reason the letter is an `Option` here rather than a `char` with a
         // stand-in in it.
-        let mut letters: BTreeMap<Option<char>, Vec<&Game>> = BTreeMap::new();
-        for game in matching {
-            letters.entry(game.initial()).or_default().push(game);
+        let mut letters: BTreeMap<Option<char>, Vec<crate::apps::Entry>> = BTreeMap::new();
+        for (letter, row) in games {
+            letters.entry(letter).or_default().push(row);
         }
 
         let entries = letters
@@ -3004,15 +3162,16 @@ impl Steam {
                     // them can be right about that.
                     icon: Some(
                         crate::icons::letter_mark(heading)
-                            .unwrap_or(crate::icons::STEAM)
+                            .unwrap_or(fallback)
                             .to_string(),
                     ),
-                    entries: games.into_iter().map(&make_row).collect(),
+                    entries: games,
                     place: None,
                     chosen: false,
                     over_the_list: false,
                     person: None,
                     portrait: None,
+                    used: None,
                 })
             })
             .collect();
@@ -3040,6 +3199,7 @@ impl Steam {
             over_the_list: true,
             person: None,
             portrait: None,
+            used: None,
         })
     }
 
@@ -3662,25 +3822,88 @@ impl Steam {
         self.client.stop_launch(app_id);
     }
 
-    /// Have Valve's client fetch a game the account owns and has not got.
+    /// Have Valve's client fetch a game the account owns and has not got, into
+    /// the library `place` says — see [`lxb_steam::webui::Place`].
     ///
     /// Should the game have an agreement, it is read in the language the shell
     /// is speaking, where the publisher wrote one.
-    pub fn install(&mut self, app_id: u32) {
+    pub fn install(&mut self, app_id: u32, place: lxb_steam::webui::Place) {
+        self.places.insert(app_id, place.clone());
         self.client
-            .install(app_id, crate::i18n::spoken().steam_name());
+            .install(app_id, place, crate::i18n::spoken().steam_name());
     }
 
     /// Record that the person has accepted these agreements, and fetch the
     /// game. Only ever called from the Accept button on the panel that showed
     /// them — see `Shell::accept_the_agreement`.
+    ///
+    /// Into the library the press before it was sent to, so a game whose
+    /// library was chosen first and whose agreement was asked second goes
+    /// where it was sent. A game with no press this session behind it goes
+    /// where the settings say, as a press would.
     pub fn accept_and_install(&mut self, app_id: u32, accepting: Vec<lxb_steam::webui::Eula>) {
-        self.client
-            .accept_and_install(app_id, accepting, crate::i18n::spoken().steam_name());
+        let place = self
+            .places
+            .get(&app_id)
+            .cloned()
+            .unwrap_or_else(place_from_the_settings);
+        self.client.accept_and_install(
+            app_id,
+            accepting,
+            place,
+            crate::i18n::spoken().steam_name(),
+        );
+    }
+
+    /// The library the last press on this game was sent to, or asked about.
+    pub fn place(&self, app_id: u32) -> Option<lxb_steam::webui::Place> {
+        self.places.get(&app_id).cloned()
+    }
+
+    /// Make this library Steam's own default, if Valve's client is up — see
+    /// [`lxb_steam::Steam::make_default_library`].
+    pub fn make_default_library(&mut self, path: &str) {
+        self.client.make_default_library(path.to_string());
     }
 
     pub fn stop_installing(&mut self, app_id: u32) {
         self.client.stop_installing(app_id);
+    }
+
+    /// Move one installed game into another library, by the path Steam lists
+    /// it under — Settings > Games > Steam > Storage. See
+    /// [`lxb_steam::Steam::move_game`].
+    ///
+    /// Remembered here from the press, before Steam has said anything, so the
+    /// row and the panel can say it is moving from the moment it was asked.
+    pub fn move_game(&mut self, app_id: u32, to: String) {
+        self.moving = Some(Relocation {
+            app_id,
+            to: to.clone(),
+            percent: None,
+            stopping: false,
+        });
+        self.client.move_game(app_id, to);
+    }
+
+    /// Stop the move that is under way. What says it has stopped is the move
+    /// ending, which the row and the panel wait for.
+    pub fn cancel_move(&mut self) {
+        if let Some(moving) = self.moving.as_mut() {
+            moving.stopping = true;
+        }
+        self.client.cancel_move();
+    }
+
+    /// The game being moved between libraries, while one is.
+    pub fn moving(&self) -> Option<&Relocation> {
+        self.moving.as_ref()
+    }
+
+    /// Add, remove or repair one of Steam's libraries — see
+    /// [`lxb_steam::Steam::shelve`].
+    pub fn shelve(&mut self, job: lxb_steam::webui::Shelving) {
+        self.client.shelve(job);
     }
 
     /// Take one game off the disk.
@@ -3917,7 +4140,7 @@ impl Steam {
                     .is_some_and(|game| !game.standing.moving())
             })?;
         Some(Coming {
-            app_id,
+            whose: Whose::Steam(app_id),
             name: self.named(app_id),
             verb: match self.valve_is_doing.get(&app_id) {
                 Some(lxb_steam::client::InHand::Checking) => CHECKING,
@@ -3957,7 +4180,7 @@ impl Steam {
             .iter()
             .find(|(app_id, _)| !self.removing.contains(app_id))
             .map(|(app_id, so_far)| Coming {
-                app_id: *app_id,
+                whose: Whose::Steam(*app_id),
                 name: self.named(*app_id),
                 verb: self.verb_for(*app_id),
                 share: so_far.fraction(),
@@ -3978,7 +4201,7 @@ impl Steam {
                         && !self.removing.contains(&game.app_id)
                 })
                 .map(|game| Coming {
-                    app_id: game.app_id,
+                    whose: Whose::Steam(game.app_id),
                     name: game.name.clone(),
                     verb: verb_for(game.standing),
                     share: game.fraction(),
@@ -4043,7 +4266,7 @@ impl Steam {
             }
         };
         Some(Coming {
-            app_id,
+            whose: Whose::Steam(app_id),
             name: self.named(app_id),
             verb,
             share: None,
@@ -4077,7 +4300,7 @@ impl Steam {
         share: Option<f32>,
     ) -> Coming {
         Coming {
-            app_id,
+            whose: Whose::Steam(app_id),
             name: self.named(app_id),
             // Whether the game is on the disk, rather than what the manifest is
             // calling it — which under a launch may be neither of the two
@@ -6959,7 +7182,7 @@ mod tests {
         // And a client that is up puts it back, because now something is.
         steam.apply(client_said(lxb_steam::ClientReport::Ready));
         let coming = steam.downloading().expect("a download to draw");
-        assert_eq!(coming.app_id, 1);
+        assert_eq!(coming.steam_app_id(), Some(1));
         assert!(coming
             .share
             .is_some_and(|share| (share - 0.333).abs() < 0.01));
@@ -7249,7 +7472,7 @@ mod tests {
         ];
         // Off the disk alone: nobody pressed anything in this shell.
         let from_the_disk = steam.downloading().expect("the disk's own download");
-        assert_eq!(from_the_disk.app_id, 945360);
+        assert_eq!(from_the_disk.steam_app_id(), Some(945360));
         assert_eq!(from_the_disk.said(), "Downloading Among Us");
         assert_eq!(from_the_disk.share, Some(0.3));
         assert!(!from_the_disk.stuck);
@@ -7270,7 +7493,7 @@ mod tests {
             }),
         });
         let mine = steam.downloading().expect("this session's own download");
-        assert_eq!(mine.app_id, 504230);
+        assert_eq!(mine.steam_app_id(), Some(504230));
         assert_eq!(mine.said(), "Downloading Celeste");
         assert_eq!(mine.share, Some(0.12));
     }
@@ -7339,7 +7562,7 @@ mod tests {
             Game::invented(945360, "Among Us".to_string(), false).coming_down(60),
         ];
         assert_eq!(
-            steam.downloading().map(|coming| coming.app_id),
+            steam.downloading().and_then(|coming| coming.steam_app_id()),
             Some(945360)
         );
     }

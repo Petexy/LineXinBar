@@ -255,6 +255,7 @@ shell-orientation = Ausrichtung
 shell-other = Sonstiges
 shell-output-device = Ausgabegerät
 shell-paired = Gekoppelt
+shell-particles = Partikel
 shell-password = Passwort
 shell-paste = Einfügen
 shell-peak-brightness = Spitzenhelligkeit
@@ -302,6 +303,7 @@ shell-size = Größe
 shell-software = Software
 shell-sort = Sortieren
 shell-sounds = Töne
+shell-sparkles-drifting-along-the-wallpaper = Funkeln, das über den Hintergrund treibt
 shell-square-pixels = Quadratische Pixel
 shell-standard = Standard
 shell-start-music = Startmusik
@@ -1115,6 +1117,7 @@ integration-top-right = Oben rechts
 integration-bottom-left = Unten links
 integration-bottom-right = Unten rechts
 integration-update-the-system = Das System aktualisieren
+integration-update-linexinbar = LineXinBar aktualisieren
 integration-update-flatpaks = Flatpaks aktualisieren
 integration-update-aur = AUR aktualisieren
 integration-update-snaps = Snaps aktualisieren
@@ -1535,9 +1538,90 @@ steam-install-needs-first = { $what ->
    *[other] Für dieses Spiel muss zuerst eine Frage beantwortet werden.
     }
 steam-downloading-first = { $name } wird zuerst heruntergeladen.
+
+# Steam: in welche Bibliothek ein Spiel installiert wird.
+steam-install-to = Spiele installieren auf
+steam-ask-every-time = Jedes Mal fragen
+steam-ask-every-time-note = Sie wählen für jedes Spiel, wohin es kommt
+steam-library-not-connected = Nicht verbunden
+steam-library-gone = Keine Steam-Bibliothek mehr
+steam-install-to-unavailable = { $library } · nicht verfügbar, daher wird jedes Mal gefragt
+steam-library-on-drive = { $drive } · { $folder }
+steam-choose-library = Wählen Sie, wo es installiert werden soll.
+steam-choose-library-size = Wählen Sie, wo es installiert werden soll. Es benötigt { $size }.
+steam-game-needs = Es benötigt { $size }.
+steam-no-library-has-room = Nirgends ist genug Platz frei. Es benötigt { $size }.
+steam-chosen-library-not-connected = { $library } ist nicht verbunden. Wählen Sie einen anderen Ort.
+steam-chosen-library-full = Auf { $library } ist nicht genug Platz frei. Wählen Sie einen anderen Ort.
+steam-library-free = { $library } · { $free } frei
+steam-library-too-small = { $library } · nicht genug Platz
+steam-installs-into = Es wird auf { $library } installiert.
+steam-you-choose-where-next = Als Nächstes wählen Sie, wo es installiert wird.
 steam-achievements-unlocked = Steam · { $unlocked } / { $total } freigeschaltet
 enter-password-for = Geben Sie das Passwort für { $name } ein.
 progress-of = { $at } von { $of }
+
+steam-storage = Speicher
+steam-storage-note = { $count ->
+    [one] { $count } Bibliothek
+   *[other] { $count } Bibliotheken
+    }
+steam-library-games = { $count ->
+    [0] Keine Spiele
+    [one] { $count } Spiel
+   *[other] { $count } Spiele
+    }
+steam-library-summary = { $games } · { $room }
+steam-library-connect = Schließen Sie das Laufwerk an, um seine Spiele zu sehen.
+steam-repair-library = Ordner reparieren
+steam-repair-library-note = Wenn sich Spiele von hier nicht installieren oder starten lassen
+steam-remove-library = Laufwerk entfernen
+steam-remove-library-note = Steam verwendet es nicht mehr. Darauf wird nichts gelöscht.
+steam-remove-library-has-games = Verschieben oder deinstallieren Sie zuerst seine Spiele
+steam-remove-library-default = Neue Spiele werden hier installiert
+steam-remove-library-ask = Dieses Laufwerk nicht mehr für Steam-Spiele verwenden? Darauf wird nichts gelöscht.
+steam-add-drive = Laufwerk hinzufügen
+steam-add-drive-note = Spiele auf einem weiteren Laufwerk ablegen
+steam-add-library-elsewhere = Ordner auswählen
+steam-add-library-elsewhere-note = Ein leerer Ordner auf einem beliebigen Laufwerk
+steam-add-library-here = Steam-Spiele in diesem Ordner ablegen
+steam-game-busy = { $size } · Steam arbeitet daran
+steam-move-progress = Fortschritt anzeigen
+steam-move-choose = Wählen Sie, wohin es verschoben werden soll. Es benötigt { $size }.
+steam-move-nowhere = Auf keinem anderen Laufwerk ist genug Platz frei. Es benötigt { $size }.
+steam-move-no-other-library = Es gibt keinen anderen Ort dafür. Fügen Sie zuerst ein Laufwerk hinzu.
+steam-moving-to = Wird auf { $library } verschoben
+steam-moving-to-percent = Wird auf { $library } verschoben · { $percent }%
+steam-moving-stopping = Wird angehalten…
+steam-move-hide = Ausblenden
+steam-move-stop = Anhalten
+steam-moved-note = Es ist jetzt auf { $library }.
+steam-move-failed = Es wurde nicht verschoben.
+steam-library-adding = Wird zu Steam hinzugefügt…
+steam-library-removing = Wird aus Steam entfernt…
+steam-library-repairing = Wird repariert…
+steam-library-repaired = Es wurde repariert.
+steam-library-not-added = Es wurde nicht hinzugefügt.
+steam-library-not-removed = Es wurde nicht entfernt.
+steam-library-not-repaired = Es wurde nicht repariert.
+steam-could-not-be-reached = Steam war nicht erreichbar. Versuchen Sie es gleich noch einmal.
+steam-refused-in-use-by = { $game } verwendet es gerade. Versuchen Sie es erneut, wenn es fertig ist.
+steam-refused = { $why ->
+    [drive-root] Steam kann nicht die oberste Ebene eines Laufwerks verwenden. Wählen Sie einen Ordner darauf.
+    [not-empty] In diesem Ordner liegen andere Dateien. Wählen Sie einen leeren.
+    [not-writable] Dort kann nichts gespeichert werden.
+    [not-executable] Von diesem Laufwerk können keine Spiele gestartet werden.
+    [already] Auf diesem Laufwerk gibt es bereits eine Steam-Bibliothek.
+    [not-listed] Steam führt diese Bibliothek nicht mehr.
+    [in-use] Steam verwendet es gerade. Versuchen Sie es später erneut.
+    [folder-there] Dort gibt es bereits einen Ordner für dieses Spiel.
+    [shared] Es teilt Dateien mit einem anderen Spiel und kann daher nicht verschoben werden.
+    [no-room] Dort ist nicht genug Platz frei.
+    [running] Beenden Sie zuerst das Spiel.
+    [unmovable] Steam kann dieses Spiel nicht verschieben.
+    [another-move] Ein anderes Spiel wird gerade verschoben. Warten Sie, bis es fertig ist.
+   *[other] Steam konnte es nicht ausführen. Versuchen Sie es später erneut.
+    }
 
 # Achievements.
 signed-in-as = Angemeldet als { $name }
@@ -1604,6 +1688,47 @@ screen-share-request = { $application } möchte Ihren Bildschirm teilen
 device-connected = { $name } ist verbunden
 device-paired = { $name } ist gekoppelt
 device-would-not-pair = { $name } ließ sich nicht koppeln
+
+# Settings > Storage. A partition is named by what it is for (System, Home,
+# Startup), else by its own label, else storage-unnamed with its size. `whole`
+# and `size` are sizes already written out, like "237 GiB".
+storage-title = Speicher
+storage-description = Wie viel Platz auf jedem Laufwerk frei ist
+storage-startup = Systemstart
+storage-unnamed = Laufwerk mit { $size }
+storage-not-in-use = Nicht verwendet · { $whole }
+storage-extra-memory = Als zusätzlicher Arbeitsspeicher verwendet · { $whole }
+storage-cannot-check = Freier Platz konnte nicht geprüft werden · { $whole }
+storage-checking = Laufwerke werden geprüft…
+storage-none = Keine Laufwerke gefunden
+storage-free = Frei
+storage-used = Belegt
+storage-capacity = Kapazität
+storage-file-system = Dateisystem
+storage-location = Ort
+storage-drive = Laufwerk
+
+# Laufwerke einhängen, aus „Dateien“ und von der Seite eines Laufwerks unter
+# Einstellungen > Speicher. `size` ist eine fertig geschriebene Größe.
+drive-not-mounted = Nicht eingehängt · { $size }
+drive-mounting = Wird eingehängt…
+drive-unmounting = Wird ausgehängt…
+shell-mount = Einhängen
+shell-unmount = Aushängen
+shell-safely-remove = Sicher entfernen
+drive-mount-note = In „Dateien“ verfügbar machen
+drive-unmount-note = Nicht verfügbar, bis es wieder geöffnet wird
+drive-safely-remove-note = Aushängen und ausschalten, damit es abgezogen werden kann
+drive-at-startup = Beim Start einhängen
+drive-at-startup-on-note = Sofort nach dem Start des Computers verfügbar, für alle
+drive-at-startup-off-note = Wird erst eingehängt, wenn es in „Dateien“ geöffnet wird
+drive-at-startup-failed = Konnte nicht geändert werden
+drive-information = Laufwerksinformationen
+drive-can-unplug = Sie können es jetzt abziehen.
+drive-mount-failed = Dieses Laufwerk konnte nicht eingehängt werden.
+drive-unmount-failed = Dieses Laufwerk konnte nicht ausgehängt werden.
+drive-in-use = Dieses Laufwerk wird noch verwendet. Schließen Sie, was es verwendet, und versuchen Sie es erneut.
+drive-not-allowed = Dieses Konto darf das nicht.
 
 # Countries, by ISO 3166 code, as the keyboard-layout column names them.
 country-none = Kein Land
@@ -1856,3 +1981,75 @@ country-yt = Mayotte
 country-za = Südafrika
 country-zm = Sambia
 country-zw = Simbabwe
+
+# Epic Games, through Heroic Games Launcher: the optional lxb-heroic package.
+# `address` is Epic's own activation address, as the helper gives it.
+epic-looking = Heroic wird gesucht
+epic-press-to-finish-setting-up = Drücken, um die Einrichtung abzuschließen
+epic-sign-in-to-play = Melden Sie sich an, um Ihre Epic-Games-Bibliothek hier zu spielen
+epic-asking-for-a-code = Code wird bei Epic angefordert
+epic-scan-with-your-phone = Scannen Sie dies mit Ihrem Telefon, um sich anzumelden.
+epic-or-enter-the-code = Oder öffnen Sie { $address } auf einem beliebigen Gerät und geben Sie diesen Code ein:
+epic-may-say-fortnite = Auf der Seite von Epic steht womöglich, dass Fortnite fragt. Das ist so vorgesehen.
+epic-sign-in-on-this-screen = Auf diesem Bildschirm anmelden
+epic-signing-in = Anmeldung läuft
+epic-close-heroic-first = Heroic ist geöffnet. Schließen Sie es und versuchen Sie es dann erneut.
+epic-could-not-be-reached = Epic ist nicht erreichbar. Prüfen Sie die Verbindung und versuchen Sie es dann erneut.
+epic-code-ran-out = Der Code ist abgelaufen, bevor er verwendet wurde.
+epic-confirm-first = Epic möchte, dass Sie zuerst etwas bestätigen. Scannen Sie dies mit Ihrem Telefon und versuchen Sie es dann erneut.
+epic-sign-in-did-not-work = Die Anmeldung hat nicht funktioniert.
+epic-open-heroic = Heroic öffnen
+epic-getting-ready = Wird vorbereitet
+epic-downloading-heroic = Heroic wird heruntergeladen
+epic-downloading-proton = Was Spiele zum Laufen brauchen, wird heruntergeladen
+epic-plays-through-ubisoft = Läuft über Ubisoft Connect
+epic-plays-through-ea = Läuft über die EA-App
+epic-plays-your-library = Epic Games spielt die Spiele, die Sie bei Epic besitzen, über den Heroic Games Launcher.
+epic-install-explanation = Es ist kostenlos, und sonst wird auf diesem Rechner nichts geändert.
+epic-one-more-download = Spiele brauchen noch einen Download, bevor sie starten können.
+epic-sign-out-question = Von Epic Games abmelden? Installierte Spiele bleiben auf diesem Rechner.
+# Installing and uninstalling one game of the Epic Games column. `download`,
+# `disk` and `size` are sizes already written out.
+epic-download-and-disk = { $download } zum Herunterladen, { $disk } nach der Installation.
+epic-not-enough-space = Dafür ist nicht genug Platz frei. Es benötigt { $size }.
+epic-no-space = Dafür ist nicht genug Platz frei.
+epic-ubisoft-downloads-it = Ubisoft Connect lädt das Spiel beim ersten Spielen herunter und bittet Sie, sich dort anzumelden.
+epic-ea-downloads-it = Die EA-App lädt das Spiel beim ersten Spielen herunter und bittet Sie, sich dort anzumelden.
+epic-stopping-keeps-what-arrived = Ein Abbruch behält, was schon angekommen ist. Eine erneute Installation macht dort weiter.
+epic-heroic-is-busy = Heroic ist geöffnet oder ein Spiel daraus läuft. Schließen Sie es und versuchen Sie es dann erneut.
+epic-waits-for-heroic = Beginnt, sobald Heroic und seine Spiele geschlossen sind
+epic-update-waiting = Update verfügbar
+epic-may-need-a-connection = Zum Spielen ist eventuell eine Verbindung nötig
+epic-no-connection = Keine Verbindung
+epic-it-may-need-a-connection = Zum Starten ist eventuell eine Verbindung nötig.
+epic-verify-and-repair = Überprüfen und reparieren
+epic-asking-heroic = Heroic wird gefragt…
+epic-heroics-default = Standard von Heroic
+epic-heroics-default-is = Standard von Heroic ({ $tool })
+epic-tool-not-changed = Womit die Spiele laufen, wurde nicht geändert.
+epic-checking-percent = Dateien werden geprüft… { $percent }%
+epic-repairing = Wird repariert…
+epic-repairing-percent = Wird repariert… { $percent }%
+epic-files-checked = Alle Dateien wurden geprüft.
+epic-files-not-checked = Die Dateien konnten nicht geprüft werden.
+epic-how-heroic-works-with-the-shell = Wie Heroic mit der Oberfläche zusammenarbeitet
+epic-off-heroic-is-an-application-like-any-other = Aus — Heroic ist eine Anwendung wie jede andere
+epic-heroic-is-an-application-like-any-other-with-its-own-icon = Heroic ist eine Anwendung wie jede andere, mit eigenem Symbol
+epic-heroic-is-started-in-the-background-as-the-session-comes-up = Heroic wird im Hintergrund gestartet, während die Sitzung hochfährt
+epic-heroic-is-started-when-the-first-game-is-pressed = Heroic wird gestartet, wenn das erste Spiel gedrückt wird
+epic-leave-heroic-running = Heroic laufen lassen
+epic-heroic-stays-up-after-a-game-so-the-next-one-starts-sooner = Heroic bleibt nach einem Spiel geöffnet, damit das nächste schneller startet
+epic-heroic-closes-with-the-game-and-the-memory-comes-back = Heroic wird mit dem Spiel geschlossen, und der Speicher kommt zurück
+epic-run-games-with = Spiele starten mit
+epic-updating = Wird aktualisiert…
+epic-updating-percent = Wird aktualisiert… { $percent }%
+epic-updating-percent-of = Wird aktualisiert… { $percent }% von { $size }
+# Settings > Games > Epic Games.
+epic-install-games-here = Epic-Spiele in diesem Ordner installieren
+epic-folder-not-changed = Der Ordner wurde nicht geändert.
+epic-cloud-saves = Cloud-Spielstände
+epic-cloud-saves-on = Spielstände werden bei Epic gespeichert und sind auf jedem Rechner da, auf dem Sie spielen
+epic-cloud-saves-off = Spielstände bleiben auf diesem Rechner
+epic-cloud-saves-not-changed = Cloud-Spielstände wurden nicht geändert.
+epic-achievement-summary = { $description } · { $xp } XP · { $state }
+epic-players-who-have-it = Spieler, die ihn haben

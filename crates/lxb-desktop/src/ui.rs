@@ -93,6 +93,12 @@ const CARD_ASPECT: f32 = 16.0 / 9.0;
 /// while there is nothing to measure. See [`crate::apps::Rom::shape`].
 const COVER_ASPECT: f32 = 600.0 / 900.0;
 
+/// And an Epic game's: its tall box art is 3:4 — 1200 by 1600 at the source,
+/// fetched at 675 by 900 — where Valve's capsule is 2:3, and a 3:4 picture on
+/// a 2:3 card stood in glass above and below. Held to the same area as
+/// Steam's card by [`Cards::of`], so the two columns weigh the same.
+const EPIC_COVER_ASPECT: f32 = 3.0 / 4.0;
+
 /// The border of glass a picture stands on, as a share of the picture's own
 /// shorter side.
 ///
@@ -1815,12 +1821,17 @@ fn cards_in(entries: &[Entry]) -> Option<Cards> {
                 // reach, because a search narrowed to nothing must not change
                 // the shape of the column it narrowed.
                 Searched::Library | Searched::Trophies => return Some(Cards::of(COVER_ASPECT)),
+                // Epic's tall box art is 3:4 — see [`EPIC_COVER_ASPECT`].
+                Searched::Epic => return Some(Cards::of(EPIC_COVER_ASPECT)),
                 // A settings column is rows, searched or not.
                 Searched::Layouts => return None,
             },
             Entry::Trophy(row)
                 if row.game().is_some()
-                    || matches!(row.key, crate::trophies::Key::RetroGame(..)) =>
+                    || matches!(
+                        row.key,
+                        crate::trophies::Key::RetroGame(..) | crate::trophies::Key::EpicGame(..)
+                    ) =>
             {
                 return Some(Cards::of(COVER_ASPECT))
             }
@@ -1840,6 +1851,10 @@ fn cards_in(entries: &[Entry]) -> Option<Cards> {
             // answer — see [`crate::apps::Rom::shape`] — and a shelf nothing
             // has been measured for keeps the shape it had before.
             Entry::Rom(rom) => return Some(Cards::of(rom.shape.unwrap_or(COVER_ASPECT))),
+            // An Epic game's tall box art is 3:4, not a Steam capsule's 2:3,
+            // so the column is its own shape — and a game whose box is not,
+            // one in nine, carries its own; see the per-row shape below.
+            Entry::EpicGame(_) => return Some(Cards::of(EPIC_COVER_ASPECT)),
             _ => {}
         }
     }
@@ -2518,7 +2533,7 @@ pub fn build(
             let selected = distance < 0.5 && active > 0.5;
             let icon_size = lerp(ITEM_ICON, ITEM_ICON_FOCUSED, focus) * scale * near;
             let achievement = matches!(entry, Entry::Trophy(row)
-                if matches!(row.key, crate::trophies::Key::SteamAchievement(..) | crate::trophies::Key::RetroAchievement(..)));
+                if matches!(row.key, crate::trophies::Key::SteamAchievement(..) | crate::trophies::Key::RetroAchievement(..) | crate::trophies::Key::EpicAchievement(..)));
             // A value set on a scale is drawn as the scale, in the room the
             // icon would have had — and the scale is a tall capsule where an
             // icon is a small square, so the light behind it and the glass
@@ -2538,6 +2553,9 @@ pub fn build(
             // [`crate::trophies::Row::shape`].
             let shape = match entry {
                 Entry::Trophy(row) => row.shape.filter(|s| s.is_finite() && *s > 0.0),
+                // And an Epic game's own box, measured off its cover — a
+                // publisher's art, not a store's template.
+                Entry::EpicGame(game) => game.shape.filter(|s| s.is_finite() && *s > 0.0),
                 _ => None,
             };
             let card = cards.map(|cards| {
@@ -2678,6 +2696,9 @@ pub fn build(
                 // like a photograph rather than by an id like a Steam title.
                 // See [`crate::retroarch`].
                 Entry::Rom(rom) => rom.boxart.as_deref().and_then(|at| slots.thumbnail(at)),
+                // An Epic game's cover is a file the helper fetched into the
+                // shell's cache, asked for by path on the same terms.
+                Entry::EpicGame(game) => game.cover.as_deref().and_then(|at| slots.thumbnail(at)),
                 _ => entry.media().and_then(|file| slots.thumbnail(&file.path)),
             };
             // And whether that cover is drawn in colour. A game that is not on
@@ -2688,6 +2709,9 @@ pub fn build(
             // they are missing.
             let colourless = match entry {
                 Entry::Game(game) => slots.drain(game.app_id, game.installed),
+                // The same rule for an Epic game, without the fade: what can
+                // be played is the only part of the column in colour.
+                Entry::EpicGame(game) if !game.installed => 1.0,
                 _ => 0.0,
             };
             let picture =
@@ -11130,7 +11154,14 @@ pub fn build_dialog(view: DialogView, width: f32, height: f32) -> Scene {
             x: chip[0] + label_padding,
             y: chip[1] + chip[3] * 0.5 - label_size * 0.62,
             size: label_size,
-            color: theme.text.a(if focused { 1.0 } else { 0.84 }),
+            // Dimmed on an answer that cannot be given, as its mark above is:
+            // the cursor walks past it, and a label as bright as its
+            // neighbours' would be a button that looks pressable and is not.
+            color: theme.text.a(match (focused, button.enabled) {
+                (true, _) => 1.0,
+                (false, true) => 0.84,
+                (false, false) => 0.4,
+            }),
             bold: focused,
             max_width: (chip[2] - label_padding * 2.0).max(0.0),
             align: TextAlign::Center,
@@ -13920,11 +13951,19 @@ fn push_download_card(scene: &mut Scene, view: &GuideView, width: f32, height: f
     if alpha <= 0.0 {
         return;
     }
-    let picture = view
-        .slots
-        .game_icon(coming.app_id)
-        .or_else(|| view.slots.cover(coming.app_id))
-        .filter(|thumb| thumb.aspect.is_finite() && thumb.aspect > 0.0);
+    let (picture, glyph) = match &coming.whose {
+        crate::steam::Whose::Steam(app_id) => (
+            view.slots
+                .game_icon(*app_id)
+                .or_else(|| view.slots.cover(*app_id)),
+            icons::STEAM,
+        ),
+        crate::steam::Whose::Epic { cover, .. } => (
+            cover.as_deref().and_then(|path| view.slots.thumbnail(path)),
+            crate::heroic::mark(),
+        ),
+    };
+    let picture = picture.filter(|thumb| thumb.aspect.is_finite() && thumb.aspect > 0.0);
     push_corner_card(
         scene,
         CornerCard {
@@ -13932,10 +13971,10 @@ fn push_download_card(scene: &mut Scene, view: &GuideView, width: f32, height: f
             alpha,
             behind: view.behind,
             picture,
-            // The Steam mark behind the game's own picture: a card with an
+            // The store's mark behind the game's own picture: a card with an
             // empty square where a picture should be reads as a card that
             // failed rather than as one whose picture has not landed yet.
-            glyph: icons::STEAM,
+            glyph,
             said: coming.said(),
             share: coming.share,
             stuck: coming.stuck,
@@ -16107,6 +16146,7 @@ mod tests {
             over_the_list: false,
             person: None,
             portrait: None,
+            used: None,
         })
     }
 
@@ -21212,6 +21252,40 @@ mod tests {
         assert_eq!(cards_in(&songs), None, "music has no picture in it to show");
     }
 
+    /// The Epic Games column is a column of covers at Epic's own box shape,
+    /// 3:4 — the shape its tall art arrives at — so the picture fills the
+    /// card rather than standing in glass above and below it, which is what
+    /// a 2:3 Steam card did with it. It weighs what a Steam cover weighs.
+    #[test]
+    fn an_epic_column_is_cards_at_epics_own_box_shape() {
+        let epic = |shape: Option<f32>| {
+            Entry::EpicGame(crate::apps::EpicGame {
+                app_name: "Quail".into(),
+                name: "20XX".into(),
+                note: String::new(),
+                progress: None,
+                installed: false,
+                start: None,
+                cover: None,
+                shape,
+                hero: None,
+                logo: None,
+            })
+        };
+        let cards = cards_in(&[epic(None), epic(Some(0.89))]).expect("a column of covers");
+        assert!((cards.aspect - 0.75).abs() < 0.001, "{}", cards.aspect);
+        let steam = Cards::of(COVER_ASPECT);
+        let picture = |cards: Cards| cards.height * cards.height * cards.aspect;
+        assert!(
+            (picture(cards) - picture(steam)).abs() < 1.0,
+            "the same picture area on the glass as a Steam cover"
+        );
+        // A squarer box keeps the column's room and fills a card of its own.
+        let (w, h) = card_fit(0.89, EPIC_COVER_ASPECT, 287.0);
+        let mount = card_mount(0.89, h);
+        assert!(((w - mount * 2.0) / (h - mount * 2.0) - 0.89).abs() < 0.002);
+    }
+
     /// A Steam library is a column of covers, and a cover is a different shape
     /// from a film frame. What the two hold in common is how much of the glass
     /// a row takes up — see [`Cards::of`] — because that is what makes a
@@ -22693,7 +22767,7 @@ mod tests {
         let settled = line(&guide_scene_legend(&guide, &cards, legend));
 
         guide.set_downloading(Some(crate::steam::Coming {
-            app_id: 4711,
+            whose: crate::steam::Whose::Steam(4711),
             name: "Among Us".to_string(),
             verb: "Downloading",
             share: Some(0.33),
@@ -22747,7 +22821,7 @@ mod tests {
         let settled = line(&guide);
 
         guide.set_downloading(Some(crate::steam::Coming {
-            app_id: 4711,
+            whose: crate::steam::Whose::Steam(4711),
             name: "Among Us".to_string(),
             verb: "Downloading",
             share: Some(0.33),
@@ -22767,7 +22841,7 @@ mod tests {
             alone.open();
             alone.backdate_open(1.0);
             alone.set_downloading(Some(crate::steam::Coming {
-                app_id: 4711,
+                whose: crate::steam::Whose::Steam(4711),
                 name: "Among Us".to_string(),
                 verb: "Downloading",
                 share: Some(0.33),
@@ -30343,7 +30417,7 @@ mod tests {
         guide.open();
         guide.backdate_open(2.0);
         guide.set_downloading(Some(crate::steam::Coming {
-            app_id: 945360,
+            whose: crate::steam::Whose::Steam(945360),
             name: "Among Us".to_string(),
             verb: "Downloading",
             share,
@@ -30436,6 +30510,81 @@ mod tests {
         assert!(
             neither.contains(&Named::slot_of(icons::STEAM)),
             "and the Steam mark stands in for that: never an empty square"
+        );
+    }
+
+    /// An Epic game coming down stands on the same card, wearing its cover —
+    /// Epic publishes no icon — and the Epic mark until that has arrived.
+    #[test]
+    fn an_epic_download_wears_its_cover_and_the_epic_mark() {
+        struct EpicPictures(Option<u32>);
+        impl SlotLookup for EpicPictures {
+            fn slot_for(&self, icon: Option<&str>) -> Option<u32> {
+                Some(Named::slot_of(icon.unwrap_or_default()))
+            }
+            fn glyph(&self, name: &str) -> Option<u32> {
+                Some(match name {
+                    icons::STEAM => 91,
+                    name if name == crate::heroic::mark() => 92,
+                    _ => 1,
+                })
+            }
+            fn thumbnail(&self, path: &std::path::Path) -> Option<crate::gpu::Thumb> {
+                assert_eq!(path, std::path::Path::new("/art/Quail/cover.jpg"));
+                self.0.map(|slot| crate::gpu::Thumb {
+                    slot,
+                    aspect: 3.0 / 4.0,
+                    covers: [1.0, 1.0],
+                })
+            }
+        }
+        let mut guide = Guide::default();
+        guide.open();
+        guide.backdate_open(2.0);
+        guide.set_downloading(Some(crate::steam::Coming {
+            whose: crate::steam::Whose::Epic {
+                app_name: "Quail".into(),
+                cover: Some("/art/Quail/cover.jpg".into()),
+            },
+            name: "Cat Quest".to_string(),
+            verb: "Downloading",
+            share: Some(0.5),
+            stuck: false,
+            a_download: true,
+        }));
+        while guide.animate_download(0.05) < 1.0 {}
+        let ([x, y, w, h], _) = guide_download_rect(1920.0, 1080.0, 1.0);
+        let inside = |quad: &Quad| quad.x >= x && quad.y >= y && quad.x < x + w && quad.y < y + h;
+        let drawn = |slots: &dyn SlotLookup| -> Vec<u32> {
+            guide_scene_with(&guide, None, None, &[], None, slots, 0.0, None)
+                .quads
+                .into_iter()
+                .filter(inside)
+                .map(|quad| quad.slot)
+                .collect()
+        };
+        assert!(drawn(&EpicPictures(Some(73))).contains(&73), "the cover");
+        let waiting = drawn(&EpicPictures(None));
+        assert!(waiting.contains(&92));
+        assert!(!waiting.contains(&91), "not Steam's");
+        let said: Vec<String> = guide_scene_with(
+            &guide,
+            None,
+            None,
+            &[],
+            None,
+            &EpicPictures(None),
+            0.0,
+            None,
+        )
+        .texts
+        .into_iter()
+        .filter(|text| text.x >= x && text.y >= y && text.x < x + w && text.y < y + h)
+        .map(|text| text.content)
+        .collect();
+        assert_eq!(
+            said,
+            vec!["Downloading Cat Quest".to_string(), "50%".to_string()]
         );
     }
 

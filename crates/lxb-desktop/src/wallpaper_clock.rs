@@ -186,6 +186,9 @@ fn parse(record: &str) -> Result<Handoff, Rejection> {
     // no part of a wallpaper, so the reader this is written for has no use for
     // them and the record has never carried them.
     let mut theme = None;
+    // Whether the login screen's current was carrying its sparkles, dropped for
+    // the same reason and to the same reader: this shell has its own answer.
+    let mut particles = None;
 
     for field in record.split(';') {
         let (key, value) = field.split_once('=').ok_or(Rejection::MalformedField)?;
@@ -202,6 +205,7 @@ fn parse(record: &str) -> Result<Handoff, Rejection> {
             "scene-ns" => &mut scene_ns,
             "accent" => &mut accent,
             "theme" => &mut theme,
+            "particles" => &mut particles,
             _ => return Err(Rejection::UnknownField),
         };
         if slot.replace(value).is_some() {
@@ -332,7 +336,7 @@ mod tests {
     fn canonical_fixture_matches_the_display_manager_encoder() {
         assert_eq!(
             valid_record(),
-            "v=1;visual=lxb-wallpaper-v2;clock=linux-monotonic;boot=01234567-89ab-cdef-0123-456789abcdef;sample-ns=10000000000;scene-ns=42000000000;accent=Blue"
+            "v=1;visual=lxb-wallpaper-v6;clock=linux-monotonic;boot=01234567-89ab-cdef-0123-456789abcdef;sample-ns=10000000000;scene-ns=42000000000;accent=Blue"
         );
     }
 
@@ -353,6 +357,22 @@ mod tests {
         .expect("reordered handoff");
         assert_eq!(handoff.scene_ns, 7);
         assert_eq!(handoff.accent, "Red");
+    }
+
+    /// What the login screen was drawn in travels with the phase for a reader
+    /// that cannot see this account's settings. This shell can, so both fields
+    /// are accepted and left alone — the phase is not thrown away over them —
+    /// and still refused twice over, as any field is.
+    #[test]
+    fn the_greeters_material_and_particles_do_not_cost_the_phase() {
+        let handoff = parse(&format!("{};theme=Simple;particles=on", valid_record()))
+            .expect("a record that says what it was drawn in");
+        assert_eq!(handoff.scene_ns, 42_000_000_000);
+        assert!(parse(&format!("{};particles=off", valid_record())).is_ok());
+        assert_eq!(
+            parse(&format!("{};particles=on;particles=off", valid_record())).unwrap_err(),
+            Rejection::DuplicateField
+        );
     }
 
     #[test]

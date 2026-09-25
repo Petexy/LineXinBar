@@ -197,6 +197,15 @@ pub enum Action {
     /// Steam not at all. What can be seen is the panel, the well, the
     /// scrolling and the step from one agreement to the next.
     PretendAnAgreement,
+    /// Put the panel that asks which Steam library a game goes into on the
+    /// screen, with three invented libraries on it.
+    ///
+    /// **`--debug-actions library` only, and nothing is installed.** The real
+    /// one needs a machine with two Steam libraries and a game the account
+    /// owns and has not got; this needs neither. One of the three is too small
+    /// for the invented game, so the button that cannot be pressed is seen
+    /// too, and choosing any of the others puts the panel away.
+    PretendALibraryChoice,
     /// Ask Valve's own overlay to come up over the game in front.
     ///
     /// Honoured from outside for the plainest reason of the four: there is
@@ -341,6 +350,9 @@ fn read_into(
         // [`crate::files::trash`] gives. What is passed here would be the
         // query of whatever column happened to be searched last.
         crate::files::Place::Trash => crate::files::trash(how.sort),
+        // Nothing to read until it is mounted, which is a press rather than a
+        // read — see `Shell::open_the_unmounted_drive`.
+        crate::files::Place::Unmounted(_) => return None,
     };
     folder.entries = shown.rows;
     // What was found, in place of the date the row was carrying: "14 folders,
@@ -513,6 +525,11 @@ struct LaunchedApp {
     /// has told the shell something, and until this was here the only place it
     /// said it was the log. See [`Played`].
     played: Option<Played>,
+    /// Whether this is Heroic's courier for an Epic game. Started cold, it
+    /// lives as long as the game and a second more — Heroic writes the
+    /// playtime and exits — so its going is the moment the library on the
+    /// disk has something new in it. See [`Lattice::running_through_heroic`].
+    through_heroic: bool,
 }
 
 /// One game a launched process was playing, and how quickly it stopped.
@@ -602,6 +619,13 @@ impl Lattice {
             let rom = rom.clone();
             return self.play_rom(&rom);
         }
+        // A game of the Epic account, which carries Heroic's own shortcut for
+        // it — see [`crate::apps::EpicGame::start`] — and is filed under the
+        // game's name for the reason the two above are.
+        if let Some(game) = cursor.current_entry(self).and_then(Entry::epic_game) {
+            let game = game.clone();
+            return self.play_epic(&game);
+        }
         let app = cursor.current_app(self)?;
         let name = app.name.clone();
         let entry = app.path.clone();
@@ -637,6 +661,7 @@ impl Lattice {
                     started_at: Instant::now(),
                     wait_error_reported: false,
                     played: None,
+                    through_heroic: false,
                 });
                 Some(pid)
             }
@@ -683,6 +708,7 @@ impl Lattice {
                     started_at: Instant::now(),
                     wait_error_reported: false,
                     played: None,
+                    through_heroic: false,
                 });
                 Some(pid)
             }
@@ -722,6 +748,43 @@ impl Lattice {
                 lasted: Duration::ZERO,
             }),
         )
+    }
+
+    /// Start one game of the Epic account, through Heroic.
+    ///
+    /// A row with no command is a game not on this disk, and its press is
+    /// answered before it gets here.
+    pub fn play_epic(&mut self, game: &crate::apps::EpicGame) -> Option<u32> {
+        let argv = game.start.as_ref()?;
+        tracing::info!(game = %game.name, app = %game.app_name, "playing, through Heroic");
+        let pid = self.open_command(crate::media::Opening {
+            name: game.name.clone(),
+            icon: None,
+            command: crate::retroarch::shell_command(argv),
+        })?;
+        if let Some(launched) = self.launched_apps.last_mut() {
+            launched.through_heroic = true;
+        }
+        Some(pid)
+    }
+
+    /// Since when a Heroic this shell started has been running, where one is:
+    /// the oldest of its couriers still alive. See [`crate::heroic::Heroic::landed_at`].
+    pub fn heroic_running_since(&self) -> Option<Instant> {
+        self.launched_apps
+            .iter()
+            .filter(|app| app.through_heroic)
+            .map(|app| app.started_at)
+            .min()
+    }
+
+    /// How many of Heroic's couriers are still running — see
+    /// [`LaunchedApp::through_heroic`]. The shell compares it across a reap.
+    pub fn running_through_heroic(&self) -> usize {
+        self.launched_apps
+            .iter()
+            .filter(|app| app.through_heroic)
+            .count()
     }
 
     /// Start one command line the shell built itself, under a name of its own.
@@ -835,6 +898,7 @@ impl Lattice {
                     started_at: Instant::now(),
                     wait_error_reported: false,
                     played,
+                    through_heroic: false,
                 });
                 Some(pid)
             }
@@ -876,6 +940,7 @@ impl Lattice {
                     started_at: Instant::now(),
                     wait_error_reported: false,
                     played: None,
+                    through_heroic: false,
                 });
                 Some(pid)
             }
@@ -1734,6 +1799,14 @@ impl Cursor {
         Some(lattice.categories.get(at)?.entries.get(row)?.game()?.app_id)
     }
 
+    /// The same question of the Epic Games column, whose games are known by
+    /// Epic's app name rather than by a number.
+    pub fn epic_game_in_column(&self, lattice: &Lattice, at: usize) -> Option<String> {
+        let row = self.row_in_column(at)?;
+        let entry = lattice.categories.get(at)?.entries.get(row)?;
+        Some(entry.epic_game()?.app_name.clone())
+    }
+
     /// Remember the full path, including Alphabetical and its letter folders.
     pub fn trophy_selection(&self, lattice: &Lattice) -> Option<Vec<crate::trophies::Position>> {
         let at = lattice
@@ -1820,16 +1893,29 @@ impl Cursor {
     /// is [`Self::keep_on_media`]'s rule, applied to a list that re-sorts
     /// itself rather than one that grows.
     pub fn keep_on_game(&mut self, lattice: &Lattice, at: usize, app_id: u32) {
+        self.keep_on_row(lattice, at, |entry| {
+            entry.game().is_some_and(|game| game.app_id == app_id)
+        });
+    }
+
+    /// [`Self::keep_on_game`] for the Epic Games column.
+    pub fn keep_on_epic_game(&mut self, lattice: &Lattice, at: usize, app_name: &str) {
+        self.keep_on_row(lattice, at, |entry| {
+            entry
+                .epic_game()
+                .is_some_and(|game| game.app_name == app_name)
+        });
+    }
+
+    /// Keep the cursor on the row `is` picks out, wherever the column moved it.
+    fn keep_on_row(&mut self, lattice: &Lattice, at: usize, is: impl Fn(&Entry) -> bool) {
         let Some(was) = self.row_in_column(at) else {
             return;
         };
         let Some(entries) = lattice.categories.get(at).map(|column| &column.entries) else {
             return;
         };
-        let Some(row) = entries
-            .iter()
-            .position(|entry| entry.game().is_some_and(|game| game.app_id == app_id))
-        else {
+        let Some(row) = entries.iter().position(is) else {
             // The game has left the library altogether — a shared title whose
             // lender took it back. The cursor keeps its row, which is now
             // whichever game closed the gap, exactly as [`Self::keep_on_media`]
@@ -1874,15 +1960,38 @@ impl Cursor {
     /// rule and the arithmetic are [`Self::keep_on_media`]'s: the list slid
     /// under a stationary cursor, which is not a journey to show.
     pub fn keep_inside_on_game(&mut self, lattice: &Lattice, app_id: u32) {
+        self.keep_inside_on(lattice, |entry| {
+            entry.game().is_some_and(|game| game.app_id == app_id)
+        });
+    }
+
+    /// The Epic game a display standing inside a folder of the Epic Games
+    /// column — a letter of its index — is on, for keeping it there across a
+    /// rebuild. See [`Self::game_inside`].
+    pub fn epic_game_inside(&self, lattice: &Lattice) -> Option<String> {
+        if self.open == 0 {
+            return None;
+        }
+        Some(self.current_entry(lattice)?.epic_game()?.app_name.clone())
+    }
+
+    /// Keep it on that Epic game after the column was rebuilt. See
+    /// [`Self::keep_inside_on_game`].
+    pub fn keep_inside_on_epic_game(&mut self, lattice: &Lattice, app_name: &str) {
+        self.keep_inside_on(lattice, |entry| {
+            entry
+                .epic_game()
+                .is_some_and(|game| game.app_name == app_name)
+        });
+    }
+
+    /// Keep a display standing inside a folder on the row `is` picks out.
+    fn keep_inside_on(&mut self, lattice: &Lattice, is: impl Fn(&Entry) -> bool) {
         if self.open == 0 {
             return;
         }
         let was = self.selected_item();
-        let Some(row) = self
-            .current_entries(lattice)
-            .iter()
-            .position(|entry| entry.game().is_some_and(|game| game.app_id == app_id))
-        else {
+        let Some(row) = self.current_entries(lattice).iter().position(is) else {
             // Gone from this letter altogether — a game the account lost, or
             // one renamed into another heading. The cursor keeps its row, as it
             // does for a file deleted from under it.
@@ -3002,6 +3111,7 @@ mod tests {
             over_the_list: false,
             person: None,
             portrait: None,
+            used: None,
         })
     }
 
@@ -3160,6 +3270,7 @@ mod tests {
                 over_the_list: false,
                 person: None,
                 portrait: None,
+                used: None,
             })
         };
         Lattice::with_wayland_display(
@@ -3281,6 +3392,7 @@ mod tests {
                     over_the_list: false,
                     person: None,
                     portrait: None,
+                    used: None,
                 })],
             }],
             OsString::from("lxb-test"),
@@ -3606,6 +3718,7 @@ mod tests {
                 over_the_list: false,
                 person: None,
                 portrait: None,
+                used: None,
             })
         };
         let disks = [disk("/home/somebody"), disk("/"), disk("/run/media/stick")];
@@ -4163,6 +4276,7 @@ mod tests {
             over_the_list: true,
             person: None,
             portrait: None,
+            used: None,
         })
     }
 
@@ -4221,6 +4335,53 @@ mod tests {
             "and the column is drawn from two rows further up, so nothing moved"
         );
         assert!(!cursor.animate(1.0 / 60.0), "nothing left to ease");
+    }
+
+    /// The Epic Games column re-sorts the same way when a game lands, and its
+    /// games are known by Epic's name for them rather than by a number.
+    #[test]
+    fn an_epic_game_that_finishes_installing_keeps_the_cursor_too() {
+        let epic = |app: &str, installed: bool| {
+            Entry::EpicGame(crate::apps::EpicGame {
+                app_name: app.to_string(),
+                name: app.to_string(),
+                note: String::new(),
+                progress: None,
+                installed,
+                start: None,
+                cover: None,
+                shape: None,
+                hero: None,
+                logo: None,
+            })
+        };
+        let column = |entries| {
+            Lattice::with_wayland_display(
+                vec![Category {
+                    id: "epic",
+                    title: "Epic Games",
+                    icon: "lxb:epic",
+                    entries,
+                }],
+                OsString::from("lxb-test"),
+            )
+        };
+        let lattice = column(vec![epic("Owl", false), epic("Quail", false)]);
+        let mut cursor = cursor(&lattice);
+        assert!(cursor.navigate(Action::Down, &lattice));
+        while cursor.animate(1.0 / 60.0) {}
+        assert_eq!(
+            cursor.epic_game_in_column(&lattice, 0).as_deref(),
+            Some("Quail")
+        );
+
+        let lattice = column(vec![epic("Quail", true), epic("Owl", false)]);
+        cursor.keep_on_epic_game(&lattice, 0, "Quail");
+        assert_eq!(cursor.selected_item(), 0);
+        assert_eq!(
+            cursor.epic_game_in_column(&lattice, 0).as_deref(),
+            Some("Quail")
+        );
     }
 
     /// The same for a display that is somewhere else entirely. The row a
@@ -4581,6 +4742,7 @@ mod tests {
                     over_the_list: false,
                     person: None,
                     portrait: None,
+                    used: None,
                 })],
             }],
             OsString::from("lxb-test"),

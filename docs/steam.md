@@ -12,6 +12,7 @@
 - [Who is on Steam, and talking to them](#who-is-on-steam-and-talking-to-them)
 - [An invitation to a game](#an-invitation-to-a-game)
 - [Settings > Games > Steam](#settings--games--steam)
+- [Storage: libraries, and moving games between them](#storage-libraries-and-moving-games-between-them)
 
 ## Steam
 
@@ -628,13 +629,50 @@ Running both through one function is how a failed download came to be reported
 on screen as *"Steam would not take the credential"* — a sentence about a
 password, printed over a game.
 
-Where the game goes is the client's default and deliberately not overridden: it
-is the folder the user chose in Steam, and a shell that put games somewhere
-else would be putting them somewhere nobody asked for. Which build comes down
-is the client's decision too — this system, this account's licences, the depots
-the game is actually made of. A shell that passed its own opinion in would be a
-second implementation of that decision, able only to be wrong in ways Steam's
-is not.
+**Which library a game goes into is asked on the shell's own panel**, on a
+machine with more than one. Valve's wizard stops at `ShowConfig` whenever there
+is more than one library and the game may be moved (`bCanChangeInstallFolder`)
+— its own dialog would show a folder list there — and the shell used to go on
+with the client's default, which was answering the question for the person.
+Now, with Settings > Games > Steam > Storage > **Install games to** on **Ask every time**
+(the default), the shell reads the libraries Valve's list reads
+(`SteamClient.InstallFolder.GetInstallFolders`: path, the name given in Steam,
+free space, whether it is the default) and the room the game needs
+(`nDiskSpaceRequired`), cancels the wizard, and puts up a panel: the game's
+name, "Choose where to install it. It needs 46 GB.", a button per library
+("Games · 412 GB free") and **Not now**. A library the game will not fit on is a
+greyed-out button saying so, by Valve's own test (the room needed is less than
+the room free). The cursor starts on Steam's default where the game fits there.
+Pressing one opens the wizard again and makes the call Valve's folder list
+makes, `Installs.SetInstallFolder`, before going on. A library is named by the
+name somebody gave it in Steam, else by the drive it is on as Settings >
+Storage names that drive.
+
+With a library chosen in the settings instead, nothing is asked: the wizard is
+pointed at it, and it is made Steam's own default too
+(`InstallFolder.SetDefaultInstallFolder`, the call behind Steam's "Make
+default"), so a game started from Steam's window lands in the same place. That
+is told to a running client on the settings press, without ever starting one,
+and to any client on the next install into it. A chosen library that is not
+there — a drive unplugged today — or that has not the room is asked about,
+with the reason at the top of the panel, rather than quietly swapped for
+Steam's default. Choosing a library for one game on the panel is that game's
+answer only. The choice rides through an agreement: a game asked where, then
+asked to accept terms, goes where it was sent once they are accepted.
+
+A client that has lost `GetInstallFolders` or `SetInstallFolder` installs where
+it always did — into its own default — rather than refusing the game. A
+machine with one library is never asked anything and has no row for it.
+
+`cargo run -p lxb-steam --example probe-install -- <app id>` reports the
+choice and fetches nothing; `--to <library>` fetches into one.
+`--debug-actions library` photographs the panel with three invented libraries,
+one of them too small, and installs nothing.
+
+Which build comes down is the client's decision — this system, this account's
+licences, the depots the game is actually made of. A shell that passed its own
+opinion in would be a second implementation of that decision, able only to be
+wrong in ways Steam's is not.
 
 **Two games in five stop the flow to ask something**, and nearly always it is an
 agreement. Of fifteen titles taken off one real account, six had one — Black
@@ -1053,6 +1091,20 @@ it is, the moment is let go of rather than kept — closing the client twenty
 minutes later because a download finally finished would be acting on a game
 nobody remembers.
 
+**Storage.** Steam's own Storage page, on the bar: the libraries Steam keeps
+games in, the games in each, and **Add drive**. The row leading to it says how
+many libraries there are. See "Storage" below.
+
+**Install games to**, the first row of Storage. Ask every time. Only on a
+machine with more than one Steam library, and then it lists them — each by the
+name it was given in Steam or the drive it is on, with the free space on that
+drive under it — after **Ask every time**. Asking puts the library panel up on
+each install (see "Which library a game goes into" above); a library chosen
+here is used without asking and becomes Steam's own default as well, so
+Steam's window agrees. A chosen library whose drive is unplugged says "Not
+connected" and stays ticked, and until it is back every install asks. Written
+as `steam-install-to`, the library's path as Steam lists it; missing is asking.
+
 The three are written to the settings file as `steam-integration`,
 `steam-at-startup` and `steam-after-a-game`, on every machine including one
 with no Steam installed: what they answer is what *this shell* does. A file
@@ -1061,4 +1113,112 @@ gets the integration on, the client started for a game, and left running after
 one. `--no-steam` outranks all three and does not rewrite them: a machine
 booted once with the flag comes back the next morning set as it was, and the
 page says so instead of offering a switch that would change nothing.
+
+## Storage: libraries, and moving games between them
+
+Settings > Games > Steam > **Storage** is the shell's copy of Valve's own
+Storage page (Steam > Settings > Storage), for somebody with a controller in
+their hand:
+
+```
+Settings > Games > Steam > Storage          (2 libraries)
+
+    Install games to      Ask every time          only with two or more
+    Home                  3 games · 27 GB free of 250 GB   ████████▌──
+    GamesSSD              1 game · 412 GB free of 1.0 TB
+    Add drive             Keep games on another drive
+```
+
+**A library** is named as Install games to names it, and its row says how many
+games it holds and how much room is left on its drive, in words and as the
+bar a partition draws on Settings > Storage. Stepping in lists every game its
+manifests list, largest first — Steam's own order on that page, and Proton and
+the runtimes included, since they take room like anything else — then
+**Repair folder** and **Remove drive**. A drive that is not plugged in says
+"Not connected", because its games cannot be read.
+
+**Pressing a game raises a menu** — Move, Uninstall, Cancel — and never starts
+it: a press on a settings page out of habit must not start forty gigabytes of
+somebody's evening, nor take one off. Both are greyed out while Steam is working
+on the game (the row says "Steam is working on it"). **Uninstall** is the
+game's own Uninstall, with its question first. **Move** puts up a panel in the
+shape of the one that asks where a game is installed: the game, "Choose where to
+move it. It needs 34 GB.", a button per other library with the room left there
+("GamesSSD · 412 GB free"), greyed out and saying "not enough space" where it
+will not fit, and **Not now**. Room is wanted even for a library on the same
+drive: Valve's client copies the files across and counts the bytes as it goes.
+
+**While a game moves**, a panel says where it is going with a bar and the per
+cent on it, and offers **Hide** and **Stop**. Hidden, the move goes on and the
+game's row on the page carries the same bar ("Moving to GamesSSD · 34%"); the
+end is announced in the corner. Stopped, the game stays where it was. One move
+at a time — Valve's dialog moves one game after another, and a second watch
+would read the first one's progress — so a Move pressed on another game says
+to wait.
+
+**Repair folder** is Steam's Repair Folder and says when it has finished.
+**Remove drive** is Steam's Remove Library: Steam stops using the folder and
+nothing on the drive is deleted. It is asked about first, and it is not offered
+at all for the library Steam is installed in, which Steam can never be without;
+a library that still holds games, or that Install games to names, says why it
+cannot be removed instead ("Move or uninstall its games first", "New games are
+installed here").
+
+**Add drive** lists the drives Settings > Storage lists, by the names it gives
+them, that could take a library and have none: mounted, writable by the person
+signed in, not what the machine starts from, and not already holding one of
+Steam's libraries — which is Valve's own dropdown ("/run/media/…/GamesHDD —
+423 GB of 915.8 GB free"). A drive is asked for a `SteamLibrary` folder at its
+top, which is what Valve's list proposes for every drive it offers (`%s%c%s`
+beside `SteamLibrary` in `steamui.so`), because Steam refuses a drive's top
+folder outright. **Choose a folder** is its "Let me choose another location":
+the shell's own folder picker, answered with "Keep Steam games in this folder".
+When the library has been made, the cursor is put on its row.
+
+### How it is done
+
+Every change is made the way Valve's page makes it, through the client's own
+interface — nothing here writes `libraryfolders.vdf`, which the client writes
+out of its memory and would write over. The calls, read out of
+`~/.local/share/Steam/steamui/chunk~*.js` and `library.js`:
+
+| Row | Call |
+|---|---|
+| Add drive | `InstallFolder.AddInstallFolder(path)` |
+| Remove drive | `InstallFolder.RemoveInstallFolder(nFolderIndex)` |
+| Repair folder | `InstallFolder.RepairInstallFolder(nFolderIndex)`, finished by `RegisterForRepairFolderFinished` |
+| Move | `InstallFolder.MoveInstallFolderForApp(appid, nFolderIndex)`, followed by `RegisterForMoveContentProgress` |
+| Stop | `InstallFolder.CancelMove()` |
+
+A library is found by its path in `GetInstallFolders`, as Install games to finds
+one. A move's progress comes as `{appid, eError, flProgress}`: `eError` 20
+(`Busy`) while it goes, with `flProgress` in per cent, and 0 when that game is
+done; anything else is a refusal — 15 "folder already exists", 17 "has shared
+content", 22 "can't be moved", the three Valve's dialog has a sentence for,
+plus 12 (no room) and 16 (running). Adding refuses with a word Valve's page
+looks up in its catalogue — `NoDriveRoot`, `NotEmptyFolder`,
+`NotWritableFolder`, `NotExecutableFolder`, `DriveAlreadyHasLibrary`,
+`FailedToAdd` — and removing refuses with the app that is using the library.
+`lxb_steam::webui::Declined` sorts all of them, and the shell says each in its
+own words and in every language ("That folder has other files in it. Choose an
+empty one."); Steam's word goes to the log. A client that cannot be reached is
+"Steam could not be reached. Try again in a moment."
+
+What is shown is read off the disk — `libraryfolders.vdf` and one manifest per
+game, when Settings is arrived at and every three seconds while the page is
+open, with the drives — so walking to it never wakes Steam. A press does: it
+needs the account the shell holds, as an uninstall does, and wakes the client
+where it is not up.
+
+**What was checked, and what was not** (2026-09-24). Photographed in the
+nested shell against a scratch home holding a Steam with two libraries: the
+page, a library's games and rows, the menu, the Move panel, Remove drive's
+question, Add drive's list of this machine's own drives and the folder picker.
+Every press there ended in "Steam could not be reached", which is the
+unreached path working — the scratch session holds no account. The calls into
+Valve's client are Valve's own, read out of its interface; **none of them has
+yet been made against a live client**, because each changes a real library.
+The answers are parsed by tested functions (`shelved`, `move_began`,
+`move_heard`), but the first real Move, Add drive, Remove drive and Repair
+folder are still to be watched.
 

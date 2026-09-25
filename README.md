@@ -15,7 +15,8 @@ from one interface, using a gamepad, keyboard or mouse.
 - **A desktop you can use from the couch.** Browse apps, music, videos and
   pictures with a controller, with an on-screen keyboard when you need to type.
 - **Your games in one place.** Browse your Steam library and launch games through
-  Steam, with optional RetroArch integration for your own console games.
+  Steam, with optional integrations for your Epic Games library (through Heroic
+  Games Launcher) and for your own console games (through RetroArch).
 - **Multiple displays, independently.** Each screen runs at its own resolution
   and refresh rate, with controls for moving between them.
 - **A guide a button away.** Switch apps, adjust volume and brightness, or get
@@ -78,13 +79,13 @@ lists and testing with multiple virtual displays.
 
 LineXinBar is in **early development**. Hardware testing has primarily covered
 one AMD GPU with two displays; other GPU vendors and multi-GPU setups need more
-validation. Steam games require Valve’s Steam client, and RetroArch integration
-is an optional package. See [known limitations](docs/overview.md#not-implemented)
+validation. Steam games require Valve’s Steam client, and the Epic Games and
+RetroArch integrations are optional packages. See [known limitations](docs/overview.md#not-implemented)
 before relying on it as your daily desktop.
 
 ## Learn more and contribute
 
-The [documentation index](docs/index.md) covers setup, Steam, RetroArch,
+The [documentation index](docs/index.md) covers setup, Steam, Epic Games, RetroArch,
 settings, desktop features and the technical reference. Bug reports, hardware
 testing, translations and code contributions are welcome. When reporting a
 problem, include your distribution, GPU, how you started LineXinBar and relevant

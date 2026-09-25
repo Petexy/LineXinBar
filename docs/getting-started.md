@@ -109,6 +109,7 @@ one feature:
 | `steam` (native or Flatpak)               | Playing and installing anything in the Steam column | The account still signs in and the library is still listed, but nothing in it starts or downloads: every row says so rather than doing nothing |
 | `lxb-retroarch` (a package of its own)    | [RetroArch and your own console games](retroarch.md#retroarch-and-your-own-console-games): a row under Steam, and a column of the consoles in your ROM folder | The shell never mentions RetroArch at all — no row, no column, no page under Settings |
 | `flatpak`, with `lxb-retroarch` installed | Installing RetroArch from the shell, and running the Flathub build | The row says RetroArch is not installed and that there is no flatpak to install it with; a distribution package of `retroarch` is used in preference either way |
+| `lxb-heroic` (a package of its own, needing `flatpak`) | [Epic Games](epic.md): a row under Steam, a sign-in by phone or on the screen, and a column of your Epic library to install and play | The shell never mentions Epic Games at all — no row, no column, no page under Settings |
 
 ### Permissions
 

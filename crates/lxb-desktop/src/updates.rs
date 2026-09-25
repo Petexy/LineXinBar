@@ -1095,7 +1095,8 @@ impl Updates {
     }
 
     /// Whether what is about to be installed is the kind that wants a
-    /// restart: the system's own packages, or a device's firmware.
+    /// restart: the system's own packages, a device's firmware, or the
+    /// desktop and its login screen, which are in use until the session ends.
     fn restart_expected(&self) -> bool {
         self.selected().any(|s| {
             s.executable
@@ -1103,6 +1104,10 @@ impl Updates {
                 && match s.id {
                     SourceId::System => !s.listed || !s.items.is_empty() || !s.fresh,
                     SourceId::Firmware => !s.items.is_empty(),
+                    SourceId::Linexinbar => s
+                        .items
+                        .iter()
+                        .any(|i| lxb_updates::releases::restarts_the_session(&i.name)),
                     _ => false,
                 }
         })
@@ -2040,13 +2045,14 @@ mod tests {
     }
 
     /// Every source a machine can have, on one review, fits the smallest
-    /// display the shell is drawn on — with no paging, because eight fields
-    /// is what a review of eight sources is.
+    /// display the shell is drawn on — with no paging, because nine fields
+    /// is what a review of nine sources is.
     #[test]
     fn a_review_of_every_source_fits_the_display() {
         let updates = reviewing(
             [
                 SourceId::System,
+                SourceId::Linexinbar,
                 SourceId::Flatpak,
                 SourceId::Aur,
                 SourceId::Snap,
@@ -2060,7 +2066,7 @@ mod tests {
             .collect(),
         );
         let (lines, buttons) = updates.panel();
-        assert_eq!(fields(&lines).len(), 8);
+        assert_eq!(fields(&lines).len(), 9);
         assert!(!commands(&updates).contains(&menu::Command::UpdateOverview));
         let last = buttons.len() - 1;
         let mut dialog = crate::dialog::Dialog::default();

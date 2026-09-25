@@ -255,6 +255,7 @@ shell-orientation = दिशा
 shell-other = अन्य
 shell-output-device = आउटपुट डिवाइस
 shell-paired = पेयर किया गया
+shell-particles = कण
 shell-password = पासवर्ड
 shell-paste = चिपकाएँ
 shell-peak-brightness = अधिकतम चमक
@@ -302,6 +303,7 @@ shell-size = आकार
 shell-software = सॉफ़्टवेयर
 shell-sort = क्रमबद्ध करें
 shell-sounds = ध्वनियाँ
+shell-sparkles-drifting-along-the-wallpaper = वॉलपेपर पर तैरती चमक
 shell-square-pixels = वर्गाकार पिक्सेल
 shell-standard = मानक
 shell-start-music = शुरुआती संगीत
@@ -1115,6 +1117,7 @@ integration-top-right = ऊपर दाएँ
 integration-bottom-left = नीचे बाएँ
 integration-bottom-right = नीचे दाएँ
 integration-update-the-system = सिस्टम अपडेट करें
+integration-update-linexinbar = LineXinBar अपडेट करें
 integration-update-flatpaks = Flatpak अपडेट करें
 integration-update-aur = AUR अपडेट करें
 integration-update-snaps = Snap अपडेट करें
@@ -1535,9 +1538,86 @@ steam-install-needs-first = { $what ->
    *[other] इस गेम के लिए पहले एक सवाल का जवाब देना होगा।
     }
 steam-downloading-first = { $name } पहले डाउनलोड हो रहा है।
+
+# Steam: गेम किस लाइब्रेरी में इंस्टॉल होगा।
+steam-install-to = गेम यहाँ इंस्टॉल करें
+steam-ask-every-time = हर बार पूछें
+steam-ask-every-time-note = हर गेम कहाँ जाएगा, यह आप चुनते हैं
+steam-library-not-connected = कनेक्ट नहीं है
+steam-library-gone = अब Steam लाइब्रेरी नहीं है
+steam-install-to-unavailable = { $library } · उपलब्ध नहीं, इसलिए हर बार पूछा जाता है
+steam-library-on-drive = { $drive } · { $folder }
+steam-choose-library = चुनें कि इसे कहाँ इंस्टॉल करना है।
+steam-choose-library-size = चुनें कि इसे कहाँ इंस्टॉल करना है। इसे { $size } चाहिए।
+steam-game-needs = इसे { $size } चाहिए।
+steam-no-library-has-room = कहीं भी पर्याप्त जगह नहीं है। इसे { $size } चाहिए।
+steam-chosen-library-not-connected = { $library } कनेक्ट नहीं है, इसलिए कोई दूसरी जगह चुनें।
+steam-chosen-library-full = { $library } पर पर्याप्त जगह नहीं है, इसलिए कोई दूसरी जगह चुनें।
+steam-library-free = { $library } · { $free } खाली
+steam-library-too-small = { $library } · पर्याप्त जगह नहीं
+steam-installs-into = इसे { $library } पर इंस्टॉल किया जाएगा।
+steam-you-choose-where-next = इसके बाद आप चुनेंगे कि इसे कहाँ इंस्टॉल करना है।
 steam-achievements-unlocked = Steam · { $unlocked } / { $total } अनलॉक
 enter-password-for = { $name } का पासवर्ड दर्ज करें।
 progress-of = { $of } में से { $at }
+
+steam-storage = स्टोरेज
+steam-storage-note = { $count } लाइब्रेरी
+steam-library-games = { $count ->
+    [0] कोई गेम नहीं
+   *[other] { $count } गेम
+    }
+steam-library-summary = { $games } · { $room }
+steam-library-connect = इसके गेम देखने के लिए ड्राइव कनेक्ट करें।
+steam-repair-library = फ़ोल्डर ठीक करें
+steam-repair-library-note = अगर यहाँ से गेम इंस्टॉल या शुरू नहीं होते
+steam-remove-library = ड्राइव हटाएँ
+steam-remove-library-note = Steam इसका उपयोग बंद कर देगा। इस पर कुछ भी मिटाया नहीं जाता।
+steam-remove-library-has-games = पहले इसके गेम ले जाएँ या अनइंस्टॉल करें
+steam-remove-library-default = नए गेम यहीं इंस्टॉल होते हैं
+steam-remove-library-ask = इस ड्राइव का Steam गेम के लिए उपयोग बंद करें? इस पर कुछ भी मिटाया नहीं जाता।
+steam-add-drive = ड्राइव जोड़ें
+steam-add-drive-note = गेम किसी दूसरी ड्राइव पर रखें
+steam-add-library-elsewhere = फ़ोल्डर चुनें
+steam-add-library-elsewhere-note = किसी भी ड्राइव पर एक खाली फ़ोल्डर
+steam-add-library-here = Steam गेम इस फ़ोल्डर में रखें
+steam-game-busy = { $size } · Steam इस पर काम कर रहा है
+steam-move-progress = प्रगति दिखाएँ
+steam-move-choose = चुनें कि इसे कहाँ ले जाना है। इसे { $size } चाहिए।
+steam-move-nowhere = किसी और ड्राइव पर इसके लिए जगह नहीं है। इसे { $size } चाहिए।
+steam-move-no-other-library = इसे ले जाने के लिए कोई और जगह नहीं है। पहले एक ड्राइव जोड़ें।
+steam-moving-to = { $library } पर ले जाया जा रहा है
+steam-moving-to-percent = { $library } पर ले जाया जा रहा है · { $percent }%
+steam-moving-stopping = रोका जा रहा है…
+steam-move-hide = छिपाएँ
+steam-move-stop = रोकें
+steam-moved-note = अब यह { $library } पर है।
+steam-move-failed = इसे ले जाया नहीं जा सका।
+steam-library-adding = Steam में जोड़ा जा रहा है…
+steam-library-removing = Steam से हटाया जा रहा है…
+steam-library-repairing = ठीक किया जा रहा है…
+steam-library-repaired = इसे ठीक कर दिया गया।
+steam-library-not-added = इसे जोड़ा नहीं जा सका।
+steam-library-not-removed = इसे हटाया नहीं जा सका।
+steam-library-not-repaired = इसे ठीक नहीं किया जा सका।
+steam-could-not-be-reached = Steam से संपर्क नहीं हो सका। थोड़ी देर में फिर कोशिश करें।
+steam-refused-in-use-by = { $game } अभी इसका उपयोग कर रहा है। उसके खत्म होने पर फिर कोशिश करें।
+steam-refused = { $why ->
+    [drive-root] Steam किसी ड्राइव के सबसे ऊपरी फ़ोल्डर का उपयोग नहीं कर सकता। उस पर कोई फ़ोल्डर चुनें।
+    [not-empty] उस फ़ोल्डर में दूसरी फ़ाइलें हैं। कोई खाली फ़ोल्डर चुनें।
+    [not-writable] वहाँ कुछ भी सेव नहीं किया जा सकता।
+    [not-executable] उस ड्राइव से गेम शुरू नहीं किए जा सकते।
+    [already] उस ड्राइव पर पहले से एक Steam लाइब्रेरी है।
+    [not-listed] Steam के पास अब वह लाइब्रेरी नहीं है।
+    [in-use] Steam अभी इसका उपयोग कर रहा है। बाद में फिर कोशिश करें।
+    [folder-there] वहाँ इस गेम का एक फ़ोल्डर पहले से है।
+    [shared] यह किसी दूसरे गेम के साथ फ़ाइलें साझा करता है, इसलिए इसे ले जाया नहीं जा सकता।
+    [no-room] वहाँ पर्याप्त जगह नहीं है।
+    [running] पहले गेम बंद करें।
+    [unmovable] Steam इस गेम को नहीं ले जा सकता।
+    [another-move] कोई दूसरा गेम ले जाया जा रहा है। उसके पूरा होने तक रुकें।
+   *[other] Steam यह नहीं कर सका। बाद में फिर कोशिश करें।
+    }
 
 # Achievements.
 signed-in-as = { $name } के रूप में साइन इन
@@ -1604,6 +1684,47 @@ screen-share-request = { $application } आपकी स्क्रीन स�
 device-connected = { $name } कनेक्टेड है
 device-paired = { $name } पेयर है
 device-would-not-pair = { $name } पेयर नहीं हुआ
+
+# Settings > Storage. A partition is named by what it is for (System, Home,
+# Startup), else by its own label, else storage-unnamed with its size. `whole`
+# and `size` are sizes already written out, like "237 GiB".
+storage-title = स्टोरेज
+storage-description = हर ड्राइव पर कितनी जगह बची है
+storage-startup = स्टार्टअप
+storage-unnamed = { $size } ड्राइव
+storage-not-in-use = उपयोग में नहीं · { $whole }
+storage-extra-memory = अतिरिक्त मेमोरी के रूप में उपयोग में · { $whole }
+storage-cannot-check = खाली जगह की जाँच नहीं हो सकी · { $whole }
+storage-checking = ड्राइव की जाँच हो रही है…
+storage-none = कोई ड्राइव नहीं मिली
+storage-free = खाली
+storage-used = उपयोग में
+storage-capacity = क्षमता
+storage-file-system = फ़ाइल सिस्टम
+storage-location = स्थान
+storage-drive = ड्राइव
+
+# ड्राइव माउंट करना, फ़ाइलें से और सेटिंग्स > स्टोरेज में किसी ड्राइव के पेज से।
+# `size` पहले से लिखा हुआ आकार है। ड्राइव स्त्रीलिंग है।
+drive-not-mounted = माउंट नहीं है · { $size }
+drive-mounting = माउंट हो रही है…
+drive-unmounting = अनमाउंट हो रही है…
+shell-mount = माउंट करें
+shell-unmount = अनमाउंट करें
+shell-safely-remove = सुरक्षित रूप से निकालें
+drive-mount-note = इसे फ़ाइलें में उपलब्ध कराएँ
+drive-unmount-note = दोबारा खोले जाने तक उपलब्ध नहीं रहेगी
+drive-safely-remove-note = इसे अनमाउंट करके बंद करें, ताकि इसे निकाला जा सके
+drive-at-startup = स्टार्टअप पर माउंट करें
+drive-at-startup-on-note = कंप्यूटर शुरू होते ही सभी के लिए उपलब्ध
+drive-at-startup-off-note = केवल फ़ाइलें में खोलने पर माउंट होती है
+drive-at-startup-failed = बदला नहीं जा सका
+drive-information = ड्राइव की जानकारी
+drive-can-unplug = अब आप इसे निकाल सकते हैं।
+drive-mount-failed = यह ड्राइव माउंट नहीं हो सकी।
+drive-unmount-failed = यह ड्राइव अनमाउंट नहीं हो सकी।
+drive-in-use = कोई चीज़ अभी भी इस ड्राइव का उपयोग कर रही है। उसे बंद करें और फिर से कोशिश करें।
+drive-not-allowed = इस खाते को ऐसा करने की अनुमति नहीं है।
 
 # Countries, by ISO 3166 code, as the keyboard-layout column names them.
 country-none = कोई देश नहीं
@@ -1856,3 +1977,75 @@ country-yt = मायोते
 country-za = दक्षिण अफ़्रीका
 country-zm = ज़ाम्बिया
 country-zw = ज़िम्बाब्वे
+
+# Epic Games, through Heroic Games Launcher: the optional lxb-heroic package.
+# `address` is Epic's own activation address, as the helper gives it.
+epic-looking = Heroic ढूँढा जा रहा है
+epic-press-to-finish-setting-up = सेटअप पूरा करने के लिए दबाएँ
+epic-sign-in-to-play = अपनी Epic Games लाइब्रेरी यहाँ खेलने के लिए साइन इन करें
+epic-asking-for-a-code = Epic से कोड माँगा जा रहा है
+epic-scan-with-your-phone = साइन इन करने के लिए इसे अपने फ़ोन से स्कैन करें।
+epic-or-enter-the-code = या किसी भी डिवाइस पर { $address } खोलें और यह कोड डालें:
+epic-may-say-fortnite = Epic के पेज पर लिखा हो सकता है कि Fortnite पूछ रहा है। यह सामान्य है।
+epic-sign-in-on-this-screen = इसी स्क्रीन पर साइन इन करें
+epic-signing-in = साइन इन हो रहा है
+epic-close-heroic-first = Heroic खुला है। उसे बंद करें, फिर दोबारा कोशिश करें।
+epic-could-not-be-reached = Epic से संपर्क नहीं हो सका। कनेक्शन जाँचें, फिर दोबारा कोशिश करें।
+epic-code-ran-out = कोड इस्तेमाल होने से पहले ही समाप्त हो गया।
+epic-confirm-first = Epic चाहता है कि आप पहले कुछ पुष्टि करें। इसे अपने फ़ोन से स्कैन करें, फिर दोबारा कोशिश करें।
+epic-sign-in-did-not-work = साइन इन नहीं हो सका।
+epic-open-heroic = Heroic खोलें
+epic-getting-ready = तैयारी हो रही है
+epic-downloading-heroic = Heroic डाउनलोड हो रहा है
+epic-downloading-proton = गेम चलाने के लिए ज़रूरी चीज़ें डाउनलोड हो रही हैं
+epic-plays-through-ubisoft = Ubisoft Connect के ज़रिए चलता है
+epic-plays-through-ea = EA ऐप के ज़रिए चलता है
+epic-plays-your-library = Epic Games, Heroic Games Launcher के ज़रिए Epic पर आपके गेम चलाता है।
+epic-install-explanation = यह मुफ़्त है, और इस मशीन पर और कुछ नहीं बदला जाता।
+epic-one-more-download = गेम शुरू होने से पहले एक और डाउनलोड ज़रूरी है।
+epic-sign-out-question = Epic Games से साइन आउट करें? इंस्टॉल किए गए गेम इसी मशीन पर रहेंगे।
+# Installing and uninstalling one game of the Epic Games column. `download`,
+# `disk` and `size` are sizes already written out.
+epic-download-and-disk = डाउनलोड { $download }, इंस्टॉल होने पर { $disk }।
+epic-not-enough-space = इसके लिए पर्याप्त जगह नहीं है। इसे { $size } चाहिए।
+epic-no-space = इसके लिए पर्याप्त जगह नहीं है।
+epic-ubisoft-downloads-it = जब आप पहली बार खेलेंगे, Ubisoft Connect गेम डाउनलोड करेगा और आपसे वहाँ साइन इन करने को कहेगा।
+epic-ea-downloads-it = जब आप पहली बार खेलेंगे, EA ऐप गेम डाउनलोड करेगा और आपसे वहाँ साइन इन करने को कहेगा।
+epic-stopping-keeps-what-arrived = रोकने पर जो आ चुका है वह बना रहता है। फिर से इंस्टॉल करने पर वहीं से जारी रहेगा।
+epic-heroic-is-busy = Heroic खुला है, या उससे कोई गेम चल रहा है। उसे बंद करें, फिर दोबारा कोशिश करें।
+epic-waits-for-heroic = Heroic और उसके गेम बंद होने पर शुरू होगा
+epic-update-waiting = अपडेट उपलब्ध
+epic-may-need-a-connection = खेलने के लिए कनेक्शन की ज़रूरत हो सकती है
+epic-no-connection = कनेक्शन नहीं है
+epic-it-may-need-a-connection = इसे शुरू होने के लिए कनेक्शन की ज़रूरत हो सकती है।
+epic-verify-and-repair = जाँचें और ठीक करें
+epic-asking-heroic = Heroic से पूछा जा रहा है…
+epic-heroics-default = Heroic का डिफ़ॉल्ट
+epic-heroics-default-is = Heroic का डिफ़ॉल्ट ({ $tool })
+epic-tool-not-changed = गेम किससे चलते हैं, यह नहीं बदला गया।
+epic-checking-percent = फ़ाइलें जाँची जा रही हैं… { $percent }%
+epic-repairing = ठीक किया जा रहा है…
+epic-repairing-percent = ठीक किया जा रहा है… { $percent }%
+epic-files-checked = सभी फ़ाइलें जाँच ली गई हैं।
+epic-files-not-checked = इसकी फ़ाइलें जाँची नहीं जा सकीं।
+epic-how-heroic-works-with-the-shell = Heroic शेल के साथ कैसे काम करता है
+epic-off-heroic-is-an-application-like-any-other = बंद — Heroic बाकी ऐप्लिकेशन जैसा ही एक ऐप्लिकेशन है
+epic-heroic-is-an-application-like-any-other-with-its-own-icon = Heroic बाकी जैसा ही एक ऐप्लिकेशन है, अपने आइकन के साथ
+epic-heroic-is-started-in-the-background-as-the-session-comes-up = सत्र शुरू होते ही Heroic पृष्ठभूमि में शुरू हो जाता है
+epic-heroic-is-started-when-the-first-game-is-pressed = पहला गेम दबाने पर Heroic शुरू होता है
+epic-leave-heroic-running = Heroic चलता रहने दें
+epic-heroic-stays-up-after-a-game-so-the-next-one-starts-sooner = गेम के बाद Heroic चलता रहता है, ताकि अगला गेम जल्दी शुरू हो
+epic-heroic-closes-with-the-game-and-the-memory-comes-back = गेम के साथ Heroic बंद हो जाता है, और मेमोरी वापस मिल जाती है
+epic-run-games-with = गेम इससे चलाएँ
+epic-updating = अपडेट हो रहा है…
+epic-updating-percent = अपडेट हो रहा है… { $percent }%
+epic-updating-percent-of = अपडेट हो रहा है… { $size } का { $percent }%
+# Settings > Games > Epic Games.
+epic-install-games-here = Epic गेम इस फ़ोल्डर में इंस्टॉल करें
+epic-folder-not-changed = फ़ोल्डर नहीं बदला गया।
+epic-cloud-saves = क्लाउड सेव
+epic-cloud-saves-on = सेव Epic के पास रखे जाते हैं, और आप जिस भी मशीन पर खेलें वहाँ मिलते हैं
+epic-cloud-saves-off = सेव इसी मशीन पर रहते हैं
+epic-cloud-saves-not-changed = क्लाउड सेव नहीं बदले गए।
+epic-achievement-summary = { $description } · { $xp } XP · { $state }
+epic-players-who-have-it = जिन खिलाड़ियों के पास यह है

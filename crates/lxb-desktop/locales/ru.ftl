@@ -255,6 +255,7 @@ shell-orientation = Ориентация
 shell-other = Прочее
 shell-output-device = Устройство вывода
 shell-paired = Сопряжено
+shell-particles = Частицы
 shell-password = Пароль
 shell-paste = Вставить
 shell-peak-brightness = Пиковая яркость
@@ -302,6 +303,7 @@ shell-size = Размер
 shell-software = Программы
 shell-sort = Сортировка
 shell-sounds = Звуки
+shell-sparkles-drifting-along-the-wallpaper = Искорки, плывущие по обоям
 shell-square-pixels = Квадратные пиксели
 shell-standard = Стандартный
 shell-start-music = Музыка на старте
@@ -1135,6 +1137,7 @@ integration-top-right = Вверху справа
 integration-bottom-left = Внизу слева
 integration-bottom-right = Внизу справа
 integration-update-the-system = Обновить систему
+integration-update-linexinbar = Обновить LineXinBar
 integration-update-flatpaks = Обновить Flatpak
 integration-update-aur = Обновить AUR
 integration-update-snaps = Обновить Snap
@@ -1639,9 +1642,95 @@ steam-install-needs-first = { $what ->
    *[other] Эта игра сначала просит ответить на вопрос.
     }
 steam-downloading-first = Сначала загружается { $name }.
+
+# Steam: библиотека, в которую устанавливается игра. `library` — название
+# библиотеки или диска; оно не склоняется, поэтому стоит после двоеточия.
+steam-install-to = Куда устанавливать игры
+steam-ask-every-time = Спрашивать каждый раз
+steam-ask-every-time-note = Вы выбираете место для каждой игры
+steam-library-not-connected = Не подключено
+steam-library-gone = Больше не библиотека Steam
+steam-install-to-unavailable = { $library } · недоступно, поэтому место выбирается при каждой установке
+steam-library-on-drive = { $drive } · { $folder }
+steam-choose-library = Выберите, куда установить игру.
+steam-choose-library-size = Выберите, куда установить игру. Ей нужно { $size }.
+steam-game-needs = Игре нужно { $size }.
+steam-no-library-has-room = Места не хватает нигде. Игре нужно { $size }.
+steam-chosen-library-not-connected = Не подключено: { $library }. Выберите другое место.
+steam-chosen-library-full = Недостаточно места: { $library }. Выберите другое место.
+steam-library-free = { $library } · { $free } свободно
+steam-library-too-small = { $library } · недостаточно места
+steam-installs-into = Место установки: { $library }.
+steam-you-choose-where-next = Далее вы выберете, куда установить игру.
 steam-achievements-unlocked = Steam · открыто { $unlocked } / { $total }
 enter-password-for = Введите пароль для { $name }.
 progress-of = { $at } из { $of }
+
+steam-storage = Хранилище
+steam-storage-note = { $count ->
+    [one] { $count } библиотека
+    [few] { $count } библиотеки
+    [many] { $count } библиотек
+   *[other] { $count } библиотеки
+    }
+steam-library-games = { $count ->
+    [0] Нет игр
+    [one] { $count } игра
+    [few] { $count } игры
+    [many] { $count } игр
+   *[other] { $count } игр
+    }
+steam-library-summary = { $games } · { $room }
+steam-library-connect = Подключите диск, чтобы увидеть его игры.
+steam-repair-library = Исправить папку
+steam-repair-library-note = Если игры отсюда не устанавливаются или не запускаются
+steam-remove-library = Убрать диск
+steam-remove-library-note = Steam перестанет его использовать. На нём ничего не удаляется.
+steam-remove-library-has-games = Сначала переместите или удалите его игры
+steam-remove-library-default = Сюда устанавливаются новые игры
+steam-remove-library-ask = Больше не использовать этот диск для игр Steam? На нём ничего не удаляется.
+steam-add-drive = Добавить диск
+steam-add-drive-note = Хранить игры на другом диске
+steam-add-library-elsewhere = Выбрать папку
+steam-add-library-elsewhere-note = Пустая папка на любом диске
+steam-add-library-here = Хранить игры Steam в этой папке
+steam-game-busy = { $size } · занято Steam
+steam-move-progress = Показать ход
+steam-move-choose = Выберите, куда переместить. Нужно { $size }.
+steam-move-nowhere = Ни на одном другом диске не хватает места. Нужно { $size }.
+steam-move-no-other-library = Переместить больше некуда. Сначала добавьте диск.
+steam-moving-to = Перемещение: { $library }
+steam-moving-to-percent = Перемещение: { $library } · { $percent }%
+steam-moving-stopping = Остановка…
+steam-move-hide = Скрыть
+steam-move-stop = Остановить
+steam-moved-note = Новое место: { $library }.
+steam-move-failed = Перемещение не выполнено.
+steam-library-adding = Добавление в Steam…
+steam-library-removing = Удаление из Steam…
+steam-library-repairing = Исправление…
+steam-library-repaired = Исправление завершено.
+steam-library-not-added = Добавление не выполнено.
+steam-library-not-removed = Удаление не выполнено.
+steam-library-not-repaired = Исправление не выполнено.
+steam-could-not-be-reached = Не удаётся связаться со Steam. Попробуйте ещё раз через минуту.
+steam-refused-in-use-by = Сейчас используется: { $game }. Попробуйте ещё раз позже.
+steam-refused = { $why ->
+    [drive-root] Steam не может использовать корень диска. Выберите папку на этом диске.
+    [not-empty] В этой папке есть другие файлы. Выберите пустую.
+    [not-writable] Туда ничего нельзя сохранить.
+    [not-executable] С этого диска нельзя запускать игры.
+    [already] На этом диске уже есть библиотека Steam.
+    [not-listed] У Steam больше нет этой библиотеки.
+    [in-use] Steam сейчас его использует. Попробуйте ещё раз позже.
+    [folder-there] Там уже есть папка этой игры.
+    [shared] Эта игра использует общие файлы с другой игрой, поэтому её нельзя переместить.
+    [no-room] Там недостаточно места.
+    [running] Сначала закройте игру.
+    [unmovable] Steam не может переместить эту игру.
+    [another-move] Сейчас перемещается другая игра. Дождитесь окончания.
+   *[other] Steam не может это сделать. Попробуйте ещё раз позже.
+    }
 
 # Achievements.
 signed-in-as = Вход выполнен как { $name }
@@ -1714,6 +1803,48 @@ screen-share-request = { $application } хочет показать ваш эк�
 device-connected = { $name } подключено
 device-paired = { $name } сопряжено
 device-would-not-pair = { $name } не удалось сопрячь
+
+# Settings > Storage. A partition is named by what it is for (System, Home,
+# Startup), else by its own label, else storage-unnamed with its size. `whole`
+# and `size` are sizes already written out, like "237 GiB".
+storage-title = Хранилище
+storage-description = Сколько места осталось на каждом диске
+storage-startup = Загрузка
+storage-unnamed = Диск { $size }
+storage-not-in-use = Не используется · { $whole }
+storage-extra-memory = Используется как дополнительная память · { $whole }
+storage-cannot-check = Не удалось проверить свободное место · { $whole }
+storage-checking = Проверка дисков…
+storage-none = Диски не найдены
+storage-free = Свободно
+storage-used = Занято
+storage-capacity = Ёмкость
+storage-file-system = Файловая система
+storage-location = Расположение
+storage-drive = Диск
+
+# Монтирование дисков из «Файлов» и со страницы диска в Настройки > Хранилище.
+# `size` — уже записанный размер. Без глагольных форм прошедшего времени,
+# зависящих от рода; прилагательные согласуются со словом «диск».
+drive-not-mounted = Не смонтирован · { $size }
+drive-mounting = Монтирование…
+drive-unmounting = Размонтирование…
+shell-mount = Смонтировать
+shell-unmount = Размонтировать
+shell-safely-remove = Безопасно извлечь
+drive-mount-note = Сделать доступным в «Файлах»
+drive-unmount-note = Недоступен до следующего открытия
+drive-safely-remove-note = Размонтировать и выключить, чтобы его можно было отсоединить
+drive-at-startup = Монтировать при запуске
+drive-at-startup-on-note = Доступен сразу после запуска компьютера, для всех
+drive-at-startup-off-note = Монтируется только при открытии в «Файлах»
+drive-at-startup-failed = Не удалось изменить
+drive-information = Сведения о диске
+drive-can-unplug = Теперь его можно отсоединить.
+drive-mount-failed = Не удалось смонтировать этот диск.
+drive-unmount-failed = Не удалось размонтировать этот диск.
+drive-in-use = Этот диск ещё используется. Закройте то, что его использует, и повторите попытку.
+drive-not-allowed = У этой учётной записи нет на это прав.
 
 # Countries, by ISO 3166 code, as the keyboard-layout column names them.
 country-none = Без страны
@@ -1966,3 +2097,75 @@ country-yt = Майотта
 country-za = Южно-Африканская Республика
 country-zm = Замбия
 country-zw = Зимбабве
+
+# Epic Games, through Heroic Games Launcher: the optional lxb-heroic package.
+# `address` is Epic's own activation address, as the helper gives it.
+epic-looking = Поиск Heroic
+epic-press-to-finish-setting-up = Нажмите, чтобы завершить настройку
+epic-sign-in-to-play = Войдите, чтобы играть здесь в игры из своей библиотеки Epic Games
+epic-asking-for-a-code = Запрос кода у Epic
+epic-scan-with-your-phone = Отсканируйте это телефоном, чтобы войти.
+epic-or-enter-the-code = Или откройте { $address } на любом устройстве и введите этот код:
+epic-may-say-fortnite = На странице Epic может быть указано, что запрос от Fortnite. Так и должно быть.
+epic-sign-in-on-this-screen = Войти на этом экране
+epic-signing-in = Выполняется вход
+epic-close-heroic-first = Heroic открыт. Закройте его и попробуйте снова.
+epic-could-not-be-reached = Не удаётся связаться с Epic. Проверьте подключение и попробуйте снова.
+epic-code-ran-out = Срок действия кода истёк до его использования.
+epic-confirm-first = Epic просит сначала кое-что подтвердить. Отсканируйте это телефоном и попробуйте снова.
+epic-sign-in-did-not-work = Войти не удалось.
+epic-open-heroic = Открыть Heroic
+epic-getting-ready = Подготовка
+epic-downloading-heroic = Загрузка Heroic
+epic-downloading-proton = Загрузка того, что нужно играм для запуска
+epic-plays-through-ubisoft = Запускается через Ubisoft Connect
+epic-plays-through-ea = Запускается через приложение EA
+epic-plays-your-library = Epic Games запускает игры, которые есть у вас в Epic, с помощью Heroic Games Launcher.
+epic-install-explanation = Это бесплатно, и больше ничего на этом компьютере не меняется.
+epic-one-more-download = Играм нужна ещё одна загрузка, прежде чем они смогут запуститься.
+epic-sign-out-question = Выйти из Epic Games? Установленные игры останутся на этом компьютере.
+# Installing and uninstalling one game of the Epic Games column. `download`,
+# `disk` and `size` are sizes already written out.
+epic-download-and-disk = Загрузка: { $download }, после установки: { $disk }.
+epic-not-enough-space = Места недостаточно. Игре нужно { $size }.
+epic-no-space = Места недостаточно.
+epic-ubisoft-downloads-it = Ubisoft Connect загрузит игру при первом запуске и попросит войти в учётную запись.
+epic-ea-downloads-it = Приложение EA загрузит игру при первом запуске и попросит войти в учётную запись.
+epic-stopping-keeps-what-arrived = При остановке загруженное сохранится. Повторная установка продолжится с того же места.
+epic-heroic-is-busy = Heroic открыт или запущена игра из него. Закройте его и попробуйте снова.
+epic-waits-for-heroic = Начнётся, когда Heroic и его игры будут закрыты
+epic-update-waiting = Ждёт обновления
+epic-may-need-a-connection = Для игры может понадобиться подключение
+epic-no-connection = Нет подключения
+epic-it-may-need-a-connection = Для запуска может понадобиться подключение.
+epic-verify-and-repair = Проверить и исправить
+epic-asking-heroic = Запрос к Heroic…
+epic-heroics-default = По умолчанию в Heroic
+epic-heroics-default-is = По умолчанию в Heroic ({ $tool })
+epic-tool-not-changed = То, чем запускаются игры, не изменено.
+epic-checking-percent = Проверка файлов… { $percent }%
+epic-repairing = Исправление…
+epic-repairing-percent = Исправление… { $percent }%
+epic-files-checked = Все файлы проверены.
+epic-files-not-checked = Не удалось проверить файлы.
+epic-how-heroic-works-with-the-shell = Как Heroic работает с оболочкой
+epic-off-heroic-is-an-application-like-any-other = Выкл. — Heroic такое же приложение, как любое другое
+epic-heroic-is-an-application-like-any-other-with-its-own-icon = Heroic такое же приложение, как любое другое, со своим значком
+epic-heroic-is-started-in-the-background-as-the-session-comes-up = Heroic запускается в фоне, пока поднимается сеанс
+epic-heroic-is-started-when-the-first-game-is-pressed = Heroic запускается при нажатии первой игры
+epic-leave-heroic-running = Оставить Heroic запущенным
+epic-heroic-stays-up-after-a-game-so-the-next-one-starts-sooner = Heroic остаётся после игры, чтобы следующая запустилась быстрее
+epic-heroic-closes-with-the-game-and-the-memory-comes-back = Heroic закрывается вместе с игрой, и память возвращается
+epic-run-games-with = Запускать игры через
+epic-updating = Обновление…
+epic-updating-percent = Обновление… { $percent }%
+epic-updating-percent-of = Обновление… { $percent }% из { $size }
+# Settings > Games > Epic Games.
+epic-install-games-here = Устанавливать игры Epic в эту папку
+epic-folder-not-changed = Папка не изменена.
+epic-cloud-saves = Облачные сохранения
+epic-cloud-saves-on = Сохранения хранятся в Epic и доступны на любом компьютере, где вы играете
+epic-cloud-saves-off = Сохранения остаются на этом компьютере
+epic-cloud-saves-not-changed = Облачные сохранения не изменены.
+epic-achievement-summary = { $description } · { $xp } XP · { $state }
+epic-players-who-have-it = Игроки, у которых оно есть

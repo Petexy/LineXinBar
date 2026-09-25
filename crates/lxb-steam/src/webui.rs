@@ -466,6 +466,18 @@ pub enum Problem {
     /// way out — and what accepts is a later [`install`] that is handed the
     /// same list back, which only a person pressing Accept makes.
     Agreements(Vec<Eula>),
+    /// There is more than one library the game could go into, and the person
+    /// is to choose — see [`Place::Ask`]. Carries the libraries and how much
+    /// room the game needs, as the wizard counted them.
+    ///
+    /// Not a failure, on the terms [`Problem::Agreements`] is not one: the
+    /// wizard was cancelled on the way out, nothing has been fetched, and what
+    /// installs is a later [`install`] handed the place that was chosen.
+    WhereTo(Choice),
+    /// Steam would not do what was asked of a library, or would not move a
+    /// game into one, and said why in a word the shell can put into its own
+    /// — see [`Declined`].
+    Declined(Declined),
     /// The ground the flow was standing on moved before it acted, so it did
     /// not act. Carries the caller's own account of what moved.
     ///
@@ -499,11 +511,17 @@ impl std::fmt::Display for Problem {
                 "This game has {} agreement(s) to accept first.",
                 listed.len()
             ),
+            Problem::WhereTo(choice) => write!(
+                f,
+                "This game can go into any of {} Steam libraries.",
+                choice.libraries.len()
+            ),
             // Short, because it is drawn as one line of a panel. Which methods
             // went is a fact for the log, and it is already there.
             Problem::Renamed(_) => {
                 write!(f, "This version of Steam cannot be driven from here.")
             }
+            Problem::Declined(why) => write!(f, "Steam would not: {why}"),
             // The caller's sentence, on its own, for the same reason
             // `Stopped`'s is: it already says what moved, and anything put in
             // front of it would be this module guessing at somebody else's
@@ -2048,15 +2066,18 @@ pub fn build() -> Result<Build, Problem> {
 }
 
 /// Every method in Valve's client this crate reaches for.
-const EVERYTHING_THIS_CRATE_CALLS: [&str; 13] = [
+const EVERYTHING_THIS_CRATE_CALLS: [&str; 16] = [
     "Auth.SetLoginToken",
     "Settings.SetSetting",
     "Installs.RegisterForShowInstallWizard",
     "Installs.OpenInstallWizard",
     "Installs.SetCreateShortcuts",
+    "Installs.SetInstallFolder",
     "Installs.ContinueInstall",
     "Installs.CancelInstall",
     "Installs.OpenUninstallWizard",
+    "InstallFolder.GetInstallFolders",
+    "InstallFolder.SetDefaultInstallFolder",
     "Apps.GetAvailableCompatTools",
     "Apps.RegisterForAppDetails",
     "Apps.SpecifyCompatTool",
@@ -2184,10 +2205,30 @@ fn which_are_missing(wanted: &[&str]) -> Result<Vec<String>, Problem> {
 /// [`knows_the_game`], which is the wait that fixes it, and which cost 1.3
 /// seconds on the machine it was measured on.
 ///
-/// The install folder is deliberately not chosen: the client's default is the
-/// one the user set in the client, and a shell that overrode it would put games
-/// somewhere they did not ask for and did not expect.
-pub fn install(app_id: u32, accepting: &[Eula], still: Still<'_>) -> Result<(), Problem> {
+/// ## Which library it goes into
+///
+/// `place` — see [`Place`]. On a machine with one library there is nothing to
+/// choose and it is never looked at. With more, the wizard's own `ShowConfig`
+/// is where Valve's dialog would have shown its folder list, and it is where
+/// this either asks ([`Problem::WhereTo`], answered the way an agreement is:
+/// cancelled, asked on the shell's panel, opened again with the answer) or
+/// makes the call Valve's list makes, `Installs.SetInstallFolder`, for the
+/// library it was handed.
+///
+/// A named library that is not there any more, or has not the room, is asked
+/// about instead of fetched into. It was the person's choice, and it cannot be
+/// honoured; Steam's default in its place would be a different choice that
+/// nobody made.
+///
+/// A client that has lost the two calls a choice is made with installs where it
+/// always did — into its own default — rather than refusing the game: the
+/// question is a nicety over a download that works without it.
+pub fn install(
+    app_id: u32,
+    accepting: &[Eula],
+    place: &Place,
+    still: Still<'_>,
+) -> Result<(), Problem> {
     let (_turn, socket) = ready_to_drive_the_wizard(&INSTALLING_NEEDS, still)?;
     // `SetCreateShortcuts(false, false)` because the two it makes are a
     // desktop file and a start-menu entry on a machine that may have neither
@@ -2238,11 +2279,13 @@ pub fn install(app_id: u32, accepting: &[Eula], still: Still<'_>) -> Result<(), 
                  app, id: one.id, version: one.version, url: one.url \
                }})) }}); \
              }}; \
+             {placing} \
              watch = SteamClient.Installs.RegisterForShowInstallWizard(async where => {{ \
                switch (where.eInstallState) {{ \
                  case {config}: \
                    if (going) return; \
                    going = true; \
+                   if (!(await placed(where))) return; \
                    await SteamClient.Installs.SetCreateShortcuts(false, false); \
                    await SteamClient.Installs.ContinueInstall(); \
                    return; \
@@ -2269,6 +2312,7 @@ pub fn install(app_id: u32, accepting: &[Eula], still: Still<'_>) -> Result<(), 
          }})()",
         knows = knows_the_game(app_id),
         accepting = accepting_literal(accepting),
+        placing = placing(place),
         config = state::SHOW_CONFIG,
         complete = state::COMPLETE,
         failed_state = state::FAILED,
@@ -2326,6 +2370,713 @@ fn accepting_literal(accepting: &[Eula]) -> String {
             .collect(),
     )
     .to_string()
+}
+
+/// Which Steam library an [`install`] puts the game in.
+///
+/// Only ever a question on a machine with more than one: with a single library
+/// there is one answer, and neither variant changes anything.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Place {
+    /// Let the person choose. The wizard is cancelled before anything is
+    /// fetched and the libraries come back as [`Problem::WhereTo`].
+    Ask,
+    /// This library, by the path Steam files it under
+    /// ([`Library::path`]).
+    ///
+    /// `by_default` also makes it Steam's own default — the one its own install
+    /// dialog starts on — so that a game started from Steam's window lands
+    /// where one started from the shell does. That is what a standing choice
+    /// in the shell's settings passes; a choice made for one game on the panel
+    /// that asked is that game's answer and nothing more.
+    In { path: String, by_default: bool },
+}
+
+/// One library a game could be installed into, as the client lists it
+/// (`SteamClient.InstallFolder.GetInstallFolders`).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Library {
+    /// Where it is — the key a choice is made and remembered by, because the
+    /// client's own index for it moves when a library before it is removed.
+    pub path: String,
+    /// The name somebody gave it in Steam's storage settings, empty when
+    /// nobody did — which is most of them.
+    pub label: String,
+    /// Bytes free on the drive it is on, as the client counts them.
+    pub free: u64,
+    /// Whether it is Steam's own default, which is where its dialog starts.
+    pub default: bool,
+}
+
+impl Library {
+    /// Whether a game needing `needs` bytes fits, by the test Valve's dialog
+    /// makes before it lets its Install button be pressed. A size that is not
+    /// known fits everywhere, because refusing on a number nobody has would
+    /// be refusing on nothing.
+    pub fn fits(&self, needs: u64) -> bool {
+        needs == 0 || needs < self.free
+    }
+}
+
+/// What the wizard said when a game could go into more than one library.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Choice {
+    /// How many bytes the game takes, or 0 where the wizard did not say.
+    pub needs: u64,
+    /// Every library that is there today, in Steam's own order.
+    pub libraries: Vec<Library>,
+}
+
+/// JavaScript defining `placed(where)`, run at `ShowConfig`: `true` to go on
+/// with the install, `false` having already answered with the libraries.
+///
+/// Asked only where Valve's own dialog would have asked — more than one
+/// library that is there, and a game the wizard lets be moved — except that a
+/// library that was *named* and is not there is asked about even when only one
+/// is left, because that one is not what the person chose.
+fn placing(place: &Place) -> String {
+    let wanted = match place {
+        Place::Ask => "null".to_string(),
+        Place::In { path, by_default } => serde_json::json!({
+            "path": path,
+            "default": by_default,
+        })
+        .to_string(),
+    };
+    format!(
+        "const placed = async where => {{ \
+           const folders = SteamClient.InstallFolder; \
+           if (typeof folders?.GetInstallFolders !== 'function' \
+               || typeof SteamClient.Installs.SetInstallFolder !== 'function') return true; \
+           if (!where.bCanChangeInstallFolder) return true; \
+           let listed = []; \
+           try {{ listed = await folders.GetInstallFolders(); }} catch (ignored) {{ return true; }} \
+           const there = (Array.isArray(listed) ? listed : []).filter(one => \
+             one && one.bIsMounted && typeof one.strFolderPath === 'string' && one.strFolderPath); \
+           const wanted = {wanted}; \
+           const ask = needs => {{ \
+             SteamClient.Installs.CancelInstall(); \
+             finish({{ where: {{ needs, libraries: there.map(one => ({{ \
+               path: one.strFolderPath, label: one.strUserLabel || '', \
+               free: one.nFreeSpace, default: !!one.bIsDefaultFolder \
+             }})) }} }}); \
+             return false; \
+           }}; \
+           if (!wanted) return there.length > 1 ? ask(where.nDiskSpaceRequired) : true; \
+           const bare = path => String(path || '').replace(/\\/+$/, ''); \
+           const folder = there.find(one => bare(one.strFolderPath) === bare(wanted.path)); \
+           if (!folder) return there.length ? ask(where.nDiskSpaceRequired) : true; \
+           if (wanted.default && !folder.bIsDefaultFolder \
+               && typeof folders.SetDefaultInstallFolder === 'function') {{ \
+             try {{ await folders.SetDefaultInstallFolder(folder.nFolderIndex); }} catch (ignored) {{}} \
+           }} \
+           let now = where; \
+           if (where.iInstallFolder !== folder.nFolderIndex) {{ \
+             const moved = await SteamClient.Installs.SetInstallFolder(folder.nFolderIndex); \
+             if (moved && typeof moved === 'object') now = moved; \
+             if (now.iInstallFolder !== undefined && now.iInstallFolder !== folder.nFolderIndex) \
+               return ask(where.nDiskSpaceRequired); \
+           }} \
+           const needs = Number(now.nDiskSpaceRequired) || 0; \
+           const room = Number(now.nDiskSpaceAvailable) || Number(folder.nFreeSpace) || 0; \
+           if (needs > 0 && room > 0 && needs >= room) return ask(needs); \
+           return true; \
+         }}; "
+    )
+}
+
+/// Read the libraries the wizard brought back when it stopped to ask where.
+///
+/// `None` for a list this cannot use — fewer than one library, or one with no
+/// path — so the caller says the install failed rather than putting up a panel
+/// whose buttons lead nowhere.
+fn choice_said(said: &serde_json::Value) -> Option<Choice> {
+    let libraries = said
+        .get("libraries")?
+        .as_array()?
+        .iter()
+        .map(|one| {
+            Some(Library {
+                path: one
+                    .get("path")?
+                    .as_str()
+                    .filter(|path| !path.is_empty())?
+                    .to_string(),
+                label: one
+                    .get("label")
+                    .and_then(serde_json::Value::as_str)
+                    .unwrap_or_default()
+                    .trim()
+                    .to_string(),
+                free: bytes(one.get("free")),
+                default: one
+                    .get("default")
+                    .and_then(serde_json::Value::as_bool)
+                    .unwrap_or(false),
+            })
+        })
+        .collect::<Option<Vec<_>>>()?;
+    if libraries.is_empty() {
+        return None;
+    }
+    Some(Choice {
+        needs: bytes(said.get("needs")),
+        libraries,
+    })
+}
+
+/// A byte count as the client writes one: a number, or — for a value too wide
+/// for a JavaScript number to hold exactly — a string. Anything else is 0,
+/// which every reader of these takes as "not known".
+fn bytes(value: Option<&serde_json::Value>) -> u64 {
+    match value {
+        Some(serde_json::Value::Number(number)) => number
+            .as_u64()
+            .or_else(|| number.as_f64().filter(|n| *n > 0.0).map(|n| n as u64))
+            .unwrap_or(0),
+        Some(serde_json::Value::String(text)) => text.trim().parse().unwrap_or(0),
+        _ => 0,
+    }
+}
+
+/// Make this library Steam's own default: where its install dialog starts, and
+/// where a game started from its window goes.
+///
+/// The half of Settings > Games > Steam > Install games to that belongs to
+/// Steam rather than to this shell, told on the press — see
+/// [`crate::Steam::make_default_library`]. The call is the one Steam's own
+/// storage page makes behind its "Make default" row.
+///
+/// No wizard is driven, so none is waited for. A library the client does not
+/// list — it has been removed since the shell read the disk — is a refusal,
+/// said as one.
+pub fn make_default_library(path: &str, still: Still<'_>) -> Result<(), Problem> {
+    can_be_driven(&DEFAULT_LIBRARY_NEEDS)?;
+    let call = format!(
+        "(async () => {{ \
+           const bare = path => String(path || '').replace(/\\/+$/, ''); \
+           const listed = await SteamClient.InstallFolder.GetInstallFolders(); \
+           const folder = (Array.isArray(listed) ? listed : []) \
+             .find(one => one && bare(one.strFolderPath) === bare({path})); \
+           if (!folder) return JSON.stringify({{ result: 2, message: 'Steam does not list that library' }}); \
+           if (!folder.bIsDefaultFolder) \
+             await SteamClient.InstallFolder.SetDefaultInstallFolder(folder.nFolderIndex); \
+           return JSON.stringify({{ result: 1 }}); \
+         }})()",
+        path = json_string(path),
+    );
+    let socket = the_client_it_proved(still)?;
+    evaluate(&socket, &call).and_then(|answer| took_it(&answer))
+}
+
+/// What [`make_default_library`] reaches for.
+const DEFAULT_LIBRARY_NEEDS: [&str; 2] = [
+    "InstallFolder.GetInstallFolders",
+    "InstallFolder.SetDefaultInstallFolder",
+];
+
+/// Something done to one of Steam's libraries as a whole, as Valve's own
+/// storage page does it — Settings > Games > Steam > Storage is the shell's
+/// copy of that page. Each carries the library's path, written as Steam
+/// writes it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Shelving {
+    /// Make a new library here: Steam's **Add Drive**. For a drive, the path is
+    /// the folder inside it Steam's own list proposes — see
+    /// [`library_on_a_drive`] — because Steam refuses a drive's top folder.
+    Add(String),
+    /// Stop using this library: Steam's **Remove Library**. Nothing on the
+    /// drive is deleted; Steam forgets the folder.
+    Remove(String),
+    /// Put right what is wrong with the folder's permissions and its own
+    /// furniture: Steam's **Repair Folder**.
+    Repair(String),
+}
+
+impl Shelving {
+    /// The library it is about.
+    pub fn path(&self) -> &str {
+        match self {
+            Shelving::Add(path) | Shelving::Remove(path) | Shelving::Repair(path) => path,
+        }
+    }
+}
+
+impl std::fmt::Display for Shelving {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Shelving::Add(path) => write!(f, "add the library {path}"),
+            Shelving::Remove(path) => write!(f, "remove the library {path}"),
+            Shelving::Repair(path) => write!(f, "repair the library {path}"),
+        }
+    }
+}
+
+/// Why Steam would not do something to a library or move a game between them.
+///
+/// Valve's client refuses these with a word of its own — a key its storage page
+/// looks up in its catalogue, or an update error number — and the words are
+/// sorted here into the cases a person can do something about, so that the
+/// shell can say each in its own language and in plain terms. What Steam said
+/// word for word goes to the log with the refusal.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Declined {
+    /// A drive's own top folder: Steam keeps a library in a folder *on* a
+    /// drive, never in the drive itself. `NoDriveRoot`.
+    DriveRoot,
+    /// A folder that already has something in it that is not a library.
+    /// `NotEmptyFolder`.
+    NotEmpty,
+    /// A folder this user cannot write into. `NotWritableFolder`.
+    NotWritable,
+    /// A drive mounted so that nothing on it may be run, which no game can be
+    /// started from. `NotExecutableFolder`.
+    NotExecutable,
+    /// The drive has a library on it already. `DriveAlreadyHasLibrary`.
+    AlreadyALibrary,
+    /// Steam does not list that library, or no longer does.
+    NotListed,
+    /// Something is using the library, so it cannot be removed: the game Steam
+    /// named, where it named one.
+    InUse(Option<u32>),
+    /// Where the game would go already has a folder of its name. Update error
+    /// 15.
+    FolderThere,
+    /// The game shares its files with another. Update error 17.
+    Shared,
+    /// There is not enough room where it would go. Update error 12.
+    NoRoom,
+    /// The game is running. Update error 16.
+    Running,
+    /// Steam says this game cannot be moved at all. Update error 22.
+    Unmovable,
+    /// Another game is being moved, and the client moves one at a time.
+    AnotherMove,
+    /// Anything else, with Steam's own word for the log.
+    Other(String),
+}
+
+impl Declined {
+    /// Sort the word Steam's storage page refuses a library with.
+    fn from_word(word: &str) -> Declined {
+        match word.trim() {
+            "NoDriveRoot" => Declined::DriveRoot,
+            "NotEmptyFolder" => Declined::NotEmpty,
+            "NotWritableFolder" => Declined::NotWritable,
+            "NotExecutableFolder" => Declined::NotExecutable,
+            "DriveAlreadyHasLibrary" => Declined::AlreadyALibrary,
+            "NotListed" => Declined::NotListed,
+            other => Declined::Other(other.to_string()),
+        }
+    }
+
+    /// Sort the update error a move ended with. The numbers are Valve's own
+    /// `EAppUpdateError`, and the four with a sentence of their own are the four
+    /// its move dialog has one for, plus the two a person can act on.
+    fn from_update_error(code: i64) -> Declined {
+        match code {
+            12 => Declined::NoRoom,
+            15 => Declined::FolderThere,
+            16 => Declined::Running,
+            17 => Declined::Shared,
+            22 => Declined::Unmovable,
+            other => Declined::Other(format!("update error {other}")),
+        }
+    }
+}
+
+impl std::fmt::Display for Declined {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Declined::DriveRoot => write!(f, "Steam will not use the top folder of a drive"),
+            Declined::NotEmpty => write!(f, "that folder is not empty"),
+            Declined::NotWritable => write!(f, "that folder cannot be written to"),
+            Declined::NotExecutable => write!(f, "nothing on that drive may be run"),
+            Declined::AlreadyALibrary => write!(f, "that drive already has a library"),
+            Declined::NotListed => write!(f, "Steam does not list that library"),
+            Declined::InUse(Some(app_id)) => write!(f, "app {app_id} is using it"),
+            Declined::InUse(None) => write!(f, "Steam is using it"),
+            Declined::FolderThere => write!(f, "a folder of that name is already there"),
+            Declined::Shared => write!(f, "it shares content with another game"),
+            Declined::NoRoom => write!(f, "there is not enough room there"),
+            Declined::Running => write!(f, "the game is running"),
+            Declined::Unmovable => write!(f, "Steam cannot move it"),
+            Declined::AnotherMove => write!(f, "another game is being moved"),
+            Declined::Other(said) => write!(f, "{said}"),
+        }
+    }
+}
+
+/// Where Steam keeps a library it makes on a drive: a `SteamLibrary` folder at
+/// the top of it.
+///
+/// The folder Valve's own Add Drive list proposes for every drive it offers —
+/// `%s%c%s` beside `SteamLibrary` in `steamui.so` — and the reason the shell
+/// asks for exactly this rather than for the drive: Steam refuses a drive's
+/// top folder outright (`NoDriveRoot`).
+pub fn library_on_a_drive(mounted_at: &std::path::Path) -> String {
+    mounted_at
+        .join("SteamLibrary")
+        .to_string_lossy()
+        .into_owned()
+}
+
+/// What the library calls reach for.
+const ADDING_NEEDS: [&str; 1] = ["InstallFolder.AddInstallFolder"];
+const REMOVING_LIBRARY_NEEDS: [&str; 2] = [
+    "InstallFolder.GetInstallFolders",
+    "InstallFolder.RemoveInstallFolder",
+];
+const REPAIRING_NEEDS: [&str; 3] = [
+    "InstallFolder.GetInstallFolders",
+    "InstallFolder.RepairInstallFolder",
+    "InstallFolder.RegisterForRepairFolderFinished",
+];
+const MOVING_NEEDS: [&str; 3] = [
+    "InstallFolder.GetInstallFolders",
+    "InstallFolder.MoveInstallFolderForApp",
+    "InstallFolder.RegisterForMoveContentProgress",
+];
+const CANCELLING_A_MOVE_NEEDS: [&str; 1] = ["InstallFolder.CancelMove"];
+
+/// How long a repair is waited for. Valve's own dialog waits as long as it
+/// takes; this waits long enough for any library measured, and says so in the
+/// log rather than holding a panel up for ever.
+const UNTIL_A_REPAIR_IS_DONE: Duration = Duration::from_secs(180);
+
+/// JavaScript finding one library in the client's own list by its path, into
+/// `folder`, or answering that it is not there.
+fn the_library(path: &str) -> String {
+    format!(
+        "const bare = path => String(path || '').replace(/\\/+$/, ''); \
+         const listed = await SteamClient.InstallFolder.GetInstallFolders(); \
+         const folder = (Array.isArray(listed) ? listed : []) \
+           .find(one => one && bare(one.strFolderPath) === bare({path})); \
+         if (!folder) return JSON.stringify({{ result: 2, message: 'NotListed' }}); ",
+        path = json_string(path),
+    )
+}
+
+/// Do one thing to one library, the way Valve's storage page does it.
+///
+/// **Add** is the call behind its Add button: a folder Steam will keep games
+/// in from now on, made if it is not there. **Remove** is Remove Library, which
+/// forgets the folder and deletes nothing. **Repair** is Repair Folder, and it
+/// is waited for — the client says when it has finished, not when it began.
+///
+/// A refusal comes back as [`Problem::Declined`], sorted into something the
+/// shell can say in words; see [`Declined`].
+pub fn shelve(job: &Shelving, still: Still<'_>) -> Result<(), Problem> {
+    let (needs, call, patience): (&[&str], String, Duration) = match job {
+        Shelving::Add(path) => (
+            &ADDING_NEEDS,
+            format!(
+                "(async () => {{ \
+                   try {{ await SteamClient.InstallFolder.AddInstallFolder({path}); }} \
+                   catch (refused) {{ \
+                     return JSON.stringify({{ result: 2, message: String(refused?.message ?? refused ?? '') }}); \
+                   }} \
+                   return JSON.stringify({{ result: 1 }}); \
+                 }})()",
+                path = json_string(path),
+            ),
+            PATIENCE,
+        ),
+        // Valve's own page reads a refusal's message as the app that is using
+        // the library — a number above 7 — and as Steam itself otherwise.
+        Shelving::Remove(path) => (
+            &REMOVING_LIBRARY_NEEDS,
+            format!(
+                "(async () => {{ \
+                   {find} \
+                   try {{ await SteamClient.InstallFolder.RemoveInstallFolder(folder.nFolderIndex); }} \
+                   catch (refused) {{ \
+                     return JSON.stringify({{ result: 2, message: 'InUse', app: Number(refused?.message ?? 0) || 0 }}); \
+                   }} \
+                   return JSON.stringify({{ result: 1 }}); \
+                 }})()",
+                find = the_library(path),
+            ),
+            PATIENCE,
+        ),
+        // The registration is left in the page, like the downloads' one: it is
+        // the same page however many times this connects to it, and a second
+        // registration would count every finish twice.
+        Shelving::Repair(path) => (
+            &REPAIRING_NEEDS,
+            format!(
+                "(async () => {{ \
+                   {find} \
+                   if (!window.__lxb_repairs) {{ \
+                     window.__lxb_repairs = {{ finished: 0, hook: null }}; \
+                     window.__lxb_repairs.hook = SteamClient.InstallFolder.RegisterForRepairFolderFinished( \
+                       () => {{ window.__lxb_repairs.finished += 1; }}); \
+                   }} \
+                   const before = window.__lxb_repairs.finished; \
+                   try {{ await SteamClient.InstallFolder.RepairInstallFolder(folder.nFolderIndex); }} \
+                   catch (refused) {{ \
+                     return JSON.stringify({{ result: 2, message: String(refused?.message ?? refused ?? '') }}); \
+                   }} \
+                   const until = Date.now() + {patience}; \
+                   while (window.__lxb_repairs.finished === before && Date.now() < until) {{ \
+                     await new Promise(settle => setTimeout(settle, 250)); \
+                   }} \
+                   return JSON.stringify(window.__lxb_repairs.finished !== before \
+                     ? {{ result: 1 }} : {{ result: 2, message: 'the repair did not say it had finished' }}); \
+                 }})()",
+                find = the_library(path),
+                patience = UNTIL_A_REPAIR_IS_DONE.as_millis(),
+            ),
+            UNTIL_A_REPAIR_IS_DONE + PATIENCE,
+        ),
+    };
+    can_be_driven(needs)?;
+    let socket = the_client_it_proved(still)?;
+    shelved(&evaluate_within(&socket, &call, patience)?)
+}
+
+/// What one answer from [`shelve`] comes to.
+fn shelved(answer: &str) -> Result<(), Problem> {
+    let parsed: serde_json::Value =
+        serde_json::from_str(answer).map_err(|_| Problem::Refused(answer.to_string()))?;
+    match parsed.get("result").and_then(serde_json::Value::as_i64) {
+        Some(1) => Ok(()),
+        Some(_) => {
+            let word = parsed
+                .get("message")
+                .and_then(serde_json::Value::as_str)
+                .unwrap_or_default();
+            Err(Problem::Declined(match word {
+                "InUse" => Declined::InUse(
+                    parsed
+                        .get("app")
+                        .and_then(serde_json::Value::as_u64)
+                        .and_then(|app| u32::try_from(app).ok())
+                        // Seven and under is Steam's own numbering for itself,
+                        // not a game — Valve's page names "Steam" for those.
+                        .filter(|app| *app > 7),
+                ),
+                other => Declined::from_word(other),
+            }))
+        }
+        None => Err(Problem::Refused(answer.to_string())),
+    }
+}
+
+/// How far a move has got, as Valve's client last said.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Moving {
+    pub app_id: u32,
+    /// How far along, 0 to 100 — `flProgress`, which the client counts in
+    /// per cent, as its own dialog's bar is drawn from.
+    pub percent: f32,
+}
+
+/// How a move ended that did not fail.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Moved {
+    /// The game is in the library it was sent to.
+    Done,
+    /// Somebody stopped it, and it is where it was.
+    Cancelled,
+}
+
+/// How often a move is asked how it is going. The client says so as often as
+/// it likes; the bar only has to be as fresh as a person can see.
+const MOVE_LOOK_EVERY: Duration = Duration::from_millis(500);
+
+/// How long a move may go without a word before it is given up on. Long,
+/// because a large game's last file can take a while on a slow drive, and a
+/// move is never stopped by this — only no longer watched.
+const MOVE_SILENCE: Duration = Duration::from_secs(600);
+
+/// Move one game into another library, the way Valve's Move Content dialog
+/// does, telling `heard` how far it has got as it goes.
+///
+/// The call is `MoveInstallFolderForApp`; how it is going arrives through a
+/// registration, which is left in the page and read back on every look — the
+/// shape [`downloading`] has, for the same reason: the client offers no getter.
+/// A move ends when the client says so for this game: code 0 is done, 20 is
+/// still going, and anything else is a refusal. One that was cancelled through
+/// [`cancel_move`] ends as [`Moved::Cancelled`], whatever code it ends with.
+pub fn move_game(
+    app_id: u32,
+    to: &str,
+    still: Still<'_>,
+    mut heard: impl FnMut(Moving),
+) -> Result<Moved, Problem> {
+    can_be_driven(&MOVING_NEEDS)?;
+    // Valve's dialog offers only the libraries that do not already hold the
+    // game, and a move into the one it is in is answered the same way.
+    let start = format!(
+        "(async () => {{ \
+           {find} \
+           if ((folder.vecApps || []).some(one => one && Number(one.nAppID) === {app_id})) \
+             return JSON.stringify({{ result: 2, message: 'FolderThere' }}); \
+           if (!window.__lxb_moving) {{ \
+             window.__lxb_moving = {{ last: null, cancelled: false, hook: null }}; \
+             window.__lxb_moving.hook = SteamClient.InstallFolder.RegisterForMoveContentProgress( \
+               said => {{ window.__lxb_moving.last = said; }}); \
+           }} \
+           window.__lxb_moving.last = null; \
+           window.__lxb_moving.cancelled = false; \
+           try {{ await SteamClient.InstallFolder.MoveInstallFolderForApp({app_id}, folder.nFolderIndex); }} \
+           catch (refused) {{ \
+             const code = typeof refused === 'number' ? refused : Number(refused?.eError ?? refused?.message ?? -1); \
+             return JSON.stringify({{ result: 2, message: 'refused', code: Number.isFinite(code) ? code : -1 }}); \
+           }} \
+           return JSON.stringify({{ result: 1 }}); \
+         }})()",
+        find = the_library(to),
+    );
+    let socket = the_client_it_proved(still)?;
+    let answer = evaluate(&socket, &start)?;
+    move_began(&answer)?;
+
+    const LOOK: &str = "(async () => { \
+        const moving = window.__lxb_moving; \
+        if (!moving) return 'null'; \
+        const last = moving.last; \
+        return JSON.stringify({ \
+          cancelled: !!moving.cancelled, \
+          app: last ? Number(last.appid ?? 0) : 0, \
+          code: last ? Number(last.eError ?? -1) : -1, \
+          percent: last ? Number(last.flProgress ?? 0) : 0 }); \
+      })()";
+    let mut quiet_since = Instant::now();
+    let mut last_percent = -1.0_f32;
+    let mut misses = 0;
+    loop {
+        std::thread::sleep(MOVE_LOOK_EVERY);
+        let said = match evaluate(&socket, LOOK).and_then(|answer| move_heard(&answer)) {
+            Ok(said) => {
+                misses = 0;
+                said
+            }
+            // A look that did not land is tried again: the client may be busy
+            // writing a file. Ten in a row is a client that has gone.
+            Err(problem) => {
+                misses += 1;
+                if misses >= 10 {
+                    return Err(problem);
+                }
+                continue;
+            }
+        };
+        if let Some(ended) = said.ended(app_id) {
+            return ended;
+        }
+        if let Some(percent) = said.moving(app_id) {
+            if (percent - last_percent).abs() > f32::EPSILON {
+                last_percent = percent;
+                quiet_since = Instant::now();
+                heard(Moving { app_id, percent });
+            }
+        }
+        if quiet_since.elapsed() > MOVE_SILENCE {
+            return Err(Problem::Unreachable(
+                "the move stopped saying how it was going".to_string(),
+            ));
+        }
+    }
+}
+
+/// Whether the first call of a move was taken.
+fn move_began(answer: &str) -> Result<(), Problem> {
+    let parsed: serde_json::Value =
+        serde_json::from_str(answer).map_err(|_| Problem::Refused(answer.to_string()))?;
+    match parsed.get("result").and_then(serde_json::Value::as_i64) {
+        Some(1) => Ok(()),
+        Some(_) => Err(Problem::Declined(
+            match parsed.get("message").and_then(serde_json::Value::as_str) {
+                Some("refused") => Declined::from_update_error(
+                    parsed
+                        .get("code")
+                        .and_then(serde_json::Value::as_i64)
+                        .unwrap_or(-1),
+                ),
+                Some("FolderThere") => Declined::FolderThere,
+                Some(word) => Declined::from_word(word),
+                None => Declined::Other(answer.to_string()),
+            },
+        )),
+        None => Err(Problem::Refused(answer.to_string())),
+    }
+}
+
+/// One look at a move that is under way.
+#[derive(Debug, Clone, Copy, PartialEq)]
+struct MoveHeard {
+    cancelled: bool,
+    /// Which game the last word was about, or 0 before there has been one.
+    app: u32,
+    /// `eError` on that word: 0 done, 20 still going, anything else refused.
+    code: i64,
+    percent: f32,
+}
+
+impl MoveHeard {
+    /// How the move of this game ended, where the last word says it has.
+    fn ended(&self, app_id: u32) -> Option<Result<Moved, Problem>> {
+        if self.app != app_id || self.code == STILL_MOVING || self.code < 0 {
+            return None;
+        }
+        Some(match (self.code, self.cancelled) {
+            (0, _) => Ok(Moved::Done),
+            (_, true) => Ok(Moved::Cancelled),
+            (code, false) => Err(Problem::Declined(Declined::from_update_error(code))),
+        })
+    }
+
+    /// How far along it is, where the last word is about this game and says
+    /// it is still going.
+    fn moving(&self, app_id: u32) -> Option<f32> {
+        (self.app == app_id && self.code == STILL_MOVING).then(|| self.percent.clamp(0.0, 100.0))
+    }
+}
+
+/// `k_EAppUpdateErrorBusy`, which is what the client says of a move on every
+/// word but its last.
+const STILL_MOVING: i64 = 20;
+
+fn move_heard(answer: &str) -> Result<MoveHeard, Problem> {
+    if answer.trim() == "null" {
+        return Ok(MoveHeard {
+            cancelled: false,
+            app: 0,
+            code: -1,
+            percent: 0.0,
+        });
+    }
+    #[derive(serde::Deserialize)]
+    struct Said {
+        cancelled: bool,
+        app: u32,
+        code: i64,
+        percent: f32,
+    }
+    let said: Said =
+        serde_json::from_str(answer).map_err(|_| Problem::Refused(answer.to_string()))?;
+    Ok(MoveHeard {
+        cancelled: said.cancelled,
+        app: said.app,
+        code: said.code,
+        percent: said.percent,
+    })
+}
+
+/// Stop the move that is under way, as the Cancel button on Valve's own dialog
+/// does. The game stays where it was. What says it has stopped is the move's
+/// own watch — see [`move_game`] — which this marks as cancelled first.
+pub fn cancel_move(still: Still<'_>) -> Result<(), Problem> {
+    can_be_driven(&CANCELLING_A_MOVE_NEEDS)?;
+    let socket = the_client_it_proved(still)?;
+    let call = "(async () => { \
+        if (window.__lxb_moving) window.__lxb_moving.cancelled = true; \
+        await SteamClient.InstallFolder.CancelMove(); \
+        return JSON.stringify({ result: 1 }); \
+      })()";
+    evaluate(&socket, call).and_then(|answer| took_it(&answer))
 }
 
 /// Read the list the wizard brought back when it stopped on an agreement.
@@ -2844,6 +3595,18 @@ fn wizard_said(answer: &str) -> Result<(), Problem> {
             }
         });
     }
+    // More than one place the game could go, and the person is to say which.
+    // The expression only offers libraries that have a path, so a list this
+    // cannot read is an answer this cannot read, like any other.
+    if let Some(said) = parsed.get("where") {
+        return Err(match choice_said(said) {
+            Some(choice) => Problem::WhereTo(choice),
+            None => {
+                tracing::warn!(%said, "the client listed libraries this shell could not read");
+                Problem::Refused(answer.to_string())
+            }
+        });
+    }
     if parsed.get("ok").and_then(serde_json::Value::as_bool) == Some(true) {
         return Ok(());
     }
@@ -2985,6 +3748,141 @@ fn json_string(value: &str) -> String {
 mod tests {
     use super::*;
 
+    /// Steam keeps a library it makes on a drive in a `SteamLibrary` folder at
+    /// the top of it, because it refuses the top of the drive itself.
+    #[test]
+    fn a_drive_is_given_the_folder_steams_own_list_proposes() {
+        assert_eq!(
+            library_on_a_drive(std::path::Path::new("/run/media/kate/GamesHDD")),
+            "/run/media/kate/GamesHDD/SteamLibrary"
+        );
+    }
+
+    /// Each word Valve's storage page refuses a library with is sorted into a
+    /// reason the shell can say, and a word it does not know is kept for the
+    /// log rather than guessed at.
+    #[test]
+    fn a_library_refusal_is_sorted_by_steams_own_word() {
+        let refused = |message: &str| shelved(&format!(r#"{{"result":2,"message":"{message}"}}"#));
+        assert_eq!(shelved(r#"{"result":1}"#), Ok(()));
+        assert_eq!(
+            refused("NoDriveRoot"),
+            Err(Problem::Declined(Declined::DriveRoot))
+        );
+        assert_eq!(
+            refused("NotEmptyFolder"),
+            Err(Problem::Declined(Declined::NotEmpty))
+        );
+        assert_eq!(
+            refused("NotWritableFolder"),
+            Err(Problem::Declined(Declined::NotWritable))
+        );
+        assert_eq!(
+            refused("NotExecutableFolder"),
+            Err(Problem::Declined(Declined::NotExecutable))
+        );
+        assert_eq!(
+            refused("DriveAlreadyHasLibrary"),
+            Err(Problem::Declined(Declined::AlreadyALibrary))
+        );
+        assert_eq!(
+            refused("NotListed"),
+            Err(Problem::Declined(Declined::NotListed))
+        );
+        assert_eq!(
+            refused("FailedToAdd"),
+            Err(Problem::Declined(Declined::Other(
+                "FailedToAdd".to_string()
+            )))
+        );
+        // A library in use names the game using it — and Steam itself, which
+        // numbers itself seven and under, is nobody's game.
+        assert_eq!(
+            shelved(r#"{"result":2,"message":"InUse","app":440}"#),
+            Err(Problem::Declined(Declined::InUse(Some(440))))
+        );
+        assert_eq!(
+            shelved(r#"{"result":2,"message":"InUse","app":7}"#),
+            Err(Problem::Declined(Declined::InUse(None)))
+        );
+    }
+
+    /// A move is refused with Valve's update error number, as its own dialog
+    /// reads it, or with the shell's own word for a library that already holds
+    /// the game.
+    #[test]
+    fn a_move_refusal_is_sorted_by_its_update_error() {
+        let refused = |code: i64| {
+            move_began(&format!(
+                r#"{{"result":2,"message":"refused","code":{code}}}"#
+            ))
+        };
+        assert_eq!(move_began(r#"{"result":1}"#), Ok(()));
+        assert_eq!(refused(15), Err(Problem::Declined(Declined::FolderThere)));
+        assert_eq!(refused(17), Err(Problem::Declined(Declined::Shared)));
+        assert_eq!(refused(22), Err(Problem::Declined(Declined::Unmovable)));
+        assert_eq!(refused(12), Err(Problem::Declined(Declined::NoRoom)));
+        assert_eq!(refused(16), Err(Problem::Declined(Declined::Running)));
+        assert!(matches!(
+            refused(5),
+            Err(Problem::Declined(Declined::Other(_)))
+        ));
+        assert_eq!(
+            move_began(r#"{"result":2,"message":"FolderThere"}"#),
+            Err(Problem::Declined(Declined::FolderThere))
+        );
+        assert_eq!(
+            move_began(r#"{"result":2,"message":"NotListed"}"#),
+            Err(Problem::Declined(Declined::NotListed))
+        );
+    }
+
+    /// A move is going while the client says 20, done when it says 0 of the
+    /// game, and refused on anything else — or stopped, where Stop was pressed,
+    /// whatever it ends with. A word about another game is not this move's.
+    #[test]
+    fn a_move_is_read_off_the_last_word_about_its_game() {
+        let heard = |answer: &str| move_heard(answer).expect("a look");
+        let look = |app: u32, code: i64, percent: f32, cancelled: bool| {
+            heard(&format!(
+                r#"{{"cancelled":{cancelled},"app":{app},"code":{code},"percent":{percent}}}"#
+            ))
+        };
+
+        let nothing = heard("null");
+        assert_eq!(nothing.ended(440), None);
+        assert_eq!(nothing.moving(440), None);
+
+        let before = look(0, -1, 0.0, false);
+        assert_eq!(before.ended(440), None, "no word yet");
+
+        let going = look(440, 20, 42.5, false);
+        assert_eq!(going.ended(440), None);
+        assert_eq!(going.moving(440), Some(42.5));
+        assert_eq!(going.moving(730), None, "not that game's move");
+
+        assert_eq!(look(440, 0, 100.0, false).ended(440), Some(Ok(Moved::Done)));
+        assert_eq!(
+            look(440, 3, 42.0, true).ended(440),
+            Some(Ok(Moved::Cancelled))
+        );
+        assert_eq!(
+            look(440, 0, 100.0, true).ended(440),
+            Some(Ok(Moved::Done)),
+            "a move that finished before Stop arrived is done"
+        );
+        assert_eq!(
+            look(440, 17, 3.0, false).ended(440),
+            Some(Err(Problem::Declined(Declined::Shared)))
+        );
+        assert_eq!(look(730, 0, 100.0, false).ended(440), None);
+        assert_eq!(
+            look(440, 20, 250.0, false).moving(440),
+            Some(100.0),
+            "clamped"
+        );
+    }
+
     /// A client whose private interface has moved is refused before anything
     /// is driven, and says so in a sentence a panel can hold.
     ///
@@ -3116,6 +4014,89 @@ mod tests {
                 "{broken}"
             );
         }
+    }
+
+    /// A wizard that stopped to ask where comes back with the libraries, in
+    /// Steam's order, with sizes read whether the client wrote them as numbers
+    /// or as strings — and a list with a library nobody could name is an
+    /// answer that cannot be read, not a panel with a blank button on it.
+    #[test]
+    fn a_choice_of_libraries_comes_back_as_the_libraries() {
+        assert_eq!(
+            wizard_said(
+                r#"{"where":{"needs":12884901888,"libraries":[
+                    {"path":"/home/x/.local/share/Steam","label":"","free":85899345920,"default":true},
+                    {"path":"/mnt/GamesSSD/SteamLibrary","label":" Games ","free":"442381631488","default":false}
+                ]}}"#
+            ),
+            Err(Problem::WhereTo(Choice {
+                needs: 12_884_901_888,
+                libraries: vec![
+                    Library {
+                        path: "/home/x/.local/share/Steam".to_string(),
+                        label: String::new(),
+                        free: 85_899_345_920,
+                        default: true,
+                    },
+                    Library {
+                        path: "/mnt/GamesSSD/SteamLibrary".to_string(),
+                        label: "Games".to_string(),
+                        free: 442_381_631_488,
+                        default: false,
+                    },
+                ],
+            }))
+        );
+        // A size the wizard did not give is not known, rather than nothing.
+        let Err(Problem::WhereTo(choice)) =
+            wizard_said(r#"{"where":{"libraries":[{"path":"/a","free":10}]}}"#)
+        else {
+            panic!("a list of one library is still a list");
+        };
+        assert_eq!(choice.needs, 0);
+        assert!(choice.libraries[0].fits(0));
+
+        for unreadable in [
+            r#"{"where":{"needs":1,"libraries":[]}}"#,
+            r#"{"where":{"needs":1,"libraries":[{"path":"","free":1}]}}"#,
+            r#"{"where":{"needs":1}}"#,
+        ] {
+            assert!(
+                matches!(wizard_said(unreadable), Err(Problem::Refused(_))),
+                "{unreadable}"
+            );
+        }
+    }
+
+    /// A game fits where there is more room than it needs, by Valve's own test:
+    /// exactly as much room as it needs is not enough.
+    #[test]
+    fn a_library_fits_a_game_only_with_room_to_spare() {
+        let library = Library {
+            path: "/a".to_string(),
+            label: String::new(),
+            free: 100,
+            default: false,
+        };
+        assert!(library.fits(99));
+        assert!(!library.fits(100));
+        assert!(!library.fits(101));
+    }
+
+    /// The place is handed to the expression as data, whatever is in the path,
+    /// and asking hands it nothing at all.
+    #[test]
+    fn a_place_is_handed_over_as_data() {
+        let odd = r#"/mnt/it's "odd"/SteamLibrary"#;
+        let named = placing(&Place::In {
+            path: odd.to_string(),
+            by_default: true,
+        });
+        assert!(
+            named.contains(&serde_json::json!({ "path": odd, "default": true }).to_string()),
+            "{named}"
+        );
+        assert!(placing(&Place::Ask).contains("const wanted = null;"));
     }
 
     /// What an install records as accepted is exactly what was read, under the

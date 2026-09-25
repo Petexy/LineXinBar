@@ -39,11 +39,14 @@ mod bluetooth;
 mod catalogue;
 mod controller;
 mod crypt;
+mod destination;
 mod dialog;
+mod drives;
 mod files;
 mod friends;
 mod gpu;
 mod guide;
+mod heroic;
 mod i18n;
 mod icons;
 mod keyboard;
@@ -76,6 +79,8 @@ mod sound;
 mod steam;
 mod steam_hid;
 mod steam_stand_in;
+mod steam_storage;
+mod storage;
 mod sun;
 mod system;
 mod theme;
@@ -700,6 +705,20 @@ struct Cli {
     #[arg(long = "apply-language", hide = true, value_name = "LOCALE")]
     apply_language: Option<String>,
 
+    /// Add or remove the machine's mount-table line for the filesystem with
+    /// this UUID, and exit.
+    ///
+    /// The privileged half of Settings > Storage > a drive > Mount at
+    /// startup, started by polkit and by nothing else, on the terms
+    /// `--apply-language` is. See [`drives::at_startup_as_root`].
+    #[arg(
+        long = "mount-at-startup",
+        hide = true,
+        num_args = 2,
+        value_names = ["UUID", "ON|OFF"]
+    )]
+    mount_at_startup: Option<Vec<String>>,
+
     /// Perform actions at fixed times after start-up, as a comma-separated
     /// list of `seconds:action` (`--debug-actions 2:guide,3:right,4:launch`).
     /// Actions are `guide`, `keyboard`, `back`, `launch`, `submit`, `up`,
@@ -784,6 +803,14 @@ struct Cli {
     /// what this shows is the real integration reading a real disk.
     #[arg(long, hide = true)]
     retroarch_helper: Option<std::path::PathBuf>,
+
+    /// Use this program as the Epic Games integration instead of looking for
+    /// `lxb-heroic` on `PATH` — the development aid `--retroarch-helper` is,
+    /// and for its reason: the integration is a package, and what the shell
+    /// does with it installed cannot otherwise be looked at on a machine where
+    /// it has not been.
+    #[arg(long, hide = true)]
+    heroic_helper: Option<std::path::PathBuf>,
 
     /// Read the battery out of this directory instead of the kernel's own
     /// `/sys/class/power_supply`.
@@ -1023,6 +1050,12 @@ fn main() -> anyhow::Result<()> {
         return locale::apply_as_root(locale);
     }
 
+    // And this one, for the same reasons: one line of the machine's mount
+    // table, by a process polkit started as root for that and nothing else.
+    if let Some([uuid, on]) = cli.mount_at_startup.as_deref() {
+        return drives::at_startup_as_root(uuid, on);
+    }
+
     // Nor this one: an archive, unpacked where it stands, and out. Before
     // everything below for the reason above — no settings are read, no
     // catalogue is scanned, no compositor is looked for — and it does not even
@@ -1086,6 +1119,20 @@ fn main() -> anyhow::Result<()> {
         apps::offer_retroarch(
             &mut categories,
             Some(crate::i18n::text("shell-looking-for-retroarch").to_string()),
+            None,
+        );
+    }
+    // And the Epic Games integration's, on exactly those terms: a `PATH`
+    // lookup that decides whether there is a row at all, Heroic's own entry
+    // taken off before the shell's row arrives to stand in for it.
+    let heroic_helper = heroic::look_for_helper(cli.heroic_helper.clone());
+    // And only while it is on. Off, Heroic is an application like any other:
+    // its own entry stays on the bar and no row stands in for it.
+    if heroic_helper.is_some() && settings::epic_integration() {
+        apps::hide_heroic_client(&mut categories);
+        apps::offer_epic(
+            &mut categories,
+            Some(crate::i18n::text("epic-looking").to_string()),
             None,
         );
     }
@@ -1158,6 +1205,10 @@ fn main() -> anyhow::Result<()> {
     let retroarch = match retroarch_helper {
         Some(at) => retroarch::RetroArch::start(at.to_path_buf()),
         None => retroarch::RetroArch::absent(),
+    };
+    let heroic = match heroic_helper {
+        Some(at) if settings::epic_integration() => heroic::Heroic::start(at),
+        _ => heroic::Heroic::absent(),
     };
 
     // Whether the games on the bar are somebody's actual library, which is
@@ -1274,6 +1325,8 @@ fn main() -> anyhow::Result<()> {
         removal_plan: None,
         uninstalling: None,
         compat_menu: None,
+        epic_looked: None,
+        epic_compat_menu: None,
         ways_menu: None,
         remember_the_way: false,
         open_with: Vec::new(),
@@ -1308,6 +1361,9 @@ fn main() -> anyhow::Result<()> {
             None => power::Power::start(),
         },
         battery_seen: None,
+        storage: storage::Storage::start(),
+        drives: drives::Drives::start(),
+        drives_seen: 0,
         network_wanted: None,
         bt: bluetooth::Bt::start(),
         users: users::Users::start(),
@@ -1328,11 +1384,22 @@ fn main() -> anyhow::Result<()> {
         launch_questions_waiting: VecDeque::new(),
         said_a_download_finished: None,
         retroarch,
+        heroic,
+        heroic_panel: None,
+        heroic_installing_panel: false,
+        heroic_after_setup: false,
+        heroic_enter: false,
+        epic_asked: None,
+        epic_signing_here: false,
         retroachievements: retroachievements::RetroAchievements::default(),
         trophy_browser: trophies::Browser::default(),
         retroachievement_buttons: Vec::new(),
         updates: updates::Updates::default(),
         agreements: None,
+        destinations: None,
+        move_choice: None,
+        library_to_remove: None,
+        storage_panel: None,
         retroarch_setup: false,
         retroarch_offer: None,
         retroarch_play: None,
@@ -1521,9 +1588,16 @@ fn main() -> anyhow::Result<()> {
     while !shell.exit {
         event_queue.dispatch_pending(&mut shell)?;
         let running = shell.lattice.running_roms();
+        let through_heroic = shell.lattice.running_through_heroic();
         let failed = shell.lattice.reap_children();
         if running != shell.lattice.running_roms() {
             shell.retroachievements.refresh();
+        }
+        // An Epic game has ended — Heroic has written its playtime and gone —
+        // so the column is read off the disk again, and the row says how long
+        // it has now been played.
+        if through_heroic > shell.lattice.running_through_heroic() {
+            shell.heroic.reread();
         }
         shell.roms_that_would_not_start(failed);
 
@@ -1605,6 +1679,7 @@ fn main() -> anyhow::Result<()> {
         // whichever frame it is done.
         if shell.startup.ready {
             shell.sync_retroarch();
+            shell.sync_heroic();
             shell.sync_retroachievements();
             shell.sync_updates();
         }
@@ -2668,6 +2743,10 @@ struct Panel {
     /// full rate behind it, which is the one part of that feature that costs
     /// something and shows nothing. See [`Shell::sync_wallpaper`].
     drew_the_wallpaper: bool,
+    /// How long this display has been drawing its wallpaper behind an
+    /// application that covers it, which it should never do for long — see
+    /// [`Behind`].
+    wallpaper_behind: Behind,
     /// Likewise for the backdrop's blur, which ramps with the menu rather
     /// than with the start screen — over an application the start screen
     /// never flies, but the background still has to soften.
@@ -3483,9 +3562,23 @@ fn is_valves_client(app_id: &str) -> bool {
 /// Folded the way [`is_valves_client`] folds a name, and for the same reason:
 /// an X11 class is conventionally capitalised where a Wayland app id is not,
 /// and neither spelling is this shell's to insist on.
+/// Whether a window is umu's own progress window rather than the game it is
+/// starting: a zenity dialog called "ProtonFixes", 340 by 152, shown while
+/// umu applies its fixes to a game (measured with Heroic's, 2026-09-25).
+fn is_umus_own_window(window: &WindowCard) -> bool {
+    window.app_id.eq_ignore_ascii_case("zenity") && window.title.trim() == "ProtonFixes"
+}
+
 fn game_a_window_is_named_after(app_id: &str) -> Option<u32> {
     let name = app_id.trim().to_lowercase();
-    name.strip_prefix("steam_app_")?.parse().ok()
+    // Zero is not an app id, on the process route's argument (see
+    // `lxb_steam::process`): it is what every game umu starts outside Steam
+    // is called — Heroic's among them, measured on 2026-09-24 — and taking it
+    // for a Steam game would file somebody's Epic game as Steam's.
+    name.strip_prefix("steam_app_")?
+        .parse()
+        .ok()
+        .filter(|app_id| *app_id != 0)
 }
 
 /// A game whose loading screen ran out of patience, and everything the panel
@@ -3856,6 +3949,12 @@ struct Shell {
     /// was asked from and nowhere else — a menu the user has since closed, or
     /// moved on to another game in, is not one to write a list over.
     compat_menu: Option<u32>,
+    /// When the Epic Games package was last looked for — see
+    /// [`Shell::look_for_the_epic_package`].
+    epic_looked: Option<Instant>,
+    /// The Epic game whose Compatibility list is up and waiting for Heroic to
+    /// be asked what it can run games with — the twin of `compat_menu`.
+    epic_compat_menu: Option<String>,
     /// And which Steam title the open menu is waiting for a list of *ways to
     /// start* about. The twin of [`Shell::compat_menu`], held apart for the
     /// same reason the two lists are: a menu waiting for one of them is not
@@ -4071,6 +4170,16 @@ struct Shell {
     /// this shell is the change itself and never the fact that the wallpaper
     /// happens to be moving anyway.
     battery_seen: Option<power::Charge>,
+    /// The partitions on this machine and how full each is, and the worker that
+    /// keeps them true while Settings is open — see [`storage`].
+    storage: storage::Storage,
+    /// The drives that could be mounted, and the worker that mounts them — see
+    /// [`drives`]. Files lists the ones nothing has mounted, and Settings >
+    /// Storage offers each one's Mount, Unmount and Mount at startup.
+    drives: drives::Drives,
+    /// How many listings the drives worker had published when this shell last
+    /// looked. See [`drives::Drives::published`].
+    drives_seen: u64,
     /// What this machine is paired with, and the worker that keeps it true. The
     /// Bluetooth pages under Settings are drawn from it, and this is also the
     /// session's pairing agent — see [`bluetooth`].
@@ -4192,6 +4301,29 @@ struct Shell {
     /// whether there is anything in it is whether the `lxb-retroarch` package
     /// is installed. See [`retroarch`].
     retroarch: retroarch::RetroArch,
+    /// The optional Epic Games integration, through Heroic. Empty on a machine
+    /// without the `lxb-heroic` package. See [`heroic`].
+    heroic: heroic::Heroic,
+    /// The buttons of the Epic sign-in panel while it is the one on screen,
+    /// which is how a new line of the sign-in tells a panel to refresh from a
+    /// question to re-raise. See [`Shell::show_epic_panel`].
+    heroic_panel: Option<Vec<menu::Command>>,
+    /// Whether the panel over an Epic Games setup is up, so a line of progress
+    /// arriving after somebody put it away does not bring it back.
+    heroic_installing_panel: bool,
+    /// Set by a setup that has just worked: the next answer about the machine
+    /// goes straight on to what the setup was for — signing in.
+    heroic_after_setup: bool,
+    /// Set by a sign-in that has just worked: the library arriving takes the
+    /// display to its column, if the cursor is still on the row.
+    heroic_enter: bool,
+    /// The question about one Epic game that is on screen, if one is. See
+    /// [`Shell::ask_about_epic_game`].
+    epic_asked: Option<heroic::Asked>,
+    /// Set by "Sign in on this screen": Epic's page is open in a browser in
+    /// front of the bar, so a sign-in that goes through brings the bar back
+    /// over it. See [`Shell::sign_in_to_epic_here`].
+    epic_signing_here: bool,
     retroachievements: retroachievements::RetroAchievements,
     trophy_browser: trophies::Browser,
     retroachievement_buttons: Vec<menu::Command>,
@@ -4199,6 +4331,17 @@ struct Shell {
     /// The agreements a Steam game stopped on before it would install, while
     /// they are being read on the shell's own panel. See [`agreement`].
     agreements: Option<agreement::Agreements>,
+    /// The libraries a Steam game can go into, while the panel asking which
+    /// is up. See [`destination`].
+    destinations: Option<destination::Destinations>,
+    /// The libraries one game could be moved into, while the panel asking
+    /// which is up. See [`steam_storage::MoveChoice`].
+    move_choice: Option<steam_storage::MoveChoice>,
+    /// The library the Remove drive question is about, until it is answered.
+    library_to_remove: Option<String>,
+    /// Which of the Storage page's watching panels is up, where one is — see
+    /// [`steam_storage::Panel`].
+    storage_panel: Option<steam_storage::Panel>,
     /// Whether the folder now being read was *just chosen*, so the cores its
     /// games need are fetched when the reading is done.
     ///
@@ -4809,6 +4952,7 @@ impl Shell {
             // The first pass settles it either way, and a film that waited one
             // pass to start is a film nobody was looking at yet.
             drew_the_wallpaper: false,
+            wallpaper_behind: Behind::default(),
             blur_linear: 0.0,
             depth_linear: 0.0,
             arrival_linear: 0.0,
@@ -5119,6 +5263,11 @@ impl Shell {
         // a password the worker is waiting for reaches the screen on.
         self.sync_network();
         self.sync_power();
+        // And how much room is left on the drives, for the Storage page.
+        self.sync_storage();
+        // And which of them could be mounted, and what came of a press that
+        // mounted or unmounted one — a stick plugged in lands here too.
+        self.sync_drives();
         // And the same for what it is paired with, which is the same worker
         // shape and the same frame — plus the pairing question, which arrives
         // from BlueZ rather than from anything the shell pressed.
@@ -5145,9 +5294,10 @@ impl Shell {
         let stick_pointer = self.stick_pointer_on();
         // A display whose bar is behind a fullscreen application draws
         // nothing at all this frame: see `panel_is_visible`.
-        let visible: Vec<bool> = (0..self.panels.len())
-            .map(|index| self.panel_is_visible(index))
+        let seen: Vec<Option<Seen>> = (0..self.panels.len())
+            .map(|index| self.why_it_is_seen(index))
             .collect();
+        let visible: Vec<bool> = seen.iter().map(Option::is_some).collect();
         // And which of them a launch is covering, which is the other thing that
         // lifts a display's surface over an application and then draws the whole
         // of itself on it. Wanted only by the check at the bottom of the loop —
@@ -5693,9 +5843,14 @@ impl Shell {
 
         for (index, panel) in self.panels.iter_mut().enumerate() {
             let visible = visible[index];
+            // Read before the target is borrowed for drawing: whether the
+            // compositor's black is all the way down over this display, which
+            // outranks everything else about whether it draws.
+            let rested = panel.is_rested(now);
             let Some(target) = panel.target.as_mut() else {
                 panel.was_visible = visible;
                 panel.drew_the_wallpaper = false;
+                panel.wallpaper_behind.note(false, now);
                 continue;
             };
 
@@ -5790,7 +5945,7 @@ impl Shell {
                 || covers_settling
                 || cursor_moving[index]
                 || (pressing && index == focused_panel);
-            let draw_now = should_draw(visible, settling, panel.was_visible);
+            let draw_now = should_draw(rested, visible, settling, panel.was_visible);
             if visible != panel.was_visible {
                 // Worth a line: whether a display believes it is covered is
                 // the difference between an idle shell and one burning a
@@ -5799,6 +5954,7 @@ impl Shell {
                 tracing::debug!(
                     display = %panel.name,
                     visible,
+                    why = ?seen[index],
                     output = ?(panel.width, panel.height),
                     windows = ?panel
                         .windows
@@ -5863,6 +6019,7 @@ impl Shell {
                 // Left standing it would say this display still wanted frames
                 // for a picture it stopped putting on the screen passes ago.
                 panel.drew_the_wallpaper = false;
+                panel.wallpaper_behind.note(false, now);
                 continue;
             }
             drew = true;
@@ -6519,7 +6676,7 @@ impl Shell {
                 // on its own picture with nothing drawn over the display, so
                 // there is nothing for a label to be hidden by — and the bar's
                 // own fade below takes every one of them anyway.
-                if splash.game().is_none() {
+                if !splash.drawn_as_a_game() {
                     let (panel_rect, _) =
                         ui::launch_panel(splash.from, width as f32, height as f32, open);
                     scene.hide_text_behind(panel_rect);
@@ -6544,8 +6701,18 @@ impl Shell {
                         // name for a program, which is a picture; the field is
                         // here for the case where it is not.
                         glyph: named,
-                        game: splash.game().is_some(),
-                        logo: splash.game().and_then(|app_id| gpu.logo(app_id)),
+                        game: splash.drawn_as_a_game(),
+                        // Valve's logo by app id for a Steam game, and the
+                        // file the Epic helper fetched for an Epic one.
+                        logo: splash
+                            .game()
+                            .map(gpu::LogoOf::Steam)
+                            .or_else(|| {
+                                splash
+                                    .logo_file()
+                                    .map(|at| gpu::LogoOf::File(at.to_path_buf()))
+                            })
+                            .and_then(|of| gpu.logo(&of)),
                         doing: splash.doing(),
                         said: splash.said(),
                         // Only for the one wait somebody may leave, and drawn
@@ -6794,7 +6961,7 @@ impl Shell {
             let game_opening = self
                 .launching
                 .iter()
-                .find(|splash| splash.display == panel.id && splash.game().is_some())
+                .find(|splash| splash.display == panel.id && splash.drawn_as_a_game())
                 .is_some_and(|splash| splash.drawing(now) && !splash.uncovering(now));
 
             // What this display has behind each of its two surfaces, back to
@@ -6845,6 +7012,37 @@ impl Shell {
             } else {
                 None
             };
+
+            // **The check this loop keeps on its own visibility rule** — see
+            // [`Behind`]. The wallpaper, on either surface, on a display an
+            // application covers, with the surface under that application
+            // rather than lifted over it: nothing of that frame can be seen
+            // through an opaque window, and through a translucent one it is
+            // the start screen moving behind it.
+            let wallpaper_behind = (panel.drew_the_wallpaper || main_backdrop.is_some())
+                && bar_is_covered(panel.width, panel.height, &panel.windows)
+                && !panel
+                    .applied_surface_state
+                    .is_some_and(|state| matches!(state.0 .0, Layer::Overlay));
+            if panel.wallpaper_behind.note(wallpaper_behind, now) {
+                tracing::warn!(
+                    display = %panel.name,
+                    why = ?seen[index],
+                    visible,
+                    settling,
+                    board_only,
+                    home,
+                    mode = ?self.guide.mode(),
+                    splashing = splashing[index],
+                    output = ?(panel.width, panel.height),
+                    windows = ?panel
+                        .windows
+                        .iter()
+                        .map(|window| (window.width, window.height))
+                        .collect::<Vec<_>>(),
+                    "a covered display has gone on drawing its wallpaper behind the application"
+                );
+            }
 
             // The menu's own surface **first**, so that its contents are cached
             // against the parent's commit below and the two land on the screen
@@ -8347,6 +8545,7 @@ impl Shell {
             Action::PretendAMessage => self.pretend_a_message_arrived(),
             Action::PretendAnInvite => self.pretend_an_invitation_arrived(),
             Action::PretendAnAgreement => self.pretend_an_agreement(),
+            Action::PretendALibraryChoice => self.pretend_a_library_choice(),
             Action::VolumeUp => self.change_volume(1),
             Action::VolumeDown => self.change_volume(-1),
             Action::VolumeMute => self.mute_volume(),
@@ -8500,6 +8699,13 @@ impl Shell {
                 // step, because a column with no rows in it cannot be stepped
                 // into and what is in a folder is not known until it has been
                 // looked at. See [`model::Cursor::open_place`].
+                //
+                // Except a drive nothing has mounted, which has nothing to read
+                // yet: the press mounts it, and the shell steps into it once it
+                // is there. See [`Shell::open_the_unmounted_drive`].
+                if self.open_the_unmounted_drive() {
+                    return;
+                }
                 self.read_selected_place();
                 // A subcategory is opened rather than launched. Accept is the
                 // way *in* on the original bar as much as Right is, and a row
@@ -8588,6 +8794,11 @@ impl Shell {
                     if setting == settings::Setting::EmulatorArt {
                         self.fetch_all_art();
                     }
+                    // And Epic's saves sync, which is Heroic's setting and is
+                    // set by its helper; the row is marked when it answers.
+                    if let settings::Setting::EpicCloudSaves(on) = setting {
+                        self.heroic.set_cloud_saves(on);
+                    }
                     // And a Bluetooth row is BlueZ's, on exactly those terms
                     // again — including the last one, which matters more here
                     // than anywhere: connecting to a device is a conversation
@@ -8606,6 +8817,13 @@ impl Shell {
                     if let settings::Setting::User(value) = setting {
                         self.carry_out_user(value);
                     }
+                    // And a drive's own rows under Settings > Storage, which
+                    // are UDisks' to carry out on exactly the network's terms:
+                    // a mount can take a password and a disk spinning up, and
+                    // the row says what is happening until it has.
+                    if let settings::Setting::Drive(value) = setting {
+                        self.carry_out_drive(value);
+                    }
                     // And a Steam row, which is the shell's own to carry out
                     // for a reason none of the four above share: what is on the
                     // other end of it is *this process*. Turning the
@@ -8616,6 +8834,12 @@ impl Shell {
                     // below.
                     if let settings::Setting::Steam(value) = setting {
                         self.carry_out_steam(value);
+                    }
+                    // And an Epic Games row, on the same terms: the switch
+                    // stops or starts the half of the shell that drives
+                    // Heroic, and the rest are Heroic's to be told.
+                    if let settings::Setting::Epic(value) = setting {
+                        self.carry_out_epic(value);
                     }
                     // The night light is the one page in this tree whose
                     // *shape* depends on what was just chosen: asking it to
@@ -8728,6 +8952,12 @@ impl Shell {
                 // inside one — at the top level it walks the category row and
                 // opens nothing, so there is nothing to read for it there.
                 if action == Action::Right && before > 0 {
+                    // A drive nothing has mounted has no column to step into
+                    // until it is mounted, so Right asks for that exactly as
+                    // Accept does.
+                    if self.open_the_unmounted_drive() {
+                        return;
+                    }
                     self.read_selected_place();
                 }
                 let moved = match self.panels.get_mut(self.focused_panel) {
@@ -9355,6 +9585,12 @@ impl Shell {
         if self.selected_make().is_some() {
             return self.begin_rename();
         }
+        // A game on a library's page raises its menu — Move, Uninstall —
+        // rather than starting: a press on a settings page out of habit must
+        // never start a game, nor take one off.
+        if self.selected_stored().is_some() {
+            return self.toggle_context_menu();
+        }
         if self.selected_sweep().is_some() {
             // Out of the row's own tile, which is where every panel this bar
             // raises grows from — the same rectangle the context menu is
@@ -9363,6 +9599,26 @@ impl Shell {
                 return;
             };
             return self.ask_to_empty_the_trash(ui::launch_origin(width, height));
+        }
+        // The Epic Games row, and a game of its column that is not on this
+        // disk or is on its way on or off it — none of them starts a process.
+        // The row walks the setup; the game asks the question that fits.
+        match self.panels.get(self.focused_panel).and_then(|panel| {
+            panel.cursor.current_entry(&self.lattice).map(|entry| {
+                (
+                    entry.epic().is_some(),
+                    entry.epic_game().is_some_and(|game| {
+                        game.start.is_none()
+                            || self.heroic.doing(&game.app_name) != heroic::Doing::Nothing
+                            || self.heroic_does_not_know(&game.app_name)
+                            || self.heroic.offers_update(&game.app_name)
+                    }),
+                )
+            })
+        }) {
+            Some((true, _)) => return self.press_epic_row(),
+            Some((_, true)) => return self.press_epic_game(),
+            _ => {}
         }
         match self.panels.get(self.focused_panel).and_then(|panel| {
             panel.cursor.current_entry(&self.lattice).map(|entry| {
@@ -9502,6 +9758,21 @@ impl Shell {
         // opens out of, and what was already on the display, so the
         // application's own window can be told from them.
         let opening = self.selected_opening();
+        // Whether Heroic is what will start it, which changes how long the
+        // loading screen waits and what the launcher's own exit means — and
+        // the game's own logo, for a loading screen drawn the way a Steam
+        // game's is, on the game's own picture.
+        let epic = self
+            .selected_epic_game()
+            .map(|game| (game.app_name.clone(), game.logo.clone()));
+        let through_heroic = epic.as_ref().map(|(_, logo)| logo.clone());
+        // And whether a Heroic is running already, asked before the press
+        // starts one: it decides whether the process about to be started is
+        // Heroic itself or a courier to it.
+        // Left running after a game, Heroic is started detached, so the
+        // process started is a courier either way. See `heroic::launch_argv`.
+        let heroic_running = through_heroic.is_some()
+            && (heroic::is_running() || settings::epic_left_after_a_game());
         let Some(panel) = self.panels.get(self.focused_panel) else {
             return;
         };
@@ -9517,6 +9788,11 @@ impl Shell {
         let loading_screen = match started {
             Some(pid) => {
                 self.needs_redraw = true;
+                // An Epic game's achievements are asked for again once it
+                // has ended, for what it unlocked.
+                if let Some((app_name, _)) = &epic {
+                    self.heroic.started(app_name);
+                }
                 // Something is starting. Here rather than beside the splash,
                 // which is only built for a row the shell can name: the sound
                 // is about the process, and a launch nobody could put a title
@@ -9538,6 +9814,13 @@ impl Shell {
                                 foreground: &foreground,
                             },
                         );
+                        let splash = match through_heroic {
+                            Some(logo) => splash
+                                .through_heroic()
+                                .heroic_already_running(heroic_running)
+                                .on_its_own_picture(logo),
+                            None => splash,
+                        };
                         self.begin_launch(splash);
                         true
                     }
@@ -9699,6 +9982,9 @@ impl Shell {
             apps::Entry::File(file) => Some((file.name.clone(), Some(file.glyph.to_string()))),
             apps::Entry::Game(game) => Some((game.name.clone(), Some(icons::STEAM.to_string()))),
             apps::Entry::Rom(rom) => Some((rom.name.clone(), Some(retroarch::mark().to_string()))),
+            apps::Entry::EpicGame(game) => {
+                Some((game.name.clone(), Some(heroic::mark().to_string())))
+            }
             _ => None,
         }
     }
@@ -10977,6 +11263,7 @@ impl Shell {
         // from has gone must not write itself over this one. See
         // [`Shell::steam_said_what_runs_it`].
         self.compat_menu = None;
+        self.epic_compat_menu = None;
         self.ways_menu = None;
         let trophies = entries
             .iter()
@@ -11115,6 +11402,12 @@ impl Shell {
         if self.folder_row().is_some() {
             return self.directory_entry_menu();
         }
+        // And a drive in the list of disks is another: nothing on a disk's row
+        // is about a file, and the one thing to do to the disk itself is put
+        // it away. See [`Shell::drive_entry_menu`].
+        if let Some(volume) = self.selected_drive() {
+            return self.drive_entry_menu(&volume);
+        }
         // And one thing in the trash is another kind again, sharing not one row
         // with any of the above: it cannot be opened, renamed or carried, and
         // deleting it has already happened. See [`Shell::trashed_entry_menu`].
@@ -11138,12 +11431,28 @@ impl Shell {
         if self.selected_service().is_some() {
             return self.service_entry_menu();
         }
+        // A game on a library's page under Settings > Games > Steam > Storage
+        // is the same title as a row of the Steam column and not the same
+        // thing: what can be done to it there is where it is kept. See
+        // [`crate::steam_storage::stored_menu_rows`].
+        if self.selected_stored().is_some() {
+            return self.stored_entry_menu();
+        }
         // And the RetroArch row is a fifth, on the same argument: it stands for
         // a program the shell hides from its own category and a collection the
         // shell reads, so nothing that can be done to an installed application
         // is true of it.
         if self.selected_emulation().is_some() {
             return self.emulation_entry_menu();
+        }
+        // And the Epic Games row and its games, on the same argument: the row
+        // stands for an account and a program the shell hides, and a game of
+        // it is Heroic's to start rather than a package's.
+        if self.selected_epic().is_some() {
+            return self.epic_entry_menu();
+        }
+        if self.selected_epic_game().is_some() {
+            return self.epic_game_entry_menu();
         }
         // And one of somebody's own games is a sixth: a file on their disk that
         // nothing installed, which is neither an application nor a song. See
@@ -11296,6 +11605,17 @@ impl Shell {
     /// whatever was selected when it was raised, and the cursor cannot move
     /// while it is up.
     fn resolution_subject(&self) -> Option<resolution::Subject> {
+        // An Epic game. Every one of them runs under umu, whose windows all
+        // call themselves `steam_app_0`, so a name is no way to tell one from
+        // another: the answer is filed under the game and sent under that
+        // name on the way into its own launch — the ROM folder's arrangement,
+        // for the same reason.
+        if let Some(game) = self.selected_epic_game() {
+            return Some(resolution::Subject::Application {
+                key: format!("epic:{}", game.app_name),
+                names: vec![heroic::WINDOW_CLASS.to_string()],
+            });
+        }
         if let Some(game) = self.selected_game() {
             // Valve starts a title under a class of its own making, which is
             // the same string every time that game runs and is therefore both
@@ -12059,6 +12379,12 @@ impl Shell {
             // the column, carrying what has just been typed.
             apps::Searched::Folder => self.search_here(query),
             apps::Searched::Library => self.search_library(query),
+            apps::Searched::Epic => {
+                if self.heroic.set_search(query) {
+                    self.rebuild_heroic();
+                    self.needs_redraw = true;
+                }
+            }
             apps::Searched::Trophies => {
                 if self.trophy_browser.search != query {
                     self.trophy_browser.search = query.into();
@@ -15112,6 +15438,7 @@ impl Shell {
         // Not a compatibility list either — see the note in
         // [`Shell::toggle_context_menu`].
         self.compat_menu = None;
+        self.epic_compat_menu = None;
         self.ways_menu = None;
         if self
             .context_menu
@@ -15470,6 +15797,7 @@ impl Shell {
         // Not a compatibility list either — see the note in
         // [`Shell::toggle_context_menu`].
         self.compat_menu = None;
+        self.epic_compat_menu = None;
         self.ways_menu = None;
         if self.context_menu.open_selecting(
             anchor,
@@ -15786,6 +16114,7 @@ impl Shell {
         // Not a compatibility list either — see the note in
         // [`Shell::toggle_context_menu`].
         self.compat_menu = None;
+        self.epic_compat_menu = None;
         self.ways_menu = None;
         if self.context_menu.open_at(
             anchor,
@@ -16979,6 +17308,10 @@ impl Shell {
             menu::Command::ConfirmPurgeMarked => self.purge_the_marked(from),
             menu::Command::Delete => self.ask_to_delete(from),
             menu::Command::ConfirmDelete => self.delete_the_file(from),
+            // A drive's two. Neither asks first: nothing is lost by either,
+            // and the row says what is happening until it has.
+            menu::Command::Unmount(number) => self.put_the_drive_away(number, false),
+            menu::Command::SafelyRemove(number) => self.put_the_drive_away(number, true),
             // The trash's own four. Restore is the one row in this list with no
             // question in front of it, which is what it being the only act in
             // the shell that undoes a loss earns it — see
@@ -17011,6 +17344,70 @@ impl Shell {
             menu::Command::Resolution => self.offer_resolution(),
             menu::Command::UseResolution(size) => self.use_resolution(size),
             menu::Command::RetroArchOpen => self.open_retroarch(),
+            menu::Command::EpicOfferInstall => self.offer_to_set_up_epic(),
+            menu::Command::EpicInstall => self.set_up_epic(),
+            menu::Command::EpicSignIn => {
+                self.heroic.begin_sign_in();
+                self.show_epic_panel();
+            }
+            menu::Command::EpicCancel => {
+                self.heroic.cancel_sign_in();
+                self.show_epic_panel();
+            }
+            menu::Command::EpicSignInHere => self.sign_in_to_epic_here(),
+            menu::Command::EpicSignOut => self.offer_to_sign_out_of_epic(),
+            menu::Command::EpicSignOutNow => self.heroic.sign_out(),
+            menu::Command::EpicRefresh => self.heroic.refresh(),
+            menu::Command::EpicOpenHeroic => self.open_heroic(),
+            menu::Command::EpicPlay => self.start_selection(),
+            menu::Command::EpicOfferGet => {
+                self.ask_about_selected_epic_game(heroic::Question::Install)
+            }
+            menu::Command::EpicOfferStop => {
+                self.ask_about_selected_epic_game(heroic::Question::Stop)
+            }
+            menu::Command::EpicOfferRemove => {
+                self.ask_about_selected_epic_game(heroic::Question::Uninstall)
+            }
+            menu::Command::EpicGet => {
+                if let Some(asked) = self.epic_asked.take() {
+                    tracing::info!(app = %asked.app_name, "installing an Epic game");
+                    self.heroic.get(&asked.app_name);
+                    self.rebuild_heroic();
+                    self.needs_redraw = true;
+                }
+            }
+            menu::Command::EpicUpdate => {
+                if let Some(app_name) = self.selected_epic_game().map(|game| game.app_name.clone())
+                {
+                    tracing::info!(app = %app_name, "updating an Epic game");
+                    self.heroic.get(&app_name);
+                    self.rebuild_heroic();
+                    self.needs_redraw = true;
+                }
+            }
+            // Played as it is. Straight to the launch rather than through the
+            // press, which is what asked the question.
+            menu::Command::EpicPlayNow => {
+                self.epic_asked = None;
+                self.push_resolution_for_a_launch();
+                self.launch_the_selection(None);
+            }
+            menu::Command::EpicStop => {
+                if let Some(asked) = self.epic_asked.take() {
+                    self.heroic.stop(&asked.app_name);
+                    self.rebuild_heroic();
+                    self.needs_redraw = true;
+                }
+            }
+            menu::Command::EpicRemove => {
+                if let Some(asked) = self.epic_asked.take() {
+                    tracing::info!(app = %asked.app_name, "uninstalling an Epic game");
+                    self.heroic.remove(&asked.app_name);
+                    self.rebuild_heroic();
+                    self.needs_redraw = true;
+                }
+            }
             menu::Command::RetroArchArt => self.fetch_this_art(),
             menu::Command::RetroArchConsoleArt => self.fetch_console_art(),
             menu::Command::RetroArchCoreSettings => self.open_core_settings(),
@@ -17134,7 +17531,10 @@ impl Shell {
             // keys back and starts it folding — so all that is left is to stop
             // waiting on whatever it was for.
             menu::Command::Dismiss => {
+                self.epic_asked = None;
                 self.removal_plan = None;
+                self.move_choice = None;
+                self.library_to_remove = None;
                 self.deleting = None;
                 self.abandon_uninstall("cancelled");
                 // A question closed by anything other than one of its own rows
@@ -17211,6 +17611,46 @@ impl Shell {
                 self.context_menu.descend(title, entries);
             }
             menu::Command::SteamSortBy(sort) => self.sort_steam_library(sort),
+            menu::Command::EpicSort => {
+                let entries = library_sort_rows(
+                    self.heroic.sort(),
+                    self.heroic.orders(),
+                    menu::Command::EpicSortBy,
+                );
+                let title = Some(menu::Title::new(heroic::TITLE));
+                self.context_menu.descend(title, entries);
+            }
+            menu::Command::EpicSortBy(sort) => self.sort_epic_library(sort),
+            menu::Command::EpicCompatibility => {
+                if let Some(game) = self.selected_epic_game().cloned() {
+                    let rows = self.heroic.compatibility_rows(&game.app_name);
+                    if self
+                        .context_menu
+                        .descend(Some(menu::Title::new(game.name.clone())), rows)
+                    {
+                        self.epic_compat_menu = Some(game.app_name);
+                        self.needs_redraw = true;
+                    }
+                }
+            }
+            // Nothing asked and nothing put on the screen, as Steam's is: a
+            // setting on a game, read the next time it starts, taken back by
+            // the row above it.
+            menu::Command::EpicRunWith(tool) => {
+                if let Some(app_name) = self.selected_epic_game().map(|game| game.app_name.clone())
+                {
+                    self.heroic.use_tool(Some(&app_name), tool);
+                }
+            }
+            menu::Command::EpicVerify => {
+                if let Some(app_name) = self.selected_epic_game().map(|game| game.app_name.clone())
+                {
+                    tracing::info!(app = %app_name, "checking an Epic game's files");
+                    self.heroic.repair(&app_name);
+                    self.rebuild_heroic();
+                    self.needs_redraw = true;
+                }
+            }
             menu::Command::TrophiesSort => {
                 let entries = trophies_sort_rows(self.trophy_browser.sort);
                 self.context_menu.descend(
@@ -17246,6 +17686,16 @@ impl Shell {
                 self.steam_hand_over(app_id, lxb_steam::Doing::Install)
             }
             menu::Command::SteamAcceptAgreement(app_id) => self.accept_the_agreement(app_id),
+            menu::Command::SteamInstallInto { app_id, library } => {
+                self.install_into(app_id, library)
+            }
+            menu::Command::SteamMoveGame(app_id) => self.offer_to_move(app_id),
+            menu::Command::SteamMoveInto { app_id, library } => self.move_into(app_id, library),
+            menu::Command::SteamShowMove => self.show_the_move(),
+            menu::Command::SteamCancelMove => self.stop_the_move(),
+            // The panel is folding already; what it was watching goes on.
+            menu::Command::SteamStorageHide => {}
+            menu::Command::SteamRemoveLibraryNow => self.remove_library_now(),
             menu::Command::SteamUninstall(app_id) => self.offer_to_uninstall(app_id),
             menu::Command::SteamUninstallNow(app_id) => self.uninstall_steam_game(app_id),
             menu::Command::SteamStartClient(app_id) => {
@@ -18298,7 +18748,6 @@ impl Shell {
             return;
         }
         self.scan_the_bar_again();
-        self.decode_marks_that_arrived();
     }
 
     /// Find and decode the marks of applications that were installed after the
@@ -18454,6 +18903,9 @@ impl Shell {
         if self.retroarch.note().is_some() {
             apps::hide_retroarch_client(&mut categories);
         }
+        if self.heroic.note().is_some() {
+            apps::hide_heroic_client(&mut categories);
+        }
         // And the three applications this shell takes off its own bar, which a
         // scan has of course just found again. They are reached from the shelf
         // of files each is for — Graphics > Images, Multimedia > Video,
@@ -18511,6 +18963,7 @@ impl Shell {
         // library hung the way every other one is. A session without the
         // integration puts up nothing — see [`Self::rebuild_retroarch`].
         self.rebuild_retroarch();
+        self.rebuild_heroic();
         // And every cursor put back where it was standing, now that the bar is
         // the whole of what it is going to be. Nothing between here and the
         // footings above may be trusted to have left one where it was:
@@ -18554,6 +19007,13 @@ impl Shell {
         if let Some(watch) = self.catalogue.as_mut() {
             watch.rebuilt(Instant::now());
         }
+        // And the marks of whatever has arrived on the bar, whatever brought it
+        // there: an application installed a moment ago, or one an integration
+        // had been standing in for until it was switched off or its package
+        // taken away — Heroic's entry, or Steam's. Neither was on the bar when
+        // the atlas was built, and without this it is drawn with the generic
+        // mark for the rest of the session.
+        self.decode_marks_that_arrived();
         self.needs_redraw = true;
     }
 
@@ -18609,6 +19069,14 @@ impl Shell {
         self.steam_buttons.clear();
         self.retroachievements.cancel();
         self.retroachievement_buttons.clear();
+        // And an Epic sign-in, on the Steam one's argument: the panel was the
+        // whole of it, and the helper would go on polling for a phone nobody
+        // is holding.
+        self.heroic.cancel_sign_in();
+        self.heroic_panel = None;
+        self.heroic_installing_panel = false;
+        self.epic_asked = None;
+        self.epic_signing_here = false;
         self.osk.offer_shell_field(false);
         // A core offered and not answered is an offer given up on; a fetch
         // already running is not, and goes on behind the bar with the row
@@ -18647,14 +19115,24 @@ impl Shell {
     /// since left is dropped on the floor here rather than uploaded — it cost
     /// nothing to make the second time, because it is on the disk now.
     fn sync_thumbnails(&mut self) {
-        let (files, mut games) = self.rows_worth_having();
+        let (mut files, mut games) = self.rows_worth_having();
         // The game in the corner of the open menu is worth a picture wherever
         // its row happens to be — nobody has to be standing on it, and the
         // whole reason the card exists is that they are somewhere else. Its
         // cover joins the rows so that the card has something to draw while its
         // icon is on its way, and for good if Steam publishes no icon for it.
-        let arriving = self.guide.downloading().map(|coming| coming.app_id);
+        // An Epic game's cover is a file, like the one its row draws.
+        let arriving = self
+            .guide
+            .downloading()
+            .and_then(steam::Coming::steam_app_id);
         games.extend(arriving);
+        if let Some(steam::Whose::Epic {
+            cover: Some(cover), ..
+        }) = self.guide.downloading().map(|coming| &coming.whose)
+        {
+            files.insert(cover.clone());
+        }
         for path in &files {
             if self
                 .gpu
@@ -18706,6 +19184,20 @@ impl Shell {
         // them for every row somebody scrolls past would be the whole library
         // over the wire by teatime and a folder of photographs decoded end to
         // end on the way through it.
+        // An Epic game the cursor is standing on whose backdrop has not been
+        // fetched: asked for now, once a session, the way the Steam column
+        // asks for a hero only for the row actually chosen.
+        let heroes: Vec<String> = self
+            .panels
+            .iter()
+            .filter_map(|panel| panel.cursor.current_entry(&self.lattice))
+            .filter_map(Entry::epic_game)
+            .filter(|game| game.hero.is_none())
+            .map(|game| game.app_name.clone())
+            .collect();
+        for app_name in heroes {
+            self.heroic.want_hero(&app_name);
+        }
         let scenery: HashSet<art::Sight> = self
             .panels
             .iter()
@@ -18750,7 +19242,7 @@ impl Shell {
         // somewhere into an animation that has already begun, so the title
         // would appear as a name and then turn into artwork. It is a tenth of
         // what a hero costs and it is wanted in exactly the same places.
-        let logos: HashSet<u32> = scenery
+        let logos: HashSet<gpu::LogoOf> = scenery
             .iter()
             .filter_map(art::Sight::game)
             // The games being started as well, in case a row is somehow no
@@ -18758,15 +19250,34 @@ impl Shell {
             // minutes, and a logo dropped out of the atlas underneath it would
             // take the title off it.
             .chain(self.launching.iter().filter_map(launch::Launch::game))
+            .map(gpu::LogoOf::Steam)
+            // And an Epic game's, on the same two terms — the row a cursor is
+            // standing on, and a game being started — as the file the helper
+            // fetched it into.
+            .chain(
+                self.panels
+                    .iter()
+                    .filter_map(|panel| panel.cursor.current_entry(&self.lattice))
+                    .filter_map(Entry::epic_game)
+                    .filter_map(|game| game.logo.clone())
+                    .chain(
+                        self.launching
+                            .iter()
+                            .filter_map(|splash| splash.logo_file().map(Path::to_path_buf)),
+                    )
+                    .map(gpu::LogoOf::File),
+            )
             .collect();
-        for app_id in &logos {
-            if self
-                .gpu
-                .as_ref()
-                .is_some_and(|gpu| gpu.logo(*app_id).is_none())
-            {
-                self.art
-                    .want(*app_id, art::Piece::Logo, self.steam.pictures(*app_id));
+        for of in &logos {
+            if self.gpu.as_ref().is_none_or(|gpu| gpu.logo(of).is_some()) {
+                continue;
+            }
+            match of {
+                gpu::LogoOf::Steam(app_id) => {
+                    self.art
+                        .want(*app_id, art::Piece::Logo, self.steam.pictures(*app_id));
+                }
+                gpu::LogoOf::File(path) => self.thumbs.want(path, thumbs::Want::Logo),
             }
         }
 
@@ -18833,6 +19344,10 @@ impl Shell {
                     let of = art::Sight::Snapshot(path);
                     scenery.contains(&of) && gpu.put_scenery(&of, picture)
                 }
+                thumbs::Made::Logo(picture) => {
+                    let of = gpu::LogoOf::File(path);
+                    logos.contains(&of) && gpu.put_logo(of, picture)
+                }
                 // A picture of a row the cursor has since left.
                 _ => false,
             };
@@ -18852,8 +19367,10 @@ impl Shell {
                     let of = art::Sight::Game(*app_id);
                     scenery.contains(&of) && gpu.put_scenery(&of, picture)
                 }
-                art::Made::Logo { app_id, picture } if logos.contains(app_id) => {
-                    gpu.put_logo(*app_id, picture)
+                art::Made::Logo { app_id, picture }
+                    if logos.contains(&gpu::LogoOf::Steam(*app_id)) =>
+                {
+                    gpu.put_logo(gpu::LogoOf::Steam(*app_id), picture)
                 }
                 art::Made::Icon { path, picture }
                     if wanted.contains(path) && gpu.thumbnail(path).is_none() =>
@@ -19009,6 +19526,11 @@ impl Shell {
                     Entry::Rom(rom) => {
                         files.extend(rom.boxart.clone());
                     }
+                    // An Epic game's cover, on the same terms: a file the
+                    // helper fetched into the shell's cache.
+                    Entry::EpicGame(game) => {
+                        files.extend(game.cover.clone());
+                    }
                     _ => {
                         if let Some(file) = entry.media().filter(|file| file.kind.has_picture()) {
                             files.insert(file.path.clone());
@@ -19106,6 +19628,17 @@ impl Shell {
             return match self.thumbs.hopeless(rom.snap.as_deref()?, want) {
                 true => None,
                 false => Some(sight),
+            };
+        }
+        // And an Epic game, whose picture is its wide box art — the same key
+        // art a Steam title stands behind the display, fetched by the helper
+        // into the shell's cache and read like a photograph. A game whose
+        // backdrop has not come down yet keeps the wallpaper until it has.
+        if let Some(game) = entry.epic_game() {
+            let hero = game.hero.as_deref()?;
+            return match self.thumbs.hopeless(hero, thumbs::Want::Backdrop) {
+                true => None,
+                false => Some(art::Sight::Picture(hero.to_path_buf())),
             };
         }
         let path = picture_behind(entry)?;
@@ -19243,9 +19776,14 @@ impl Shell {
     /// Which build comes down is Valve's client's decision and not this
     /// shell's — the same decision Steam makes anywhere else, about this
     /// system and this account's licences.
+    ///
+    /// Into the library Settings > Games > Steam > Install games to names, or —
+    /// on "Ask every time", and wherever the one it names cannot take the game
+    /// — asked on the shell's own panel once Steam has said how big it is. See
+    /// [`Shell::offer_the_libraries`].
     fn install_steam_game(&mut self, app_id: u32) {
         tracing::info!(app_id, "asking Valve's client to fetch a game");
-        self.steam.install(app_id);
+        self.steam.install(app_id, steam::place_from_the_settings());
     }
 
     /// Take one game off the disk, having asked first.
@@ -19454,10 +19992,18 @@ impl Shell {
     /// download, and the press that removes it is the last chance anybody gets
     /// to have meant something else.
     fn offer_to_uninstall(&mut self, app_id: u32) {
-        let Some(game) = self.steam.game(app_id) else {
-            return;
+        // Out of the account's library where it is there, and otherwise out of
+        // the manifest on the disk: Settings > Games > Steam > Storage lists
+        // every game a library holds, Steam's own Proton and runtimes among
+        // them, and a press there on one the account does not list must still
+        // be asked about rather than do nothing.
+        let (name, note) = match self.steam.game(app_id) {
+            Some(game) => (game.name.clone(), game.note()),
+            None => match settings::steam_game_stored(app_id) {
+                Some((_, game)) => (game.name, steam::format_size(game.size)),
+                None => return,
+            },
         };
-        let (name, note) = (game.name.clone(), game.note());
         let from = self.dialog_origin();
         self.dialog.ask(
             from,
@@ -19641,16 +20187,32 @@ impl Shell {
         if let Some(room) = preflight.room_said() {
             lines.push(dialog::Line::Note(room));
         }
-        match preflight.already.as_deref() {
-            // Not a refusal — Steam queues downloads perfectly well — but it is
-            // the difference between a press that starts something now and one
-            // that starts something in an hour, and nothing said so.
-            Some(first) => lines.push(dialog::Line::Note(
+        // Not a refusal — Steam queues downloads perfectly well — but it is
+        // the difference between a press that starts something now and one
+        // that starts something in an hour, and nothing said so.
+        if let Some(first) = preflight.already.as_deref() {
+            lines.push(dialog::Line::Note(
                 crate::message!("steam-downloading-first", "name" => first),
+            ));
+        }
+        // And where it goes, where that is somebody's choice rather than
+        // Steam's: the library the settings name, or that the next panel asks.
+        // A machine with one library is told what it always was, and only
+        // where nothing else was said.
+        match (settings::steam_install_to(), preflight.libraries_present()) {
+            (Some(path), _) if preflight.has_library(&path) => {
+                lines.push(dialog::Line::Note(crate::message!(
+                    "steam-installs-into",
+                    "library" => destination::what_the_settings_call(&path)
+                )))
+            }
+            (Some(_), _) | (None, 2..) => lines.push(dialog::Line::Note(
+                crate::i18n::text("steam-you-choose-where-next").to_string(),
             )),
-            None => lines.push(dialog::Line::Note(
+            (None, _) if preflight.already.is_none() => lines.push(dialog::Line::Note(
                 crate::i18n::text("shell-steam-chooses-the-size-and-folder").to_string(),
             )),
+            (None, _) => {}
         }
         lines.push(dialog::Line::Rule);
 
@@ -21823,10 +22385,16 @@ impl Shell {
         }
         let mut trophy_games = std::collections::BTreeSet::new();
         let mut trophy_icons = Vec::new();
+        let mut epic_opened = Vec::new();
         for panel in &self.panels {
             for entry in panel.cursor.opened_rows(&self.lattice) {
                 if let apps::Entry::Trophy(row) = entry {
                     trophy_games.extend(row.game());
+                    // An Epic game's list opened is its icons asked for, as a
+                    // Steam game's is — see `Heroic::want_trophy_icons`.
+                    if let crate::trophies::Key::EpicGame(app_name) = &row.key {
+                        epic_opened.push(app_name.clone());
+                    }
                 }
             }
             for column in panel.cursor.columns(&self.lattice) {
@@ -21836,6 +22404,9 @@ impl Shell {
                     }
                 }
             }
+        }
+        for app_name in epic_opened {
+            self.heroic.want_trophy_icons(&app_name);
         }
         let trophies_changed = self.steam.watch_trophies(trophy_games, &trophy_icons);
         let mut changed = self.steam.sync();
@@ -21876,6 +22447,25 @@ impl Shell {
         }
         if changed.panel {
             self.show_steam_panel();
+        }
+        // Settings > Games > Steam > Storage: a game arriving or leaving, a
+        // move and a library all change what that page lists, so it is read
+        // again now rather than at its next look.
+        if !changed.installed.is_empty() && self.read_steam_storage() {
+            self.rebuild_settings();
+        }
+        if changed.moving {
+            self.note_the_move();
+            self.refresh_the_move();
+        }
+        for (app_id, to, how) in changed.moved {
+            if self.read_steam_storage() {
+                self.rebuild_settings();
+            }
+            self.a_move_ended(app_id, &to, how);
+        }
+        for (job, how) in changed.shelved {
+            self.a_library_changed(job, how);
         }
         // After the column and the panel, because a failure puts a modal up
         // and the bar it is drawn over should already be the new one.
@@ -21938,6 +22528,10 @@ impl Shell {
             .steam
             .downloading()
             .or_else(|| self.what_a_waiting_press_is_watching())
+            // Then an Epic game coming down, on the same card, because it is
+            // the same fact about the machine — and ahead of what follows,
+            // which is work over a game that already plays.
+            .or_else(|| self.heroic.downloading())
             // And last, work the client has in hand that neither of those
             // would say: a shader cache over a game that is on the disk and
             // plays, with nobody standing in front of a loading screen waiting
@@ -21950,11 +22544,14 @@ impl Shell {
         // before it will open a window — a shader cache, an update it has not
         // written down — and a game that was playable throughout has not
         // "finished downloading" when that ends. See [`steam::Coming`].
+        // An Epic download's finish is not this card's to notice — the helper
+        // says when one has landed, and [`Shell::epic_download_ended`]
+        // announces it — so what goes on from here is a Steam game or nothing.
         self.a_download_ended(
             coming
                 .as_ref()
                 .filter(|coming| coming.a_download)
-                .map(|coming| coming.app_id),
+                .and_then(steam::Coming::steam_app_id),
         );
         self.guide.set_downloading(coming);
         // Every one of the three that a row is built from, and `reach` is not
@@ -22066,6 +22663,757 @@ impl Shell {
                 self.needs_redraw = true;
             }
         }
+    }
+
+    // --- the Epic Games integration ---------------------------------------
+
+    /// Bring the Epic Games integration up to date with its helper.
+    fn sync_heroic(&mut self) {
+        self.look_for_the_epic_package();
+        let change = self.heroic.poll();
+        // Whether the machine can reach the internet, which decides what an
+        // Epic game's row says and whether its press asks about an update.
+        // Read off the corner's own pass — see [`network::Net::online`].
+        let went = self.heroic.set_online(self.net.online());
+        // The background Heroic, and a game of Heroic's ending — whatever
+        // started it. Whether Heroic's own window is open is the shell's to
+        // say: it is what makes a running Heroic somebody's rather than one
+        // with nothing to do. See `heroic::Heroic::keep`.
+        let heroics_window = self.panels.iter().any(|panel| {
+            panel.windows.iter().any(|window| {
+                let app_id = window.app_id.trim().to_lowercase();
+                heroic::WINDOW_NAMES.contains(&app_id.as_str())
+            })
+        });
+        if self.heroic.keep(heroics_window) {
+            tracing::info!("a game of Heroic's has ended");
+            self.heroic.game_ended();
+        }
+        if change.rows || went {
+            self.rebuild_heroic();
+            self.needs_redraw = true;
+        }
+        if change.panel {
+            if self.heroic.installing().is_some() && self.heroic_installing_panel {
+                self.show_installing_epic();
+            }
+            if self.heroic.signing().is_some() {
+                self.show_epic_panel();
+            }
+        }
+        if let Some((worked, reason)) = change.installed {
+            self.epic_setup_ended(worked, reason);
+        }
+        if let Some(ended) = change.fetched {
+            self.epic_download_ended(ended);
+        }
+        if let Some(ended) = change.removed {
+            self.epic_uninstall_ended(ended);
+        }
+        if change.settings {
+            self.rebuild_settings();
+            self.needs_redraw = true;
+        }
+        if change.trophies {
+            self.rebuild_trophies();
+        }
+        if let Some(Some(reason)) = change.saves {
+            let mut lines = vec![dialog::Line::Note(
+                crate::i18n::text("epic-cloud-saves-not-changed").to_string(),
+            )];
+            if let Some(why) = heroic::game_failed_sentence(reason) {
+                lines.push(dialog::Line::Note(why));
+            }
+            self.say_about_epic(lines);
+        }
+        // What Heroic can run games with has been heard: a Compatibility list
+        // still saying it is asking is filled in, if it is still up.
+        if change.tools {
+            if let Some(app_name) = self.epic_compat_menu.take() {
+                if self.context_menu.is_open() {
+                    let rows = self.heroic.compatibility_rows(&app_name);
+                    let title = self.heroic.title(&app_name).map(menu::Title::new);
+                    self.context_menu.replace(title, rows);
+                    self.needs_redraw = true;
+                }
+            }
+        }
+        if let Some(Some(reason)) = change.tool_set {
+            let mut lines = vec![dialog::Line::Note(
+                crate::i18n::text("epic-tool-not-changed").to_string(),
+            )];
+            if let Some(why) = heroic::game_failed_sentence(reason) {
+                lines.push(dialog::Line::Note(why));
+            }
+            self.say_about_epic(lines);
+        }
+        if let Some(Some(reason)) = change.chose {
+            let mut lines = vec![dialog::Line::Note(
+                crate::i18n::text("epic-folder-not-changed").to_string(),
+            )];
+            if let Some(why) = heroic::game_failed_sentence(reason) {
+                lines.push(dialog::Line::Note(why));
+            }
+            self.say_about_epic(lines);
+        }
+        // A size landing, or a download moving, is the question on screen
+        // having something new to say.
+        if change.sized.is_some() || change.rows {
+            self.refresh_epic_question();
+        }
+        if let Some(reason) = change.signed_out {
+            match reason {
+                Some(reason) => {
+                    tracing::warn!(?reason, "Heroic was not signed out");
+                    self.say_about_epic(vec![dialog::Line::Note(heroic::reason_sentence(reason))]);
+                }
+                None => tracing::info!("Heroic is signed out of Epic"),
+            }
+        }
+        if change.signed_in.is_some() {
+            // The panel has nothing left to say; the column arriving is the
+            // answer, and it is stepped into when it does.
+            self.show_epic_panel();
+            self.heroic_enter = true;
+            // Signed in on Epic's page in a browser on this screen: the bar
+            // comes back over it, the way the guide's Start screen brings it,
+            // so the column arriving is something somebody can see. The
+            // browser stays where it is, behind — it is theirs.
+            if std::mem::take(&mut self.epic_signing_here) {
+                self.guide.show_start_screen_over_app();
+                self.needs_redraw = true;
+            }
+        }
+        // A setup that has just worked goes on to what it was for, once the
+        // machine has been asked again what is here.
+        if change.rows && self.heroic_after_setup {
+            match self.heroic.press() {
+                heroic::Press::SignIn => {
+                    self.heroic_after_setup = false;
+                    self.heroic.begin_sign_in();
+                    self.show_epic_panel();
+                }
+                heroic::Press::Enter => self.heroic_after_setup = false,
+                _ => {}
+            }
+        }
+        // And the library arriving after a sign-in, while the cursor is still
+        // on the row that asked for it: the journey ends in the column, not
+        // on a row that says it is signed in.
+        if change.rows && self.heroic_enter && self.epic_column().is_some() {
+            self.heroic_enter = false;
+            if self.selected_epic().is_some() && self.step_to_epic_column() {
+                self.sounds.step();
+            }
+        }
+    }
+
+    /// Put the Epic Games row and column back on the bar from what the
+    /// integration knows.
+    ///
+    /// Every display is left on the game it was on, as the Steam column's are
+    /// — see [`Shell::shelve_games`]: a game that has just been installed
+    /// moves to the top half of the column, and so does the cursor watching it.
+    fn rebuild_heroic(&mut self) {
+        let note = self.heroic.note();
+        let arriving = self.heroic.arriving();
+        let shifted = apps::offer_epic(&mut self.lattice.categories, note, arriving);
+        self.absorb(shifted);
+        let standing: Vec<Option<String>> = match self.epic_column() {
+            Some(at) => self
+                .panels
+                .iter()
+                .map(|panel| panel.cursor.epic_game_in_column(&self.lattice, at))
+                .collect(),
+            None => Vec::new(),
+        };
+        // And one level further in, for a display standing in a letter of the
+        // index, as Steam's column keeps its own. See `shelve_games`.
+        let inside: Vec<Option<String>> = self
+            .panels
+            .iter()
+            .map(|panel| panel.cursor.epic_game_inside(&self.lattice))
+            .collect();
+        let rows = self.heroic.rows();
+        let shifted = apps::shelve_epic(&mut self.lattice.categories, rows);
+        self.absorb(shifted);
+        let Some(at) = self.epic_column() else {
+            return;
+        };
+        let lattice = &self.lattice;
+        for (panel, was) in self.panels.iter_mut().zip(standing) {
+            if let Some(app_name) = was {
+                panel.cursor.keep_on_epic_game(lattice, at, &app_name);
+            }
+        }
+        for (panel, was) in self.panels.iter_mut().zip(inside) {
+            if let Some(app_name) = was {
+                panel.cursor.keep_inside_on_epic_game(lattice, &app_name);
+            }
+        }
+        for panel in &mut self.panels {
+            panel.cursor.keep_in_bounds(&self.lattice);
+        }
+    }
+
+    /// What pressing the Epic Games row does — see [`heroic::Heroic::press`],
+    /// which is the whole of the decision.
+    fn press_epic_row(&mut self) {
+        match self.heroic.press() {
+            heroic::Press::Waiting => self.heroic.reprobe(),
+            heroic::Press::Install | heroic::Press::SetUp => self.offer_to_set_up_epic(),
+            heroic::Press::Cannot(why) => self.say_about_epic(vec![dialog::Line::Note(why)]),
+            heroic::Press::SignIn => {
+                self.heroic.begin_sign_in();
+                self.show_epic_panel();
+            }
+            heroic::Press::Enter => {
+                if self.step_to_epic_column() {
+                    self.sounds.step();
+                } else {
+                    // Signed in with no column yet: the library has not
+                    // arrived. The press asks for it again rather than doing
+                    // nothing visible, as the Steam row's does.
+                    self.heroic.refresh();
+                }
+            }
+        }
+    }
+
+    /// Ask whether to set Epic Games up: the whole of it where there is no
+    /// Heroic, and only what is left where there is one without a Proton.
+    ///
+    /// What is being downloaded is said as what it does — games can start —
+    /// rather than as Heroic, a flatpak and a Proton, which are this shell's
+    /// business. The log says which of them it fetched.
+    fn offer_to_set_up_epic(&mut self) {
+        let from = self.dialog_origin();
+        let lines = match self.heroic.press() {
+            heroic::Press::SetUp => vec![
+                dialog::Line::Heading(heroic::TITLE.to_string()),
+                dialog::Line::Note(crate::i18n::text("epic-one-more-download").to_string()),
+                dialog::Line::Rule,
+            ],
+            _ => vec![
+                dialog::Line::Note(crate::i18n::text("epic-plays-your-library").to_string()),
+                dialog::Line::Heading(crate::i18n::text("shell-download-it").to_string()),
+                dialog::Line::Note(crate::i18n::text("epic-install-explanation").to_string()),
+                dialog::Line::Rule,
+            ],
+        };
+        self.dialog.ask(
+            from,
+            Some(heroic::mark().to_string()),
+            lines,
+            vec![
+                menu::Entry::new(menu::Command::Dismiss, crate::i18n::text("shell-not-now")),
+                menu::Entry::new(
+                    menu::Command::EpicInstall,
+                    crate::i18n::text("shell-install"),
+                ),
+            ],
+            // On Not now, which is the answer drawn first: this one spends
+            // somebody's line and their disk.
+            0,
+        );
+    }
+
+    /// They said yes.
+    fn set_up_epic(&mut self) {
+        tracing::info!("setting Epic Games up");
+        self.heroic.install();
+        self.rebuild_heroic();
+        self.heroic_installing_panel = true;
+        self.show_installing_epic();
+    }
+
+    /// The panel over a setup: what it is doing and how far along, with
+    /// nothing to press — the disk and the network are busy behind it.
+    fn show_installing_epic(&mut self) {
+        let Some(installing) = self.heroic.installing() else {
+            return;
+        };
+        let note = heroic::installing_sentence(installing);
+        let bar = match installing.progress {
+            Some(done) => dialog::Line::Progress((done * 100.0).round().clamp(0.0, 100.0) as u8),
+            None => dialog::Line::Waiting,
+        };
+        let from = self.dialog_origin();
+        self.dialog.wait(
+            from,
+            Some(heroic::mark().to_string()),
+            vec![
+                dialog::Line::Heading(heroic::TITLE.to_string()),
+                dialog::Line::Note(note),
+                bar,
+            ],
+        );
+    }
+
+    /// The setup is over, one way or the other.
+    fn epic_setup_ended(&mut self, worked: bool, reason: Option<heroic::Reason>) {
+        self.heroic.installed();
+        self.rebuild_heroic();
+        let panel_up = std::mem::take(&mut self.heroic_installing_panel);
+        if !worked {
+            let mut lines = vec![dialog::Line::Note(
+                crate::i18n::text("shell-it-could-not-be-downloaded").to_string(),
+            )];
+            if let Some(why) = reason.and_then(heroic::setup_failed_sentence) {
+                lines.push(dialog::Line::Note(why));
+            }
+            self.say_about_epic(lines);
+            return;
+        }
+        tracing::info!("Epic Games is set up");
+        if panel_up && self.dialog.is_open() {
+            self.dialog.close();
+        }
+        // Straight on to signing in, once the machine has been asked again —
+        // see [`Self::sync_heroic`].
+        self.heroic_after_setup = true;
+    }
+
+    /// Put the sign-in panel up, bring it up to date, or take it away — the
+    /// Steam panel's rule: the same buttons are the same panel with new words
+    /// in it, and it is refreshed rather than raised again.
+    fn show_epic_panel(&mut self) {
+        let Some(panel) = self.heroic.panel() else {
+            if self.heroic_panel.take().is_some() && self.dialog.is_open() {
+                self.dialog.close();
+            }
+            self.needs_redraw = true;
+            return;
+        };
+        let buttons: Vec<menu::Command> = panel.buttons.iter().map(|entry| entry.command).collect();
+        let from = self.dialog_origin();
+        if self.dialog.is_open() && self.heroic_panel.as_ref() == Some(&buttons) {
+            self.dialog.say(panel.lines);
+        } else if panel.buttons.is_empty() {
+            self.dialog
+                .wait(from, Some(heroic::mark().to_string()), panel.lines);
+        } else {
+            self.dialog.ask(
+                from,
+                Some(heroic::mark().to_string()),
+                panel.lines,
+                panel.buttons,
+                0,
+            );
+        }
+        self.heroic_panel = Some(buttons);
+        self.sync_surface_state();
+        self.needs_redraw = true;
+    }
+
+    /// Open Epic's own page for the code on screen in the browser this machine
+    /// opens web addresses with, behind the ordinary loading screen.
+    ///
+    /// The fallback the user asked for beside the phone: Epic's page in a
+    /// window on the screen. It needs no web engine of the shell's own — the
+    /// page is the one the QR code carries, with the code filled in, so
+    /// signing in there *is* approving the code, and the helper waiting on it
+    /// goes on exactly as it does for a phone.
+    fn sign_in_to_epic_here(&mut self) {
+        let Some(page) = self.heroic.sign_in_page().map(str::to_string) else {
+            return;
+        };
+        let Some(opening) = media::opening(
+            Path::new(&page),
+            "x-scheme-handler/https",
+            &self.lattice.categories,
+            &self.lattice.aside,
+        ) else {
+            self.say_about_epic(vec![dialog::Line::Note(
+                crate::i18n::text("shell-not-working-on-this-machine").to_string(),
+            )]);
+            return;
+        };
+        tracing::info!(with = %opening.name, "opening Epic's own sign-in page on this screen");
+        self.epic_signing_here = true;
+        let (name, icon) = (opening.name.clone(), opening.icon.clone());
+        self.open_with_a_loading_screen(name, icon, |lattice| lattice.open_command(opening));
+    }
+
+    /// Ask before signing Heroic out, saying what stays.
+    fn offer_to_sign_out_of_epic(&mut self) {
+        let from = self.dialog_origin();
+        self.dialog.ask(
+            from,
+            Some(heroic::mark().to_string()),
+            vec![
+                dialog::Line::Heading(heroic::TITLE.to_string()),
+                dialog::Line::Note(crate::i18n::text("epic-sign-out-question").to_string()),
+                dialog::Line::Rule,
+            ],
+            vec![
+                menu::Entry::new(menu::Command::Dismiss, crate::i18n::text("shell-cancel")),
+                menu::Entry::new(
+                    menu::Command::EpicSignOutNow,
+                    crate::i18n::text("shell-sign-out"),
+                ),
+            ],
+            0,
+        );
+    }
+
+    /// Heroic's own window, which the shell otherwise keeps off the bar — for
+    /// what only it can do. Behind the ordinary loading screen.
+    fn open_heroic(&mut self) {
+        let Some(command) = self.heroic.open_command() else {
+            return;
+        };
+        let opening = media::Opening {
+            name: "Heroic".to_string(),
+            icon: Some(heroic::mark().to_string()),
+            command: retroarch::shell_command(&command),
+        };
+        tracing::info!(command = %opening.command, "opening Heroic's own window");
+        let (name, icon) = (opening.name.clone(), opening.icon.clone());
+        self.open_with_a_loading_screen(name, icon, |lattice| lattice.open_command(opening));
+    }
+
+    /// A panel about Epic Games with one way out.
+    fn say_about_epic(&mut self, lines: Vec<dialog::Line>) {
+        let from = self.dialog_origin();
+        let mut said = vec![dialog::Line::Heading(heroic::TITLE.to_string())];
+        said.extend(lines);
+        said.push(dialog::Line::Rule);
+        self.dialog.ask(
+            from,
+            Some(heroic::mark().to_string()),
+            said,
+            vec![menu::Entry::new(
+                menu::Command::Dismiss,
+                crate::i18n::text("shell-close"),
+            )],
+            0,
+        );
+    }
+
+    /// Take the focused display to the Epic Games column. `false` when there
+    /// is none, which is every session nobody has signed in on.
+    fn step_to_epic_column(&mut self) -> bool {
+        let Some(at) = self.epic_column() else {
+            return false;
+        };
+        let lattice = &self.lattice;
+        let Some(panel) = self.panels.get_mut(self.focused_panel) else {
+            return false;
+        };
+        panel.cursor.go_to_own_column(at, lattice);
+        self.needs_redraw = true;
+        true
+    }
+
+    /// Where the Epic Games column is, if it is on the bar.
+    fn epic_column(&self) -> Option<usize> {
+        self.lattice
+            .categories
+            .iter()
+            .position(|column| column.id == apps::epic_column())
+    }
+
+    /// The Epic Games row, where the bar is standing on it.
+    fn selected_epic(&self) -> Option<&apps::Emulation> {
+        self.panels
+            .get(self.focused_panel)?
+            .cursor
+            .current_entry(&self.lattice)?
+            .epic()
+    }
+
+    /// The Epic game the bar is standing on, if it is on one.
+    fn selected_epic_game(&self) -> Option<&apps::EpicGame> {
+        self.panels
+            .get(self.focused_panel)?
+            .cursor
+            .current_entry(&self.lattice)?
+            .epic_game()
+    }
+
+    /// The menu over the Epic Games row — see [`heroic::Heroic::row_menu`].
+    fn epic_entry_menu(&self) -> Option<([f32; 4], Option<String>, Vec<menu::Entry>)> {
+        let panel = self.panels.get(self.focused_panel)?;
+        let rows = self.heroic.row_menu();
+        if rows.is_empty() {
+            return None;
+        }
+        let anchor = ui::launch_origin(panel.width as f32, panel.height as f32);
+        Some((anchor, Some(heroic::TITLE.to_string()), rows))
+    }
+
+    /// A press on an Epic game that does not start it: the question that fits
+    /// what is happening to it.
+    fn press_epic_game(&mut self) {
+        let Some(game) = self.selected_epic_game() else {
+            return;
+        };
+        let (app_name, title, here) = (
+            game.app_name.clone(),
+            game.name.clone(),
+            game.start.is_some(),
+        );
+        let question = match self.heroic.doing(&app_name) {
+            heroic::Doing::Removing => {
+                let from = self.dialog_origin();
+                self.dialog.ask(
+                    from,
+                    Some(heroic::mark().to_string()),
+                    vec![
+                        dialog::Line::Heading(title),
+                        dialog::Line::Note(
+                            crate::i18n::text("shell-this-game-is-being-removed").to_string(),
+                        ),
+                        dialog::Line::Rule,
+                    ],
+                    vec![menu::Entry::new(menu::Command::Dismiss, "OK")],
+                    0,
+                );
+                self.needs_redraw = true;
+                return;
+            }
+            heroic::Doing::Waiting | heroic::Doing::Held | heroic::Doing::Fetching(_) => {
+                heroic::Question::Stop
+            }
+            heroic::Doing::Nothing if !here => heroic::Question::Install,
+            heroic::Doing::Nothing if self.heroic.offers_update(&app_name) => {
+                heroic::Question::Update
+            }
+            heroic::Doing::Nothing if self.heroic_does_not_know(&app_name) => {
+                return self.say_about_epic_game(
+                    title,
+                    vec![dialog::Line::Note(
+                        crate::i18n::text("epic-heroic-is-busy").to_string(),
+                    )],
+                );
+            }
+            heroic::Doing::Nothing => return,
+        };
+        self.ask_about_epic_game(app_name, question);
+    }
+
+    /// Whether a game was installed while a Heroic this shell started was
+    /// already running — which that Heroic does not know, and would answer a
+    /// Play of with its own offer to install it. See
+    /// [`heroic::Heroic::landed_at`].
+    fn heroic_does_not_know(&self, app_name: &str) -> bool {
+        match (
+            self.heroic.landed_at(app_name),
+            self.lattice.heroic_running_since(),
+        ) {
+            (Some(landed), Some(running)) => running < landed,
+            _ => false,
+        }
+    }
+
+    /// The question about the Epic game the menu was raised over.
+    fn ask_about_selected_epic_game(&mut self, question: heroic::Question) {
+        if let Some(app_name) = self.selected_epic_game().map(|game| game.app_name.clone()) {
+            self.ask_about_epic_game(app_name, question);
+        }
+    }
+
+    /// Put a question about one Epic game on screen: whether to install it,
+    /// stop it coming down, or uninstall it. Whichever it is, the first
+    /// button is the one stood on — Install for the first, because it is why
+    /// the panel is up, as Steam's is; the harmless answer for the other two.
+    fn ask_about_epic_game(&mut self, app_name: String, question: heroic::Question) {
+        if question == heroic::Question::Install {
+            self.heroic.measure(&app_name);
+        }
+        let Some(panel) = self.heroic.question(question, &app_name) else {
+            return;
+        };
+        let buttons: Vec<menu::Command> = panel.buttons.iter().map(|entry| entry.command).collect();
+        let from = self.dialog_origin();
+        self.dialog.ask(
+            from,
+            Some(heroic::mark().to_string()),
+            panel.lines,
+            panel.buttons,
+            0,
+        );
+        self.epic_asked = Some(heroic::Asked {
+            app_name,
+            question,
+            buttons,
+        });
+        self.needs_redraw = true;
+    }
+
+    /// Bring the question about an Epic game up to date: the size it was
+    /// waiting for, the percentage of the download it offers to stop — or
+    /// take it away, where it no longer applies.
+    fn refresh_epic_question(&mut self) {
+        let Some(asked) = self.epic_asked.as_ref() else {
+            return;
+        };
+        // Another panel has taken its place, or it was answered.
+        let ours = self.dialog.is_open()
+            && self
+                .dialog
+                .buttons
+                .entries()
+                .iter()
+                .map(|entry| entry.command)
+                .eq(asked.buttons.iter().copied());
+        if !ours {
+            self.epic_asked = None;
+            return;
+        }
+        let (app_name, question) = (asked.app_name.clone(), asked.question);
+        match self.heroic.question(question, &app_name) {
+            None => {
+                self.epic_asked = None;
+                self.dialog.close();
+            }
+            Some(panel) => {
+                let buttons: Vec<menu::Command> =
+                    panel.buttons.iter().map(|entry| entry.command).collect();
+                if Some(&buttons) == self.epic_asked.as_ref().map(|asked| &asked.buttons) {
+                    self.dialog.say(panel.lines);
+                } else {
+                    self.ask_about_epic_game(app_name, question);
+                }
+            }
+        }
+        self.needs_redraw = true;
+    }
+
+    /// A game's download has ended. Arriving is said the way a Steam game's
+    /// finish is — in the corner, without a sound, with its cover — and not
+    /// arriving is said on a panel where nothing else is up, or in the corner
+    /// where something is, rather than over it.
+    fn epic_download_ended(&mut self, ended: heroic::Ended) {
+        // A repair is its own ending: the files were checked, which is news
+        // somebody asked for rather than a game arriving — said as quietly.
+        if ended.repair {
+            if ended.worked {
+                let icon = self
+                    .heroic
+                    .cover_of(&ended.app_name)
+                    .map(str::to_string)
+                    .unwrap_or_else(|| heroic::mark().to_string());
+                self.notifications.announce(
+                    &ended.title,
+                    crate::i18n::text("epic-files-checked"),
+                    &icon,
+                );
+                self.load_notification_icons();
+                self.sync_notification_panel();
+                self.needs_redraw = true;
+                return;
+            }
+            let mut lines = vec![dialog::Line::Note(
+                crate::i18n::text("epic-files-not-checked").to_string(),
+            )];
+            if let Some(why) = ended.reason.and_then(heroic::game_failed_sentence) {
+                lines.push(dialog::Line::Note(why));
+            }
+            return self.say_about_epic_game(ended.title, lines);
+        }
+        if ended.worked {
+            let icon = self
+                .heroic
+                .cover_of(&ended.app_name)
+                .map(str::to_string)
+                .unwrap_or_else(|| heroic::mark().to_string());
+            self.notifications.announce(
+                &ended.title,
+                crate::i18n::text("shell-the-download-has-finished"),
+                &icon,
+            );
+            self.load_notification_icons();
+            self.sync_notification_panel();
+            self.needs_redraw = true;
+            return;
+        }
+        let mut lines = vec![dialog::Line::Note(
+            crate::i18n::text("shell-it-could-not-be-downloaded").to_string(),
+        )];
+        if let Some(why) = ended.reason.and_then(heroic::game_failed_sentence) {
+            lines.push(dialog::Line::Note(why));
+        }
+        self.say_about_epic_game(ended.title, lines);
+    }
+
+    /// An Epic game Heroic was asked to start never appeared: Heroic went
+    /// without opening a window, or the wait ran out. Said, because a loading
+    /// screen that simply goes is a press nobody answered — and with no
+    /// connection, the likeliest reason with it: the game, or what Heroic
+    /// starts it with, wanted the network. Why exactly is in Heroic's log.
+    fn say_epic_never_started_it(&mut self, title: String) {
+        let offline = self.heroic.offline();
+        tracing::warn!(%title, offline, "Heroic never opened the game it was asked for");
+        let mut lines = vec![dialog::Line::Note(
+            crate::i18n::text("shell-it-did-not-start").to_string(),
+        )];
+        if offline {
+            lines.push(dialog::Line::Note(
+                crate::i18n::text("epic-it-may-need-a-connection").to_string(),
+            ));
+        }
+        self.say_about_epic_game(title, lines);
+    }
+
+    /// An uninstall has ended. One that worked is the row changing; one that
+    /// did not is said.
+    fn epic_uninstall_ended(&mut self, ended: heroic::Ended) {
+        if ended.worked {
+            return;
+        }
+        let mut lines = vec![dialog::Line::Note(
+            crate::i18n::text("shell-it-could-not-be-removed").to_string(),
+        )];
+        if let Some(why) = ended.reason.and_then(heroic::game_failed_sentence) {
+            lines.push(dialog::Line::Note(why));
+        }
+        self.say_about_epic_game(ended.title, lines);
+    }
+
+    /// A panel about one Epic game with one way out — or, where another panel
+    /// is up, the same words in the corner rather than over it.
+    fn say_about_epic_game(&mut self, title: String, lines: Vec<dialog::Line>) {
+        if self.dialog.is_open() {
+            let said = lines
+                .iter()
+                .filter_map(|line| match line {
+                    dialog::Line::Note(note) => Some(note.as_str()),
+                    _ => None,
+                })
+                .collect::<Vec<_>>()
+                .join(" ");
+            self.notifications.announce(&title, &said, heroic::mark());
+            self.sounds.notified();
+            self.load_notification_icons();
+            self.sync_notification_panel();
+            self.needs_redraw = true;
+            return;
+        }
+        let from = self.dialog_origin();
+        let mut said = vec![dialog::Line::Heading(title)];
+        said.extend(lines);
+        said.push(dialog::Line::Rule);
+        self.dialog.ask(
+            from,
+            Some(heroic::mark().to_string()),
+            said,
+            vec![menu::Entry::new(
+                menu::Command::Dismiss,
+                crate::i18n::text("shell-close"),
+            )],
+            0,
+        );
+        self.needs_redraw = true;
+    }
+
+    /// The menu over one Epic game — see [`heroic::Heroic::game_menu`].
+    fn epic_game_entry_menu(&self) -> Option<([f32; 4], Option<String>, Vec<menu::Entry>)> {
+        let panel = self.panels.get(self.focused_panel)?;
+        let game = self.selected_epic_game()?;
+        let anchor = ui::launch_origin(panel.width as f32, panel.height as f32);
+        Some((anchor, Some(game.name.clone()), self.heroic.game_menu(game)))
     }
 
     // --- the RetroArch integration ------------------------------------------
@@ -22955,6 +24303,26 @@ impl Shell {
                 self.answer_choice(ChosenFeedback::Kept, Screen::Start);
             }
             settings::Picking::Firmware => self.take_the_firmware(&pick.at),
+            // A folder somebody chose for Steam's games: out of the picker,
+            // back to the Add drive page it was opened from, and Steam asked to
+            // make a library there — see [`Shell::shelve`].
+            settings::Picking::SteamLibrary => {
+                tracing::info!(at = %pick.at.display(), "Steam is to keep games in there");
+                self.leave_the_picker();
+                self.shelve(lxb_steam::webui::Shelving::Add(
+                    pick.at.to_string_lossy().into_owned(),
+                ));
+            }
+            // Where Epic games go: Heroic's own setting, written by the helper,
+            // with Heroic's sandbox told it may write there. The row says the
+            // new folder when the helper has answered — see
+            // [`Shell::sync_heroic`].
+            settings::Picking::EpicFolder => {
+                tracing::info!(at = %pick.at.display(), "Epic games are to go in there");
+                self.leave_the_picker();
+                self.heroic.choose_folder(&pick.at);
+                self.answer_choice(ChosenFeedback::Kept, Screen::Start);
+            }
         }
     }
 
@@ -23590,7 +24958,10 @@ impl Shell {
             .map(|p| p.cursor.trophy_selection(&self.lattice))
             .collect();
         let mut games = self.steam.trophy_games();
-        let steam_games = !games.is_empty();
+        // Epic's beside Steam's, as games somebody has something to show for.
+        let epic = self.heroic.trophy_rows();
+        let steam_games = !games.is_empty() || !epic.is_empty();
+        games.extend(epic);
         let available = retroarch::offered() && self.retroarch.command().is_some();
         if available {
             games.extend(self.retroachievements.rows());
@@ -23748,6 +25119,33 @@ impl Shell {
         self.needs_redraw = true;
     }
 
+    /// List the Epic Games column in a different order — written down, and
+    /// the cursor put at the head of the list on the display that asked, as
+    /// [`Self::sort_steam_library`] does for Steam's.
+    fn sort_epic_library(&mut self, sort: lxb_steam::library::Sort) {
+        if !self.heroic.set_sort(sort) {
+            return;
+        }
+        tracing::info!(
+            order = sort.key(),
+            "listing the Epic Games library differently"
+        );
+        settings::remember_epic_sort(sort);
+        self.rebuild_heroic();
+        let Some(at) = self.epic_column() else {
+            return;
+        };
+        let lattice = &self.lattice;
+        if let Some(panel) = self
+            .panels
+            .get_mut(self.focused_panel)
+            .filter(|panel| panel.cursor.selected_category == at && panel.cursor.depth() == 0)
+        {
+            panel.cursor.rest_on_first_row(lattice);
+        }
+        self.needs_redraw = true;
+    }
+
     /// Where the Steam library hangs on the bar, when there is one.
     fn steam_column(&self) -> Option<usize> {
         self.lattice
@@ -23787,6 +25185,21 @@ impl Shell {
                     "this game has agreements to accept first"
                 );
                 self.offer_the_agreements(app_id, agreements);
+                return;
+            }
+            // Nothing went wrong either: the game can go into more than one
+            // library, and which is the person's to say — asked here, with the
+            // size Steam gave and the room each library has.
+            steam::Ended::Failed {
+                app_id,
+                why: lxb_steam::Stopped::WhereTo(choice),
+            } => {
+                tracing::info!(
+                    app_id,
+                    libraries = choice.libraries.len(),
+                    "this game is to go into a library somebody chooses"
+                );
+                self.offer_the_libraries(app_id, choice);
                 return;
             }
             // Nothing went wrong: the game wants something answered that only
@@ -23901,6 +25314,7 @@ impl Shell {
             .steam
             .game(app_id)
             .map(|game| game.name.clone())
+            .or_else(|| settings::steam_game_stored(app_id).map(|(_, game)| game.name))
             .unwrap_or_else(|| crate::message!("steam-app-number", "app" => app_id));
         let from = self.dialog_origin();
         let mut said = vec![dialog::Line::Heading(name)];
@@ -25871,10 +27285,30 @@ impl Shell {
             .map(|splash| {
                 let at = self.panel_at(splash.display)?;
                 let panel = self.panels.get(at)?;
+                // A game Heroic starts goes through umu, which puts up a small
+                // progress window of its own first — "ProtonFixes" — for a
+                // second or so. It is not the game, and a loading screen that
+                // handed over to it dipped to black and came back again before
+                // the game's own window arrived (measured on 2026-09-25: at
+                // 6.6 s, gone at 7.3 s, the game at 9.1 s). So for that launch
+                // it is not a window at all.
+                let counts = |window: &WindowCard| {
+                    !(splash.is_through_heroic() && is_umus_own_window(window))
+                };
+                let foreground = panel.foreground.clone().unwrap_or_default();
+                let umus = panel
+                    .windows
+                    .iter()
+                    .any(|window| !counts(window) && window.title == foreground);
                 Some(WhereItIsLoading {
                     at,
-                    windows: panel.windows.iter().map(|window| window.id).collect(),
-                    foreground: panel.foreground.clone().unwrap_or_default(),
+                    windows: panel
+                        .windows
+                        .iter()
+                        .filter(|window| counts(window))
+                        .map(|window| window.id)
+                        .collect(),
+                    foreground: if umus { String::new() } else { foreground },
                     alive: splash.pid.is_none_or(|pid| self.lattice.launch_alive(pid)),
                 })
             })
@@ -25898,6 +27332,7 @@ impl Shell {
         // And the ones that ended with nothing to show for themselves, which is
         // the only kind the user has to be told about.
         let mut never_appeared: Vec<GaveUp> = Vec::new();
+        let mut epic_never_started: Vec<String> = Vec::new();
         // And the displays whose loading screen has just been answered, so the
         // start screen it was standing on can step behind the application that
         // answered it. See [`Self::an_application_took_the_display`].
@@ -26015,6 +27450,9 @@ impl Shell {
                     asked_of_the_client: splash.asked_of_the_client(),
                 });
             }
+            if done && splash.heroic_never_started_it() {
+                epic_never_started.push(splash.name.clone());
+            }
             finished |= done;
             drawing |= splash.drawing(now);
             keep.push(!done);
@@ -26079,6 +27517,9 @@ impl Shell {
                 self.stop_waiting_for_steam("its loading screen ran out of patience");
             }
             self.say_steam_never_started_it(gave_up);
+        }
+        for title in epic_never_started {
+            self.say_epic_never_started_it(title);
         }
         // Only while there is something of one on the screen. Once a splash has
         // faded it goes on watching for a few seconds with nothing to draw, and
@@ -26797,9 +28238,15 @@ impl Shell {
     /// guide is the exception: it is drawn *over* the application, which is
     /// the whole point of it.
     fn panel_is_visible(&self, index: usize) -> bool {
-        let Some(panel) = self.panels.get(index) else {
-            return false;
-        };
+        self.why_it_is_seen(index).is_some()
+    }
+
+    /// The same answer with its reason kept: which of the things below is
+    /// what keeps this display drawing, or `None` where nothing is. Asked for
+    /// the log — see [`Behind`], which is what a wrong answer here looks like
+    /// from outside.
+    fn why_it_is_seen(&self, index: usize) -> Option<Seen> {
+        let panel = self.panels.get(index)?;
         // Nothing of this display's picture is on screen: the compositor has
         // the black all the way down over it. Drawing under that is drawing
         // for nobody, and a start screen that went on animating behind a
@@ -26811,13 +28258,16 @@ impl Shell {
         // drawn either way, because `settling` outranks this. Nothing may
         // vanish before its transition ends.
         if panel.is_rested(Instant::now()) {
-            return false;
+            return None;
         }
-        if self.splash_on_screen(index) || self.restoring_on(index) {
-            return true;
+        if self.splash_on_screen(index) {
+            return Some(Seen::Splash);
+        }
+        if self.restoring_on(index) {
+            return Some(Seen::Restore);
         }
         if index == self.focused_panel && self.guide.is_over_app() {
-            return true;
+            return Some(Seen::Guide);
         }
         // So is the keyboard, and its hint: both are drawn over the
         // application on purpose, so a display that has stopped drawing
@@ -26829,7 +28279,7 @@ impl Shell {
         // panel that had stopped drawing behind its own application, which is
         // a keyboard summoned onto a screen that never repaints.
         if index == self.keyboard_panel() && self.keyboard_visible() {
-            return true;
+            return Some(Seen::Keyboard);
         }
         // And so is the corner of the screen. This is the one case where the
         // shell has something to draw over an application that nobody asked
@@ -26837,14 +28287,14 @@ impl Shell {
         // display that had stopped drawing because a game covered its bar
         // would go on not drawing while a notification came and went.
         if index == self.focused_panel && !self.notifications.toasts().is_empty() {
-            return true;
+            return Some(Seen::Bubble);
         }
         // And so is the volume control the keys raise, which is the other
         // thing drawn over an application without anything being opened — and
         // the one whose whole purpose is to be visible while a game covers the
         // display.
         if index == self.focused_panel && self.volume.on_screen() {
-            return true;
+            return Some(Seen::Volume);
         }
         // And the floating window's own menu, which is the fifth of these and
         // the one the user asked for outright. Without it the menu is opened,
@@ -26853,7 +28303,7 @@ impl Shell {
         // of the game is the last frame this display drew: the whole start
         // screen, and no menu. That is what it looked like on screen.
         if index == self.focused_panel && self.floating_menu_on_screen() {
-            return true;
+            return Some(Seen::FloatingMenu);
         }
         // And the panel an application's file question is answered in, which is
         // the sixth of these and misses in two ways at once. Without it the
@@ -26865,9 +28315,9 @@ impl Shell {
         // standing over somebody's browser showing the wallpaper instead of the
         // browser. That is what was reported.
         if index == self.focused_panel && self.file_question_on_screen() {
-            return true;
+            return Some(Seen::FileQuestion);
         }
-        !bar_is_covered(panel.width, panel.height, &panel.windows)
+        (!bar_is_covered(panel.width, panel.height, &panel.windows)).then_some(Seen::Uncovered)
     }
 
     /// Whether the focused display is drawing the keyboard, or the hint that
@@ -28393,6 +29843,7 @@ impl Shell {
         // Not a compatibility list either — see the note in
         // [`Shell::toggle_context_menu`].
         self.compat_menu = None;
+        self.epic_compat_menu = None;
         self.ways_menu = None;
         self.context_menu.open_at(
             anchor,
@@ -29967,6 +31418,29 @@ impl Shell {
         })
     }
 
+    /// Whether any display being drawn has the Storage page open — the
+    /// machine's, under Settings, or Steam's, under Games > Steam.
+    ///
+    /// Opened rather than highlighted, as the compatibility tools are: walking
+    /// past the row is not somebody watching a disk fill. Steam's page is the
+    /// same watch because it draws the same drives, and the games on them move
+    /// as downloads finish and uninstalls land.
+    fn standing_in_storage(&self) -> bool {
+        let (id, ..) = apps::SHELL_SETTINGS;
+        (0..self.panels.len()).any(|index| {
+            self.panel_is_visible(index)
+                && self.panels[index]
+                    .cursor
+                    .current_category(&self.lattice)
+                    .is_some_and(|category| category.id == id)
+                && self.panels[index]
+                    .cursor
+                    .opened_rows(&self.lattice)
+                    .iter()
+                    .any(|row| matches!(row, apps::Entry::Folder(folder) if matches!(folder.identity.as_deref(), Some("storage-title" | "steam-storage"))))
+        })
+    }
+
     /// Whether the top corner of the start screen is on screen anywhere.
     ///
     /// Not [`Shell::panel_is_visible`], which is a wider question and the wrong
@@ -30396,6 +31870,257 @@ impl Shell {
         }
     }
 
+    /// Tell the storage worker where the cursor is, and hand the Settings
+    /// column whatever it has read since.
+    ///
+    /// The worker reads when Settings is arrived at and then only while the
+    /// Storage page is open, so a session spent anywhere else asks nothing of
+    /// the disks. See [`storage::Storage::watch`].
+    fn sync_storage(&mut self) {
+        self.storage
+            .watch(self.standing_in_settings(), self.standing_in_storage());
+        if let Some(listing) = self.storage.take() {
+            // And Steam's libraries with the drives, at the same moments and
+            // for the same page-building reason: the Install games to row is
+            // built on every rebuild of the tree and names each library by the
+            // drive it is on. A small file read, and only when Settings has
+            // been arrived at or the Storage page is being watched.
+            //
+            // And the games in each, for Settings > Games > Steam > Storage,
+            // which lists them — one small manifest a game.
+            let libraries_moved = self.read_steam_storage();
+            if settings::note_storage(listing) || libraries_moved {
+                self.rebuild_settings();
+                self.needs_redraw = true;
+            }
+        }
+    }
+
+    /// Hand Files and Settings > Storage the drives the worker last read, and
+    /// answer every press on one that has finished.
+    ///
+    /// Files' list of disks is read on the press that opens it rather than
+    /// kept, so the one copy that has to be read again is the one somebody is
+    /// standing in — a stick plugged in while they look at the list is on it
+    /// the moment it is mounted, and a drive being opened says so on its row.
+    fn sync_drives(&mut self) {
+        let published = self.drives.published();
+        if published != self.drives_seen {
+            self.drives_seen = published;
+            if drives::note(self.drives.listing()) {
+                self.rebuild_settings();
+                if self.standing_in_the_drives() {
+                    self.reread_the_open_folder();
+                }
+                self.needs_redraw = true;
+            }
+        }
+        for outcome in self.drives.take_outcomes() {
+            self.answer_drive(outcome);
+        }
+    }
+
+    /// Whether the cursor is in Files' own list of disks — the column the
+    /// Files row opens, and not one of the walks that choose something.
+    fn standing_in_the_drives(&self) -> bool {
+        let Some(panel) = self.panels.get(self.focused_panel) else {
+            return false;
+        };
+        matches!(
+            panel.cursor.open_from(&self.lattice),
+            Some(apps::Entry::Folder(under))
+                if under.place == Some(files::Place::Volumes(files::Shows::Everything))
+        )
+    }
+
+    /// Mount the drive the cursor is on, if it is one nothing has mounted, and
+    /// step into it once it is there.
+    ///
+    /// `true` when the press was the drive's, including a second press on a
+    /// row that already says "Mounting…" — that one is spent, because a press
+    /// that seems to do nothing is a press somebody makes twice.
+    ///
+    /// No panel is put up while it happens. The row says it, and the screen is
+    /// left free for the one panel a mount may need — the password an internal
+    /// disk asks for, which polkit only puts up when nothing else is up.
+    fn open_the_unmounted_drive(&mut self) -> bool {
+        let number = match self
+            .panels
+            .get(self.focused_panel)
+            .and_then(|panel| panel.cursor.current_entry(&self.lattice))
+        {
+            Some(apps::Entry::Folder(folder)) => match folder.place {
+                Some(files::Place::Unmounted(number)) => number,
+                _ => return false,
+            },
+            _ => return false,
+        };
+        if !self.drives.mount(number, true) {
+            tracing::debug!(
+                number,
+                "this drive is already being opened, so the press was spent"
+            );
+            return true;
+        }
+        self.answer_choice(ChosenFeedback::Kept, Screen::Start);
+        self.sync_drives();
+        true
+    }
+
+    /// The drive the cursor is on in Files' list of disks, if it is one
+    /// UDisks can put away.
+    fn selected_drive(&self) -> Option<drives::Volume> {
+        if !self.standing_in_the_drives() {
+            return None;
+        }
+        let panel = self.panels.get(self.focused_panel)?;
+        let apps::Entry::Folder(folder) = panel.cursor.current_entry(&self.lattice)? else {
+            return None;
+        };
+        let known = drives::known();
+        match folder.place.as_ref()? {
+            files::Place::Directory(at, _) => known.mounted_at(at).cloned(),
+            files::Place::Unmounted(number) => known.volume(*number).cloned(),
+            _ => None,
+        }
+    }
+
+    /// The menu over a drive in Files: the one way to put it away, and Cancel.
+    fn drive_entry_menu(
+        &self,
+        volume: &drives::Volume,
+    ) -> Option<([f32; 4], Option<String>, Vec<menu::Entry>)> {
+        let panel = self.panels.get(self.focused_panel)?;
+        let anchor = ui::launch_origin(panel.width as f32, panel.height as f32);
+        Some((anchor, Some(volume.title()), drive_rows(volume)?))
+    }
+
+    /// Unmount a drive, or — `remove` — unmount it and turn it off.
+    fn put_the_drive_away(&mut self, number: u64, remove: bool) {
+        let asked = match remove {
+            true => self.drives.remove(number),
+            false => self.drives.unmount(number),
+        };
+        if !asked {
+            tracing::debug!(
+                number,
+                "this drive is already being worked on, so the press was spent"
+            );
+        }
+        self.sync_drives();
+    }
+
+    /// One press on a drive's page under Settings > Storage.
+    fn carry_out_drive(&mut self, value: settings::DriveValue) {
+        let asked = match value {
+            settings::DriveValue::Mount(number) => self.drives.mount(number, false),
+            settings::DriveValue::Unmount(number) => self.drives.unmount(number),
+            settings::DriveValue::Remove(number) => self.drives.remove(number),
+            settings::DriveValue::AtStartup(number, on) => {
+                // The answer already in force is no press at all: nothing to
+                // write, and no password to ask for it.
+                let already = drives::known()
+                    .volume(number)
+                    .is_some_and(|volume| volume.at_startup.is_some() == on);
+                !already && self.drives.at_startup(number, on)
+            }
+        };
+        if asked {
+            self.sync_drives();
+        }
+    }
+
+    /// What came of a press on a drive, said where it has to be.
+    ///
+    /// A drive opened from Files is stepped into, if the cursor is still on
+    /// its row: somebody who has walked away in the meantime has moved on, and
+    /// taking them back would be the shell moving the bar under their thumb.
+    /// A refusal is a panel, in words — what UDisks said is in the journal —
+    /// except a password panel somebody closed, which they know about, and
+    /// Mount at startup, whose row says it.
+    fn answer_drive(&mut self, outcome: drives::Outcome) {
+        use drives::{Act, Refusal};
+        match (outcome.act, outcome.result) {
+            (Act::Mount, Ok(Some(at))) => {
+                if outcome.open && self.still_on_the_drive(outcome.number, &at) {
+                    self.walk_files_to(&at, None);
+                    self.needs_redraw = true;
+                }
+            }
+            (Act::Remove, Ok(_)) => self.say_about_a_drive(&outcome.title, "drive-can-unplug"),
+            (_, Ok(_)) | (_, Err(Refusal::Dismissed)) | (Act::AtStartup(_), Err(_)) => {}
+            (Act::Mount, Err(refusal)) => self.say_about_a_drive(
+                &outcome.title,
+                match refusal {
+                    Refusal::NotAllowed => "drive-not-allowed",
+                    _ => "drive-mount-failed",
+                },
+            ),
+            (Act::Unmount | Act::Remove, Err(refusal)) => self.say_about_a_drive(
+                &outcome.title,
+                match refusal {
+                    Refusal::Busy => "drive-in-use",
+                    Refusal::NotAllowed => "drive-not-allowed",
+                    _ => "drive-unmount-failed",
+                },
+            ),
+        }
+    }
+
+    /// Whether the cursor is still on the row of the drive a press mounted:
+    /// the row it was pressed on, or the folder that row has since become.
+    fn still_on_the_drive(&self, number: u64, at: &Path) -> bool {
+        if !self.standing_in_the_drives() {
+            return false;
+        }
+        let Some(apps::Entry::Folder(folder)) = self
+            .panels
+            .get(self.focused_panel)
+            .and_then(|panel| panel.cursor.current_entry(&self.lattice))
+        else {
+            return false;
+        };
+        match &folder.place {
+            Some(files::Place::Unmounted(pressed)) => *pressed == number,
+            Some(files::Place::Directory(place, _)) => place == at,
+            _ => false,
+        }
+    }
+
+    /// A panel naming a drive and saying one thing about it, with Close.
+    ///
+    /// Not over another panel: whatever is up is something the person is in
+    /// the middle of, and the journal already has what this would have said.
+    fn say_about_a_drive(&mut self, title: &str, note: &'static str) {
+        if self.dialog.is_open() {
+            tracing::info!(
+                title,
+                note,
+                "a panel is up, so what came of the drive was not said"
+            );
+            return;
+        }
+        let Some((width, height)) = self.focused_size() else {
+            return;
+        };
+        let raised = self.dialog.ask(
+            ui::launch_origin(width, height),
+            Some(icons::FILE_DRIVE.to_string()),
+            vec![
+                dialog::Line::Heading(title.to_string()),
+                dialog::Line::Note(crate::i18n::text(note).to_string()),
+            ],
+            vec![menu::Entry::new(
+                menu::Command::Dismiss,
+                crate::i18n::text("shell-close"),
+            )],
+            0,
+        );
+        if raised {
+            self.needs_redraw = true;
+        }
+    }
+
     /// Put the password panel up, take it away, or leave it where it is.
     ///
     /// Driven off the worker's own question rather than off the press that
@@ -30624,6 +32349,80 @@ impl Shell {
     /// see [`settings::Setting::Steam`]. What is left is the doing, and only
     /// the first of the three has any: the other two are answers to questions
     /// asked at moments that have not arrived yet.
+    /// Carry out one of Settings > Games > Epic Games' rows — Steam's three
+    /// switches, for Heroic, and what it runs games with.
+    fn carry_out_epic(&mut self, value: settings::EpicValue) {
+        match value {
+            settings::EpicValue::Integration(on) => self.epic_integration_changed(on),
+            // As Steam's: turning it on asks for what it promises now rather
+            // than at the next session, and turning it off stops nothing that
+            // is running.
+            settings::EpicValue::AtStartup(true) => self.heroic.start_background(),
+            settings::EpicValue::AtStartup(false) => {}
+            // What the next game is started with, which is on its row.
+            settings::EpicValue::AfterAGame(_) => self.rebuild_heroic(),
+            settings::EpicValue::Tool(name) => self.heroic.use_tool(None, Some(name)),
+        }
+        self.rebuild_settings();
+        self.needs_redraw = true;
+    }
+
+    /// Look for the Epic Games package again, every five seconds, and follow
+    /// it coming or going: a package is installed and removed while a session
+    /// runs. Gone, the Epic half of the shell goes with it — the row, the
+    /// column, the achievements and the page — and the bar is scanned again,
+    /// which puts Heroic's own entry back on it as an application like any
+    /// other. Come, the integration starts as a session coming up starts it,
+    /// if it is switched on. See [`heroic::look_again`].
+    fn look_for_the_epic_package(&mut self) {
+        let due = self
+            .epic_looked
+            .is_none_or(|at| at.elapsed() >= Duration::from_secs(5));
+        if !due {
+            return;
+        }
+        self.epic_looked = Some(Instant::now());
+        let Some(found) = heroic::look_again() else {
+            return;
+        };
+        match found {
+            Some(helper) => {
+                tracing::info!(at = %helper.display(), "the Epic Games integration has been installed");
+                if settings::epic_integration() {
+                    self.heroic = heroic::Heroic::start(helper);
+                }
+            }
+            None => {
+                tracing::info!("the Epic Games integration has been taken off this machine");
+                self.heroic = heroic::Heroic::absent();
+            }
+        }
+        self.scan_the_bar_again();
+        self.rebuild_trophies();
+        self.needs_redraw = true;
+    }
+
+    /// The Epic Games integration was switched on or off.
+    ///
+    /// Off, the half of the shell that drives Heroic goes: whatever it was
+    /// coming down stops, keeping what arrived, a Heroic it kept in the
+    /// background is closed, and the bar is scanned again — which is what puts
+    /// Heroic's own entry back on it and takes the row and the column away.
+    /// On, it is started again, as a session coming up starts it.
+    fn epic_integration_changed(&mut self, on: bool) {
+        tracing::info!(on, "the Epic Games integration was switched");
+        if on {
+            if let Some(helper) = heroic::helper() {
+                self.heroic = heroic::Heroic::start(helper);
+            }
+        } else {
+            self.heroic.close_background();
+            self.heroic = heroic::Heroic::absent();
+        }
+        self.scan_the_bar_again();
+        self.rebuild_trophies();
+    }
+
     fn carry_out_steam(&mut self, value: settings::SteamValue) {
         match value {
             settings::SteamValue::Integration(on) => self.steam_integration_changed(on),
@@ -30652,6 +32451,31 @@ impl Shell {
                 lxb_steam::webui::Which::OtherTitles,
                 tool.map(str::to_string),
             ),
+            // Written down by `settings`, and half of it is Steam's: a library
+            // chosen here is Steam's own default too, told now if a client is
+            // up and otherwise on the next install into it. "Ask every time"
+            // has no counterpart in Steam, whose own dialog always asks, and
+            // tells it nothing. See [`settings::SteamValue::InstallTo`].
+            //
+            // Either way the page is rebuilt: the row above the list says which
+            // is chosen, and one left standing would name the answer somebody
+            // has just stopped giving.
+            settings::SteamValue::InstallTo(to) => {
+                if let Some(path) = to {
+                    self.steam.make_default_library(path);
+                }
+                self.rebuild_settings();
+            }
+            // Steam's own storage page, pressed on the shell's copy of it: each
+            // is asked of Valve's client, with a panel up while it answers — and
+            // Remove asks the person first. See [`crate::steam_storage`].
+            settings::SteamValue::AddLibrary(path) => {
+                self.shelve(lxb_steam::webui::Shelving::Add(path.to_string()))
+            }
+            settings::SteamValue::RemoveLibrary(path) => self.offer_to_remove_library(path),
+            settings::SteamValue::RepairLibrary(path) => {
+                self.shelve(lxb_steam::webui::Shelving::Repair(path.to_string()))
+            }
         }
     }
 
@@ -32857,13 +34681,21 @@ fn steam_sort_rows(
     now: lxb_steam::library::Sort,
     knows: lxb_steam::library::Orders,
 ) -> Vec<menu::Entry> {
+    library_sort_rows(now, knows, menu::Command::SteamSortBy)
+}
+
+/// The orders a library of games can be listed in, as the rows of a Sort list
+/// whose presses are `by` — Steam's column's, and the Epic Games column's,
+/// which offers the same eight over its own facts.
+fn library_sort_rows(
+    now: lxb_steam::library::Sort,
+    knows: lxb_steam::library::Orders,
+    by: fn(lxb_steam::library::Sort) -> menu::Command,
+) -> Vec<menu::Entry> {
     let mut rows: Vec<menu::Entry> = lxb_steam::library::SORTS
         .iter()
         .map(|sort| {
-            let row = menu::Entry::new(
-                menu::Command::SteamSortBy(*sort),
-                crate::i18n::builtin(sort.label()),
-            );
+            let row = menu::Entry::new(by(*sort), crate::i18n::builtin(sort.label()));
             let row = if *sort == now {
                 row.glyph(icons::CHOSEN)
             } else {
@@ -34686,6 +36518,43 @@ fn folder_rows(deletable: bool, hidden: bool) -> Vec<menu::Entry> {
     ]
 }
 
+/// The rows of the menu over a drive in Files' list of disks.
+///
+/// One way to put it away and Cancel. A drive that can be unplugged is offered
+/// Safely remove — which unmounts it and turns it off, so the person knows when
+/// to pull it out — and never Unmount beside it, because a stick left mounted
+/// or not is not a choice anybody standing over one is making. Any other
+/// drive is offered Unmount while it is mounted and nothing while it is not:
+/// pressing its row is what mounts it. `None` when there is nothing to offer,
+/// or the drive is somewhere the system keeps itself.
+fn drive_rows(volume: &drives::Volume) -> Option<Vec<menu::Entry>> {
+    let mounted = volume.place();
+    if volume.systems || mounted.is_some_and(|at| !files::is_somewhere_a_drive_goes(at)) {
+        return None;
+    }
+    let row = match (volume.removable, mounted.is_some()) {
+        (true, true) => menu::Entry::new(
+            menu::Command::SafelyRemove(volume.number),
+            crate::i18n::text("shell-safely-remove"),
+        ),
+        (true, false) if volume.can_power_off => menu::Entry::new(
+            menu::Command::SafelyRemove(volume.number),
+            crate::i18n::text("shell-safely-remove"),
+        ),
+        (false, true) => menu::Entry::new(
+            menu::Command::Unmount(volume.number),
+            crate::i18n::text("shell-unmount"),
+        ),
+        _ => return None,
+    };
+    Some(vec![
+        // The snapped chain the Leave row under a network wears: the same act
+        // — something that was joined, taken apart — on a different object.
+        row.glyph(icons::SETTING_DISCONNECT),
+        menu::Entry::new(menu::Command::Dismiss, crate::i18n::text("shell-cancel")).group(1),
+    ])
+}
+
 /// The row that turns the names beginning with a dot on and off, ticked where
 /// they are on.
 ///
@@ -35662,7 +37531,16 @@ fn owns_window(owner: Owning<'_>, window: &WindowCard, game_windows: &HashMap<u3
 /// decides what a button that *kills something* is called, and every way of
 /// getting it wrong names one thing while ending another.
 fn window_name(window: &WindowCard, installed: Option<&str>, from_steam: bool) -> String {
-    if from_steam && !window.title.trim().is_empty() {
+    // A class of Proton's own — `steam_app_<id>`, and `steam_app_0` for every
+    // game umu starts outside Steam, Heroic's among them — is a number rather
+    // than a name, and the window it is on is a game's: its title is the
+    // game's own, for the reason a Steam game's is.
+    let protons = window
+        .app_id
+        .trim()
+        .to_lowercase()
+        .starts_with("steam_app_");
+    if (from_steam || protons) && !window.title.trim().is_empty() {
         return window.title.clone();
     }
     if let Some(name) = installed {
@@ -36721,8 +38599,83 @@ fn picture_behind(entry: &Entry) -> Option<&Path> {
 /// in front shows through, what the display returns to when it is uncovered,
 /// and, since it is the commit that applies them, what carries any pending
 /// layer or keyboard change with it.
-fn should_draw(visible: bool, settling: bool, was_visible: bool) -> bool {
-    visible || settling || was_visible
+///
+/// Except under OLED protection's black, once it is all the way down: nothing
+/// there can be seen at all, settled or not, so a rested display draws nothing
+/// until input brings it back — and whatever was still moving on it is where it
+/// should be by then, since the arithmetic goes on without the drawing. The
+/// compositor puts what is on that display to sleep at the same moment; see
+/// [`Panel::is_rested`] and the compositor's `blackout`.
+fn should_draw(rested: bool, visible: bool, settling: bool, was_visible: bool) -> bool {
+    !rested && (visible || settling || was_visible)
+}
+
+/// Why a display is drawing — the reason [`Shell::panel_is_visible`] found,
+/// in the order it looks for them.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Seen {
+    /// A loading screen is on it.
+    Splash,
+    /// A window is flying back onto it.
+    Restore,
+    /// The guide, or the start screen raised over an application on purpose.
+    Guide,
+    /// The on-screen keyboard, or the chip that stands in for it.
+    Keyboard,
+    /// A bubble in the corner.
+    Bubble,
+    /// The control the volume keys raise.
+    Volume,
+    /// The floating window's own menu.
+    FloatingMenu,
+    /// An application's file question.
+    FileQuestion,
+    /// Nothing covers the bar.
+    Uncovered,
+}
+
+/// How long a covered display may go on drawing its wallpaper before it is
+/// said out loud.
+///
+/// Longer than anything that does it on purpose. A guide closing over an
+/// application flies the start screen back behind it for the length of
+/// [`HOME_FLIGHT`], and the frame a display draws on the way to going quiet is
+/// one frame; both are over well inside this.
+const BEHIND_FOR: Duration = Duration::from_secs(2);
+
+/// A display drawing its wallpaper behind an application that covers it, and
+/// for how long — the check [`Shell::draw`] keeps on its own visibility rule.
+///
+/// That rule has broken three times, and each time it looked the same from
+/// outside: through a translucent window, the start screen still moving
+/// behind it. It is also the one fault that cannot be seen at all behind an
+/// opaque one, so it can be in a build for days. Each time the cause was a
+/// second copy of "can this be seen" drifting from the first, and the useful
+/// thing to have in the log is *which* of the reasons [`Seen`] lists kept the
+/// display drawing — which is what this is for.
+///
+/// Said once for each stretch, on the frame it reaches [`BEHIND_FOR`], and a
+/// frame that is not behind anything starts the count again.
+#[derive(Debug, Default)]
+struct Behind {
+    since: Option<Instant>,
+    said: bool,
+}
+
+impl Behind {
+    /// Note one frame, and whether it is the one to say something on.
+    fn note(&mut self, behind: bool, now: Instant) -> bool {
+        if !behind {
+            *self = Self::default();
+            return false;
+        }
+        let since = *self.since.get_or_insert(now);
+        if self.said || now.saturating_duration_since(since) < BEHIND_FOR {
+            return false;
+        }
+        self.said = true;
+        true
+    }
 }
 
 /// Whether a frame carries nothing of the bar — only whatever the shell has
@@ -37578,6 +39531,7 @@ fn parse_timed_action(raw: &str) -> Result<(f32, Action), String> {
         "message" => Action::PretendAMessage,
         "invite" => Action::PretendAnInvite,
         "agreement" => Action::PretendAnAgreement,
+        "library" => Action::PretendALibraryChoice,
         "steam-overlay" => Action::SteamOverlay,
         "volume-up" => Action::VolumeUp,
         "volume-down" => Action::VolumeDown,
@@ -40032,19 +41986,37 @@ mod flight_tests {
     /// keyboard, with nothing due that could clear it.
     #[test]
     fn a_display_draws_one_last_frame_after_it_is_covered() {
+        const RESTED: bool = true;
         // Visible, then covered with nothing left to animate: one more frame.
         let mut was_visible = true;
-        assert!(should_draw(false, false, was_visible));
+        assert!(should_draw(!RESTED, false, false, was_visible));
 
         // Having drawn it, and only then, it goes quiet.
         was_visible = false;
-        assert!(!should_draw(false, false, was_visible));
+        assert!(!should_draw(!RESTED, false, false, was_visible));
 
         // An animation still running keeps it drawing until it settles, so
         // the frame left behind is never a half-finished one.
-        assert!(should_draw(false, true, false));
+        assert!(should_draw(!RESTED, false, true, false));
         // And a visible display always draws, settled or not.
-        assert!(should_draw(true, false, false));
+        assert!(should_draw(!RESTED, true, false, false));
+    }
+
+    /// Under OLED protection's black, all the way down, nothing is drawn at
+    /// all — not the last frame, and not an animation still settling, since
+    /// neither can be seen — until input takes the display out of its rest.
+    #[test]
+    fn a_rested_display_draws_nothing_until_it_is_woken() {
+        const RESTED: bool = true;
+        for visible in [false, true] {
+            for settling in [false, true] {
+                for was_visible in [false, true] {
+                    assert!(!should_draw(RESTED, visible, settling, was_visible));
+                }
+            }
+        }
+        // Woken, it draws again on the ordinary terms.
+        assert!(should_draw(!RESTED, false, true, false));
     }
 
     /// And what that last frame is allowed to carry, which is the other half of
@@ -40073,6 +42045,37 @@ mod flight_tests {
             nothing_of_the_bar_is_drawn(!RAISED, !VISIBLE),
             "a hint that has just gone leaves a covered display, not a bar"
         );
+    }
+
+    /// The check the draw loop keeps on that rule: the wallpaper drawn behind
+    /// an application that covers the display is said once, and only once it
+    /// has gone on longer than anything that does it on purpose.
+    #[test]
+    fn the_wallpaper_behind_an_application_is_said_once_it_has_gone_on() {
+        let t0 = Instant::now();
+        let at = |seconds: f32| t0 + Duration::from_secs_f32(seconds);
+        let mut behind = Behind::default();
+
+        // A guide closing over an application flies the start screen back
+        // behind it for a fraction of a second; that is never worth a word.
+        assert!(!behind.note(true, at(0.0)));
+        assert!(!behind.note(true, at(0.3)));
+        assert!(!behind.note(false, at(0.35)));
+        assert!(!behind.note(true, at(1.0)));
+        assert!(
+            !behind.note(true, at(2.9)),
+            "the count starts again after a frame that was not behind anything"
+        );
+
+        // Kept up, it is said on the frame it reaches the limit, and not again.
+        assert!(behind.note(true, at(3.0)));
+        assert!(!behind.note(true, at(4.0)));
+        assert!(!behind.note(true, at(60.0)));
+
+        // A display that stopped and started again is a new stretch.
+        assert!(!behind.note(false, at(61.0)));
+        assert!(!behind.note(true, at(62.0)));
+        assert!(behind.note(true, at(64.0)));
     }
 
     /// OLED protection, from the one side of it that is arithmetic. Every
@@ -41852,6 +43855,12 @@ mod input_tests {
             "the tail of a reverse-DNS class, not the level it is on"
         );
 
+        // A game Proton started outside Steam — Heroic's, through umu — is
+        // named by its window too: its class is a number, not a name, and
+        // offering to "Close Steam_app_0" was what the first Epic game got.
+        let epic = window(17, "steam_app_0", "Cat Quest");
+        assert_eq!(window_name(&epic, None, false), "Cat Quest");
+
         // And a game whose window says nothing keeps the old chain rather than
         // being called the empty string.
         let unnamed = window(13, "x86_64", "   ");
@@ -41993,6 +44002,22 @@ mod input_tests {
         assert_eq!(game_a_window_is_named_after("steam"), None);
         assert_eq!(game_a_window_is_named_after("steamwebhelper"), None);
         assert_eq!(game_a_window_is_named_after("steam_app_"), None);
+        // What a game umu starts outside Steam is called: Heroic's, for one.
+        assert_eq!(game_a_window_is_named_after("steam_app_0"), None);
+
+        // And umu's own progress window, which comes up before the game's and
+        // is not it.
+        let card = |app_id: &str, title: &str| WindowCard {
+            pid: None,
+            id: 1,
+            title: title.to_string(),
+            app_id: app_id.to_string(),
+            width: 340,
+            height: 152,
+        };
+        assert!(is_umus_own_window(&card("zenity", "ProtonFixes")));
+        assert!(!is_umus_own_window(&card("zenity", "Some question")));
+        assert!(!is_umus_own_window(&card("steam_app_0", "Cat Quest")));
         assert_eq!(game_a_window_is_named_after("steam_app_shortcut"), None);
         assert_eq!(game_a_window_is_named_after(""), None);
     }
@@ -42779,6 +44804,46 @@ mod file_menu_tests {
 
     fn commands(rows: &[menu::Entry]) -> Vec<menu::Command> {
         rows.iter().map(|row| row.command).collect()
+    }
+
+    /// A drive's menu in Files is the one way to put it away: Unmount for a
+    /// disk inside the machine, Safely remove for one that can be unplugged —
+    /// never both — and nothing at all for a disk nothing has mounted, whose
+    /// press is what mounts it, or for one the system runs from.
+    #[test]
+    fn a_drives_menu_is_the_one_way_to_put_it_away() {
+        let mut internal = drives::a_drive(2065, "sdb1", "GamesSSD");
+        assert!(drive_rows(&internal).is_none(), "nothing to put away");
+
+        internal.mounted_at = vec![PathBuf::from("/mnt/GamesSSD")];
+        let rows = drive_rows(&internal).expect("a mounted disk can be unmounted");
+        assert_eq!(
+            commands(&rows),
+            [menu::Command::Unmount(2065), menu::Command::Dismiss]
+        );
+        assert_eq!(rows[0].glyph, Some(icons::SETTING_DISCONNECT));
+
+        let mut stick = drives::a_drive(2081, "sdc1", "Stick");
+        stick.removable = true;
+        stick.can_power_off = true;
+        stick.mounted_at = vec![PathBuf::from("/run/media/kate/Stick")];
+        assert_eq!(
+            commands(&drive_rows(&stick).unwrap()),
+            [menu::Command::SafelyRemove(2081), menu::Command::Dismiss]
+        );
+        // Unmounted, a stick that can be turned off can still be put away.
+        stick.mounted_at.clear();
+        assert_eq!(
+            commands(&drive_rows(&stick).unwrap()),
+            [menu::Command::SafelyRemove(2081), menu::Command::Dismiss]
+        );
+
+        let mut root = drives::a_drive(66307, "nvme0n1p3", "root");
+        root.mounted_at = vec![PathBuf::from("/")];
+        assert!(drive_rows(&root).is_none(), "the system is not put away");
+        let mut var = drives::a_drive(66308, "nvme0n1p4", "var");
+        var.mounted_at = vec![PathBuf::from("/var")];
+        assert!(drive_rows(&var).is_none());
     }
 
     fn labels(rows: &[menu::Entry]) -> Vec<&str> {
@@ -44270,6 +46335,7 @@ mod bios_walk_tests {
             over_the_list: false,
             person: None,
             portrait: None,
+            used: None,
         })
     }
 
@@ -44287,6 +46353,7 @@ mod bios_walk_tests {
             over_the_list: true,
             person: None,
             portrait: None,
+            used: None,
         })
     }
 

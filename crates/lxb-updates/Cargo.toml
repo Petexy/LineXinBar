@@ -15,3 +15,10 @@ zbus = { version = "5", default-features = false, features = ["async-io", "block
 
 
 sha2 = "0.10"
+
+# GitHub, for what LineXinBar and the projects beside it have released: the
+# API's release lists and the files attached to them. Blocking, with a TLS
+# stack and root certificates of its own, so a root step's download trusts
+# nothing an administrator's or anybody else's certificate store says. Already
+# in the lock through lxb-retroarch and lxb-heroic.
+ureq = "3"

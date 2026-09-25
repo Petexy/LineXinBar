@@ -11,8 +11,9 @@ pkgbase=linexinbar
 # The third is optional in the other direction: `lxb-retroarch` is an
 # integration for one program, and the shell finds it on PATH or never mentions
 # RetroArch at all. It is version-locked to the shell because what the two agree
-# about is a protocol rather than a library.
-pkgname=('lxb-compositor' 'lxb-desktop' 'lxb-retroarch')
+# about is a protocol rather than a library. `lxb-heroic`, Epic Games through
+# Heroic Games Launcher's flatpak, is optional on exactly the same terms.
+pkgname=('lxb-compositor' 'lxb-desktop' 'lxb-retroarch' 'lxb-heroic')
 pkgver=@VERSION@
 pkgrel=1
 pkgdesc='Multi-display Wayland desktop with a console-style shell'
@@ -181,6 +182,7 @@ package_lxb-desktop() {
     )
     optdepends=(
         'networkmanager: the Network pages in Settings'
+        'udisks2: mounting drives from Files and Settings > Storage'
         'xdg-desktop-portal: screen sharing and file choosing, through lxb-portal'
         'pipewire: the frames a shared screen is carried on'
         'wireplumber: volume control through wpctl'
@@ -190,6 +192,7 @@ package_lxb-desktop() {
         'hicolor-icon-theme: fallback application icons'
         'sudo: application removal from the shell'
         'lxb-retroarch: play your own console games from the bar'
+        'lxb-heroic: play your Epic Games library from the bar'
     )
 
     cd "$pkgbase-$pkgver"
@@ -225,6 +228,30 @@ package_lxb-retroarch() {
         --prefix /usr \
         --target-dir target \
         --component retroarch
+
+    _linexinbar_licenses "$pkgname"
+}
+
+package_lxb-heroic() {
+    pkgdesc='Epic Games integration for the LineXinBar shell, through Heroic Games Launcher'
+    # Version-locked to the shell for the reason lxb-retroarch is: what the two
+    # agree about is a protocol carried on a pipe. See `lxb-desktop`'s
+    # `src/heroic.rs`. Flatpak is not optional here: the integration is built
+    # on Heroic's Flathub build, which the shell installs into the user's own
+    # flatpaks when it is missing.
+    depends=(
+        "lxb-desktop=$pkgver-$pkgrel"
+        'flatpak'
+        'glibc'
+        'libgcc'
+    )
+
+    cd "$pkgbase-$pkgver"
+    ./packaging/install.sh \
+        --destdir "$pkgdir" \
+        --prefix /usr \
+        --target-dir target \
+        --component heroic
 
     _linexinbar_licenses "$pkgname"
 }

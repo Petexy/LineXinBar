@@ -1,5 +1,5 @@
 Name:           lxb-desktop
-Version:        0.9.0
+Version:        0.9.1
 Release:        1%{?dist}
 Summary:        Multi-display Wayland desktop with a console-style shell
 
@@ -85,6 +85,7 @@ Requires:       libxkbcommon
 Requires:       systemd
 Requires:       pipewire
 Recommends:     NetworkManager
+Recommends:     udisks2
 Recommends:     xdg-desktop-portal
 Recommends:     wireplumber
 Recommends:     pulseaudio-utils
@@ -137,6 +138,26 @@ is installed. Where RetroArch itself is missing, the shell offers to install the
 Flathub build into the user's own flatpak installation, which needs no
 administrative rights; a distribution package of RetroArch is preferred over it
 when both are present.
+
+%package -n     lxb-heroic
+Summary:        Epic Games integration for the LineXinBar shell, through Heroic
+# Version-locked to the shell for the reason lxb-retroarch is. Flatpak is not
+# optional: the integration is built on Heroic Games Launcher's Flathub build,
+# which the shell installs into the user's own flatpaks when it is missing.
+Requires:       lxb-desktop%{?_isa} = %{version}-%{release}
+Requires:       flatpak
+
+%description -n lxb-heroic
+Adds Epic Games to the LineXinBar shell, through Heroic Games Launcher's
+flatpak: a row under Steam in the Games column, a sign-in with a code for the
+phone, a column of the account's games with their covers, installing,
+updating, playing and uninstalling them from the bar, cloud saves, and their
+achievements in the Trophies column.
+
+The shell looks for this subpackage on PATH and mentions Epic Games only when
+it is installed. Where Heroic itself is missing, the shell offers to install
+the Flathub build into the user's own flatpak installation, which needs no
+administrative rights.
 
 %description -n lxb-compositor
 A small DRM/KMS Wayland compositor that manages every connected display as an
@@ -234,6 +255,7 @@ cp -p third_party/lxb-rcheevos/LICENSE rcheevos-LICENSE.txt
 %{_bindir}/lxb-updates
 %{_datadir}/polkit-1/actions/org.linexinbar.updates.policy
 %{_datadir}/polkit-1/actions/org.linexinbar.locale.policy
+%{_datadir}/polkit-1/actions/org.linexinbar.drives.policy
 %{_datadir}/doc/lxb-desktop/updates.md
 %{_bindir}/lxb-session
 %{_datadir}/wayland-sessions/lxb.desktop
@@ -259,18 +281,55 @@ cp -p third_party/lxb-rcheevos/LICENSE rcheevos-LICENSE.txt
 # directory when the shell starts, which is how a package brings its own
 # drawings to a shell that was built without them.
 #
-# The directory, and not a list of names. There is one mark per console and
+# A pattern, and not a list of names. There is one mark per console and
 # consoles.rs gains machines; a list here would be a second place to write that
 # down, and the one nobody remembers — which is how this package came to name
 # category-retroarch.svg for a release after that drawing left the tree, and to
-# leave forty-five console marks installed and unpackaged. Nothing else stages
-# anything under that directory, so this package owns it outright.
+# leave forty-five console marks installed and unpackaged. The directory itself
+# is shared with lxb-heroic, which stages its own mark into it, so each package
+# owns the directory and its own files in it rather than the whole of it.
 %files -n       lxb-retroarch
 %license LICENSE Roboto-LICENSE.txt RobotoMono-OFL.txt Smithay-LICENSE.txt rcheevos-LICENSE.txt
 %{_bindir}/lxb-retroarch
-%{_datadir}/lxb/
+%dir %{_datadir}/lxb
+%dir %{_datadir}/lxb/glyphs
+%{_datadir}/lxb/glyphs/retroarch.svg
+%{_datadir}/lxb/glyphs/console-*.svg
+
+%files -n       lxb-heroic
+%license LICENSE
+%{_bindir}/lxb-heroic
+%dir %{_datadir}/lxb
+%dir %{_datadir}/lxb/glyphs
+%{_datadir}/lxb/glyphs/epic.svg
 
 %changelog
+* Thu Sep 24 2026 Piotr Lewandowski <piotr.petexy@gmail.com> - 0.9.1-1
+- A hundred and thirty-eight commits on from 0.9.0. What is new since then:
+- Ten languages — two Englishes, Polish, German, French, Spanish, Brazilian
+  Portuguese, Russian, Hindi and Chinese — and choosing one in Settings sets
+  the machine's language, not only the shell's.
+- Settings > Updates is a count and one Update now: a bar while it runs, a
+  card in the guide's corner for an update left running, and a restart offered
+  when one is owed.
+- RetroAchievements beside Steam in the Trophies column, for the account's own
+  games and for the ROMs on the disk, each column sorted and searched on its
+  own.
+- Files unpacks and makes archives itself, and opens a drive nothing had
+  mounted; Settings > Storage says how much each one has left and can set it to
+  mount at startup, in the machine's own table.
+- Steam's storage page on the bar — libraries, their games, where a new one
+  goes and adding a drive — a game that can start more than one way asked about
+  rather than guessed at, an agreement answered on the shell's own panel, and
+  a friend's invitation and messages heard in the friends panel.
+- The sparkles back on the current, with Theme > Particles to turn them off;
+  a screen resting behind OLED protection sleeps until it is woken.
+- A resolution of its own for any application, game or ROM, and a stick
+  pointer that stays on its application and clicks with the triggers.
+- Screen capture and the virtual keyboard only for the shell's own clients,
+  the portal only for xdg-desktop-portal, and a Steam token never written
+  through a name somebody else planted.
+
 * Sun Aug 30 2026 Piotr Lewandowski <piotr.petexy@gmail.com> - 0.9.0-1
 - Three hundred and forty-one commits on from the first package, and the shape
   of the shell has settled. What is new since 0.1.0, in the large:

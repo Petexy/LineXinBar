@@ -14,12 +14,14 @@ pub mod preflight;
 pub mod process;
 pub mod prompt;
 pub mod protection;
+pub mod release_install;
+pub mod releases;
 pub mod service;
 mod supervisor;
 
 use serde::{Deserialize, Serialize};
 
-pub const PROTOCOL: u32 = 3;
+pub const PROTOCOL: u32 = 4;
 pub const INSTALL_ACTION: &str = "org.linexinbar.updates.install";
 
 /// How wide the terminal a transaction runs on is, in characters.
@@ -46,6 +48,10 @@ pub const TRANSCRIPT_LINES: usize = 6000;
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum SourceId {
     System,
+    /// LineXinBar and the projects released beside it, from their own
+    /// releases wherever the system's repositories do not carry them. See
+    /// [`releases`].
+    Linexinbar,
     Flatpak,
     Aur,
     Snap,
@@ -62,6 +68,7 @@ impl SourceId {
     pub fn name(self) -> &'static str {
         match self {
             Self::System => "System",
+            Self::Linexinbar => "LineXinBar",
             Self::Flatpak => "Flatpaks",
             Self::Aur => "AUR",
             Self::Snap => "Snaps",
@@ -75,6 +82,7 @@ impl SourceId {
     pub fn title(self) -> &'static str {
         match self {
             Self::System => "Update the system",
+            Self::Linexinbar => "Update LineXinBar",
             Self::Flatpak => "Update Flatpaks",
             Self::Aur => "Update AUR",
             Self::Snap => "Update Snaps",
@@ -136,8 +144,17 @@ impl System {
 pub enum Provider {
     System(System),
     Custom(custom::Reviewed),
-    Flatpak { installations: Vec<String> },
-    Aur { helper: Option<String> },
+    /// What the check decided to install from LineXinBar's releases, in the
+    /// order it has to happen in. Empty until the check has run.
+    Releases {
+        operations: Vec<releases::Operation>,
+    },
+    Flatpak {
+        installations: Vec<String>,
+    },
+    Aur {
+        helper: Option<String>,
+    },
     Snap,
     Nix,
     Guix,

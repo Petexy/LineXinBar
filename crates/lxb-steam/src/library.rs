@@ -783,8 +783,9 @@ fn by_known(a: u64, b: u64, largest_first: bool) -> std::cmp::Ordering {
     }
 }
 
-/// What a name sorts as.
-fn sort_key(name: &str) -> String {
+/// What a name sorts as — and what it is searched as, which is why other
+/// libraries on the bar (Epic's) fold their names with it too.
+pub fn sort_key(name: &str) -> String {
     name.trim().to_lowercase()
 }
 
@@ -1416,6 +1417,69 @@ pub fn libraries_below(root: &Path) -> Vec<PathBuf> {
         if let Some(path) = path.filter(|path| !path.is_empty()) {
             add(PathBuf::from(path));
         }
+    }
+    found
+}
+
+/// One library as Steam's own list names it, whether or not it is there today.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Listed {
+    /// Where it is, written as Steam writes it — the same string the client's
+    /// `strFolderPath` carries, which is what a choice of library is matched
+    /// against. See [`crate::webui::Place::In`].
+    pub path: String,
+    /// The name somebody gave it in Steam's storage settings, or empty.
+    pub label: String,
+    /// Whether it can be written to now: a library on a drive that is not
+    /// plugged in today stays in Steam's list, and in this one.
+    pub present: bool,
+}
+
+/// Every library one Steam lists, in its own order, with the ones that are not
+/// there today left in.
+///
+/// [`libraries_below`] is the question "where are the games", and a library
+/// that is not there has none. This is the question "where could a game go",
+/// asked by a setting that names one — and a setting naming a drive that is
+/// unplugged this morning has to be able to say so rather than to have
+/// forgotten which drive it was.
+///
+/// A Steam too old to write the listing lists its own root and nothing else,
+/// which is the one library it has.
+pub fn listed_below(root: &Path) -> Vec<Listed> {
+    let mut found: Vec<Listed> = Vec::new();
+    let present = |path: &str| Path::new(path).join("steamapps").is_dir();
+    if !looks_like_a_root(root) {
+        return found;
+    }
+    let listing = root.join("steamapps").join("libraryfolders.vdf");
+    if let Ok(text) = std::fs::read_to_string(&listing) {
+        let node = vdf::parse(&text);
+        for (_, folder) in node.block(&["libraryfolders"]) {
+            let (path, label) = match folder {
+                vdf::Node::Value(path) => (Some(path.as_str()), None),
+                vdf::Node::Block(_) => (folder.string(&["path"]), folder.string(&["label"])),
+            };
+            let Some(path) = path.filter(|path| !path.is_empty()) else {
+                continue;
+            };
+            if found.iter().any(|known| known.path == path) {
+                continue;
+            }
+            found.push(Listed {
+                path: path.to_string(),
+                label: label.unwrap_or_default().trim().to_string(),
+                present: present(path),
+            });
+        }
+    }
+    if found.is_empty() {
+        let path = root.to_string_lossy().into_owned();
+        found.push(Listed {
+            present: present(&path),
+            path,
+            label: String::new(),
+        });
     }
     found
 }
@@ -2513,6 +2577,61 @@ mod tests {
     ///
     /// A loading screen is the one thing that has to know about that stretch —
     /// its patience is sixty seconds — so the two build numbers are read.
+    /// Every library Steam lists comes back, in its order and under the path
+    /// it writes — an unplugged one included and said to be absent, the name
+    /// somebody gave one kept, and the same library listed twice once.
+    #[test]
+    fn every_listed_library_comes_back_whether_or_not_it_is_there() {
+        let root = std::env::temp_dir().join(format!(
+            "lxb-steam-listed-{}-{:?}",
+            std::process::id(),
+            std::thread::current().id()
+        ));
+        let second = root.join("second");
+        std::fs::create_dir_all(root.join("steamapps")).expect("a scratch directory");
+        std::fs::create_dir_all(second.join("steamapps")).expect("a scratch directory");
+        let gone = root.join("unplugged");
+        std::fs::write(
+            root.join("steamapps").join("libraryfolders.vdf"),
+            format!(
+                r#""libraryfolders"
+                {{
+                    "0" {{ "path" "{root}" "label" "" }}
+                    "1" {{ "path" "{second}" "label" " Games " }}
+                    "2" {{ "path" "{gone}" "label" "" }}
+                    "3" {{ "path" "{second}" "label" "" }}
+                }}"#,
+                root = root.display(),
+                second = second.display(),
+                gone = gone.display(),
+            ),
+        )
+        .expect("the listing");
+
+        let listed = listed_below(&root);
+        std::fs::remove_dir_all(&root).ok();
+        assert_eq!(
+            listed,
+            vec![
+                Listed {
+                    path: root.display().to_string(),
+                    label: String::new(),
+                    present: true,
+                },
+                Listed {
+                    path: second.display().to_string(),
+                    label: "Games".to_string(),
+                    present: true,
+                },
+                Listed {
+                    path: gone.display().to_string(),
+                    label: String::new(),
+                    present: false,
+                },
+            ]
+        );
+    }
+
     #[test]
     fn the_two_build_numbers_say_an_update_is_outstanding_before_the_flags_do() {
         let root = std::env::temp_dir().join(format!(

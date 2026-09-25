@@ -1167,6 +1167,9 @@ fn install_source(
         }
         return Ok("Finished · follow fwupd's restart or power-cycle advice".into());
     }
+    if matches!(&source.provider, Provider::Releases { operations } if operations.is_empty()) {
+        return Ok("Up to date · nothing newer has been released".into());
+    }
     let steps = discovery::steps(source)?;
     let mut staged = false;
     for (index, step) in steps.into_iter().enumerate() {
@@ -1205,6 +1208,8 @@ fn install_source(
         "Staged for the next boot · restart to finish"
     } else if source.id == SourceId::System {
         "Finished · a restart may be needed; check again to verify"
+    } else if source.id == SourceId::Linexinbar {
+        "Finished · the desktop is the new one from the next sign-in or restart"
     } else {
         "Finished · open applications keep the old version until restarted"
     }

@@ -359,6 +359,7 @@ mod tests {
             over_the_list: false,
             person: None,
             portrait: None,
+            used: None,
         })
     }
 

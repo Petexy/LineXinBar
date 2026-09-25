@@ -88,11 +88,12 @@ let
     fwupd
     polkit
   ];
-  # `lxb-retroarch` is deliberately not in this list: it links nothing that
-  # needs a driver runpath or a wrapper, and it looks for `flatpak` on the PATH
-  # of the session that started it rather than on one baked in here — a helper
-  # wrapped with this package's own PATH would be one that could not see the
-  # flatpak the user installed.
+  # `lxb-retroarch` and `lxb-heroic` are deliberately not in this list: they
+  # link nothing that
+  # needs a driver runpath or a wrapper, and they look for `flatpak` on the PATH
+  # of the session that started them rather than on one baked in here — a
+  # helper wrapped with this package's own PATH would be one that could not see
+  # the flatpak the user installed.
   binaries = if compositorOnly then [ "lxb" ] else [ "lxb" "lxb-desktop" "lxb-portal" "lxb-updates" ];
   crates = if compositorOnly then [ "-p" "lxb-compositor" ] else [ "--workspace" ];
 in
@@ -208,6 +209,10 @@ rustPlatform.buildRustPackage {
       "$out/share/polkit-1/actions/org.linexinbar.locale.policy"
     substituteInPlace "$out/share/polkit-1/actions/org.linexinbar.locale.policy" \
       --replace-fail '@HELPER@' "$out/bin/lxb-desktop"
+    install -Dm0644 packaging/files/org.linexinbar.drives.policy.in \
+      "$out/share/polkit-1/actions/org.linexinbar.drives.policy"
+    substituteInPlace "$out/share/polkit-1/actions/org.linexinbar.drives.policy" \
+      --replace-fail '@HELPER@' "$out/bin/lxb-desktop"
     install -Dm0644 docs/updates.md "$out/share/doc/$pname/updates.md"
 
     # The RetroArch integration's marks. Its binary is installed by
@@ -225,6 +230,9 @@ rustPlatform.buildRustPackage {
     # and consoles.rs gains machines. Naming them here left this derivation
     # installing two of forty-six, one of which had already left the tree.
     install -Dm0644 crates/lxb-retroarch/glyphs/*.svg \
+      -t "$out/share/lxb/glyphs"
+    # And the Epic Games integration's one mark, on the same terms.
+    install -Dm0644 crates/lxb-heroic/glyphs/epic.svg \
       -t "$out/share/lxb/glyphs"
 
     patchShebangs "$out/bin/lxb-session"

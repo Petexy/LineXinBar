@@ -206,6 +206,14 @@ pub enum Ask {
         /// Steam's name for the language an agreement is to be read in, if
         /// the game turns out to have one. See [`agreement::read_all`].
         language: &'static str,
+        /// Which library it goes into, on a machine with more than one. See
+        /// [`webui::Place`].
+        place: webui::Place,
+    },
+    /// Make one library Steam's own default, if Valve's client is up to be
+    /// told. See [`Steam::make_default_library`].
+    DefaultLibrary {
+        path: String,
     },
     /// Stop fetching one, and take away what had arrived.
     StopInstalling {
@@ -216,6 +224,19 @@ pub enum Ask {
     Uninstall {
         app_id: u32,
     },
+    /// Add, remove or repair one of Steam's libraries, as its own storage page
+    /// does. Answered by [`Event::Shelved`].
+    Shelve(webui::Shelving),
+    /// Move one installed game into another library. Answered by
+    /// [`Event::Moving`] as it goes and by [`Event::Moved`] when it ends.
+    Move {
+        app_id: u32,
+        /// The library it goes into, by the path Steam lists it under.
+        to: String,
+    },
+    /// Stop the move that is under way, if Valve's client is up to be told.
+    /// Says nothing back itself: the move's own [`Event::Moved`] does.
+    CancelMove,
     /// Ask Valve's client which Steam Play compatibility tools one title — or
     /// every unverified title — may be run with, and which of them is forced.
     ///
@@ -835,6 +856,13 @@ pub enum Stopped {
     /// Accepting is a second press — [`Steam::accept_and_install`] — and only
     /// a person makes it. Nothing has been recorded by getting this.
     Agreements(Vec<agreement::Agreement>),
+    /// Nothing went wrong: the game can go into more than one library, and
+    /// these are they, with how much room it needs — for the shell to ask
+    /// which on its own screen. See [`webui::Place::Ask`].
+    ///
+    /// Answered by pressing Install again with the library that was chosen.
+    /// Nothing has been fetched by getting this.
+    WhereTo(webui::Choice),
     /// Nothing went wrong here either: this version of Valve's client no longer
     /// answers the calls a silent install is made of.
     ///
@@ -854,6 +882,7 @@ impl Stopped {
             Stopped::Failed(why) => why,
             Stopped::Asks(why) => why,
             Stopped::Agreements(_) => "agreements to accept",
+            Stopped::WhereTo(_) => "a library to choose",
             Stopped::NotFromHere(why) => why,
         }
     }
@@ -892,6 +921,36 @@ impl Reach {
             Reach::Restoring => Some("Connecting to Steam"),
             Reach::Online => None,
             Reach::Offline(why) => Some(why),
+        }
+    }
+}
+
+/// Why something asked of Steam's storage — a library added, removed or
+/// repaired, a game moved — did not happen.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum StorageRefused {
+    /// Steam said no, and why, in a word the shell can say in its own — see
+    /// [`webui::Declined`].
+    Declined(webui::Declined),
+    /// Steam could not be reached, woken or driven. The words are for the log:
+    /// what a person can do about any of these is the same.
+    Unreached(String),
+}
+
+impl From<webui::Problem> for StorageRefused {
+    fn from(problem: webui::Problem) -> StorageRefused {
+        match problem {
+            webui::Problem::Declined(why) => StorageRefused::Declined(why),
+            other => StorageRefused::Unreached(other.to_string()),
+        }
+    }
+}
+
+impl std::fmt::Display for StorageRefused {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            StorageRefused::Declined(why) => write!(f, "{why}"),
+            StorageRefused::Unreached(why) => write!(f, "{why}"),
         }
     }
 }
@@ -982,6 +1041,21 @@ pub enum Event {
     UninstallFailed {
         app_id: u32,
         why: String,
+    },
+    /// A library was added, removed or repaired — or Steam would not, and
+    /// this is why. See [`Steam::shelve`].
+    Shelved {
+        job: webui::Shelving,
+        how: Result<(), StorageRefused>,
+    },
+    /// How far a move has got. See [`Steam::move_game`].
+    Moving(webui::Moving),
+    /// A move has ended: the game is in the library it was sent to, it was
+    /// stopped and is where it was, or it did not go and this is why.
+    Moved {
+        app_id: u32,
+        to: String,
+        how: Result<webui::Moved, StorageRefused>,
     },
     /// How Valve's client is getting on installing itself, and what became of
     /// it.
@@ -1520,12 +1594,31 @@ impl Steam {
     ///
     /// `language` is Steam's name for the one an agreement is read in, should
     /// the game stop on one — see [`Stopped::Agreements`].
-    pub fn install(&self, app_id: u32, language: &'static str) {
+    ///
+    /// Which *library* it goes into is the person's, where there is more than
+    /// one: `place` either names it or asks, and asking is answered by
+    /// [`Event::InstallFailed`] carrying [`Stopped::WhereTo`] — see
+    /// [`webui::Place`].
+    pub fn install(&self, app_id: u32, place: webui::Place, language: &'static str) {
         self.ask(Ask::Install {
             app_id,
             accepting: Vec::new(),
             language,
+            place,
         });
+    }
+
+    /// Make this library Steam's own default — the one its install dialog
+    /// starts on, and where a game started from its window goes.
+    ///
+    /// Only if a client is up and this session's: this is a settings press,
+    /// and waking a client for it would be most of a minute and a few hundred
+    /// megabytes spent on a row. A client that is not up is told the next time
+    /// a game is fetched into a library chosen in the settings, which carries
+    /// the same instruction — see [`webui::Place::In`]. Says nothing back:
+    /// what the shell's own row shows is the shell's own setting either way.
+    pub fn make_default_library(&self, path: String) {
+        self.ask(Ask::DefaultLibrary { path });
     }
 
     /// Record that a person has accepted these agreements, and fetch the game
@@ -1541,16 +1634,22 @@ impl Steam {
     /// same agreements again, the answer is [`Stopped::Asks`] — Steam's own
     /// window — rather than the same panel a second time, which would be a
     /// press that goes round in a circle.
+    ///
+    /// `place` is the one the first press was made with, so a game whose
+    /// library was chosen before its agreement was asked goes where it was
+    /// sent.
     pub fn accept_and_install(
         &self,
         app_id: u32,
         accepting: Vec<webui::Eula>,
+        place: webui::Place,
         language: &'static str,
     ) {
         self.ask(Ask::Install {
             app_id,
             accepting,
             language,
+            place,
         });
     }
 
@@ -1575,6 +1674,35 @@ impl Steam {
     /// press that starts it is the only chance anybody gets to say no.
     pub fn uninstall(&self, app_id: u32) {
         self.ask(Ask::Uninstall { app_id });
+    }
+
+    /// Add, remove or repair one of Steam's libraries — the three things
+    /// Valve's storage page does to a library as a whole.
+    ///
+    /// Answered by [`Event::Shelved`], always. Wakes the client where it has
+    /// to: this is a press somebody made on a panel that is waiting for it,
+    /// and the list of libraries is the client's to change — the file it
+    /// keeps them in is written out of its memory, and one written under it
+    /// would be written over.
+    pub fn shelve(&self, job: webui::Shelving) {
+        self.ask(Ask::Shelve(job));
+    }
+
+    /// Move one installed game into another library, as Valve's Move Content
+    /// dialog does.
+    ///
+    /// Answered by [`Event::Moving`] as it goes and by [`Event::Moved`] when
+    /// it ends, however it ends. One at a time: a second move asked for while
+    /// one is under way is refused rather than queued, because the client's own
+    /// dialog moves one game after another and a second watch would read the
+    /// first one's progress.
+    pub fn move_game(&self, app_id: u32, to: String) {
+        self.ask(Ask::Move { app_id, to });
+    }
+
+    /// Stop the move that is under way. The game stays where it was.
+    pub fn cancel_move(&self) {
+        self.ask(Ask::CancelMove);
     }
 
     /// Ask what one title — or every unverified title — may be run under, and
@@ -1794,6 +1922,21 @@ pub(crate) enum Finished {
         generation: u64,
         how: Result<Vec<webui::Way>, String>,
     },
+    /// Something was done to a library, or not.
+    ///
+    /// No generation: a library is the machine's rather than the account's,
+    /// and the panel waiting on this is waiting whoever is signed in.
+    Shelving {
+        job: webui::Shelving,
+        how: Result<(), StorageRefused>,
+    },
+    /// A move has ended. No generation, for the same reason — and because the
+    /// one-at-a-time hold has to be let go of whoever is signed in by now.
+    Moving {
+        app_id: u32,
+        to: String,
+        how: Result<webui::Moved, StorageRefused>,
+    },
     /// A wake has finished, whichever way it finished.
     ///
     /// Routed through the worker rather than straight to the shell for the
@@ -1818,6 +1961,9 @@ impl Finished {
             | Finished::Compatibility { generation, .. }
             | Finished::TheWays { generation, .. } => *generation,
             Finished::Waking { ticket, .. } => ticket.ground,
+            // Answered before anything asks, in `came_back`: neither belongs to
+            // an account. Never read, and zero rather than a guess.
+            Finished::Shelving { .. } | Finished::Moving { .. } => 0,
         }
     }
 }
@@ -1838,6 +1984,9 @@ impl Finished {
 struct Watching {
     fetching: std::collections::BTreeMap<u32, Moved>,
     removing: std::collections::BTreeSet<u32>,
+    /// The game this session is moving between libraries, where it is moving
+    /// one. See [`Steam::move_game`] for why there is only ever one.
+    moving: Option<u32>,
     /// Which account and which Steam these belong to, as a number that only
     /// ever goes up.
     ///
@@ -2637,6 +2786,7 @@ fn answer(
             app_id,
             accepting,
             language,
+            place,
         } => {
             let State::In { stored, .. } = &state else {
                 let _ = events.send(Event::InstallFailed {
@@ -2688,7 +2838,12 @@ fn answer(
                     eula.id, eula.version, eula.app_id
                 ));
             }
-            audit::asked(format_args!("install {app_id}"));
+            match &place {
+                webui::Place::Ask => audit::asked(format_args!("install {app_id}")),
+                webui::Place::In { path, .. } => {
+                    audit::asked(format_args!("install {app_id} into {path}"))
+                }
+            }
             let generation = watching.generation;
             let ticket = a_job_about(&state, watching);
             in_the_background(stored, ticket, ground, worker, move |ready| {
@@ -2698,7 +2853,7 @@ fn answer(
                     how: match ready {
                         Err(why) => Err(Stopped::Failed(why)),
                         Ok(standing) => {
-                            match webui::install(app_id, &accepting, standing.still()) {
+                            match webui::install(app_id, &accepting, &place, standing.still()) {
                                 Ok(()) => {
                                     tracing::info!(app_id, "Valve's client is fetching this game");
                                     Ok(())
@@ -2727,6 +2882,16 @@ fn answer(
                                     tracing::info!(app_id, %what, "this game cannot be fetched silently");
                                     Err(Stopped::Asks(what))
                                 }
+                                Err(webui::Problem::WhereTo(choice)) => {
+                                    tracing::info!(
+                                        app_id,
+                                        ?place,
+                                        libraries = choice.libraries.len(),
+                                        needs = choice.needs,
+                                        "this game is to be put in a library somebody chooses"
+                                    );
+                                    Err(Stopped::WhereTo(choice))
+                                }
                                 // Not a failure either, and answered the same way: the
                                 // window that can still do it.
                                 Err(problem @ webui::Problem::Renamed(_)) => {
@@ -2737,6 +2902,44 @@ fn answer(
                             }
                         }
                     },
+                }
+            });
+            state
+        }
+        Ask::DefaultLibrary { path } => {
+            // A setting, told to a client that is already up and nowhere else
+            // — see [`Steam::make_default_library`]. Proved and never woken,
+            // on [`HaveAClient::AsItStands`]'s terms, and for a smaller reason
+            // than theirs: nothing is walking, but a row in Settings is not
+            // worth starting Steam for.
+            let Some((stored, _)) = holding(&state) else {
+                return state;
+            };
+            let ticket = a_job_about(&state, watching);
+            let stored = stored.clone();
+            let ground = ground.clone();
+            std::thread::spawn(move || {
+                let standing = match standing_on(&stored, ticket, &ground, HaveAClient::AsItStands)
+                {
+                    Ok(standing) => standing,
+                    Err(refusal) => {
+                        tracing::info!(%path, %refusal, "no client of this session's to tell which library is its default; the next install tells it");
+                        return;
+                    }
+                };
+                audit::asked(format_args!("make {path} the default library"));
+                match webui::make_default_library(&path, standing.still()) {
+                    Ok(()) => {
+                        audit::went("make the default library", audit::How::Done);
+                        tracing::info!(%path, "Steam's default library is the one chosen in the settings");
+                    }
+                    Err(problem) => {
+                        audit::went(
+                            "make the default library",
+                            audit::How::Failed(problem.to_string()),
+                        );
+                        tracing::warn!(%path, %problem, "Steam's default library was not changed");
+                    }
                 }
             });
             state
@@ -2782,6 +2985,104 @@ fn answer(
                         webui::uninstall(app_id, standing.still())
                             .map_err(|problem| problem.to_string())
                     }),
+                }
+            });
+            state
+        }
+        Ask::Shelve(job) => {
+            // The test every press that asks the client for something makes —
+            // a credential to wake it with — and not the stricter one an
+            // install makes: nothing here goes near Steam's servers, so a
+            // session that holds an account it cannot reach today can still
+            // change what is on its own drives.
+            let Some((stored, _)) = holding(&state) else {
+                let _ = events.send(Event::Shelved {
+                    how: Err(StorageRefused::Unreached(format!(
+                        "{}, so it cannot change Steam's libraries.",
+                        out_of_reach(&state)
+                    ))),
+                    job,
+                });
+                return state;
+            };
+            audit::asked(format_args!("{job}"));
+            let ticket = a_job_about(&state, watching);
+            in_the_background(stored, ticket, ground, worker, move |ready| {
+                let how = ready
+                    .map_err(StorageRefused::Unreached)
+                    .and_then(|standing| {
+                        standing.about_to_act().map_err(StorageRefused::Unreached)?;
+                        webui::shelve(&job, standing.still()).map_err(StorageRefused::from)
+                    });
+                Finished::Shelving { job, how }
+            });
+            state
+        }
+        Ask::Move { app_id, to } => {
+            let Some((stored, _)) = holding(&state) else {
+                let _ = events.send(Event::Moved {
+                    app_id,
+                    to,
+                    how: Err(StorageRefused::Unreached(format!(
+                        "{}, so it cannot move this game.",
+                        out_of_reach(&state)
+                    ))),
+                });
+                return state;
+            };
+            if let Some(busy) = watching.moving {
+                tracing::info!(app_id, busy, "one move at a time, and another is under way");
+                let _ = events.send(Event::Moved {
+                    app_id,
+                    to,
+                    how: Err(StorageRefused::Declined(webui::Declined::AnotherMove)),
+                });
+                return state;
+            }
+            watching.moving = Some(app_id);
+            audit::asked(format_args!("move {app_id} to {to}"));
+            let ticket = a_job_about(&state, watching);
+            let told = events.clone();
+            in_the_background(stored, ticket, ground, worker, move |ready| {
+                let how = ready
+                    .map_err(StorageRefused::Unreached)
+                    .and_then(|standing| {
+                        standing.about_to_act().map_err(StorageRefused::Unreached)?;
+                        webui::move_game(app_id, &to, standing.still(), |moving| {
+                            let _ = told.send(Event::Moving(moving));
+                        })
+                        .map_err(StorageRefused::from)
+                    });
+                Finished::Moving { app_id, to, how }
+            });
+            state
+        }
+        Ask::CancelMove => {
+            // Told to a client that is already up and nowhere else, on
+            // [`Ask::DefaultLibrary`]'s terms: a client that is not running has
+            // no move in it to stop.
+            let Some((stored, _)) = holding(&state) else {
+                return state;
+            };
+            let ticket = a_job_about(&state, watching);
+            let stored = stored.clone();
+            let ground = ground.clone();
+            std::thread::spawn(move || {
+                let standing = match standing_on(&stored, ticket, &ground, HaveAClient::AsItStands)
+                {
+                    Ok(standing) => standing,
+                    Err(refusal) => {
+                        tracing::info!(refusal = %said_about(&refusal), "no client of this session's to stop a move in");
+                        return;
+                    }
+                };
+                audit::asked("cancel the move");
+                match webui::cancel_move(standing.still()) {
+                    Ok(()) => audit::went("cancel the move", audit::How::Done),
+                    Err(problem) => {
+                        audit::went("cancel the move", audit::How::Failed(problem.to_string()));
+                        tracing::warn!(%problem, "the move could not be stopped");
+                    }
                 }
             });
             state
@@ -3432,6 +3733,45 @@ fn came_back(
     if let Finished::Waking { ticket, report } = finished {
         return a_wake_landed(ticket, report, state, worker, events, watching, waking);
     }
+    // And the two about the machine's own drives, before the account is
+    // asked about for the same kind of reason: a library is not an account's,
+    // the one-at-a-time hold on a move has to be let go of whoever is signed
+    // in by now, and a panel is waiting on each whoever that is.
+    let finished = match finished {
+        Finished::Shelving { job, how } => {
+            match &how {
+                Ok(()) => {
+                    audit::went(format_args!("{job}"), audit::How::Done);
+                    tracing::info!(%job, "Steam's libraries changed");
+                }
+                Err(why) => {
+                    audit::went(format_args!("{job}"), audit::How::Failed(why.to_string()));
+                    tracing::warn!(%job, %why, "Steam's libraries did not change");
+                }
+            }
+            let _ = events.send(Event::Shelved { job, how });
+            return at_once(state);
+        }
+        Finished::Moving { app_id, to, how } => {
+            watching.moving = None;
+            match &how {
+                Ok(moved) => {
+                    audit::went(format_args!("move {app_id} to {to}"), audit::How::Done);
+                    tracing::info!(app_id, %to, ?moved, "a move between libraries ended");
+                }
+                Err(why) => {
+                    audit::went(
+                        format_args!("move {app_id} to {to}"),
+                        audit::How::Failed(why.to_string()),
+                    );
+                    tracing::warn!(app_id, %to, %why, "a game was not moved");
+                }
+            }
+            let _ = events.send(Event::Moved { app_id, to, how });
+            return at_once(state);
+        }
+        other => other,
+    };
     // A job whose account has gone says nothing to anybody. It was somebody's
     // install and they are not signed in any more; the client carries on with
     // whatever it was doing, and this session has no row left to report it on.
@@ -3446,8 +3786,9 @@ fn came_back(
     }
     match finished {
         // Answered above, before the ground was checked: a wake has a hold to
-        // let go of and a queue to start whichever way it went.
-        Finished::Waking { .. } => state,
+        // let go of and a queue to start whichever way it went, and the drives
+        // are nobody's account.
+        Finished::Waking { .. } | Finished::Shelving { .. } | Finished::Moving { .. } => state,
         Finished::Installing {
             app_id,
             how: Ok(()),
@@ -3474,7 +3815,9 @@ fn came_back(
                     Stopped::Asks(said) | Stopped::NotFromHere(said) => {
                         audit::How::Refused(said.clone())
                     }
-                    Stopped::Agreements(_) => audit::How::Refused(why.said().to_string()),
+                    Stopped::Agreements(_) | Stopped::WhereTo(_) => {
+                        audit::How::Refused(why.said().to_string())
+                    }
                 },
             );
             let _ = events.send(Event::InstallFailed { app_id, why });

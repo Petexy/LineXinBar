@@ -111,7 +111,50 @@ pub struct Output {
 pub fn probe(program: &str, args: &[&str], codes: &[i32]) -> Result<Output> {
     probe_command(command(program, args)?, program, codes)
 }
-pub(crate) fn probe_command(mut cmd: Command, program: &str, codes: &[i32]) -> Result<Output> {
+
+/// A query whose exit status is its answer: `pacman -Qqo`, `dpkg-query -S`
+/// and `rpm -qf` say "nobody owns this" by exiting 1 with nothing but a
+/// complaint on stderr, which [`probe`] rightly reads as a tool that failed.
+/// Here every status comes back, and only a tool that could not be run, ran
+/// past the bound or said too much is an error.
+pub fn ask(program: &str, args: &[&str]) -> Result<Output> {
+    let (code, out, _) = run_probe(command(program, args)?, program)?;
+    Ok(Output {
+        code,
+        text: String::from_utf8_lossy(&out).into_owned(),
+    })
+}
+
+/// Run `cmd` as [`probe`] does and ask nothing of its status, for a program
+/// found somewhere other than `PATH`: a binary under a prefix, asked its
+/// version.
+pub(crate) fn ask_command(cmd: Command, program: &str) -> Result<Output> {
+    let (code, out, _) = run_probe(cmd, program)?;
+    Ok(Output {
+        code,
+        text: String::from_utf8_lossy(&out).into_owned(),
+    })
+}
+
+pub(crate) fn probe_command(cmd: Command, program: &str, codes: &[i32]) -> Result<Output> {
+    let (code, out, err) = run_probe(cmd, program)?;
+    if !codes.contains(&code) || (code != 0 && out.is_empty() && !err.is_empty()) {
+        let error = if err.is_empty() { &out } else { &err };
+        bail!(
+            "{program} exited {code}: {}",
+            String::from_utf8_lossy(error)
+                .chars()
+                .take(1600)
+                .collect::<String>()
+        );
+    }
+    Ok(Output {
+        code,
+        text: String::from_utf8_lossy(&out).into_owned(),
+    })
+}
+
+fn run_probe(mut cmd: Command, program: &str) -> Result<(i32, Vec<u8>, Vec<u8>)> {
     cmd.stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
@@ -184,23 +227,10 @@ pub(crate) fn probe_command(mut cmd: Command, program: &str, codes: &[i32]) -> R
             return Err(error);
         }
     };
-    if !codes.contains(&code) || (code != 0 && out.is_empty() && !err.is_empty()) {
-        let error = if err.is_empty() { &out } else { &err };
-        bail!(
-            "{program} exited {code}: {}",
-            String::from_utf8_lossy(error)
-                .chars()
-                .take(1600)
-                .collect::<String>()
-        );
-    }
     if out.len() >= 2_000_000 {
         bail!("{program} returned too much data; the check is incomplete");
     }
-    Ok(Output {
-        code,
-        text: String::from_utf8_lossy(&out).into_owned(),
-    })
+    Ok((code, out, err))
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -211,6 +241,9 @@ pub struct Step {
     pub staged: bool,
     pub pulled_guix: bool,
     pub custom: Option<crate::custom::Reviewed>,
+    /// Run this helper's own executable rather than a program found on
+    /// `PATH` — see [`helper`].
+    pub helper: bool,
 }
 
 impl Step {
@@ -222,6 +255,22 @@ impl Step {
             staged: false,
             pulled_guix: false,
             custom: None,
+            helper: false,
+        }
+    }
+    /// A step this helper carries out itself: `lxb-updates release …`, which
+    /// fetches, checks and installs what LineXinBar has released. There is no
+    /// native tool that does that, and the helper is already the one program
+    /// every root step has to be trusted as far as.
+    pub fn of_helper(args: Vec<String>, root: bool) -> Self {
+        Self {
+            program: "lxb-updates".into(),
+            args,
+            root,
+            staged: false,
+            pulled_guix: false,
+            custom: None,
+            helper: true,
         }
     }
     pub fn pulled_guix(mut self) -> Self {
@@ -290,6 +339,25 @@ fn guix_current(root: bool) -> Result<PathBuf> {
     Ok(path)
 }
 
+/// Where this very program is installed.
+///
+/// Its own path rather than `PATH`'s `lxb-updates`, so that the helper a step
+/// runs is the one polkit authorized and not a second copy somebody put
+/// earlier on the path. A package can replace it while a job runs — the
+/// release step that installs a new LineXinBar does exactly that — and then
+/// the kernel reports the old inode as `… (deleted)`; the path is still where
+/// the installation keeps its helper, and the file there now is the newer one
+/// the same installation put down.
+pub fn helper() -> Result<PathBuf> {
+    let path = std::env::current_exe().context("Cannot find the update helper")?;
+    use std::os::unix::ffi::OsStrExt;
+    let bytes = path.as_os_str().as_bytes();
+    Ok(match bytes.strip_suffix(b" (deleted)") {
+        Some(kept) => PathBuf::from(std::ffi::OsStr::from_bytes(kept)),
+        None => path,
+    })
+}
+
 pub fn start(step: &Step) -> Result<Transaction> {
     if step.custom.is_some() {
         if step.root {
@@ -298,7 +366,9 @@ pub fn start(step: &Step) -> Result<Transaction> {
         return start_custom(step);
     }
     let args: Vec<&str> = step.args.iter().map(String::as_str).collect();
-    let target = if step.pulled_guix {
+    let target = if step.helper {
+        helper()?
+    } else if step.pulled_guix {
         if step.program != "guix" {
             bail!("Invalid Guix operation");
         }
@@ -334,7 +404,9 @@ pub(crate) fn start_authorized(step: &Step) -> Result<Transaction> {
     if step.custom.is_some() {
         return start_custom(step);
     }
-    let target = if step.pulled_guix {
+    let target = if step.helper {
+        helper()?
+    } else if step.pulled_guix {
         guix_current(true)?
     } else {
         find(&step.program).context("The native update tool is unavailable")?

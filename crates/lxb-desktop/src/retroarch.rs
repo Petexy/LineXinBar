@@ -1884,6 +1884,7 @@ impl RetroArch {
             over_the_list: false,
             person: None,
             portrait: None,
+            used: None,
         })
     }
 
@@ -1938,6 +1939,7 @@ impl RetroArch {
                 over_the_list: false,
                 person: None,
                 portrait: None,
+                used: None,
             });
         }
         let start = match (ready, command) {
@@ -2127,6 +2129,7 @@ pub fn folder_row() -> Entry {
         over_the_list: true,
         person: None,
         portrait: None,
+        used: None,
     })
 }
 
@@ -2600,8 +2603,9 @@ fn pictures_for(chosen: &[Chosen], rom: &Rom) -> Shown {
 }
 
 /// What one picture on this disk measures, or `None` for anything that could
-/// not be read as one.
-fn measured(at: impl AsRef<Path>) -> Option<f32> {
+/// not be read as one. An Epic game's cover is measured the same way, for the
+/// same card — see [`crate::heroic`].
+pub fn measured(at: impl AsRef<Path>) -> Option<f32> {
     let file = image::ImageReader::open(at).ok()?;
     // Guessed from the bytes rather than trusted from the name. Every one of
     // these is called `.png` because that is what libretro calls them, and a
@@ -2886,6 +2890,7 @@ pub fn bios_row(wanted: &[Firmware]) -> Option<Entry> {
         over_the_list: true,
         person: None,
         portrait: None,
+        used: None,
     }))
 }
 

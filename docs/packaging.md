@@ -22,13 +22,19 @@ These definitions build three early-development packages from one source tree:
   emulate a console carries none of it. Version-locked to the exact
   `lxb-desktop` beside it, because what the two agree about is a protocol
   carried on a pipe rather than a library — see `crates/lxb-retroarch`.
+* **`lxb-heroic`** — the optional Epic Games integration, through Heroic Games
+  Launcher's flatpak: one helper program and the mark the shell draws its rows
+  with. Optional on exactly the terms `lxb-retroarch` is, and version-locked to
+  the `lxb-desktop` beside it for the same reason. It depends on `flatpak`,
+  which it cannot do without — see [Epic Games](epic.md) and
+  `crates/lxb-heroic`.
 
 The split is a partition, and `packaging/build.sh check` enforces that — a file
 installed by no package is one that has quietly stopped shipping, and a file
 installed by two is one two packages will fight over at install time.
 
-Between them the three packages install the compositor and shell, a complete
-bundled cursor theme, a native Wayland session, and the optional integration:
+Between them the four packages install the compositor and shell, a complete
+bundled cursor theme, a native Wayland session, and the optional integrations:
 
 ```text
 lxb-compositor   bin/lxb
@@ -47,6 +53,9 @@ lxb-desktop      bin/lxb-desktop
 lxb-retroarch    bin/lxb-retroarch
                  share/lxb/glyphs/retroarch.svg
                  share/lxb/glyphs/console-*.svg   (one per console it knows)
+
+lxb-heroic       bin/lxb-heroic
+                 share/lxb/glyphs/epic.svg
 ```
 
 The udev rule grants two device nodes to whoever holds the active session on
@@ -97,6 +106,17 @@ fallback. Ports with other service managers should validate session teardown and
 provide supervision before promising updates survive logout. See
 [the update guide](updates.md) for policy examples and the validation matrix.
 
+A distribution that carries these packages, and the six projects released beside
+them, has nothing to configure for **Update LineXinBar**. The row appears only
+when some of the family is installed as packages none of the system's
+repositories offer, or was built from source under `/usr`, `/usr/local` or
+`~/.local`. The coordinator then reads each project's release list from
+`api.github.com` and downloads release files from `github.com`, over a TLS stack
+and root certificates of its own. Building a tag from source also needs `git`
+and a system-wide Rust toolchain, which are not dependencies of the package:
+only a machine that installed from source needs them, and it has them already.
+See [LineXinBar and the projects beside it](updates.md#linexinbar-and-the-projects-beside-it).
+
 Immutable distributions can package a custom System updater without enabling a
 native system upgrade. Ship the provider selection in
 `/usr/share/linexinbar/updates.json`, its manifest under
@@ -109,12 +129,13 @@ Settings commands.
 ## One version, in one file
 
 The version this project releases under is the single line in `VERSION` at the
-root of the checkout — **0.9.0** — and what a package claims and what
+root of the checkout — **0.9.1** — and what a package claims and what
 `lxb --version` reports are the same number because both come from there.
 
 Almost everything reads that file where it stands: the Arch, Debian and Nix
 definitions, the source archive's name, and the build scripts in
-`crates/lxb-compositor`, `crates/lxb-desktop` and `crates/lxb-retroarch`, which
+`crates/lxb-compositor`, `crates/lxb-desktop`, `crates/lxb-retroarch` and
+`crates/lxb-heroic`, which
 refuse to build a binary whose manifest has drifted away from it. The last of
 those needs the check most: it is the one binary here that can be installed
 without the other two, so it is the one that can most easily be a version out of
@@ -314,7 +335,13 @@ flatpak where both are present; it needs neither to be installed to be
 packaged. It reaches the network for two things and only when asked: the flatpak
 install, and fetching a core from `buildbot.libretro.com` — the same server
 RetroArch's own Online Updater uses. Both are HTTPS with a TLS stack of its own,
-so neither needs a system library. Package scripts do not create users, change group
+so neither needs a system library. `lxb-heroic` needs `flatpak`: everything it
+does is Heroic's Flathub build, which it installs into the user's own flatpaks
+where there is none. It reaches the network through that flatpak, through
+Heroic's bundled legendary (Epic's own servers, on Heroic's session), and for
+three things of its own: Epic's device sign-in, Heroic's default Proton from
+GitHub (checked against its published checksum), and the covers, backdrops,
+logos and achievement icons from Epic's image servers. Package scripts do not create users, change group
 membership, install a system-wide configuration, or alter device permissions.
 
 These recipes are intended for local and CI packages during early development.

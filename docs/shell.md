@@ -404,8 +404,8 @@ System  >  Files  >  Root  >  usr  >  lib
 ```
 
 It opens on three kinds of place. **Home** is the user's own folder; **Root**
-is `/`; and after them comes a row per drive that is mounted. Each says how
-much room is left on it. The list is built on the press that opens it rather
+is `/`; and after them comes a row per drive, mounted or not. A mounted one
+says how much room is left on it. The list is built on the press that opens it rather
 than when the shell starts, so a stick plugged in half an hour into a session
 is on it the moment somebody goes looking.
 
@@ -416,6 +416,40 @@ rest), which on a machine with subvolumes would otherwise offer the same disk
 five times under the names of its own directories. Loop devices count only
 under `/run/media`, `/media` and `/mnt`, where they are an `.iso` somebody
 attached rather than a packaged application the system mounted.
+
+#### Drives nothing has mounted
+
+A drive nothing has mounted is on the list too, in the place its name puts it
+among the others, reading **Not mounted · 932 GiB**. Pressing it mounts it and
+steps into it. The row reads **Mounting…** while that happens, and a second
+press is spent rather than asking twice. A disk inside the machine makes the
+system ask for an administrator's password first, on the shell's own panel; a
+USB stick does not. If the drive cannot be mounted, a panel names it and says
+so in plain words — the reason UDisks gave is in the journal. The cursor is only
+taken into the drive if it is still on its row when the mount finishes.
+
+```
+System  >  Files  >  GamesHDD (Not mounted · 932 GiB)  --A-->  GamesHDD  >  …
+```
+
+A USB stick or a card is mounted the moment it is plugged in, and one already
+plugged in when the session starts is mounted then, without asking for anything
+— the way GNOME and KDE behave. One the person unmounted stays unmounted until
+they open it.
+
+The menu over a drive has the one way to put it away: **Unmount** for a disk
+inside the machine, **Safely remove** for one that can be unplugged, which
+unmounts everything on it and turns it off, then says it can be pulled out.
+Something still using the drive is said in words, with what to do about it.
+Whether the machine mounts a drive by itself when it starts is under
+[Settings > Storage](settings.md#storage).
+
+The list comes from UDisks, the service GNOME's and KDE's file managers mount
+through; see `crates/lxb-desktop/src/drives.rs`. Left out are what UDisks says
+to ignore (firmware partitions, Windows' recovery), anything that is not a
+filesystem, a drive whose mount-table line says `x-gvfs-hide`, and a disk image
+attached by another account. An encrypted partition is not offered yet: it needs
+its passphrase before it can be mounted, and that is a separate change.
 
 Inside a folder the subcategories come first, then the files. A folder says
 when it was last written until it has been opened, and afterwards what was

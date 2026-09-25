@@ -3068,6 +3068,13 @@ impl LxbState {
         self.lxb
             .blackouts
             .cover(output, covered, std::time::Instant::now());
+        // What slept under the black is continued here and now, with the
+        // request that brings it back, rather than on the next pass of the
+        // loop: the user has already asked for this display, and what is on it
+        // should be running before the first frame of it coming back up. On
+        // the way down this finds nothing to do — nothing is off screen until
+        // the sheet is all the way down. See [`crate::blackout::Blackouts::is_black`].
+        self.refresh_application_sleep();
         // Nothing else is going to ask for this frame: the display being
         // covered is showing a start screen that has stopped animating,
         // precisely because the shell has stopped drawing it.

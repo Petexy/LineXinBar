@@ -22,6 +22,7 @@ in the project README.
 | [Applications, media and files](shell.md) | Launcher categories, music, videos, images, search and file operations |
 | [Steam](steam.md) | Sign-in, library, installation, launching games, friends and invitations |
 | [RetroArch](retroarch.md) | Optional integration, ROM folders, cores and console games |
+| [Epic Games](epic.md) | Optional integration through Heroic: sign-in, library, installs, updates, cloud saves and achievements |
 | [Desktop settings](settings.md) | Appearance, displays, HDR, night light, sound, networking and system settings |
 | [Controls and multiple displays](controls.md) | Gamepads, keyboard shortcuts, mouse, touch and on-screen keyboard |
 | [Guide overlay and context menus](guide.md) | App switching, quick settings, volume mixer and stick pointer |

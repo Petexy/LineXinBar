@@ -202,6 +202,59 @@ pub enum Command {
     /// reach the emulator's own screens — and there are things only they can
     /// do. Steam's row makes the same offer for the same reason.
     RetroArchOpen,
+    /// Ask whether to set Epic Games up: Heroic where there is none, and its
+    /// Proton either way. Opens the question; [`Command::EpicInstall`] is the
+    /// yes, and the two are separate names for the reason
+    /// [`Command::InstallRetroArch`] is separate from the press that asks.
+    EpicOfferInstall,
+    /// Set Epic Games up, the user having said yes.
+    EpicInstall,
+    /// Start signing in to Epic, or start again.
+    EpicSignIn,
+    /// Give up a sign-in, or put its panel away.
+    EpicCancel,
+    /// Open Epic's own page for the code on screen, in a browser on this
+    /// screen — the sign-in for somebody with no phone to hand.
+    EpicSignInHere,
+    /// Ask whether to sign Heroic out of Epic.
+    EpicSignOut,
+    /// Sign Heroic out, the user having said yes.
+    EpicSignOutNow,
+    /// Ask Epic for the library again.
+    EpicRefresh,
+    /// Open Heroic's own window, which the shell otherwise keeps off the bar.
+    EpicOpenHeroic,
+    /// Start the Epic game the menu was raised over.
+    EpicPlay,
+    /// Ask whether to install the Epic game the menu was raised over.
+    EpicOfferGet,
+    /// Install the Epic game the panel asked about.
+    EpicGet,
+    /// Ask whether to stop the Epic game the menu was raised over coming down.
+    EpicOfferStop,
+    /// Stop the Epic game the panel asked about coming down.
+    EpicStop,
+    /// Ask whether to uninstall the Epic game the menu was raised over.
+    EpicOfferRemove,
+    /// Uninstall the Epic game the panel asked about. Only ever reached from
+    /// the panel [`Command::EpicOfferRemove`] raises.
+    EpicRemove,
+    /// Update the Epic game the menu was raised over.
+    EpicUpdate,
+    /// Play the Epic game the panel asked about as it is, its update waiting.
+    EpicPlayNow,
+    /// Step into the orders the Epic Games column can be listed in — Steam's
+    /// eight, a pair of its own for the reason Steam's pair is not a shelf's.
+    EpicSort,
+    EpicSortBy(lxb_steam::library::Sort),
+    /// Step into what the Epic game the menu was raised over can run with.
+    EpicCompatibility,
+    /// Run it with this, by the name Heroic lists it under, or with Heroic's
+    /// default. Interned, because a command is `Copy`.
+    EpicRunWith(Option<&'static str>),
+    /// Check every file of the Epic game the menu was raised over, and fetch
+    /// whatever is wrong — Heroic's Verify and Repair.
+    EpicVerify,
     /// Open the picker that says where somebody's games are.
     ///
     /// Raised from the panel that explains what the folder has to look like,
@@ -231,6 +284,16 @@ pub enum Command {
     /// deleted: one asks a question and one answers it. Nothing but the panel's
     /// own button carries this.
     ReallyRemoveRetroArch,
+    /// Unmount the drive with this device number, from the menu over its row
+    /// in Files. See [`crate::drives`].
+    Unmount(u64),
+    /// Unmount everything on the drive this one is on and turn it off, so it
+    /// can be pulled out — the same row's menu, for a drive that can be.
+    ///
+    /// Its own command rather than [`Command::Unmount`] with a flag: one of
+    /// them leaves the drive where it is and the other makes it go away, and
+    /// the menu offers one or the other, never both.
+    SafelyRemove(u64),
     /// Stop looking for a BIOS, and put the question away with the panel.
     ///
     /// Not [`Command::Dismiss`], because there is something to forget: which
@@ -808,6 +871,41 @@ pub enum Command {
     /// and it is on the panel that shows the agreement's words and nowhere
     /// else — see `Shell::offer_the_agreements`.
     SteamAcceptAgreement(u32),
+    /// Install the game into one of the libraries on the panel that asked
+    /// where it should go — the `library`th, in the order the panel lists
+    /// them.
+    ///
+    /// An index rather than the path because a command is `Copy` and a path is
+    /// not; the panel holds the list, and the press is answered against the
+    /// list that was on the screen. See `Shell::offer_the_libraries`.
+    SteamInstallInto {
+        app_id: u32,
+        library: u8,
+    },
+    /// Ask where to move one game on Settings > Games > Steam > Storage, and
+    /// move it there on the answer.
+    SteamMoveGame(u32),
+    /// Move the game into one of the libraries on the panel that asked where —
+    /// the `library`th, in the order the panel lists them. An index for the
+    /// reason [`Command::SteamInstallInto`] carries one.
+    SteamMoveInto {
+        app_id: u32,
+        library: u8,
+    },
+    /// Put the panel of the move that is under way back up.
+    SteamShowMove,
+    /// Stop the move that is under way. The game stays where it was.
+    SteamCancelMove,
+    /// Put away a panel of the Storage page that is watching something Steam
+    /// is doing — a move, a library being added — which goes on without it.
+    ///
+    /// Its own command rather than [`Command::Dismiss`] so the shell can tell
+    /// that panel from any other by its buttons, and redraw it as the work
+    /// goes on.
+    SteamStorageHide,
+    /// Forget the library the panel asked about, the question having been
+    /// answered — Steam's Remove Library. Nothing on the drive is deleted.
+    SteamRemoveLibraryNow,
     /// Ask whether to take one game off the disk.
     ///
     /// Carries the app for the reason [`Command::SteamInstall`] does: it is

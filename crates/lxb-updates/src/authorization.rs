@@ -28,6 +28,11 @@ struct Grant {
     snap: bool,
     firmware: Vec<String>,
     policy: policy::Policy,
+    /// Update LineXinBar's operations, one a step and in the steps' order.
+    /// `None` holds the place of a build into the person's own home, which
+    /// is theirs to run and never the worker's.
+    #[serde(default)]
+    releases: Vec<Option<crate::releases::Operation>>,
 }
 impl Grant {
     fn reviewed(snapshot: &Snapshot) -> Result<Self> {
@@ -50,6 +55,12 @@ impl Grant {
                     grant.custom = Some(provider.clone())
                 }
                 Provider::Flatpak { installations } => grant.flatpak = installations.clone(),
+                Provider::Releases { operations } => {
+                    grant.releases = operations
+                        .iter()
+                        .map(|o| o.root().then(|| o.clone()))
+                        .collect()
+                }
                 Provider::Snap => grant.snap = true,
                 Provider::Firmware => {
                     grant.firmware = source
@@ -76,10 +87,19 @@ impl Grant {
             || self.snap
             || !self.firmware.is_empty()
             || self.flatpak.iter().any(|s| s != "user")
+            || self.releases.iter().any(Option::is_some)
     }
     fn validate(&self) -> Result<()> {
-        if self.flatpak.len() > 64 || self.firmware.len() > 256 {
+        if self.flatpak.len() > 64 || self.firmware.len() > 256 || self.releases.len() > 16 {
             bail!("Too many update targets");
+        }
+        // No home directory is acceptable here, and nothing that would not
+        // need root: this is what the root worker will run.
+        for operation in self.releases.iter().flatten() {
+            operation.validate(None)?;
+            if !operation.root() {
+                bail!("Invalid release operation");
+            }
         }
         if self.flatpak.iter().any(|s| {
             s.is_empty()
@@ -160,6 +180,12 @@ impl Grant {
             SourceId::Snap if self.snap && index == 0 => {
                 Ok(process::Step::new("snap", &["refresh"], true))
             }
+            SourceId::Linexinbar => self
+                .releases
+                .get(index)
+                .and_then(Option::as_ref)
+                .context("This release operation is outside the authorized update job")?
+                .step(),
             SourceId::Firmware => firmware::installation(
                 self.firmware
                     .get(index)
@@ -627,6 +653,40 @@ mod tests {
         assert!(grant.step(SourceId::Aur, 0).is_err());
         grant.firmware.push("--force".into());
         assert!(grant.validate().is_err());
+    }
+
+    /// The worker runs a release operation only as the review carried it and
+    /// only where it needs root; the place of a build into somebody's home
+    /// holds nothing it could be asked to run.
+    #[test]
+    fn a_release_operation_is_the_workers_only_where_it_needs_root() {
+        use crate::releases::Operation;
+        let build = |prefix: &str| Operation::Source {
+            repo: "DistriBumpy".into(),
+            tag: "v0.9.2".into(),
+            prefix: prefix.into(),
+            components: vec![String::new()],
+            libdir: None,
+            sitedir: None,
+        };
+        let mut grant = Grant {
+            policy: policy::read().unwrap(),
+            releases: vec![Some(build("/usr")), None],
+            ..Grant::default()
+        };
+        assert!(grant.needed());
+        let step = grant.step(SourceId::Linexinbar, 0).unwrap();
+        assert!(step.helper && step.root && step.args[0] == "release");
+        assert!(grant.step(SourceId::Linexinbar, 1).is_err());
+        assert!(grant.step(SourceId::Linexinbar, 2).is_err());
+        grant.releases = vec![None];
+        assert!(
+            !grant.needed(),
+            "a home build alone asks nobody for a password"
+        );
+        grant.releases = vec![Some(build("/home/someone/.local"))];
+        assert!(grant.validate().is_err());
+        assert!(grant.step(SourceId::Linexinbar, 0).is_err());
     }
 
     fn local_session(stream: UnixStream) -> Session {

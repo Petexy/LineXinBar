@@ -1419,15 +1419,21 @@ pub fn post_repaint(
 /// this is for is a whole application nobody is looking at; there is none to be
 /// had inside the one they are.
 ///
-/// Two answers are the whole display at once. While the shell is painting over
-/// it nothing of anybody's is on screen — its own windows included, since there
-/// is no application in front for them to belong to. While the overview is up
-/// everything is, because those cards are the live windows themselves.
+/// Three answers are the whole display at once. While the shell is painting
+/// over it nothing of anybody's is on screen — its own windows included, since
+/// there is no application in front for them to belong to. While the display
+/// is resting all the way behind OLED protection's black nothing is either, the
+/// floating window included, since the sheet is over that too: what is under
+/// it sleeps until input brings the display back. See [`crate::blackout`]. And
+/// while the overview is up everything is, because those cards are the live
+/// windows themselves.
 ///
 /// Except a window that has never been on screen *at all*, which is on every
 /// list until it has been on one. See [`has_been_seen`]: that is the window a
 /// loading screen is waiting for, and it is the one thing under a covered
-/// display that must go on running.
+/// display that must go on running. On a resting display it is also the one
+/// thing that may wake it: what it paints is what `output_drawing` reports, and
+/// a display with something new painting on it is not left resting.
 ///
 /// A window the shell is driving out of sight is on no list. It is not on the
 /// screen, which is the question this answers; that it must still be sent
@@ -1437,7 +1443,13 @@ pub fn windows_on_screen(lxb: &Lxb, output: &Output) -> Vec<Window> {
     // Read off the flight rather than a flag, so windows are already running
     // by the time they arrive in their cards and keep running until the last
     // one has flown home.
-    let overview_up = lxb.overview.progress(output, std::time::Instant::now()) > 0.0;
+    let now = std::time::Instant::now();
+    let overview_up = lxb.overview.progress(output, now) > 0.0;
+    if !overview_up && lxb.blackouts.is_black(output, now) {
+        // Resting all the way behind the black, which is over everything on
+        // this display — the floating window too — so only the newcomers.
+        return arriving_on(lxb, output, &[]);
+    }
     if !overview_up && shell_hides_the_display(lxb, output) {
         // Except the floating window, which the shell is not painting over: it
         // is drawn in front of the shell's own surfaces. Saying otherwise here
@@ -1446,19 +1458,7 @@ pub fn windows_on_screen(lxb: &Lxb, output: &Output) -> Vec<Window> {
         // sleep — which is the one thing a window that floats over everything
         // must never do.
         let mut shown = floating_windows(lxb, output);
-        // And the newcomers, which are the other thing a covered display can
-        // have on it that nobody is hiding from anybody — see [`has_been_seen`].
-        // Nothing is marked here: a display the shell is standing over is
-        // precisely where a window does not get its chance.
-        let arriving: Vec<Window> = lxb
-            .space
-            .elements_for_output(output)
-            .rev()
-            .filter(|window| !lxb.out_of_sight(window))
-            .filter(|window| !has_been_seen(window))
-            .filter(|window| !shown.contains(window))
-            .cloned()
-            .collect();
+        let arriving = arriving_on(lxb, output, &shown);
         shown.extend(arriving);
         return shown;
     }
@@ -1491,6 +1491,25 @@ pub fn windows_on_screen(lxb: &Lxb, output: &Output) -> Vec<Window> {
         shown.push(window.clone());
     }
     shown
+}
+
+/// The newcomers on a display that is covered whole — by the shell's own start
+/// screen, or by OLED protection's black — and so is showing nothing of
+/// anybody's: the other thing such a display can have on it that nobody is
+/// hiding from anybody. See [`has_been_seen`]. `besides` is what is already on
+/// the list, so nothing is on it twice.
+///
+/// Nothing is marked here: a covered display is precisely where a window does
+/// not get its chance.
+fn arriving_on(lxb: &Lxb, output: &Output, besides: &[Window]) -> Vec<Window> {
+    lxb.space
+        .elements_for_output(output)
+        .rev()
+        .filter(|window| !lxb.out_of_sight(window))
+        .filter(|window| !has_been_seen(window))
+        .filter(|window| !besides.contains(window))
+        .cloned()
+        .collect()
 }
 
 /// Record, for every surface, which display it was drawn on this frame.

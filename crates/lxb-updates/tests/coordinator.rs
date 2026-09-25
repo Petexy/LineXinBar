@@ -82,6 +82,7 @@ esac
                 format!("{}:/usr/bin:/bin", root.join("bin").display()),
             )
             .env("FIXTURE_LOG", root.join("install.log"))
+            .env("LXB_UPDATES_RELEASE_FIXTURES", root.join("releases"))
             .stdin(Stdio::null())
             .stdout(Stdio::null())
             .stderr(Stdio::inherit())
@@ -779,4 +780,111 @@ esac
     assert!(counted.snapshot.results.iter().all(|r| r.success));
     assert_eq!(counted.snapshot.results.len(), 1);
     assert_eq!(firmware(&counted).excluded.len(), 2);
+}
+
+/// A shell installed from a release page, on a pacman system whose
+/// repositories do not carry it: the check finds the newer release and lists
+/// its packages, and the step that would install them is refused, because the
+/// helper that would run as root is this test's own user-writable binary —
+/// the same guard every root step passes. Nothing reaches `pacman -U`.
+///
+/// Discovery reads the machine's own os-release to decide which package
+/// manager owns it, so on a host that is not pacman-based this has nothing to
+/// exercise, and says so.
+#[test]
+fn a_release_the_repositories_do_not_carry_is_offered_and_never_installed_by_an_untrusted_helper() {
+    if lxb_updates::discovery::Host::read().system() != lxb_updates::System::Pacman {
+        println!("skipped: discovery on this host does not choose pacman");
+        return;
+    }
+    let fixture = Fixture::new();
+    fixture.request(Request::Check { selected: vec![] });
+    let review = fixture.wait(|r| r.snapshot.phase == Phase::Reviewing);
+    assert!(
+        review
+            .snapshot
+            .sources
+            .iter()
+            .all(|s| s.id != SourceId::Linexinbar),
+        "nothing of the family is installed, so there is nothing to list"
+    );
+
+    script(
+        &fixture.root.join("bin/pacman"),
+        r#"#!/bin/sh
+printf '%s\n' "pacman $*" >> "$FIXTURE_LOG"
+case "$1" in
+-Q) printf 'lxb-compositor 0.9.0-1\nlxb-desktop 0.9.0-1\n' ;;
+-Qqm) printf 'lxb-compositor\nlxb-desktop\n' ;;
+esac
+exit 0
+"#,
+    );
+    fs::create_dir_all(fixture.root.join("releases")).unwrap();
+    let assets: Vec<serde_json::Value> = ["x86_64", "aarch64"]
+        .iter()
+        .flat_map(|arch| {
+            ["lxb-compositor", "lxb-desktop"].map(|name| {
+                let file = format!("{name}-0.9.2-1-{arch}.pkg.tar.zst");
+                serde_json::json!({
+                    "name": file,
+                    "size": 1,
+                    "digest": format!("sha256:{}", "0".repeat(64)),
+                    "browser_download_url": format!("https://github.com/Petexy/LineXinBar/releases/download/v0.9.2-alpha/{file}"),
+                })
+            })
+        })
+        .collect();
+    fs::write(
+        fixture.root.join("releases/LineXinBar.json"),
+        serde_json::json!([
+            {"tag_name": "v0.9.2-alpha", "draft": false, "prerelease": true, "assets": assets},
+            {"tag_name": "v0.9.0-alpha", "draft": false, "prerelease": true, "assets": []}
+        ])
+        .to_string(),
+    )
+    .unwrap();
+
+    fixture.request(Request::Check {
+        selected: vec![SourceId::Linexinbar],
+    });
+    let review = fixture.wait(|r| r.snapshot.phase == Phase::Reviewing);
+    let source = review
+        .snapshot
+        .sources
+        .iter()
+        .find(|s| s.id == SourceId::Linexinbar)
+        .expect("the family is listed once some of it is installed from a release");
+    assert!(source.error.is_none(), "{:?}", source.error);
+    assert!(source.listed && source.fresh && source.executable);
+    assert_eq!(
+        source
+            .items
+            .iter()
+            .map(|i| (i.name.as_str(), i.detail.as_str()))
+            .collect::<Vec<_>>(),
+        [
+            ("lxb-compositor", "0.9.0-1 → 0.9.2-1"),
+            ("lxb-desktop", "0.9.0-1 → 0.9.2-1"),
+        ]
+    );
+    let lxb_updates::Provider::Releases { operations } = &source.provider else {
+        panic!("{:?}", source.provider)
+    };
+    assert_eq!(operations.len(), 1);
+
+    fixture.request(Request::Install {
+        job: review.snapshot.job,
+    });
+    let finished = fixture.wait(|r| r.snapshot.phase == Phase::Failed);
+    let result = &finished.snapshot.results[0];
+    assert_eq!(result.source, SourceId::Linexinbar);
+    assert!(!result.success);
+    assert!(
+        result.note.contains("not protected against replacement"),
+        "{}",
+        result.note
+    );
+    let calls = fs::read_to_string(fixture.root.join("install.log")).unwrap_or_default();
+    assert!(!calls.contains("pacman -U"), "{calls}");
 }

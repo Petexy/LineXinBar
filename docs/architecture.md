@@ -106,7 +106,7 @@ inject key presses and pointer clicks, and end the session.
 | request `chose_file` | One file the user picked, repeated once each. |
 | request `answer_pick` | The end of the question: whatever was named before it, and which kind was in force. Nothing named at all is a cancellation. |
 | event `pick_chosen` / `pick_answered` | Those, on their way back to whoever asked. |
-| request `cover_output_in_black` | Fade one display to black, or bring it back — the sheet [OLED protection](settings.md#oled-protection) rests a screen behind. It takes no input away, unlike the curtain the session goes out behind. |
+| request `cover_output_in_black` | Fade one display to black, or bring it back — the sheet [OLED protection](settings.md#oled-protection) rests a screen behind. It takes no input away, unlike the curtain the session goes out behind. Once it is all the way down, what is on that display is off screen: sent no frames and put to sleep until the display is asked back. |
 | event `output_in_use` | Whether an application is in front of one display — anything the user opened, whatever started it — as against the shell being the whole of what is on the screen. |
 | event `output_drawing` | Whether anything on one display has painted recently — which is what tells a screen that can be rested from one somebody is watching. |
 | event `output_pointer` | The pointer is moving over this display. Sent on arrival and at most once every two seconds after, because the shell sees the pointer only where its own surfaces are in front. |

@@ -445,6 +445,22 @@ pub enum Entry {
     /// [`Entry::File`] — those are opened in whatever the desktop answers with,
     /// and this one is opened in the emulator the folder's name asked for.
     Rom(Rom),
+    /// Epic Games, under Steam at the head of the Games column: the way in to
+    /// the account Heroic Games Launcher holds, and afterwards the way back
+    /// out of it.
+    ///
+    /// The same kind of row as [`Entry::RetroArch`], and it carries the same
+    /// two things — its line and, while something is being fetched, a bar —
+    /// so it is the same type. It exists on a machine that has the
+    /// `lxb-heroic` package and on no other. See [`crate::heroic`].
+    Epic(Emulation),
+    /// One game of the Epic account, installed or not.
+    ///
+    /// Its own kind of row for the reasons a Steam title and a ROM are: it is
+    /// started by a command the row carries rather than by a desktop entry,
+    /// and what can be done to it is Heroic's list rather than the package
+    /// manager's. See [`EpicGame`].
+    EpicGame(EpicGame),
     /// The row at the head of a column of folders that says "this one".
     ///
     /// The picker's answer, and the only row in that column that acts. A row
@@ -536,6 +552,38 @@ pub enum Entry {
     /// in the column, and a row that is pressed to open a field would take the
     /// tick off the value that really is in force.
     Typed(Typed),
+    /// One partition on Settings > Storage: a door onto its facts, like
+    /// [`Entry::Facts`], that also carries how full it is as a bar.
+    ///
+    /// Its own kind of row rather than a field on [`Facts`] because thirty
+    /// other panels of facts have no bar and never will. See [`Partition`].
+    Partition(Partition),
+    /// One game in one Steam library, on Settings > Games > Steam > Storage.
+    ///
+    /// Not an [`Entry::Game`], though it is the same title: that row starts
+    /// the game, and this one is about where it *is*. Pressing it raises a
+    /// menu of the two things Steam's own storage page does to a game —
+    /// moving it to another library and taking it off the disk — so a press
+    /// out of habit on a settings page never starts forty gigabytes of
+    /// somebody's evening. See [`Stored`].
+    Stored(Stored),
+}
+
+/// One game in one Steam library, as the Storage page lists it.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Stored {
+    pub app_id: u32,
+    pub name: String,
+    /// What goes under the name: how much room it takes, or how far a move of
+    /// it has got.
+    pub note: String,
+    /// The library it is in, by the path Steam lists it under.
+    pub library: String,
+    /// Whether Steam is working on it — downloading, updating, checking or
+    /// taking it off — so that neither a move nor an uninstall may be started.
+    pub busy: bool,
+    /// How far a move of it has got, while one is under way.
+    pub moving: Option<Arriving>,
 }
 
 /// A value that is typed into, as the tree writes the row.
@@ -742,6 +790,22 @@ pub struct Arriving {
     pub stuck: bool,
 }
 
+/// One partition, as the Storage page writes the row.
+///
+/// Compared but not equatable, like [`Game`] and for its reason: the bar is a
+/// measurement. The shell compares a fresh reading's rows against the ones it
+/// is showing and rebuilds the column only when they differ — see
+/// `settings::note_storage` — which is why the share is rounded where it is
+/// made, to what the bar can show.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Partition {
+    /// The name, what is left on it, and the panel behind it.
+    pub facts: Facts,
+    /// How much of it is taken, drawn under the second line. `None` for a
+    /// partition nothing is using, whose fullness cannot be asked.
+    pub used: Option<Arriving>,
+}
+
 /// The RetroArch row, as the second row of the Games column.
 ///
 /// It carries what it says and nothing else, unlike [`Service`], which carries
@@ -777,6 +841,42 @@ impl Emulation {
             }),
         }
     }
+}
+
+/// One game of the Epic account, as a row of the Epic Games column.
+///
+/// Drawn the way a Steam title is — the tall box art on a cover card, the wide
+/// box art behind the display, colourless where it is not on this disk — and
+/// started the way a ROM is, by the command on the row. See
+/// [`crate::heroic::Heroic::rows`], which is where every field comes from.
+/// Compared but not equatable, like [`Game`]: the bar is a measurement.
+#[derive(Debug, Clone, PartialEq)]
+pub struct EpicGame {
+    /// Epic's own name for it, which Heroic's launch address takes.
+    pub app_name: String,
+    pub name: String,
+    /// The line under it: whether it is here, how big, how long it has been
+    /// played, or which other store plays it — or how far along it is coming
+    /// down.
+    pub note: String,
+    /// The same fact as a bar, while it is coming down. See [`Game::progress`].
+    pub progress: Option<Arriving>,
+    pub installed: bool,
+    /// Heroic's own shortcut for it, or `None` for a game not on this disk.
+    pub start: Option<Vec<String>>,
+    /// The cover, where the helper has fetched it into the shell's cache.
+    pub cover: Option<PathBuf>,
+    /// The cover's own shape, width over height, where it is not the Epic
+    /// column's — see [`Rom::shape`], which is the same fact for a shelf.
+    /// Nearly every Epic box is 3:4; one in nine on the account this was
+    /// written against is squarer, and its card is drawn at its own shape
+    /// rather than with glass showing above and below it.
+    pub shape: Option<f32>,
+    /// The backdrop, on the same terms.
+    pub hero: Option<PathBuf>,
+    /// The game's own wordmark, which its loading screen stands in the middle
+    /// of the backdrop — where Epic publishes one, which is rarely.
+    pub logo: Option<PathBuf>,
 }
 
 /// One game out of somebody's ROM folder.
@@ -1009,6 +1109,9 @@ pub enum Searched {
     Library,
     /// The independently searched Trophies game library.
     Trophies,
+    /// The Epic Games library, a column of games the shell owns the whole of
+    /// as it does Steam's. See [`crate::heroic::Heroic::rows`].
+    Epic,
     /// The keyboard arrangements this machine can be set to, which is a list of
     /// six hundred the shell read off the disk when it started. Narrowing one
     /// is a `contains` per arrangement, on the frame the letter was typed.
@@ -1030,7 +1133,11 @@ impl Searched {
     pub fn shelf(self) -> Option<crate::media::Kind> {
         match self {
             Searched::Shelf(kind) => Some(kind),
-            Searched::Folder | Searched::Library | Searched::Trophies | Searched::Layouts => None,
+            Searched::Folder
+            | Searched::Library
+            | Searched::Trophies
+            | Searched::Epic
+            | Searched::Layouts => None,
         }
     }
 
@@ -1046,7 +1153,7 @@ impl Searched {
             // What the account owns, which is what the count is of: a library
             // of six hundred games says "4 of 600 games match" whether or not
             // any of them is on this machine's disk.
-            Searched::Library | Searched::Trophies => "game",
+            Searched::Library | Searched::Trophies | Searched::Epic => "game",
             // What the machine has, which is what the count is of: a page
             // saying "3 of 598 layouts match" is counting every arrangement
             // xkeyboard-config on this machine describes.
@@ -1081,7 +1188,7 @@ impl Search {
                     Searched::Folder => {
                         crate::i18n::text("shell-search-this-folder-by-name").to_string()
                     }
-                    Searched::Library | Searched::Trophies => {
+                    Searched::Library | Searched::Trophies | Searched::Epic => {
                         crate::i18n::text("shell-search-this-library-by-name").to_string()
                     }
                     // Not "this list": the field searches every arrangement on
@@ -1210,6 +1317,13 @@ pub struct Folder {
     /// the same band of the same atlas as the thumbnail of any other file. See
     /// [`crate::thumbs`].
     pub portrait: Option<PathBuf>,
+    /// How full what this row stands for is, drawn as a bar under its second
+    /// line — the bar a [`Partition`] draws, on a row that is also a way in.
+    ///
+    /// One kind of row has one: a Steam library on Steam's Storage page under
+    /// Settings, which is a drive to read the room on *and* a list of the
+    /// games on it. `None` everywhere else.
+    pub used: Option<Arriving>,
 }
 
 /// One of a set of alternatives, exactly one of which is in force.
@@ -1400,6 +1514,7 @@ pub fn every_column() -> Vec<Column> {
         .chain(
             [
                 STEAM,
+                epic_column_id(),
                 retroarch_column_id(),
                 (
                     crate::trophies::COLUMN,
@@ -1668,6 +1783,7 @@ fn subcategories(id: &str) -> Vec<Entry> {
                 over_the_list: false,
                 person: None,
                 portrait: None,
+                used: None,
             })
         })
         .collect()
@@ -1701,6 +1817,7 @@ fn files_row() -> Entry {
         over_the_list: false,
         person: None,
         portrait: None,
+        used: None,
     })
 }
 
@@ -2058,6 +2175,21 @@ fn retroarch_column_id() -> (&'static str, &'static str, &'static str) {
     ("retroarch", "RetroArch", crate::retroarch::mark())
 }
 
+/// The column the Epic account's games hang in.
+///
+/// Not in [`CATEGORY_TABLE`], for Steam's reason and RetroArch's both: it is a
+/// consequence of an account being signed in, and of a package being there.
+/// Its mark arrives with that package — see [`crate::heroic::mark`].
+fn epic_column_id() -> (&'static str, &'static str, &'static str) {
+    ("epic", crate::heroic::TITLE, crate::heroic::mark())
+}
+
+/// What that column is called on the bar, for the press on the Epic Games row
+/// that takes the display to it.
+pub fn epic_column() -> &'static str {
+    epic_column_id().0
+}
+
 /// What that column is called on the bar, for the two things outside this
 /// module that have to find it: pressing the RetroArch row takes the display
 /// to it, and so does finishing the setup it asks for.
@@ -2392,12 +2524,14 @@ pub fn offer_retroarch(
         // Under the Steam row where there is one, and at the head where there
         // is not — a session started with `--no-steam` has no Steam row, and
         // this row would then be standing under nothing.
-        let under = usize::from(
-            column
-                .entries
-                .first()
-                .is_some_and(|first| matches!(first, Entry::Steam(_))),
-        );
+        // And under the Epic Games row where there is one, for the same
+        // reason one step further on: the column order on the bar is Steam,
+        // Epic Games, RetroArch, and the rows that lead to them read the same.
+        let under = column
+            .entries
+            .iter()
+            .take_while(|row| matches!(row, Entry::Steam(_) | Entry::Epic(_)))
+            .count();
         column
             .entries
             .insert(under, Entry::RetroArch(Emulation::new(comment, arriving)));
@@ -2415,6 +2549,117 @@ pub fn shelve_retroarch(categories: &mut Vec<Category>, rows: Vec<Entry>) -> Shi
     let (id, title, icon) = retroarch_column_id();
     let standing = categories.iter().position(|column| column.id == id);
 
+    match (standing, rows.is_empty()) {
+        (None, true) => {}
+        (Some(at), true) => {
+            categories.remove(at);
+            shifted.removed = Some(at);
+        }
+        (Some(at), false) => categories[at].entries = rows,
+        (None, false) => {
+            let at = column_place(categories, id);
+            categories.insert(
+                at,
+                Category {
+                    id,
+                    title,
+                    icon,
+                    entries: rows,
+                },
+            );
+            shifted.added = Some(at);
+        }
+    }
+    shifted
+}
+
+/// Take Heroic's own `.desktop` entry off the bar.
+///
+/// The same act as [`hide_retroarch_client`], for its reason: two rows leading
+/// to one library is the bar saying the same thing twice, and the shell's own
+/// Epic Games row is the one that leads to somebody's games. Heroic's own
+/// window is one row of that row's menu away. `true` when there was one.
+pub fn hide_heroic_client(categories: &mut Vec<Category>) -> bool {
+    let mut taken = false;
+    let mut emptied = Vec::new();
+    for (at, column) in categories.iter_mut().enumerate() {
+        let before = column.entries.len();
+        column.entries.retain(|entry| {
+            let is_heroic = entry.app().is_some_and(|app| {
+                crate::heroic::WINDOW_NAMES
+                    .iter()
+                    .any(|name| app.owns_window(name))
+            });
+            taken |= is_heroic;
+            !is_heroic
+        });
+        if column.entries.len() != before && !column.has_launchable() {
+            emptied.push(at);
+        }
+    }
+    for at in emptied.into_iter().rev() {
+        categories.remove(at);
+    }
+    taken
+}
+
+/// Put the Epic Games row under the Steam row in the Games column, or take it
+/// away — [`offer_retroarch`] for the other integration, on its terms: under
+/// Steam, which every session has, and above RetroArch, whose column comes
+/// after this one's. `None` takes the row off.
+pub fn offer_epic(
+    categories: &mut Vec<Category>,
+    comment: Option<String>,
+    arriving: Option<f32>,
+) -> Shifted {
+    let mut shifted = Shifted::default();
+    let standing = categories.iter().position(|column| column.id == GAMES);
+    let at = match (standing, &comment) {
+        (Some(at), _) => at,
+        (None, None) => return shifted,
+        (None, Some(_)) => {
+            let (id, title, icon, _) = CATEGORY_TABLE
+                .iter()
+                .find(|(own, ..)| *own == GAMES)
+                .expect("the Games column is in the table");
+            let at = column_place(categories, id);
+            categories.insert(
+                at,
+                Category {
+                    id,
+                    title,
+                    icon,
+                    entries: Vec::new(),
+                },
+            );
+            shifted.added = Some(at);
+            at
+        }
+    };
+    let column = &mut categories[at];
+    column
+        .entries
+        .retain(|entry| !matches!(entry, Entry::Epic(_)));
+    if let Some(comment) = comment {
+        let under = column
+            .entries
+            .iter()
+            .take_while(|row| matches!(row, Entry::Steam(_)))
+            .count();
+        column
+            .entries
+            .insert(under, Entry::Epic(Emulation::new(comment, arriving)));
+    }
+    shifted
+}
+
+/// Hang the Epic account's games in a column of their own, or take the column
+/// away — the same shape as [`shelve_steam`]. The rows arrive in the order
+/// they go in; see [`crate::heroic::Heroic::rows`].
+pub fn shelve_epic(categories: &mut Vec<Category>, rows: Vec<Entry>) -> Shifted {
+    let mut shifted = Shifted::default();
+    let (id, title, icon) = epic_column_id();
+    let standing = categories.iter().position(|column| column.id == id);
     match (standing, rows.is_empty()) {
         (None, true) => {}
         (Some(at), true) => {
@@ -2526,34 +2771,38 @@ fn column_place(categories: &[Category], id: &str) -> usize {
         .unwrap_or(categories.len())
 }
 
-/// How far along the bar a column belongs, in quarter-steps.
+/// How far along the bar a column belongs, in eighth-steps.
 ///
-/// The table's own order, times four, so that a column which is not in the
+/// The table's own order, times eight, so that a column which is not in the
 /// table can sit *between* two that are without either of them having to move.
-/// There are two such columns and they are both libraries of games, so they
-/// both belong immediately after Games — a person who has just been looking at
-/// what is installed and steps right lands in what they own. Steam is first of
-/// the two because it is the one every session has; RetroArch is a package a
-/// machine may not have at all, and a column that comes and goes with a
-/// package must not move the one that does not.
+/// There are three such columns and they are all libraries of games, so they
+/// all belong immediately after Games — a person who has just been looking at
+/// what is installed and steps right lands in what they own — and Trophies
+/// follows them. Steam is first because it is the one every session has; Epic
+/// Games and RetroArch are packages a machine may not have at all, and a column
+/// that comes and goes with a package must not move the one that does not.
+/// Epic Games comes before RetroArch because it is a store's library, the kind
+/// of column Steam's is.
 ///
-/// Four rather than three because the room is worth having: the next column
-/// that is a consequence of something rather than a place for something has
-/// somewhere to go without this being re-solved.
+/// Eight rather than four since Epic Games arrived and took the step the room
+/// was kept for; there is room again for the next one.
 fn rank(id: &str) -> Option<usize> {
     if id == crate::trophies::COLUMN {
-        return rank(GAMES).map(|games| games + 3);
+        return rank(GAMES).map(|games| games + 4);
     }
     if id == STEAM.0 {
         return rank(GAMES).map(|games| games + 1);
     }
-    if id == retroarch_column_id().0 {
+    if id == epic_column_id().0 {
         return rank(GAMES).map(|games| games + 2);
+    }
+    if id == retroarch_column_id().0 {
+        return rank(GAMES).map(|games| games + 3);
     }
     CATEGORY_TABLE
         .iter()
         .position(|(own, ..)| *own == id)
-        .map(|place| place * 4)
+        .map(|place| place * 8)
 }
 
 impl App {
@@ -2829,8 +3078,10 @@ impl Entry {
             Entry::Search(search) => search.label(),
             Entry::Steam(_) => "Steam",
             Entry::RetroArch(_) => "RetroArch",
+            Entry::Epic(_) => crate::heroic::TITLE,
             Entry::Game(game) => &game.name,
             Entry::Rom(rom) => &rom.name,
+            Entry::EpicGame(game) => &game.name,
             Entry::Pick(_) => crate::i18n::text("shell-select-folder"),
             Entry::Make(_) => crate::i18n::text("shell-new-folder"),
             Entry::Sweep(_) => crate::i18n::text("shell-empty-trash"),
@@ -2842,6 +3093,8 @@ impl Entry {
             Entry::Trashed(item) => &item.name,
             Entry::Facts(facts) => &facts.title,
             Entry::Typed(typed) => &typed.title,
+            Entry::Partition(partition) => &partition.facts.title,
+            Entry::Stored(stored) => &stored.name,
         }
     }
 
@@ -2866,8 +3119,10 @@ impl Entry {
             Entry::Search(search) => Some(&search.note),
             Entry::Steam(service) => Some(&service.comment),
             Entry::RetroArch(emulation) => Some(&emulation.comment),
+            Entry::Epic(store) => Some(&store.comment),
             Entry::Game(game) => Some(&game.note),
             Entry::Rom(rom) => Some(&rom.note),
+            Entry::EpicGame(game) => Some(&game.note),
             Entry::Pick(pick) => Some(&pick.comment),
             // Where it will go, said plainly, because the row is a press away
             // from a keyboard and somebody standing on it has not read a menu.
@@ -2881,6 +3136,8 @@ impl Entry {
             Entry::Trashed(item) => Some(item.note.as_str()).filter(|note| !note.is_empty()),
             Entry::Facts(facts) => Some(&facts.comment),
             Entry::Typed(typed) => Some(&typed.comment),
+            Entry::Partition(partition) => Some(&partition.facts.comment),
+            Entry::Stored(stored) => Some(&stored.note),
         }
     }
 
@@ -2888,11 +3145,18 @@ impl Entry {
     ///
     /// A game being fetched, and RetroArch fetching itself or the cores a
     /// folder of games needs — the two things in this shell somebody stands
-    /// and waits for. Every other row is a thing that already is.
+    /// and waits for. And one row that is not counting up at all: a partition
+    /// on the Storage page, whose bar is how full it is — the same picture of
+    /// "this much of the whole", read the same way.
     pub fn progress(&self) -> Option<Arriving> {
         match self {
             Entry::Game(game) => game.progress,
             Entry::RetroArch(emulation) => emulation.arriving,
+            Entry::Epic(store) => store.arriving,
+            Entry::EpicGame(game) => game.progress,
+            Entry::Partition(partition) => partition.used,
+            Entry::Folder(folder) => folder.used,
+            Entry::Stored(stored) => stored.moving,
             _ => None,
         }
     }
@@ -2920,6 +3184,9 @@ impl Entry {
             // games whose covers have not arrived should still look like
             // PlayStation games. See [`Rom::glyph`].
             Entry::Rom(rom) => Some(&rom.glyph),
+            // Epic's own mark on the row and on every game of its column:
+            // a game with no cover yet still says whose library it is in.
+            Entry::Epic(_) | Entry::EpicGame(_) => Some(crate::heroic::mark()),
             // The folder it would answer with, drawn as a folder: what is
             // being chosen is the column the row stands over.
             // The tick and not a folder: every other row in the column it
@@ -2936,6 +3203,8 @@ impl Entry {
             Entry::Trashed(item) => Some(item.glyph()),
             Entry::Facts(facts) => Some(&facts.icon),
             Entry::Typed(typed) => Some(&typed.icon),
+            Entry::Partition(partition) => Some(&partition.facts.icon),
+            Entry::Stored(_) => Some(crate::icons::STEAM),
         }
     }
 
@@ -3042,6 +3311,24 @@ impl Entry {
         }
     }
 
+    /// Whether this is the Epic Games row itself. Like the RetroArch row it
+    /// carries nothing to hand back but its line: what a press does is asked
+    /// of [`crate::heroic::Heroic`].
+    pub fn epic(&self) -> Option<&Emulation> {
+        match self {
+            Entry::Epic(store) => Some(store),
+            _ => None,
+        }
+    }
+
+    /// The Epic game this row is, if it is one.
+    pub fn epic_game(&self) -> Option<&EpicGame> {
+        match self {
+            Entry::EpicGame(game) => Some(game),
+            _ => None,
+        }
+    }
+
     /// The game out of somebody's ROM folder this row is, if it is one.
     pub fn rom(&self) -> Option<&Rom> {
         match self {
@@ -3143,7 +3430,12 @@ impl Entry {
         // column is separately exempt from being dropped; see `offer_steam`.
         matches!(
             self,
-            Entry::App(_) | Entry::Media(_) | Entry::File(_) | Entry::Game(_) | Entry::Rom(_)
+            Entry::App(_)
+                | Entry::Media(_)
+                | Entry::File(_)
+                | Entry::Game(_)
+                | Entry::Rom(_)
+                | Entry::EpicGame(_)
         )
     }
 
@@ -3246,11 +3538,22 @@ impl Entry {
                     row.key,
                     crate::trophies::Key::SteamAchievement(..)
                         | crate::trophies::Key::RetroAchievement(..)
+                        | crate::trophies::Key::EpicAchievement(..)
                 ) =>
             {
                 Some(&row.facts)
             }
             Entry::Facts(facts) => Some(facts),
+            Entry::Partition(partition) => Some(&partition.facts),
+            _ => None,
+        }
+    }
+
+    /// The game in a Steam library this row stands for, if it is one — see
+    /// [`Entry::Stored`].
+    pub fn stored(&self) -> Option<&Stored> {
+        match self {
+            Entry::Stored(stored) => Some(stored),
             _ => None,
         }
     }
@@ -3905,9 +4208,11 @@ mod tests {
     fn the_two_new_columns_stand_where_they_belong() {
         let at = |id: &str| rank(id).unwrap_or_else(|| panic!("{id} is placeable"));
         assert!(at(GAMES) < at(STEAM.0));
-        assert!(at(STEAM.0) < at(retroarch_column_id().0));
+        assert!(at(STEAM.0) < at(epic_column_id().0));
+        assert!(at(epic_column_id().0) < at(retroarch_column_id().0));
+        assert!(at(retroarch_column_id().0) < at(crate::trophies::COLUMN));
         assert!(
-            at(retroarch_column_id().0) < at(SOFTWARE),
+            at(crate::trophies::COLUMN) < at(SOFTWARE),
             "Software comes after everything that is a library of games"
         );
         assert!(at(SOFTWARE) < at("development"));
@@ -4211,6 +4516,54 @@ mod tests {
         assert_eq!(rows, vec!["Steam", "A Puzzle"]);
     }
 
+    /// The three ways into a library read in the order their columns stand on
+    /// the bar — Steam, Epic Games, RetroArch — whichever of them was rebuilt
+    /// last, because each is rebuilt on its own helper's schedule.
+    #[test]
+    fn the_epic_games_row_stands_between_steam_and_retroarch() {
+        for epic_first in [true, false] {
+            let mut categories = catalogue();
+            offer_steam(&mut categories, None, None);
+            if epic_first {
+                offer_epic(&mut categories, Some("Looking".to_string()), None);
+                offer_retroarch(&mut categories, Some("Looking".to_string()), None);
+            } else {
+                offer_retroarch(&mut categories, Some("Looking".to_string()), None);
+                offer_epic(&mut categories, Some("Looking".to_string()), None);
+            }
+            // And rebuilt again, as every change of state rebuilds them.
+            offer_epic(&mut categories, Some("Signed in".to_string()), Some(0.5));
+            offer_retroarch(&mut categories, Some("2 games".to_string()), None);
+            let games = column(&categories, GAMES).expect("the Games column");
+            let rows: Vec<&str> = games.entries.iter().map(Entry::title).collect();
+            assert_eq!(rows, vec!["Steam", "Epic Games", "RetroArch", "A Puzzle"]);
+            assert_eq!(games.entries[1].comment(), Some("Signed in"));
+            assert_eq!(games.entries[1].progress().map(|bar| bar.share), Some(0.5));
+        }
+    }
+
+    /// Heroic's own entry comes off the bar where the shell's row stands in
+    /// for it, by the class its desktop entry declares.
+    #[test]
+    fn heroics_own_entry_comes_off_the_bar() {
+        let heroic = entry(
+            "com.heroicgameslauncher.hgl.desktop",
+            "Name=Heroic Games Launcher\nExec=heroic-run %u\nStartupWMClass=heroic\n\
+             Categories=Game;PackageManager;\n",
+        );
+        let mut categories = vec![Category {
+            id: GAMES,
+            title: "Games",
+            icon: crate::icons::CATEGORY_GAMES,
+            entries: vec![Entry::App(heroic)],
+        }];
+        assert!(hide_heroic_client(&mut categories));
+        assert!(
+            categories.is_empty(),
+            "a column left with nothing goes with it"
+        );
+    }
+
     /// A session started with `--no-steam` has no Steam row for this one to
     /// stand under, and it goes at the head rather than under nothing.
     #[test]
@@ -4330,6 +4683,7 @@ mod tests {
                 over_the_list: false,
                 person: None,
                 portrait: None,
+                used: None,
             })
         };
 
@@ -4358,6 +4712,7 @@ mod tests {
             over_the_list: false,
             person: None,
             portrait: None,
+            used: None,
         });
         assert!(!opens_a_picker(&page));
         let games = crate::settings::Picking::RomsFolder;
@@ -4395,6 +4750,7 @@ mod tests {
                 over_the_list: false,
                 person: None,
                 portrait: None,
+                used: None,
             })],
             "",
             1,
@@ -4928,6 +5284,7 @@ mod tests {
                 over_the_list: false,
                 person: None,
                 portrait: None,
+                used: None,
             })],
         };
         assert!(buried.has_launchable());
@@ -4947,6 +5304,7 @@ mod tests {
                 over_the_list: false,
                 person: None,
                 portrait: None,
+                used: None,
             })],
             ..buried.clone()
         };

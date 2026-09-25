@@ -93,6 +93,14 @@ pub enum Setting {
     /// reason the two are separate: a machine that cannot pay for the water
     /// behind everything can very well pay for the marks in front of it.
     Style(theme::Part, &'static str),
+    /// Draw the sparkles the wallpaper's current carries, or leave them out —
+    /// Theme > Particles.
+    ///
+    /// Beside the materials rather than one of them: the sparkles are the same
+    /// over either material, and the question about them is only whether they
+    /// are there. Previewed like the materials, and for their reason — what the
+    /// row changes is the screen itself.
+    Particles(bool),
     /// One press on one of the two forms under Settings > Users — see
     /// [`UserValue`], which is where the whole of that page's oddity is argued.
     ///
@@ -101,6 +109,13 @@ pub enum Setting {
     /// daemon being asked, and `settings` records what the shell *remembers*,
     /// which is neither of those.
     User(UserValue),
+    /// One press on a drive's page under Settings > Storage — see
+    /// [`DriveValue`].
+    ///
+    /// Carried out by the shell on the terms [`Setting::Network`] is: what has
+    /// to happen is UDisks being asked, on a worker, and the row saying what
+    /// is happening until it has. See [`crate::drives`].
+    Drive(DriveValue),
     /// One press on Settings > Games > Steam — see [`SteamValue`], which is
     /// where each of the three is argued.
     ///
@@ -109,6 +124,10 @@ pub enum Setting {
     /// stopped, a bar being built again and Valve's client being asked to shut
     /// down, and none of those is a thing this module does.
     Steam(SteamValue),
+    /// One of Settings > Games > Epic Games' own rows, Steam's for Heroic —
+    /// carried out by the shell for [`Setting::Steam`]'s reason, and the
+    /// last of them by Heroic's helper.
+    Epic(EpicValue),
     /// Set one of an emulator core's own settings — PPSSPP's rendering
     /// resolution, Mesen's overclock.
     ///
@@ -149,6 +168,10 @@ pub enum Setting {
     /// [`Setting::Network`] is: what has to happen is a helper process being
     /// run, and this module writes down what the shell remembers.
     EmulatorArt,
+    /// Keep Epic games' saves in Epic's cloud: Heroic's own `autoSyncSaves`,
+    /// set by the Epic helper — see `crates/lxb-heroic/src/saves.rs`. Carried
+    /// out by the shell, like [`Setting::EmulatorArt`].
+    EpicCloudSaves(bool),
     /// Play the Start screen's background music, or leave that screen quiet.
     ///
     /// Carries no display, unlike everything under Display: the music belongs
@@ -327,6 +350,28 @@ pub enum UpdateValue {
     Preferences,
 }
 
+/// Settings > Games > Epic Games' own rows — Steam's three switches for
+/// Heroic, and what Heroic runs games with.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum EpicValue {
+    /// Whether the shell drives Heroic at all: the Epic Games row, its
+    /// column, its achievements, and Heroic's own entry off the bar. Off,
+    /// Heroic is an application like any other. On by default — a machine
+    /// that installed the package asked for it.
+    Integration(bool),
+    /// Whether a Heroic is started in the background as the session comes
+    /// up, so the first game starts sooner. Off by default, as Steam's is.
+    AtStartup(bool),
+    /// Whether Heroic is left running once a game has ended. Off by default,
+    /// where Steam's is on: Heroic is up in a second, and one left running is
+    /// one the shell closes and starts again whenever it changes something
+    /// Heroic knows.
+    AfterAGame(bool),
+    /// What Heroic runs games with by default — its own `wineVersion`, by the
+    /// name it lists the tool under. Written by the helper.
+    Tool(&'static str),
+}
+
 /// One thing that can be changed about Steam.
 ///
 /// Three questions about one program, and they are three rather than one
@@ -392,6 +437,39 @@ pub enum SteamValue {
     /// file, and what the row draws is always what Steam last said rather than
     /// what this session remembers. See [`note_compatibility_tools`].
     OtherTitles(Option<&'static str>),
+    /// Which Steam library a game pressed on the bar goes into, by the path
+    /// Steam lists it under — or nothing, which is **ask every time**.
+    ///
+    /// **Ask every time**, the user's own default: on a machine with more than
+    /// one library, where a forty-gigabyte game lands is a question somebody
+    /// has an answer to, and a console that picked for them would be filling
+    /// the small fast drive they were keeping free. A machine with one library
+    /// is never asked anything, whatever this says, and has no row to say it.
+    ///
+    /// A library chosen here is also made **Steam's own default** — the one
+    /// its install dialog starts on — so a game started from Steam's window
+    /// goes where one started from the bar does. That half is told to Valve's
+    /// client on the press if one is up, and otherwise on the next install
+    /// into it; see [`lxb_steam::webui::Place::In`]. "Ask every time" has no
+    /// counterpart in Steam — its own dialog always asks — so choosing it
+    /// leaves Steam's default where it is.
+    ///
+    /// A library that is not there when a game is pressed — a drive unplugged
+    /// today — is asked about rather than quietly swapped for another.
+    InstallTo(Option<&'static str>),
+    /// Make a new Steam library at this path: Settings > Games > Steam >
+    /// Storage > Add drive, which is Steam's own Add Drive.
+    ///
+    /// A press rather than a value, like the two below it. Nothing is written
+    /// to the shell's file: the list of libraries is Steam's, it is kept in
+    /// Steam's own configuration, and what the page draws afterwards is read
+    /// back from there.
+    AddLibrary(&'static str),
+    /// Ask whether to stop using this library, and stop on the answer —
+    /// Steam's Remove Library. Nothing on the drive is deleted.
+    RemoveLibrary(&'static str),
+    /// Put this library's folder right, as Steam's Repair Folder does.
+    RepairLibrary(&'static str),
 }
 
 /// One thing that can be changed about the floating window.
@@ -634,6 +712,18 @@ pub enum UserValue {
     /// [`crate::menu::Command::ConfirmUninstall`], which is the same division:
     /// one of these opens a panel and something else destroys an account.
     Remove(u64),
+}
+
+/// One press on a drive's page under Settings > Storage, by the drive's device
+/// number — see [`crate::drives::Volume::number`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DriveValue {
+    Mount(u64),
+    Unmount(u64),
+    /// Unmount it and turn the drive off, so it can be unplugged.
+    Remove(u64),
+    /// Whether the machine mounts it by itself when it starts.
+    AtStartup(u64, bool),
 }
 
 /// One of the values in this tree that is typed rather than chosen: which one,
@@ -1556,6 +1646,101 @@ static STEAM_AT_STARTUP: Mutex<bool> = Mutex::new(false);
 /// [`SteamValue::AfterAGame`].
 static STEAM_AFTER_A_GAME: Mutex<bool> = Mutex::new(true);
 
+/// The Steam library games go into, by its path, or `None` for asking every
+/// time. See [`SteamValue::InstallTo`].
+static STEAM_INSTALL_TO: Mutex<Option<String>> = Mutex::new(None);
+
+/// Settings > Games > Epic Games' three switches, Steam's three for Heroic:
+/// whether the shell drives Heroic at all, whether it starts one in the
+/// background as the session comes up, and whether it leaves Heroic running
+/// once a game has ended. See [`EpicValue`].
+///
+/// The last is off where Steam's is on, and that is Heroic's nature rather
+/// than a different opinion: Heroic is up in a second where Valve's client
+/// takes twenty, and a Heroic left running is one the shell has to close
+/// before it can change anything it knows — see [`crate::heroic`].
+static EPIC_INTEGRATION: Mutex<bool> = Mutex::new(true);
+static EPIC_AT_STARTUP: Mutex<bool> = Mutex::new(false);
+static EPIC_AFTER_A_GAME: Mutex<bool> = Mutex::new(false);
+
+/// The order the Epic Games column is listed in, by the same names as
+/// Steam's. See [`epic_sort`].
+static EPIC_SORT: Mutex<Option<String>> = Mutex::new(None);
+
+/// Whether the shell drives Heroic: the Epic Games row, its column and its
+/// achievements. Off, Heroic is an application like any other.
+pub fn epic_integration() -> bool {
+    *EPIC_INTEGRATION.lock().unwrap()
+}
+
+/// Whether a Heroic is started in the background as the session comes up.
+pub fn epic_at_startup() -> bool {
+    epic_integration() && *EPIC_AT_STARTUP.lock().unwrap()
+}
+
+/// Whether Heroic is left running once a game has ended.
+pub fn epic_left_after_a_game() -> bool {
+    epic_integration() && *EPIC_AFTER_A_GAME.lock().unwrap()
+}
+
+/// Remember the order the Epic Games column is listed in.
+pub fn remember_epic_sort(sort: lxb_steam::library::Sort) {
+    *EPIC_SORT.lock().unwrap() = Some(sort.key().to_string());
+    save(&stored());
+}
+
+/// What the settings file says the Epic Games column is listed in, if it
+/// says anything; an order this shell does not have is nothing.
+pub fn epic_sort() -> Option<lxb_steam::library::Sort> {
+    let held = EPIC_SORT.lock().unwrap();
+    lxb_steam::library::Sort::from_key(held.as_deref()?)
+}
+
+/// Every library the Steam this session drives lists, as the shell last read
+/// them off the disk — for the Install games to row, which has to be built on
+/// every rebuild of the tree and cannot read a file each time. Noted when
+/// Settings is arrived at; see [`note_steam_libraries`].
+static STEAM_LIBRARIES: Mutex<Vec<lxb_steam::library::Listed>> = Mutex::new(Vec::new());
+
+/// The games in each Steam library, by the library's path, as its manifests
+/// last said — for Settings > Games > Steam > Storage. Read when the libraries
+/// are, and for the same reason. See [`note_steam_games`].
+static STEAM_GAMES: Mutex<BTreeMap<String, Vec<StoredGame>>> = Mutex::new(BTreeMap::new());
+
+/// The folder the Steam this session drives is installed in: the one library
+/// Steam can never be without, and so the one the Storage page offers no way
+/// to remove.
+static STEAM_ROOT: Mutex<Option<String>> = Mutex::new(None);
+
+/// The game being moved between libraries, where one is. See
+/// [`note_steam_moving`].
+static STEAM_MOVING: Mutex<Option<MovingNow>> = Mutex::new(None);
+
+/// One game in one Steam library, as its manifest says.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct StoredGame {
+    pub app_id: u32,
+    pub name: String,
+    /// How much room it takes, as the manifest says.
+    pub size: u64,
+    /// Whether Steam is in the middle of something with it — fetching,
+    /// checking, taking it off — so that it may be neither moved nor removed
+    /// from here until that is over.
+    pub busy: bool,
+}
+
+/// The game being moved into another library, as the Storage page shows it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MovingNow {
+    pub app_id: u32,
+    /// Where it is going, by the path Steam lists that library under.
+    pub to: String,
+    /// How far along, in whole per cent, once Steam has said.
+    pub percent: Option<u8>,
+    /// Whether Stop has been pressed.
+    pub stopping: bool,
+}
+
 /// Whether this session does Steam at all, before the setting is even asked.
 ///
 /// `--no-steam` is a session-wide refusal made on the command line, and it
@@ -1594,6 +1779,135 @@ pub fn steam_at_startup() -> bool {
 /// down, so "leave it alone" is what an integration that is off must say.
 pub fn steam_left_after_a_game() -> bool {
     !steam_integration() || *STEAM_AFTER_A_GAME.lock().unwrap()
+}
+
+/// Which Steam library a game goes into, by the path Steam lists it under, or
+/// `None` for asking every time. See [`SteamValue::InstallTo`].
+pub fn steam_install_to() -> Option<String> {
+    STEAM_INSTALL_TO.lock().unwrap().clone()
+}
+
+/// Hand the Steam page the libraries as they are on the disk now. `true` when
+/// the tree has to be rebuilt to show them.
+pub fn note_steam_libraries(listed: Vec<lxb_steam::library::Listed>) -> bool {
+    let mut held = STEAM_LIBRARIES.lock().unwrap();
+    let changed = *held != listed;
+    *held = listed;
+    changed
+}
+
+/// Hand the Storage page the games in each library, and the folder Steam is
+/// installed in. `true` when the tree has to be rebuilt to show them.
+pub fn note_steam_games(root: Option<String>, games: BTreeMap<String, Vec<StoredGame>>) -> bool {
+    let mut held_root = STEAM_ROOT.lock().unwrap();
+    let mut held = STEAM_GAMES.lock().unwrap();
+    let changed = *held != games || *held_root != root;
+    *held = games;
+    *held_root = root;
+    changed
+}
+
+/// Hand the Storage page the move under way, or that there is none. `true`
+/// when a row would look different.
+pub fn note_steam_moving(now: Option<MovingNow>) -> bool {
+    let mut held = STEAM_MOVING.lock().unwrap();
+    let changed = *held != now;
+    *held = now;
+    changed
+}
+
+/// Every library the Steam this session drives lists, as last read.
+pub fn steam_libraries() -> Vec<lxb_steam::library::Listed> {
+    STEAM_LIBRARIES.lock().unwrap().clone()
+}
+
+/// The games in one library, as last read, largest first.
+pub fn steam_games_in(library: &str) -> Vec<StoredGame> {
+    STEAM_GAMES
+        .lock()
+        .unwrap()
+        .iter()
+        .find(|(path, _)| same_library(path, library))
+        .map(|(_, games)| games.clone())
+        .unwrap_or_default()
+}
+
+/// Which library one game is in, and what its manifest says, as last read.
+pub fn steam_game_stored(app_id: u32) -> Option<(String, StoredGame)> {
+    STEAM_GAMES
+        .lock()
+        .unwrap()
+        .iter()
+        .find_map(|(library, games)| {
+            games
+                .iter()
+                .find(|game| game.app_id == app_id)
+                .map(|game| (library.clone(), game.clone()))
+        })
+}
+
+/// How much room is left on the drive a library is on, and how big that drive
+/// is, as Settings > Storage last read it.
+pub fn steam_library_room(library: &str) -> Option<crate::storage::Room> {
+    let parts = STORAGE.lock().unwrap().clone().unwrap_or_default();
+    match &crate::storage::holding(&parts, Path::new(library))?.standing {
+        crate::storage::Standing::Mounted { room, .. } => *room,
+        _ => None,
+    }
+}
+
+/// Whether two ways of writing a library's path name the same library: Steam
+/// writes its list without a trailing slash, and a file somebody edited by
+/// hand may not.
+pub fn same_library(a: &str, b: &str) -> bool {
+    a.trim_end_matches('/') == b.trim_end_matches('/')
+}
+
+/// What each of these Steam libraries is called on a row or a button, given
+/// each one's path and the name Steam's storage settings gave it.
+///
+/// The name somebody gave it in Steam first, because that is what they will
+/// be looking for. Otherwise the name of the drive it is on as Settings >
+/// Storage calls it — Home, System, a disk's own label — so the two pages
+/// agree about which drive is which; and last, where the drives have not been
+/// read, the folder's own name.
+///
+/// Two libraries on one drive would then be one name twice, which is two
+/// buttons nobody could tell apart, so those two have their folder's name
+/// added.
+pub fn steam_library_names(libraries: &[(&str, &str)]) -> Vec<String> {
+    let parts = STORAGE.lock().unwrap().clone().unwrap_or_default();
+    let folder = |path: &str| {
+        Path::new(path)
+            .file_name()
+            .map(|name| name.to_string_lossy().into_owned())
+            .unwrap_or_else(|| path.to_string())
+    };
+    let named: Vec<String> = libraries
+        .iter()
+        .map(|(path, label)| {
+            if !label.trim().is_empty() {
+                return label.trim().to_string();
+            }
+            crate::storage::holding(&parts, Path::new(path))
+                .map(partition_title)
+                .unwrap_or_else(|| folder(path))
+        })
+        .collect();
+    named
+        .iter()
+        .zip(libraries)
+        .map(
+            |(name, (path, _))| match named.iter().filter(|other| *other == name).count() > 1 {
+                true => crate::message!(
+                    "steam-library-on-drive",
+                    "drive" => name.as_str(),
+                    "folder" => folder(path)
+                ),
+                false => name.clone(),
+            },
+        )
+        .collect()
 }
 
 /// Say whether this session was started with Steam left out.
@@ -2097,6 +2411,13 @@ pub enum Picking {
     /// Where somebody's BIOS dumps are, for the console that cannot start
     /// without one. What is chosen is copied — see `Shell::take_the_firmware`.
     Firmware,
+    /// A folder Steam is to keep games in: Settings > Games > Steam > Storage >
+    /// Add drive > Choose a folder, which is Steam's "Let me choose another
+    /// location".
+    SteamLibrary,
+    /// Where Heroic installs Epic games: Settings > Games > Epic Games. See
+    /// the helper's `folder.rs`.
+    EpicFolder,
 }
 
 impl Picking {
@@ -2106,6 +2427,8 @@ impl Picking {
         match self {
             Picking::RomsFolder => crate::i18n::text("shell-look-for-games-in-this-folder"),
             Picking::Firmware => crate::i18n::text("shell-copy-the-bios-out-of-this-folder"),
+            Picking::SteamLibrary => crate::i18n::text("steam-add-library-here"),
+            Picking::EpicFolder => crate::i18n::text("epic-install-games-here"),
         }
     }
 }
@@ -3002,6 +3325,11 @@ pub fn sun_today() -> Option<crate::sun::Sun> {
 /// they live with came looking for it, and a page somebody comes looking for
 /// should not be behind the one nobody does.
 ///
+/// Storage follows Users and stands in front of System, which is where the
+/// console this bar comes from keeps it: it is about the machine, like System,
+/// but it answers a question somebody comes with — is there room for this game
+/// — rather than one they come across.
+///
 /// System comes last because it is the one page about neither: what a display
 /// is doing and what the speakers are doing are things the user can point at,
 /// and how large the programs on the machine draw themselves is a setting they
@@ -3018,6 +3346,7 @@ pub fn column(bar: &[crate::apps::Column]) -> Vec<Entry> {
         input(),
         games(),
         users(),
+        storage(),
         system(bar),
     ]
 }
@@ -3271,12 +3600,55 @@ fn battery_percent_switch(charge: crate::power::Charge) -> Entry {
 /// came here because they prefer flat marks can have those over the water.
 ///
 /// The wallpaper first: it is the whole screen, and it is the expensive half.
+/// The particles last, because they are not a material at all but something
+/// the wallpaper's current carries — see [`particles_row`].
 fn theme_row() -> Entry {
     folder(
         crate::i18n::text("shell-theme"),
         crate::i18n::text("shell-what-the-shell-is-made-of"),
         icons::SETTING_THEME,
-        theme::PARTS.iter().copied().map(material_row).collect(),
+        theme::PARTS
+            .iter()
+            .copied()
+            .map(material_row)
+            .chain(std::iter::once(particles_row()))
+            .collect(),
+    )
+}
+
+/// Whether the wallpaper's current carries its sparkles: glitter that appears
+/// in the middle of the ribbon, is pushed out of it and grows more see-through
+/// the further it goes — the way the PlayStation 3's wave carried it.
+///
+/// On and Off, and on until somebody turns them off. The rows preview:
+/// highlighting Off takes them off the screen behind the column and walking
+/// away puts them back, which is the only way to see what the row is about — a
+/// name for a thing this small tells nobody what they are choosing.
+///
+/// Under Theme rather than anywhere else because it is a question about the
+/// wallpaper, and the same key reaches everything that draws one: the login
+/// screen reads it from the account's published look, and the compositor for
+/// the frame it opens a session with. See [`wallpaper::PARTICLES_KEY`].
+fn particles_row() -> Entry {
+    let on = theme::applied_particles();
+    folder(
+        crate::i18n::text("shell-particles"),
+        crate::i18n::text("shell-sparkles-drifting-along-the-wallpaper"),
+        icons::SETTING_PARTICLES,
+        vec![
+            value(
+                crate::i18n::text("shell-on"),
+                None,
+                on,
+                Setting::Particles(true),
+            ),
+            value(
+                crate::i18n::text("shell-off"),
+                None,
+                !on,
+                Setting::Particles(false),
+            ),
+        ],
     )
 }
 
@@ -7213,6 +7585,10 @@ fn games() -> Entry {
     // to a program this machine has not got would be a page about somebody
     // else's machine — and the row under it opens a picker for a folder
     // nothing would ever read. See [`crate::retroarch::offered`].
+    // Epic Games on the same terms as RetroArch: only where its package is.
+    if crate::heroic::offered() {
+        rows.push(epic());
+    }
     if crate::retroarch::offered() {
         rows.push(retroarch());
     }
@@ -7249,6 +7625,7 @@ fn steam() -> Entry {
     if steam_integration() {
         rows.push(steam_at_startup_switch());
         rows.push(steam_after_a_game_switch());
+        rows.push(steam_storage_page());
         rows.push(steam_other_titles_page());
     }
     // And the one shape that is neither: a session that was told on the command
@@ -7409,6 +7786,390 @@ fn steam_other_titles_note(held: &Option<crate::steam::Compat>) -> String {
     }
 }
 
+/// Which library a game goes into — see [`SteamValue::InstallTo`].
+///
+/// Only where there is a choice to make: a machine with one library has one
+/// answer, and a row offering it would be a question nobody can answer
+/// differently. It stays while a library is chosen, though, whatever else
+/// has gone, so that a choice naming a drive that is not there today can be
+/// seen and taken back.
+///
+/// The libraries are Steam's own list, read off the disk rather than asked of
+/// the client — the page must not wake Steam because a cursor walked past a
+/// row — and each says how much room its drive has, which is the thing
+/// somebody choosing where games go wants to know. An unplugged one says that
+/// instead, and is still pressable: choosing a drive that will be back
+/// tonight is a reasonable thing to do, and until it is back the question is
+/// asked on each install.
+fn steam_install_to_page() -> Option<Entry> {
+    let listed = STEAM_LIBRARIES.lock().unwrap().clone();
+    let chosen = steam_install_to();
+    if listed.len() < 2 && chosen.is_none() {
+        return None;
+    }
+    // The chosen one on its own row even when Steam no longer lists it at
+    // all, so the tick is somewhere and the row under it can say why.
+    let mut rows: Vec<(String, String, Option<&'static str>)> = listed
+        .iter()
+        .map(|library| {
+            let note = match library.present {
+                true => None,
+                false => Some("steam-library-not-connected"),
+            };
+            (library.path.clone(), library.label.clone(), note)
+        })
+        .collect();
+    if let Some(path) = chosen.as_deref() {
+        if !rows.iter().any(|(listed, ..)| same_library(listed, path)) {
+            rows.push((path.to_string(), String::new(), Some("steam-library-gone")));
+        }
+    }
+    let names = steam_library_names(
+        &rows
+            .iter()
+            .map(|(path, label, _)| (path.as_str(), label.as_str()))
+            .collect::<Vec<_>>(),
+    );
+    let parts = STORAGE.lock().unwrap().clone().unwrap_or_default();
+
+    let mut entries = vec![value(
+        crate::i18n::text("steam-ask-every-time"),
+        Some(crate::i18n::text("steam-ask-every-time-note")),
+        chosen.is_none(),
+        Setting::Steam(SteamValue::InstallTo(None)),
+    )];
+    let mut note = crate::i18n::text("steam-ask-every-time").to_string();
+    for ((path, _, missing), name) in rows.iter().zip(&names) {
+        let comment = match missing {
+            Some(key) => Some(crate::i18n::text(key).to_string()),
+            None => crate::storage::holding(&parts, Path::new(path)).and_then(|part| {
+                match &part.standing {
+                    crate::storage::Standing::Mounted {
+                        room: Some(room), ..
+                    } => Some(crate::message!(
+                        "disk-free-of",
+                        // In Steam's units rather than the Storage page's, so
+                        // the number here is the number the panel that asks
+                        // puts on the same library's button.
+                        "free" => crate::steam::format_size(room.free),
+                        "whole" => crate::steam::format_size(room.whole)
+                    )),
+                    _ => None,
+                }
+            }),
+        };
+        let is_chosen = chosen
+            .as_deref()
+            .is_some_and(|wanted| same_library(wanted, path));
+        if is_chosen {
+            note = match missing {
+                None => name.clone(),
+                Some(_) => {
+                    crate::message!("steam-install-to-unavailable", "library" => name.as_str())
+                }
+            };
+        }
+        entries.push(value(
+            name,
+            comment.as_deref(),
+            is_chosen,
+            Setting::Steam(SteamValue::InstallTo(Some(intern(path)))),
+        ));
+    }
+    Some(folder(
+        crate::i18n::text("steam-install-to"),
+        &note,
+        icons::SETTING_INSTALL_TO,
+        entries,
+    ))
+}
+
+/// Settings > Games > Steam > Storage: Steam's own storage page, on the bar.
+///
+/// The libraries Steam keeps games in, the games in each, and a way to add
+/// another — in that order, with **Install games to** at the head where there
+/// is a choice to make, because where the next game goes is the question
+/// somebody arriving here most often has. The row that leads here says how
+/// many libraries there are, which is what is behind it.
+///
+/// Everything on it is read off the disk — Steam's list of its libraries and
+/// each library's manifests — so walking to it never wakes Steam. What is
+/// *done* here is Steam's to do, and is asked of Valve's client on the press.
+fn steam_storage_page() -> Entry {
+    let listed = STEAM_LIBRARIES.lock().unwrap().clone();
+    let mut rows = Vec::new();
+    rows.extend(steam_install_to_page());
+    let names = steam_library_names(
+        &listed
+            .iter()
+            .map(|library| (library.path.as_str(), library.label.as_str()))
+            .collect::<Vec<_>>(),
+    );
+    for (library, name) in listed.iter().zip(&names) {
+        rows.push(steam_library_page(library, name));
+    }
+    rows.push(steam_add_drive_page(&listed));
+    let note = crate::message!("steam-storage-note", "count" => listed.len());
+    folder(
+        crate::i18n::text("steam-storage"),
+        &note,
+        icons::FILE_DRIVE,
+        rows,
+    )
+}
+
+/// One library: how much room is left on its drive, as a bar and in words, and
+/// behind it the games it holds and the two things Steam's page does to a
+/// library as a whole.
+///
+/// The games are largest first, which is Steam's own order on that page and
+/// the order somebody freeing up room reads in. Pressing one raises a menu —
+/// see [`crate::apps::Entry::Stored`] — rather than starting it.
+///
+/// **Remove drive** is offered for every library but the one Steam is
+/// installed in, which Steam can never be without; and it is pressable only
+/// where the library has no games in it and is not where new games go, which
+/// the row says instead of the press. A drive that is not plugged in cannot be
+/// read, so its games are not known and it may be removed: Steam forgets the
+/// folder, and nothing on the drive is touched.
+fn steam_library_page(library: &lxb_steam::library::Listed, name: &str) -> Entry {
+    let games = steam_games_in(&library.path);
+    let root = STEAM_ROOT.lock().unwrap().clone();
+    let moving = STEAM_MOVING.lock().unwrap().clone();
+    let room = steam_library_room(&library.path);
+    let comment = match (library.present, room) {
+        (false, _) => crate::i18n::text("steam-library-not-connected").to_string(),
+        (true, Some(room)) => crate::message!(
+            "steam-library-summary",
+            "games" => crate::message!("steam-library-games", "count" => games.len()),
+            "room" => crate::message!(
+                "disk-free-of",
+                "free" => crate::steam::format_size(room.free),
+                "whole" => crate::steam::format_size(room.whole)
+            )
+        ),
+        (true, None) => crate::message!("steam-library-games", "count" => games.len()),
+    };
+
+    let mut entries: Vec<Entry> = games
+        .iter()
+        .map(|game| Entry::Stored(stored_game(game, &library.path, moving.as_ref())))
+        .collect();
+    if !library.present {
+        entries.push(reading_marked(
+            crate::i18n::text("steam-library-not-connected"),
+            crate::i18n::text("steam-library-connect"),
+            icons::FILE_DRIVE,
+        ));
+    } else {
+        entries.push(action(
+            crate::i18n::text("steam-repair-library"),
+            crate::i18n::text("steam-repair-library-note"),
+            icons::REFRESH,
+            Setting::Steam(SteamValue::RepairLibrary(intern(&library.path))),
+        ));
+    }
+    let is_root = root
+        .as_deref()
+        .is_some_and(|root| same_library(root, &library.path));
+    if !is_root {
+        let installs_here = steam_install_to()
+            .as_deref()
+            .is_some_and(|chosen| same_library(chosen, &library.path));
+        let title = crate::i18n::text("steam-remove-library");
+        entries.push(match (games.is_empty(), installs_here) {
+            (false, _) => reading_marked(
+                title,
+                crate::i18n::text("steam-remove-library-has-games"),
+                icons::UNINSTALL,
+            ),
+            (true, true) => reading_marked(
+                title,
+                crate::i18n::text("steam-remove-library-default"),
+                icons::UNINSTALL,
+            ),
+            (true, false) => action(
+                title,
+                crate::i18n::text("steam-remove-library-note"),
+                icons::UNINSTALL,
+                Setting::Steam(SteamValue::RemoveLibrary(intern(&library.path))),
+            ),
+        });
+    }
+    let Entry::Folder(mut page) = folder(name, &comment, icons::FILE_DRIVE, entries) else {
+        unreachable!("folder builds a folder");
+    };
+    // By its path rather than its name: two rebuilds apart the name can change
+    // — a drive read for the first time, a label given in Steam — and the
+    // cursor standing in the page must not be thrown out of it for that.
+    page.identity = Some(steam_library_identity(&library.path));
+    page.title_message = None;
+    page.comment_message = None;
+    page.used = match (library.present, room) {
+        (true, Some(room)) => Some(crate::apps::Arriving {
+            share: (room.used() * 1000.0).round() / 1000.0,
+            stuck: false,
+        }),
+        _ => None,
+    };
+    Entry::Folder(page)
+}
+
+/// What one library's page is known by, whatever it is called today.
+pub fn steam_library_identity(path: &str) -> String {
+    format!("steam-library:{}", path.trim_end_matches('/'))
+}
+
+/// One game on a library's page: its name, how much room it takes, and — while
+/// it is being moved — how far that has got, as a bar.
+fn stored_game(
+    game: &StoredGame,
+    library: &str,
+    moving: Option<&MovingNow>,
+) -> crate::apps::Stored {
+    let size = crate::steam::format_size(game.size);
+    let moving = moving.filter(|moving| moving.app_id == game.app_id);
+    let note = match moving {
+        Some(MovingNow { stopping: true, .. }) => {
+            crate::i18n::text("steam-moving-stopping").to_string()
+        }
+        Some(MovingNow {
+            to,
+            percent: Some(percent),
+            ..
+        }) => crate::message!(
+            "steam-moving-to-percent",
+            "library" => steam_library_name(to),
+            "percent" => *percent
+        ),
+        Some(MovingNow { to, .. }) => {
+            crate::message!("steam-moving-to", "library" => steam_library_name(to))
+        }
+        None if game.busy => crate::message!("steam-game-busy", "size" => size),
+        None => size,
+    };
+    crate::apps::Stored {
+        app_id: game.app_id,
+        name: game.name.clone(),
+        note,
+        library: library.to_string(),
+        busy: game.busy,
+        moving: moving.map(|moving| crate::apps::Arriving {
+            share: f32::from(moving.percent.unwrap_or(0)) / 100.0,
+            stuck: false,
+        }),
+    }
+}
+
+/// What one library is called on a row or a button, by its path.
+pub fn steam_library_name(path: &str) -> String {
+    let listed = STEAM_LIBRARIES.lock().unwrap().clone();
+    let pairs: Vec<(&str, &str)> = listed
+        .iter()
+        .map(|library| (library.path.as_str(), library.label.as_str()))
+        .collect();
+    let names = steam_library_names(&pairs);
+    listed
+        .iter()
+        .zip(names)
+        .find(|(library, _)| same_library(&library.path, path))
+        .map(|(_, name)| name)
+        .unwrap_or_else(|| {
+            steam_library_names(&[(path, "")])
+                .pop()
+                .unwrap_or_else(|| path.to_string())
+        })
+}
+
+/// Add drive: Steam's own Add Drive list, and its "Let me choose another
+/// location".
+///
+/// The drives are the ones Settings > Storage lists, by the names it gives
+/// them, that could take a library and have none: mounted, writable by the
+/// person signed in, not what the machine starts from, and not already holding
+/// one of Steam's libraries. Pressing one asks Steam to make the library where
+/// its own list would have made it — a `SteamLibrary` folder at the top of the
+/// drive, see [`lxb_steam::webui::library_on_a_drive`] — and the last row walks
+/// the folders for somebody who wants it somewhere else.
+fn steam_add_drive_page(listed: &[lxb_steam::library::Listed]) -> Entry {
+    use crate::storage::{Role, Standing};
+
+    let parts = STORAGE.lock().unwrap().clone().unwrap_or_default();
+    let held: Vec<&str> = listed
+        .iter()
+        .filter_map(|library| crate::storage::holding(&parts, Path::new(&library.path)))
+        .map(|part| part.device.as_str())
+        .collect();
+    let mut rows: Vec<Entry> = parts
+        .iter()
+        .filter_map(|part| match &part.standing {
+            Standing::Mounted {
+                at,
+                role,
+                room: Some(room),
+            } if *role != Role::Startup
+                && !held.contains(&part.device.as_str())
+                && writable(at) =>
+            {
+                Some(action(
+                    &partition_title(part),
+                    &crate::message!(
+                        "disk-free-of",
+                        "free" => crate::steam::format_size(room.free),
+                        "whole" => crate::steam::format_size(room.whole)
+                    ),
+                    icons::FILE_DRIVE,
+                    Setting::Steam(SteamValue::AddLibrary(intern(
+                        &lxb_steam::webui::library_on_a_drive(at),
+                    ))),
+                ))
+            }
+            _ => None,
+        })
+        .collect();
+    rows.push(Entry::Folder(crate::apps::Folder {
+        title_message: Some("steam-add-library-elsewhere"),
+        comment_message: Some("steam-add-library-elsewhere-note"),
+        identity: Some("steam-add-library-elsewhere".to_string()),
+        title: crate::i18n::text("steam-add-library-elsewhere").to_string(),
+        comment: Some(crate::i18n::text("steam-add-library-elsewhere-note").to_string()),
+        icon: Some(icons::FILE_FOLDER.to_string()),
+        entries: Vec::new(),
+        // Read on the press that opens it, as every folder picker's first
+        // column is: what is plugged in is a question about the moment
+        // somebody asks it.
+        place: Some(crate::files::Place::Volumes(crate::files::Shows::Folders(
+            Picking::SteamLibrary,
+        ))),
+        chosen: false,
+        over_the_list: false,
+        person: None,
+        portrait: None,
+        used: None,
+    }));
+    folder(
+        crate::i18n::text("steam-add-drive"),
+        crate::i18n::text("steam-add-drive-note"),
+        icons::ADD,
+        rows,
+    )
+}
+
+/// Whether the person signed in may make a folder at the top of this mount.
+///
+/// Asked of the mount's own top folder, which the kernel holds in memory for
+/// as long as the filesystem is mounted, so this never waits on a drive that
+/// has spun down.
+fn writable(at: &Path) -> bool {
+    use std::os::unix::ffi::OsStrExt;
+    let Ok(path) = std::ffi::CString::new(at.as_os_str().as_bytes()) else {
+        return false;
+    };
+    // SAFETY: `path` is a valid NUL-terminated string for the length of the
+    // call, and `access` reads nothing else.
+    unsafe { libc::access(path.as_ptr(), libc::W_OK | libc::X_OK) == 0 }
+}
+
 /// Whether the client is started as the session comes up — see
 /// [`SteamValue::AtStartup`].
 fn steam_at_startup_switch() -> Entry {
@@ -7510,6 +8271,221 @@ fn retroarch() -> Entry {
         crate::i18n::text("shell-your-own-games-and-how-they-are-played"),
         crate::retroarch::mark(),
         rows,
+    )
+}
+
+/// The page belonging to the Epic Games integration, on a machine that has
+/// its package — Steam's page, for Heroic.
+///
+/// Steam's three switches first: whether the shell drives Heroic at all,
+/// whether it starts one as the session comes up, and whether it leaves one
+/// running after a game. Then Heroic's own settings, written where Heroic
+/// keeps them and never copied: where new games are installed, what they run
+/// with, and whether their saves are kept with Epic. Everything else about
+/// Heroic is its own window's, behind the row's Open Heroic.
+fn epic() -> Entry {
+    let mut rows = vec![epic_integration_switch()];
+    if epic_integration() {
+        rows.push(epic_at_startup_switch());
+        rows.push(epic_after_a_game_switch());
+        rows.push(epic_install_to());
+        rows.push(epic_run_games_with());
+        rows.push(epic_cloud_saves());
+    }
+    folder(
+        crate::heroic::TITLE,
+        crate::i18n::text("epic-how-heroic-works-with-the-shell"),
+        crate::heroic::mark(),
+        rows,
+    )
+}
+
+/// Whether the shell drives Heroic at all — see [`EpicValue::Integration`].
+fn epic_integration_switch() -> Entry {
+    let on = epic_integration();
+    folder(
+        crate::i18n::text("shell-integration"),
+        match on {
+            true => crate::i18n::text("shell-on-the-library-is-a-column-of-the-bar"),
+            false => crate::i18n::text("epic-off-heroic-is-an-application-like-any-other"),
+        },
+        crate::heroic::mark(),
+        vec![
+            value(
+                crate::i18n::text("shell-off"),
+                Some(crate::i18n::text(
+                    "epic-heroic-is-an-application-like-any-other-with-its-own-icon",
+                )),
+                !on,
+                Setting::Epic(EpicValue::Integration(false)),
+            ),
+            value(
+                crate::i18n::text("shell-on"),
+                Some(crate::i18n::text(
+                    "shell-sign-in-and-play-your-library-from-the-bar",
+                )),
+                on,
+                Setting::Epic(EpicValue::Integration(true)),
+            ),
+        ],
+    )
+}
+
+/// Whether a Heroic is started as the session comes up — see
+/// [`EpicValue::AtStartup`].
+fn epic_at_startup_switch() -> Entry {
+    let on = epic_at_startup();
+    folder(
+        crate::i18n::text("shell-start-with-the-shell"),
+        match on {
+            true => crate::i18n::text(
+                "epic-heroic-is-started-in-the-background-as-the-session-comes-up",
+            ),
+            false => crate::i18n::text("epic-heroic-is-started-when-the-first-game-is-pressed"),
+        },
+        icons::LAUNCH,
+        vec![
+            value(
+                crate::i18n::text("shell-off"),
+                Some(crate::i18n::text(
+                    "epic-heroic-is-started-when-the-first-game-is-pressed",
+                )),
+                !on,
+                Setting::Epic(EpicValue::AtStartup(false)),
+            ),
+            value(
+                crate::i18n::text("shell-on"),
+                Some(crate::i18n::text(
+                    "shell-the-first-game-of-the-day-starts-as-quickly-as-the-second",
+                )),
+                on,
+                Setting::Epic(EpicValue::AtStartup(true)),
+            ),
+        ],
+    )
+}
+
+/// Whether Heroic is left running once a game has ended — see
+/// [`EpicValue::AfterAGame`].
+fn epic_after_a_game_switch() -> Entry {
+    let on = epic_left_after_a_game();
+    folder(
+        crate::i18n::text("epic-leave-heroic-running"),
+        match on {
+            true => {
+                crate::i18n::text("epic-heroic-stays-up-after-a-game-so-the-next-one-starts-sooner")
+            }
+            false => {
+                crate::i18n::text("epic-heroic-closes-with-the-game-and-the-memory-comes-back")
+            }
+        },
+        icons::SHUTDOWN,
+        vec![
+            value(
+                crate::i18n::text("shell-off"),
+                Some(crate::i18n::text(
+                    "epic-heroic-closes-with-the-game-and-the-memory-comes-back",
+                )),
+                !on,
+                Setting::Epic(EpicValue::AfterAGame(false)),
+            ),
+            value(
+                crate::i18n::text("shell-on"),
+                Some(crate::i18n::text(
+                    "epic-heroic-stays-up-after-a-game-so-the-next-one-starts-sooner",
+                )),
+                on,
+                Setting::Epic(EpicValue::AfterAGame(true)),
+            ),
+        ],
+    )
+}
+
+/// Where Heroic installs new games — its own `defaultInstallPath`, chosen with
+/// the ordinary folder picker. Called what it is, "Install games to", as
+/// Steam's is: it is where the *next* game goes, and a game already here stays
+/// where it is.
+fn epic_install_to() -> Entry {
+    let facts = crate::heroic::facts();
+    Entry::Folder(crate::apps::Folder {
+        title_message: Some("steam-install-to"),
+        comment_message: None,
+        identity: Some("epic-games-folder".into()),
+        title: crate::i18n::text("steam-install-to").to_string(),
+        comment: Some(match &facts.base {
+            Some(at) => crate::screenshot::abbreviated(at),
+            None => crate::i18n::text("epic-looking").to_string(),
+        }),
+        icon: Some(icons::FILE_FOLDER.to_string()),
+        entries: Vec::new(),
+        // Read on the press, as every folder picker here is: what is on
+        // somebody's disk is a question about the moment they ask it.
+        place: Some(crate::files::Place::Volumes(crate::files::Shows::Folders(
+            Picking::EpicFolder,
+        ))),
+        chosen: false,
+        over_the_list: false,
+        person: None,
+        portrait: None,
+        used: None,
+    })
+}
+
+/// What Heroic runs every game with that has no tool of its own — its
+/// default `wineVersion`, out of the same list a game's Compatibility offers.
+fn epic_run_games_with() -> Entry {
+    let facts = crate::heroic::facts();
+    let rows = if facts.tools.is_empty() {
+        vec![reading(
+            crate::i18n::text("epic-asking-heroic"),
+            crate::i18n::text("epic-press-to-finish-setting-up"),
+        )]
+    } else {
+        facts
+            .tools
+            .iter()
+            .map(|tool| {
+                value(
+                    tool,
+                    None::<&str>,
+                    facts.proton.as_deref() == Some(tool.as_str()),
+                    Setting::Epic(EpicValue::Tool(intern(tool))),
+                )
+            })
+            .collect()
+    };
+    folder(
+        crate::i18n::text("epic-run-games-with"),
+        facts
+            .proton
+            .as_deref()
+            .unwrap_or_else(|| crate::i18n::text("epic-press-to-finish-setting-up")),
+        icons::SETTING_COMPATIBILITY,
+        rows,
+    )
+}
+
+/// Whether Heroic keeps saves with Epic — its own `autoSyncSaves`.
+fn epic_cloud_saves() -> Entry {
+    let on = crate::heroic::facts().cloud_saves;
+    folder(
+        crate::i18n::text("epic-cloud-saves"),
+        crate::i18n::text(if on { "shell-on" } else { "shell-off" }),
+        icons::SETTING_NETWORK,
+        vec![
+            value(
+                crate::i18n::text("shell-off"),
+                Some(crate::i18n::text("epic-cloud-saves-off")),
+                !on,
+                Setting::EpicCloudSaves(false),
+            ),
+            value(
+                crate::i18n::text("shell-on"),
+                Some(crate::i18n::text("epic-cloud-saves-on")),
+                on,
+                Setting::EpicCloudSaves(true),
+            ),
+        ],
     )
 }
 
@@ -8256,6 +9232,364 @@ fn system_information() -> Entry {
     })
 }
 
+// --- Settings > Storage -----------------------------------------------------
+
+/// What the storage worker last read, for the page to be written from.
+///
+/// Reported rather than read here, on the terms [`BATTERY`] is: the tree is
+/// rebuilt several times a minute for reasons that have nothing to do with the
+/// disks, and `statvfs` on a drive that has spun down is not something a
+/// rebuild can wait for. `None` until the first reading, which is a few
+/// milliseconds into the session. See [`crate::storage`].
+static STORAGE: Mutex<Option<Vec<crate::storage::Part>>> = Mutex::new(None);
+
+/// Hand the page a fresh reading. `true` when the column has to be rebuilt to
+/// show it.
+///
+/// Compared as the rows it would draw, rather than as the numbers: a disk in
+/// use changes its free byte count on every reading, and a page rebuilt for a
+/// difference nobody can see would be the tree rebuilt every three seconds for
+/// as long as somebody looks at it.
+pub fn note_storage(listing: Vec<crate::storage::Part>) -> bool {
+    let mut held = STORAGE.lock().unwrap();
+    let changed = held.as_deref().map(partition_rows) != Some(partition_rows(&listing));
+    *held = Some(listing);
+    changed
+}
+
+/// Storage: every partition on the machine, and how much room is left on
+/// each.
+///
+/// The row wears the drive mark the Files column gives a disk, and so do the
+/// partitions under it — they are the drives, and it is the one mark this
+/// shell has for one.
+///
+/// Until the first reading arrives, and on a machine where nothing could be
+/// read, the page holds one row saying so: an empty column is the one shape
+/// this bar cannot show.
+fn storage() -> Entry {
+    let rows = match STORAGE.lock().unwrap().as_deref() {
+        None => vec![storage_word(crate::i18n::text("storage-checking"))],
+        Some([]) => vec![storage_word(crate::i18n::text("storage-none"))],
+        Some(parts) => {
+            let known = crate::drives::known();
+            parts.iter().map(|part| storage_row(part, &known)).collect()
+        }
+    };
+    folder(
+        crate::i18n::text("storage-title"),
+        crate::i18n::text("storage-description"),
+        icons::FILE_DRIVE,
+        rows,
+    )
+}
+
+/// A row that only says something, with no second line: the page before it
+/// has anything to list.
+fn storage_word(title: &str) -> Entry {
+    Entry::Choice(Choice {
+        title: title.to_string(),
+        comment: None,
+        icon: Some(icons::FILE_DRIVE.to_string()),
+        swatch: None,
+        material: None,
+        chosen: false,
+        acts: false,
+        setting: None,
+        over_the_list: false,
+    })
+}
+
+/// One partition on the page.
+///
+/// A drive somebody can put to use — one nothing has mounted, or one mounted
+/// somewhere a drive goes rather than where the system keeps itself — is a way
+/// in: its column holds the press that mounts or unmounts it, whether the
+/// machine mounts it by itself when it starts, and the panel of its facts
+/// under them. Every other partition is that panel on its own, as it always
+/// was: there is nothing about the system's own partitions, or swap, that a
+/// person could change here and be glad of.
+///
+/// Which drives those are is UDisks' answer, joined to the kernel's reading by
+/// the device's name — see [`crate::drives`]. A machine without UDisks gets
+/// the panels, which is every drive it could not have mounted anyway.
+fn storage_row(part: &crate::storage::Part, known: &crate::drives::Listing) -> Entry {
+    use crate::storage::{Role, Standing};
+
+    let row = partition_row(part);
+    let can_be_put_to_use = |volume: &&crate::drives::Volume| {
+        !volume.systems
+            && match &part.standing {
+                Standing::Unused => true,
+                Standing::Mounted {
+                    at,
+                    role: Role::Other,
+                    ..
+                } => crate::files::is_somewhere_a_drive_goes(at),
+                _ => false,
+            }
+    };
+    let Some(volume) = known.by_device(&part.device).filter(can_be_put_to_use) else {
+        return Entry::Partition(row);
+    };
+    let doing = known.doing(volume.number);
+    let mounted = matches!(part.standing, Standing::Mounted { .. });
+
+    let mut entries = vec![drive_mount_row(volume, mounted, doing)];
+    if volume.can_start_with_the_machine() {
+        entries.push(drive_at_startup_row(
+            volume,
+            doing,
+            known.startup_trouble(volume.number),
+        ));
+    }
+    // Last, and in the words the network page uses for the same kind of row:
+    // what the drive is made of and where it is are things somebody helping
+    // over the telephone asks for, and nothing anybody acts on.
+    entries.push(Entry::Facts(crate::apps::Facts {
+        title: crate::i18n::text("drive-information").to_string(),
+        comment: part
+            .model
+            .clone()
+            .unwrap_or_else(|| crate::appinfo::human_size(part.size)),
+        icon: icons::SETTING_INFO.to_string(),
+        about: row.facts.about.clone(),
+    }));
+
+    let comment = match doing {
+        Some(doing) => crate::files::doing_note(doing).to_string(),
+        None if !mounted => crate::message!(
+            "drive-not-mounted",
+            "size" => crate::appinfo::human_size(part.size)
+        ),
+        None => row.facts.comment.clone(),
+    };
+    let Entry::Folder(mut inner) = folder(&row.facts.title, &comment, &row.facts.icon, entries)
+    else {
+        unreachable!("folder builds a folder");
+    };
+    // By the device rather than by what it is called: a label is anybody's to
+    // choose, and two drives can share one.
+    inner.title_message = None;
+    inner.comment_message = None;
+    inner.identity = Some(format!("drive:{}", part.device));
+    inner.used = row.used;
+    Entry::Folder(inner)
+}
+
+/// The row that mounts a drive, or puts it away.
+///
+/// The chain the network page draws for joining and leaving, hooked and
+/// snapped: the same act on a different object. A drive that can be unplugged
+/// is put away with Safely remove — unmounted and turned off, so the person
+/// knows when to pull it out — and any other with Unmount. While a press on the
+/// drive is being carried out the row says so and cannot be pressed again.
+fn drive_mount_row(
+    volume: &crate::drives::Volume,
+    mounted: bool,
+    doing: Option<crate::drives::Doing>,
+) -> Entry {
+    use crate::drives::Doing;
+    let number = volume.number;
+    let (title, note, icon, value) = match (mounted, volume.removable) {
+        (false, _) => (
+            "shell-mount",
+            "drive-mount-note",
+            icons::SETTING_CONNECT,
+            DriveValue::Mount(number),
+        ),
+        (true, true) => (
+            "shell-safely-remove",
+            "drive-safely-remove-note",
+            icons::SETTING_DISCONNECT,
+            DriveValue::Remove(number),
+        ),
+        (true, false) => (
+            "shell-unmount",
+            "drive-unmount-note",
+            icons::SETTING_DISCONNECT,
+            DriveValue::Unmount(number),
+        ),
+    };
+    let title = crate::i18n::text(title);
+    match doing {
+        Some(doing @ (Doing::Mounting | Doing::Unmounting | Doing::Removing)) => {
+            reading_marked(title, crate::files::doing_note(doing), icon)
+        }
+        Some(Doing::AtStartup(_)) => reading_marked(title, crate::i18n::text(note), icon),
+        None => action(title, crate::i18n::text(note), icon, Setting::Drive(value)),
+    }
+}
+
+/// Mount at startup: whether the machine mounts the drive by itself when it
+/// starts, which is a line of its mount table and not a setting of this
+/// shell's. On and Off, with what each means under it, and the row above them
+/// saying which is in force — or that the change is being made, or what came
+/// of it when it did not simply work.
+///
+/// The mark is the clock face every row about *when* wears.
+fn drive_at_startup_row(
+    volume: &crate::drives::Volume,
+    doing: Option<crate::drives::Doing>,
+    trouble: Option<crate::drives::Refusal>,
+) -> Entry {
+    use crate::drives::{Doing, Refusal};
+    let on = volume.at_startup.is_some();
+    let note = match (doing, trouble) {
+        (Some(Doing::AtStartup(_)), _) => crate::i18n::text("shell-working"),
+        (_, Some(Refusal::Later)) => crate::i18n::text("shell-a-restart-may-be-needed"),
+        (_, Some(_)) => crate::i18n::text("drive-at-startup-failed"),
+        (_, None) if on => crate::i18n::text("shell-on"),
+        (_, None) => crate::i18n::text("shell-off"),
+    };
+    folder(
+        crate::i18n::text("drive-at-startup"),
+        note,
+        icons::SETTING_SCHEDULE,
+        vec![
+            value(
+                crate::i18n::text("shell-on"),
+                Some(crate::i18n::text("drive-at-startup-on-note")),
+                on,
+                Setting::Drive(DriveValue::AtStartup(volume.number, true)),
+            ),
+            value(
+                crate::i18n::text("shell-off"),
+                Some(crate::i18n::text("drive-at-startup-off-note")),
+                !on,
+                Setting::Drive(DriveValue::AtStartup(volume.number, false)),
+            ),
+        ],
+    )
+}
+
+fn partition_rows(parts: &[crate::storage::Part]) -> Vec<crate::apps::Partition> {
+    parts.iter().map(partition_row).collect()
+}
+
+/// One partition: its name, how much is left on it in words and as a bar, and
+/// the panel behind it.
+///
+/// The row says the one thing a person came to the page for — how much room
+/// is left — in the words of a disk in Files, "120 GiB free of 237 GiB". What
+/// it is made of, where it is and which drive it is on are behind the press,
+/// on the panel of facts, because none of them is a thing anybody acts on and
+/// all of them are something somebody helping over the telephone asks for.
+fn partition_row(part: &crate::storage::Part) -> crate::apps::Partition {
+    use crate::appinfo::human_size;
+    use crate::storage::{Role, Standing};
+
+    let size = human_size(part.size);
+    let mut values = Vec::new();
+    let mut value = |key: &'static str, text: String| {
+        values.push((crate::i18n::text(key).to_string(), text));
+    };
+    let (comment, used) = match &part.standing {
+        Standing::Mounted {
+            room: Some(room), ..
+        } => {
+            let free = human_size(room.free);
+            let whole = human_size(room.whole);
+            value("storage-free", free.clone());
+            value(
+                "storage-used",
+                human_size(room.whole.saturating_sub(room.free)),
+            );
+            value("storage-capacity", whole.clone());
+            (
+                crate::message!("disk-free-of", "free" => free, "whole" => whole),
+                Some(crate::apps::Arriving {
+                    // To the thousandth, which is finer than any bar this row
+                    // is drawn at and coarse enough that a disk being written
+                    // to is not a new row on every reading.
+                    share: (room.used() * 1000.0).round() / 1000.0,
+                    stuck: false,
+                }),
+            )
+        }
+        Standing::Mounted { room: None, .. } => {
+            value("storage-capacity", size.clone());
+            (
+                crate::message!("storage-cannot-check", "whole" => size),
+                None,
+            )
+        }
+        Standing::Memory => {
+            value("storage-capacity", size.clone());
+            (
+                crate::message!("storage-extra-memory", "whole" => size),
+                None,
+            )
+        }
+        Standing::Unused => {
+            value("storage-capacity", size.clone());
+            (crate::message!("storage-not-in-use", "whole" => size), None)
+        }
+    };
+    if let Some(kind) = &part.kind {
+        value("storage-file-system", kind.clone());
+    }
+    if let Standing::Mounted { at, .. } = &part.standing {
+        value("storage-location", at.display().to_string());
+    }
+    if let Some(model) = &part.model {
+        value("storage-drive", model.clone());
+    }
+
+    let role = match &part.standing {
+        Standing::Mounted { role, .. } => Some(*role),
+        _ => None,
+    };
+    crate::apps::Partition {
+        facts: crate::apps::Facts {
+            title: partition_title(part),
+            comment,
+            // Everybody's own files wear the mark the Files column gives them,
+            // and every other partition the drive.
+            icon: match role {
+                Some(Role::Home) => icons::FILE_HOME,
+                _ => icons::FILE_DRIVE,
+            }
+            .to_string(),
+            about: crate::apps::About::Listed(values),
+        },
+        used,
+    }
+}
+
+/// What a partition is called on the page.
+///
+/// By what it is for, where that is something a person would recognise — the
+/// system, everybody's files, what the machine starts from — whatever the
+/// filesystem happens to be labelled, because a label on those is usually the
+/// installer's and not the person's. Otherwise by the name somebody gave it,
+/// then by where it is mounted, then by what the partition table calls it, and
+/// last by its size, which is how a file manager names a volume nobody named.
+fn partition_title(part: &crate::storage::Part) -> String {
+    use crate::storage::{Role, Standing};
+    let mounted = match &part.standing {
+        Standing::Mounted { role, at, .. } => Some((*role, at)),
+        _ => None,
+    };
+    match mounted {
+        Some((Role::System, _)) => return crate::i18n::text("shell-system").to_string(),
+        Some((Role::Home, _)) => return crate::i18n::text("shell-home").to_string(),
+        Some((Role::Startup, _)) => return crate::i18n::text("storage-startup").to_string(),
+        _ => {}
+    }
+    part.label
+        .clone()
+        .or_else(|| {
+            mounted
+                .and_then(|(_, at)| at.file_name())
+                .map(|name| name.to_string_lossy().into_owned())
+        })
+        .or_else(|| part.part_name.clone())
+        .unwrap_or_else(
+            || crate::message!("storage-unnamed", "size" => crate::appinfo::human_size(part.size)),
+        )
+}
+
 // --- Settings > Users -------------------------------------------------------
 
 /// Who this machine is for: every account on it, and the row that makes
@@ -8790,6 +10124,7 @@ fn folder(title: &str, comment: &str, icon: &str, entries: Vec<Entry>) -> Entry 
         over_the_list: false,
         person: None,
         portrait: None,
+        used: None,
     })
 }
 
@@ -8994,6 +10329,9 @@ pub fn preview(setting: Option<Setting>) {
                 tracing::warn!(part = part.title(), theme = name, "no theme by that name");
             }
         }
+        // The same, for the sparkles: the difference between the two rows is on
+        // the screen behind them and nowhere else.
+        Some(Setting::Particles(on)) => theme::preview_particles(on),
         // Highlighting a value the compositor or the sound server would have to
         // act on changes nothing; the accent goes back to what is applied, as
         // it does when the cursor leaves a list of values entirely.
@@ -9020,6 +10358,7 @@ pub fn preview(setting: Option<Setting>) {
             // a cursor walking past Off would take the user's library off the
             // screen and put it back, twice, on the way down a list of two.
             | Setting::Steam(_)
+            | Setting::Epic(_)
             | Setting::SoundDevice { .. }
             | Setting::Network(_)
             | Setting::Bluetooth(_)
@@ -9028,6 +10367,8 @@ pub fn preview(setting: Option<Setting>) {
             // what a form row changes is a draft two rows further down the same
             // column, which is already on screen saying what it says.
             | Setting::User(_)
+            // Nor does a drive: highlighting Mount must not mount it.
+            | Setting::Drive(_)
             // Neither emulator setting previews, and neither could: what they
             // change is a file an emulator reads when it starts, and the
             // emulator is not running while somebody is walking down this
@@ -9036,6 +10377,9 @@ pub fn preview(setting: Option<Setting>) {
             | Setting::CoreOption { .. }
             | Setting::Emulator { .. }
             | Setting::EmulatorArt
+            // Nor does a switch the Epic helper throws: highlighting On must
+            // not turn Heroic's saves sync on.
+            | Setting::EpicCloudSaves(_)
             // The floating window is the compositor's too, and there is a
             // second reason not to preview it: what a highlighted row there
             // would move is somebody's video, and a cursor walking down the
@@ -9188,6 +10532,12 @@ fn apply_with(setting: Setting, persist: impl FnOnce(&Stored)) -> bool {
             }
             tracing::info!(part = part.title(), theme = name, "theme");
         }
+        // Nothing to tell anybody, for the material's reason: the wallpaper
+        // reads this once a frame.
+        Setting::Particles(on) => {
+            theme::commit_particles(on);
+            tracing::info!(on, "particles");
+        }
         // Nothing to tell anybody either, for the opposite reason to the
         // accent's: the shell asks this of itself once a frame — see
         // [`crate::sound::Sounds::sync_music`] — so the answer is acted on by
@@ -9212,6 +10562,8 @@ fn apply_with(setting: Setting, persist: impl FnOnce(&Stored)) -> bool {
         // means is a helper being run, and the shell is what runs it. See
         // [`Setting::EmulatorArt`].
         Setting::EmulatorArt => {}
+        // Heroic's to remember, through its helper — see the variant.
+        Setting::EpicCloudSaves(_) => {}
         Setting::StartMusic(playing) => {
             *START_MUSIC.lock().unwrap() = playing;
             tracing::info!(playing, "Start music");
@@ -9251,6 +10603,20 @@ fn apply_with(setting: Setting, persist: impl FnOnce(&Stored)) -> bool {
             *STEAM_INTEGRATION.lock().unwrap() = on;
             tracing::info!(on, "the Steam integration");
         }
+        Setting::Epic(EpicValue::Integration(on)) => {
+            *EPIC_INTEGRATION.lock().unwrap() = on;
+            tracing::info!(on, "the Epic Games integration");
+        }
+        Setting::Epic(EpicValue::AtStartup(on)) => {
+            *EPIC_AT_STARTUP.lock().unwrap() = on;
+            tracing::info!(on, "Heroic is started with the shell");
+        }
+        Setting::Epic(EpicValue::AfterAGame(on)) => {
+            *EPIC_AFTER_A_GAME.lock().unwrap() = on;
+            tracing::info!(on, "Heroic is left running after a game");
+        }
+        // Heroic's to remember, through its helper — see the variant.
+        Setting::Epic(EpicValue::Tool(_)) => {}
         Setting::Steam(SteamValue::AtStartup(on)) => {
             *STEAM_AT_STARTUP.lock().unwrap() = on;
             tracing::info!(on, "Steam is started with the shell");
@@ -9269,6 +10635,28 @@ fn apply_with(setting: Setting, persist: impl FnOnce(&Stored)) -> bool {
                 tool = tool.unwrap_or("none"),
                 "what runs the games Valve has not verified"
             );
+        }
+        // Written down here, because what is asked at the next install is the
+        // shell's to know; and told to Steam by the shell as well, because a
+        // library chosen here is Steam's default too — see
+        // [`SteamValue::InstallTo`] and `Shell::carry_out_steam`.
+        Setting::Steam(SteamValue::InstallTo(path)) => {
+            *STEAM_INSTALL_TO.lock().unwrap() = path.map(str::to_string);
+            tracing::info!(
+                to = path.unwrap_or("ask every time"),
+                "where Steam games are installed"
+            );
+        }
+        // Presses, not values: the list of libraries is Steam's own, so
+        // nothing is written here and the shell carries each out by asking
+        // Steam — see `Shell::carry_out_steam`.
+        Setting::Steam(
+            SteamValue::AddLibrary(path)
+            | SteamValue::RemoveLibrary(path)
+            | SteamValue::RepairLibrary(path),
+        ) => {
+            tracing::info!(%path, ?setting, "a press on Steam's libraries");
+            return true;
         }
         // Nothing to tell anybody, and nothing to carry out. What this changes
         // is where the *next* cursor is built standing — see
@@ -9418,6 +10806,13 @@ fn apply_with(setting: Setting, persist: impl FnOnce(&Stored)) -> bool {
         // second opinion about who may log in.
         Setting::User(value) => {
             tracing::info!(?value, "account form");
+            return true;
+        }
+        // And a drive, on the same terms: UDisks carries it out and the machine
+        // remembers it — Mount at startup is a line of the mount table, not of
+        // this shell's settings file.
+        Setting::Drive(value) => {
+            tracing::info!(?value, "drive");
             return true;
         }
         // And the rest of Bluetooth, on exactly the terms the network is under:
@@ -9637,6 +11032,12 @@ pub fn load() {
 /// [`load`] so that can be exercised without a file, which is the only way to
 /// hold the fallback without writing into the developer's own home directory.
 fn adopt_theme(stored: &Stored) {
+    // A file that says nothing about the sparkles leaves them where the session
+    // has them, which on the ordinary first run is on.
+    if let Some(on) = stored.theme_particles {
+        theme::set_particles(on);
+    }
+
     // The file first, because the material is what says whether it is drawn and
     // a Custom wallpaper with nothing to draw is the one combination this must
     // not put into force. A path that names nothing is dropped here rather than
@@ -9712,6 +11113,16 @@ fn adopt(stored: Stored) {
     *STEAM_LAUNCH_OPTION.lock().unwrap() = stored.steam_launch_option;
     *STEAM_SORT.lock().unwrap() = stored.steam_sort;
     *TROPHIES_SORT.lock().unwrap() = stored.trophies_sort;
+    *EPIC_SORT.lock().unwrap() = stored.epic_sort;
+    if let Some(on) = stored.epic_integration {
+        *EPIC_INTEGRATION.lock().unwrap() = on;
+    }
+    if let Some(on) = stored.epic_at_startup {
+        *EPIC_AT_STARTUP.lock().unwrap() = on;
+    }
+    if let Some(on) = stored.epic_after_a_game {
+        *EPIC_AFTER_A_GAME.lock().unwrap() = on;
+    }
     // Whatever it says, without asking the disk whether the folder is still
     // there. A collection on a drive that is not plugged in this morning is
     // still where the user said it was, and the row that says so is where they
@@ -9802,6 +11213,13 @@ fn adopt(stored: Stored) {
     if let Some(on) = stored.steam_after_a_game {
         *STEAM_AFTER_A_GAME.lock().unwrap() = on;
     }
+    // Asking every time where the file says nothing, which is every file from
+    // before the row existed. An empty value is read as nothing too: it is not
+    // a library anybody could have chosen.
+    *STEAM_INSTALL_TO.lock().unwrap() = stored
+        .steam_install_to
+        .clone()
+        .filter(|path| !path.trim().is_empty());
     // And one that says nothing about the startup column leaves it on Games,
     // which is where a session that has never been asked has it — including
     // every session written by a shell from before this setting existed. The
@@ -10145,6 +11563,12 @@ struct Stored {
     /// it bridges the start of the session with is a wallpaper and nothing else.
     theme_wallpaper: Option<String>,
     theme_icons: Option<String>,
+    /// Whether the wallpaper's current carries its sparkles. On where the file
+    /// says nothing, which is every file written before the row existed. Read
+    /// by the login screen and the compositor too, for the reason the theme is
+    /// — see [`wallpaper::PARTICLES_KEY`], which is this key's name in the one
+    /// place all three look for it.
+    theme_particles: Option<bool>,
     /// What both of them were before they were two settings.
     ///
     /// Read, never written. One `theme` key said what the whole shell was made
@@ -10341,6 +11765,12 @@ struct Stored {
     steam_sort: Option<String>,
     /// Trophies has an independent game order, also above the TOML tables.
     trophies_sort: Option<String>,
+    /// The Epic Games column's order and Settings > Games > Epic Games' three
+    /// switches, above the maps for [`Stored::steam_sort`]'s reason.
+    epic_sort: Option<String>,
+    epic_integration: Option<bool>,
+    epic_at_startup: Option<bool>,
+    epic_after_a_game: Option<bool>,
     /// The three switches under Settings > Games > Steam: whether this shell
     /// drives Valve's client at all, whether it starts one as the session comes
     /// up, and whether it leaves one running once a game has ended.
@@ -10353,6 +11783,12 @@ struct Stored {
     steam_integration: Option<bool>,
     steam_at_startup: Option<bool>,
     steam_after_a_game: Option<bool>,
+    /// The Steam library games go into, by the path Steam lists it under.
+    /// Missing is asking every time, which is the default and what every file
+    /// from before the row existed says. Written whether or not the library is
+    /// there today: a drive unplugged this morning is still the person's
+    /// choice. See [`SteamValue::InstallTo`].
+    steam_install_to: Option<String>,
     /// Where this machine is, for the night light's sunset-to-sunrise
     /// schedule. Both or neither; degrees, north and east positive.
     ///
@@ -10569,6 +12005,7 @@ fn stored() -> Stored {
                 .to_string(),
         ),
         theme_icons: Some(theme::applied_style(theme::Part::Icons).name().to_string()),
+        theme_particles: Some(theme::applied_particles()),
         wallpaper_file: custom_wallpaper().map(|file| file.display().to_string()),
         retroarch_roms: roms_folder().map(|at| at.display().to_string()),
         // Never written. See [`Stored::theme`]: this is the key the two above
@@ -10591,6 +12028,7 @@ fn stored() -> Stored {
         steam_integration: Some(*STEAM_INTEGRATION.lock().unwrap()),
         steam_at_startup: Some(*STEAM_AT_STARTUP.lock().unwrap()),
         steam_after_a_game: Some(*STEAM_AFTER_A_GAME.lock().unwrap()),
+        steam_install_to: steam_install_to(),
         startup_category: Some(startup_category()),
         pointer_speed: Some(pointer().speed),
         cursor_size: Some(pointer().size),
@@ -10624,6 +12062,10 @@ fn stored() -> Stored {
         steam_launch_option: STEAM_LAUNCH_OPTION.lock().unwrap().clone(),
         steam_sort: STEAM_SORT.lock().unwrap().clone(),
         trophies_sort: TROPHIES_SORT.lock().unwrap().clone(),
+        epic_sort: EPIC_SORT.lock().unwrap().clone(),
+        epic_integration: Some(*EPIC_INTEGRATION.lock().unwrap()),
+        epic_at_startup: Some(*EPIC_AT_STARTUP.lock().unwrap()),
+        epic_after_a_game: Some(*EPIC_AFTER_A_GAME.lock().unwrap()),
         // Written back out so that a file which named a place goes on naming
         // it: everything here is built from the live values, and a key the
         // writer could not see is one the next change to anything else drops.
@@ -10714,8 +12156,10 @@ fn save(stored: &Stored) {
 /// the answer has not changed.
 type Shown = (
     Option<String>,
-    Option<String>,
-    Option<String>,
+    // The theme: both materials and the particles, which is one answer about
+    // what the login screen is drawn with — and one tuple, because the standard
+    // library compares tuples of twelve and no more.
+    (Option<String>, Option<String>, Option<bool>),
     Option<bool>,
     Option<u16>,
     Option<u8>,
@@ -10888,8 +12332,11 @@ fn start_the_login_screen(programs: &[&str]) -> Option<(String, std::process::Ch
 fn news_for_the_login_screen(stored: &Stored) -> bool {
     let shown: Shown = (
         stored.accent.clone(),
-        stored.theme_wallpaper.clone(),
-        stored.theme_icons.clone(),
+        (
+            stored.theme_wallpaper.clone(),
+            stored.theme_icons.clone(),
+            stored.theme_particles,
+        ),
         stored.hdr,
         stored.hdr_sdr_brightness,
         stored.hdr_srgb_intensity,
@@ -10941,6 +12388,11 @@ const PREAMBLE: &str = "\
 # and either may be either way round. Settings > Appearance > Theme. An unknown
 # name is read as Default. The login screen reads both keys, and the compositor
 # reads the wallpaper's for the frame it opens the session with.
+#
+# theme-particles: whether the wallpaper's current carries its sparkles —
+# glitter the ribbon pushes away from itself. true or false; a file that
+# says nothing leaves them on. Settings > Appearance > Theme > Particles. The
+# login screen and the compositor read it too.
 #
 # wallpaper-file: the picture or film standing behind everything, where
 # theme-wallpaper says Custom wallpaper. It is the shell's own copy of what was
@@ -11009,6 +12461,16 @@ const PREAMBLE: &str = "\
 # then left alone, with a line in the log saying so — and one belonging to
 # another session on this machine is not asked at all, which the log says
 # instead of pretending it refused.
+#
+# steam-install-to: which Steam library a game pressed on the bar is installed
+# into — Settings > Games > Steam > Install games to — by the path Steam lists
+# it under in its libraryfolders.vdf. Missing, which is the default, is “Ask
+# every time”: on a machine with more than one library, each install asks
+# where on the shell's own panel, with how much room the game needs. A library
+# named here is used without asking and is made Steam's own default too, so a
+# game started from Steam's window lands in the same place. One that is not
+# there when a game is pressed — a drive unplugged today — or that has not the
+# room is asked about instead, and the key is kept for when it is back.
 #
 # start-music: whether the Start screen plays its background music, which is
 # Settings > Sounds > Start music. It plays unless this says false. Turning it
@@ -11318,6 +12780,84 @@ fn settings_path() -> Option<PathBuf> {
 mod tests {
     use super::*;
 
+    /// Settings > Games > Epic Games is Steam's page for Heroic: the three
+    /// switches, then where new games are installed, what they run with — a
+    /// choice, the one in force ticked — and whether saves are kept with
+    /// Epic. Switched off, the switch is all there is.
+    #[test]
+    fn the_epic_page_is_steams_page_for_heroic() {
+        crate::heroic::note_facts(crate::heroic::Facts {
+            base: Some(PathBuf::from("/mnt/games/Heroic")),
+            proton: Some("Proton-CachyOS-latest".to_string()),
+            tools: vec![
+                "Proton-CachyOS-latest".to_string(),
+                "GE-Proton10-1".to_string(),
+            ],
+            cloud_saves: true,
+        });
+        let Entry::Folder(page) = epic() else {
+            panic!("a page");
+        };
+        assert_eq!(page.title, crate::heroic::TITLE);
+        let titles: Vec<&str> = page.entries.iter().map(Entry::title).collect();
+        assert_eq!(
+            titles,
+            [
+                crate::i18n::text("shell-integration"),
+                crate::i18n::text("shell-start-with-the-shell"),
+                crate::i18n::text("epic-leave-heroic-running"),
+                crate::i18n::text("steam-install-to"),
+                crate::i18n::text("epic-run-games-with"),
+                crate::i18n::text("epic-cloud-saves"),
+            ]
+        );
+        let Entry::Folder(games) = &page.entries[3] else {
+            panic!("the folder row opens a picker");
+        };
+        assert_eq!(games.comment.as_deref(), Some("/mnt/games/Heroic"));
+        assert_eq!(
+            games.place,
+            Some(crate::files::Place::Volumes(crate::files::Shows::Folders(
+                Picking::EpicFolder
+            )))
+        );
+        let marked = |row: &Entry| -> Vec<bool> {
+            row.entries()
+                .expect("a choice")
+                .iter()
+                .map(|value| matches!(value, Entry::Choice(choice) if choice.chosen))
+                .collect()
+        };
+        assert_eq!(page.entries[4].comment(), Some("Proton-CachyOS-latest"));
+        assert_eq!(
+            marked(&page.entries[4]),
+            [true, false],
+            "the default ticked"
+        );
+        let Some(Entry::Choice(other)) = page.entries[4].entries().and_then(|rows| rows.get(1))
+        else {
+            panic!("a tool to choose");
+        };
+        assert_eq!(
+            other.setting,
+            Some(Setting::Epic(EpicValue::Tool("GE-Proton10-1")))
+        );
+        assert_eq!(
+            marked(&page.entries[5]),
+            [false, true],
+            "cloud saves as Heroic has them"
+        );
+        assert_eq!(marked(&page.entries[0]), [false, true], "on");
+
+        *EPIC_INTEGRATION.lock().unwrap() = false;
+        let Entry::Folder(off) = epic() else {
+            panic!("a page");
+        };
+        *EPIC_INTEGRATION.lock().unwrap() = true;
+        assert_eq!(off.entries.len(), 1, "the switch alone");
+        assert_eq!(marked(&off.entries[0]), [true, false]);
+    }
+
     use crate::system::Device;
 
     #[test]
@@ -11368,6 +12908,7 @@ mod tests {
                             over_the_list: false,
                             person: None,
                             portrait: None,
+                            used: None,
                         }));
                         return true;
                     }
@@ -11542,6 +13083,12 @@ mod tests {
         steam_integration: bool,
         steam_at_startup: bool,
         steam_after_a_game: bool,
+        steam_install_to: Option<String>,
+        steam_libraries: Vec<lxb_steam::library::Listed>,
+        steam_games: BTreeMap<String, Vec<StoredGame>>,
+        steam_root: Option<String>,
+        steam_moving: Option<MovingNow>,
+        storage: Option<Vec<crate::storage::Part>>,
         steam_in_this_session: bool,
         startup_category: Option<String>,
         keyboard_display: Option<String>,
@@ -11585,6 +13132,12 @@ mod tests {
             steam_integration: *STEAM_INTEGRATION.lock().unwrap(),
             steam_at_startup: *STEAM_AT_STARTUP.lock().unwrap(),
             steam_after_a_game: *STEAM_AFTER_A_GAME.lock().unwrap(),
+            steam_install_to: STEAM_INSTALL_TO.lock().unwrap().clone(),
+            steam_libraries: STEAM_LIBRARIES.lock().unwrap().clone(),
+            steam_games: STEAM_GAMES.lock().unwrap().clone(),
+            steam_root: STEAM_ROOT.lock().unwrap().clone(),
+            steam_moving: STEAM_MOVING.lock().unwrap().clone(),
+            storage: STORAGE.lock().unwrap().clone(),
             steam_in_this_session: *STEAM_IN_THIS_SESSION.lock().unwrap(),
             startup_category: STARTUP_CATEGORY.lock().unwrap().clone(),
             keyboard_display: keyboard_display(),
@@ -11626,6 +13179,8 @@ mod tests {
         *STEAM_INTEGRATION.lock().unwrap() = true;
         *STEAM_AT_STARTUP.lock().unwrap() = false;
         *STEAM_AFTER_A_GAME.lock().unwrap() = true;
+        *STEAM_INSTALL_TO.lock().unwrap() = None;
+        STEAM_LIBRARIES.lock().unwrap().clear();
         *KEYBOARD_DISPLAY.lock().unwrap() = None;
         *POINTER.lock().unwrap() = Pointer::DEFAULT;
         *INHERITED.lock().unwrap() = Hdr::default();
@@ -11653,6 +13208,12 @@ mod tests {
         *STEAM_INTEGRATION.lock().unwrap() = saved.steam_integration;
         *STEAM_AT_STARTUP.lock().unwrap() = saved.steam_at_startup;
         *STEAM_AFTER_A_GAME.lock().unwrap() = saved.steam_after_a_game;
+        *STEAM_INSTALL_TO.lock().unwrap() = saved.steam_install_to;
+        *STEAM_LIBRARIES.lock().unwrap() = saved.steam_libraries;
+        *STEAM_GAMES.lock().unwrap() = saved.steam_games;
+        *STEAM_ROOT.lock().unwrap() = saved.steam_root;
+        *STEAM_MOVING.lock().unwrap() = saved.steam_moving;
+        *STORAGE.lock().unwrap() = saved.storage;
         *STEAM_IN_THIS_SESSION.lock().unwrap() = saved.steam_in_this_session;
         *STARTUP_CATEGORY.lock().unwrap() = saved.startup_category;
         *KEYBOARD_DISPLAY.lock().unwrap() = saved.keyboard_display;
@@ -12344,14 +13905,16 @@ mod tests {
 
         assert_eq!(
             halves().iter().map(Entry::title).collect::<Vec<_>>(),
-            ["Wallpaper", "Icons"],
-            "the wallpaper first: it is the whole screen and the expensive half"
+            ["Wallpaper", "Icons", "Particles"],
+            "the wallpaper first: it is the whole screen and the expensive half \
+             — and the particles last, being no material at all"
         );
         assert_eq!(
             halves().iter().map(Entry::icon).collect::<Vec<_>>(),
             [
                 Some(crate::icons::SETTING_WALLPAPER),
-                Some(crate::icons::SETTING_ICONS)
+                Some(crate::icons::SETTING_ICONS),
+                Some(crate::icons::SETTING_PARTICLES),
             ],
             "and each half wears the mark of the thing it changes"
         );
@@ -12466,6 +14029,95 @@ mod tests {
     /// through its own poison for the same reason: a test that panicked while
     /// holding it has already reported the failure that matters.
     static WALLPAPER: Mutex<()> = Mutex::new(());
+
+    /// Theme > Particles: whether the wallpaper's current carries its sparkles.
+    ///
+    /// The four things the materials beside it promise, asked of a switch:
+    /// highlighting Off takes them off the screen without choosing it, walking
+    /// away puts them back, choosing writes it down — under the key the
+    /// compositor and the login screen look for, which is not this module's to
+    /// name — and a file that says so brings them back off.
+    #[test]
+    fn the_particles_row_previews_and_only_then_writes_it_down() {
+        let _held = WALLPAPER.lock().unwrap_or_else(|held| held.into_inner());
+        struct PutBack(bool);
+        impl Drop for PutBack {
+            fn drop(&mut self) {
+                theme::set_particles(self.0);
+            }
+        }
+        let _put_back = PutBack(theme::applied_particles());
+        theme::set_particles(true);
+
+        let row = || {
+            appearance_page()[1]
+                .entries()
+                .expect("Theme opens onto its rows")[2]
+                .clone()
+        };
+        assert_eq!(
+            row().comment(),
+            Some("Sparkles drifting along the wallpaper")
+        );
+        let values = row().entries().expect("On and Off").to_vec();
+        assert_eq!(
+            values.iter().map(Entry::title).collect::<Vec<_>>(),
+            ["On", "Off"]
+        );
+        assert!(values[0].chosen(), "a shell nobody has asked carries them");
+        assert!(!values[1].chosen());
+        assert_eq!(
+            theme::particles_flag(),
+            1.0,
+            "and the shader is told to draw them"
+        );
+
+        // Highlighted: gone from the screen, not chosen.
+        preview(values[1].setting());
+        assert!(!theme::particles());
+        assert!(
+            theme::applied_particles(),
+            "highlighting Off is not choosing it"
+        );
+        assert_eq!(theme::particles_flag(), 0.0);
+
+        // Walked off the list again.
+        preview(None);
+        assert!(theme::particles());
+
+        // Chosen, and written down.
+        let mut persisted = None;
+        assert!(apply_with(
+            values[1].setting().expect("Off sets something"),
+            |stored| {
+                persisted = Some((
+                    stored.theme_particles,
+                    toml::to_string(stored).expect("the settings are writable as TOML"),
+                ))
+            },
+        ));
+        assert!(!theme::applied_particles());
+        let (particles, written) = persisted.expect("the choice is written");
+        assert_eq!(particles, Some(false));
+        assert!(
+            written.contains(&format!("{} = false", wallpaper::PARTICLES_KEY)),
+            "under the key everything else that draws the wallpaper reads: {written}"
+        );
+        assert!(
+            !row().entries().expect("On and Off")[0].chosen(),
+            "and the row says so"
+        );
+
+        // A file that says nothing leaves them as they are, and one that says
+        // so turns them back on.
+        adopt_theme(&Stored::default());
+        assert!(!theme::applied_particles());
+        adopt_theme(&Stored {
+            theme_particles: Some(true),
+            ..Stored::default()
+        });
+        assert!(theme::applied_particles());
+    }
 
     /// Put the wallpaper back the way the test found it, whatever happens in
     /// between.
@@ -17292,8 +18944,8 @@ hdr = true
 
     /// The Steam page under Games, as a session that has never been asked has
     /// it: the integration on, the client started for a game rather than with
-    /// the shell, left running once that game is over, and one row that is not
-    /// a switch at all.
+    /// the shell, left running once that game is over, and two rows that are
+    /// not switches at all.
     #[test]
     fn the_steam_page_offers_three_switches_and_says_what_they_are_set_to() {
         with_displays(&[], || {
@@ -17304,9 +18956,10 @@ hdr = true
                     "Integration",
                     "Start with the shell",
                     "Leave Steam running",
+                    "Storage",
                     COMPATIBILITY_PAGE
                 ],
-                "the thing, starting it, stopping it, and what it runs games with"
+                "the thing, starting it, stopping it, where its games are, and what it runs them with"
             );
             let chosen = |row: &Entry| {
                 row.entries()
@@ -17327,14 +18980,14 @@ hdr = true
                 );
             }
 
-            // And the fourth is not a switch: it is a list that has to be
+            // And the last is not a switch: it is a list that has to be
             // fetched from Valve's client, so a session nobody has asked it in
             // shows the wait rather than an empty column somebody could step
             // into and find nothing in.
-            let tools = rows[3].entries().expect("a column of tools");
+            let tools = rows[4].entries().expect("a column of tools");
             assert_eq!(tools.len(), 1, "one row, and it is the wait");
             assert_eq!(tools[0].setting(), None, "which cannot be pressed");
-            assert_eq!(rows[3].icon(), Some(icons::SETTING_COMPATIBILITY));
+            assert_eq!(rows[4].icon(), Some(icons::SETTING_COMPATIBILITY));
 
             // The row above them says what is in here, not what it is set to:
             // three values read back would be a door labelled with the room's
@@ -17448,6 +19101,396 @@ hdr = true
             assert!(steam_at_startup(), "a silent file answers nothing");
             assert!(!steam_left_after_a_game());
             assert!(steam_integration(), "and the default is on");
+        });
+    }
+
+    /// Two Steam libraries, as a test names them: named in Steam, so what the
+    /// rows are called does not depend on the drives of the machine the tests
+    /// run on.
+    fn two_libraries() -> Vec<lxb_steam::library::Listed> {
+        let listed = |path: &str, label: &str, present: bool| lxb_steam::library::Listed {
+            path: path.to_string(),
+            label: label.to_string(),
+            present,
+        };
+        vec![
+            listed("/home/kate/.local/share/Steam", "Home", true),
+            listed("/mnt/games/SteamLibrary", "Games", true),
+        ]
+    }
+
+    /// Settings > Games > Steam > Storage.
+    fn steam_storage() -> Vec<Entry> {
+        steam_page()
+            .into_iter()
+            .find(|row| row.title() == "Storage")
+            .expect("Steam has a Storage page")
+            .entries()
+            .expect("which opens onto its own page")
+            .to_vec()
+    }
+
+    /// The row under Settings > Games > Steam > Storage that says where games
+    /// go.
+    fn install_to_row() -> Option<Entry> {
+        steam_storage()
+            .into_iter()
+            .find(|row| row.title() == "Install games to")
+    }
+
+    /// One mounted partition, as Settings > Storage reads one.
+    fn a_drive(device: &str, label: &str, at: &str, free: u64) -> crate::storage::Part {
+        crate::storage::Part {
+            device: device.to_string(),
+            label: Some(label.to_string()),
+            part_name: None,
+            size: 1_000_000_000_000,
+            kind: Some("ext4".to_string()),
+            model: None,
+            standing: crate::storage::Standing::Mounted {
+                at: PathBuf::from(at),
+                role: crate::storage::Role::Other,
+                room: Some(crate::storage::Room {
+                    whole: 1_000_000_000_000,
+                    free,
+                }),
+            },
+        }
+    }
+
+    fn game(app_id: u32, name: &str, size: u64, busy: bool) -> StoredGame {
+        StoredGame {
+            app_id,
+            name: name.to_string(),
+            size,
+            busy,
+        }
+    }
+
+    /// The Storage page is where the Steam page's library rows went: Install
+    /// games to first where there is a choice, then each library, then Add
+    /// drive — and the row leading to it counts the libraries.
+    #[test]
+    fn steams_storage_page_lists_the_libraries_and_ends_on_add_drive() {
+        with_displays(&[], || {
+            note_steam_libraries(two_libraries()[..1].to_vec());
+            note_steam_games(None, BTreeMap::new());
+            let titles = |rows: &[Entry]| {
+                rows.iter()
+                    .map(Entry::title)
+                    .map(str::to_string)
+                    .collect::<Vec<_>>()
+            };
+            assert_eq!(titles(&steam_storage()), ["Home", "Add drive"]);
+            let door = steam_page()
+                .into_iter()
+                .find(|row| row.title() == "Storage")
+                .unwrap();
+            assert_eq!(door.comment(), Some("1 library"));
+            assert!(
+                steam_page()
+                    .iter()
+                    .all(|row| row.title() != "Install games to"),
+                "Install games to lives on the Storage page now"
+            );
+
+            note_steam_libraries(two_libraries());
+            assert_eq!(
+                titles(&steam_storage()),
+                ["Install games to", "Home", "Games", "Add drive"]
+            );
+        });
+    }
+
+    /// A library's page lists its games largest first, each a row that raises
+    /// a menu rather than starting anything; then Repair folder and Remove
+    /// drive. Steam's own folder cannot be removed, and a library with games
+    /// in it or new games going into it says why not instead of offering to.
+    #[test]
+    fn a_library_lists_its_games_and_what_can_be_done_to_it() {
+        with_displays(&[], || {
+            note_steam_libraries(two_libraries());
+            let mut games = BTreeMap::new();
+            games.insert(
+                "/home/kate/.local/share/Steam".to_string(),
+                vec![
+                    game(730, "Counter-Strike 2", 70_000_000_000, false),
+                    game(440, "Team Fortress 2", 30_000_000_000, true),
+                ],
+            );
+            games.insert("/mnt/games/SteamLibrary".to_string(), Vec::new());
+            note_steam_games(Some("/home/kate/.local/share/Steam".to_string()), games);
+            let pages = steam_storage();
+            let home = pages
+                .iter()
+                .find(|row| row.title() == "Home")
+                .expect("the home library")
+                .entries()
+                .unwrap()
+                .to_vec();
+            assert_eq!(
+                home.iter().map(Entry::title).collect::<Vec<_>>(),
+                ["Counter-Strike 2", "Team Fortress 2", "Repair folder"],
+                "Steam's own folder has no Remove drive"
+            );
+            let stored = home[0].stored().expect("a game is a stored row");
+            assert_eq!(stored.app_id, 730);
+            assert_eq!(stored.library, "/home/kate/.local/share/Steam");
+            assert_eq!(stored.note, "70 GB");
+            assert!(home[1].stored().unwrap().busy);
+            assert_eq!(home[1].comment(), Some("30 GB · Steam is working on it"));
+            assert_eq!(
+                home[2].setting(),
+                Some(Setting::Steam(SteamValue::RepairLibrary(
+                    "/home/kate/.local/share/Steam"
+                )))
+            );
+
+            let empty = |pages: &[Entry]| {
+                pages
+                    .iter()
+                    .find(|row| row.title() == "Games")
+                    .expect("the second library")
+                    .entries()
+                    .unwrap()
+                    .to_vec()
+            };
+            let remove = empty(&pages).pop().unwrap();
+            assert_eq!(remove.title(), "Remove drive");
+            assert_eq!(
+                remove.setting(),
+                Some(Setting::Steam(SteamValue::RemoveLibrary(
+                    "/mnt/games/SteamLibrary"
+                )))
+            );
+
+            // Where new games go is not removed from under the setting.
+            *STEAM_INSTALL_TO.lock().unwrap() = Some("/mnt/games/SteamLibrary".to_string());
+            let remove = empty(&steam_storage()).pop().unwrap();
+            assert_eq!(remove.setting(), None);
+            assert_eq!(remove.comment(), Some("New games are installed here"));
+            *STEAM_INSTALL_TO.lock().unwrap() = None;
+
+            // Nor one with games in it.
+            let mut games = BTreeMap::new();
+            games.insert(
+                "/mnt/games/SteamLibrary".to_string(),
+                vec![game(570, "Dota 2", 40_000_000_000, false)],
+            );
+            note_steam_games(Some("/home/kate/.local/share/Steam".to_string()), games);
+            let remove = empty(&steam_storage()).pop().unwrap();
+            assert_eq!(remove.setting(), None);
+            assert_eq!(remove.comment(), Some("Move or uninstall its games first"));
+        });
+    }
+
+    /// A library's row carries how full its drive is, as a bar and in words,
+    /// and a game being moved carries the move.
+    #[test]
+    fn a_librarys_row_says_how_full_its_drive_is() {
+        with_displays(&[], || {
+            note_steam_libraries(two_libraries());
+            *STORAGE.lock().unwrap() = Some(vec![a_drive(
+                "sdb1",
+                "Games",
+                "/mnt/games",
+                250_000_000_000,
+            )]);
+            let mut games = BTreeMap::new();
+            games.insert(
+                "/mnt/games/SteamLibrary".to_string(),
+                vec![game(570, "Dota 2", 40_000_000_000, false)],
+            );
+            note_steam_games(None, games);
+            let row = steam_storage()
+                .into_iter()
+                .find(|row| row.title() == "Games")
+                .unwrap();
+            assert_eq!(row.comment(), Some("1 game · 250 GB free of 1.0 TB"));
+            assert_eq!(row.progress().map(|bar| bar.share), Some(0.75));
+
+            assert!(note_steam_moving(Some(MovingNow {
+                app_id: 570,
+                to: "/home/kate/.local/share/Steam".to_string(),
+                percent: Some(40),
+                stopping: false,
+            })));
+            let game = steam_storage()
+                .into_iter()
+                .find(|row| row.title() == "Games")
+                .unwrap()
+                .entries()
+                .unwrap()[0]
+                .clone();
+            assert_eq!(game.comment(), Some("Moving to Home · 40%"));
+            assert_eq!(game.progress().map(|bar| bar.share), Some(0.4));
+        });
+    }
+
+    /// Add drive offers each drive that holds no library yet, by its name, and
+    /// asks Steam for the folder its own list would have made there; then the
+    /// folder picker, for anywhere else.
+    #[test]
+    fn add_drive_offers_the_drives_without_a_library() {
+        with_displays(&[], || {
+            let scratch =
+                std::env::temp_dir().join(format!("lxb-add-drive-{}", std::process::id()));
+            std::fs::create_dir_all(&scratch).unwrap();
+            let at = scratch.to_string_lossy().into_owned();
+            note_steam_libraries(two_libraries());
+            *STORAGE.lock().unwrap() = Some(vec![
+                a_drive("sdb1", "Games", "/mnt/games", 250_000_000_000),
+                a_drive("sdc1", "Spare", &at, 400_000_000_000),
+            ]);
+            let add = steam_storage().pop().expect("Add drive");
+            assert_eq!(add.title(), "Add drive");
+            let rows = add.entries().unwrap().to_vec();
+            assert_eq!(
+                rows.iter().map(Entry::title).collect::<Vec<_>>(),
+                ["Spare", "Choose a folder"],
+                "the drive holding a library is not offered again"
+            );
+            assert_eq!(rows[0].comment(), Some("400 GB free of 1.0 TB"));
+            let wanted = format!("{at}/SteamLibrary");
+            assert_eq!(
+                rows[0].setting(),
+                Some(Setting::Steam(SteamValue::AddLibrary(intern(&wanted))))
+            );
+            assert!(matches!(
+                &rows[1],
+                Entry::Folder(folder) if folder.place == Some(crate::files::Place::Volumes(
+                    crate::files::Shows::Folders(Picking::SteamLibrary)
+                ))
+            ));
+            let _ = std::fs::remove_dir_all(&scratch);
+        });
+    }
+
+    /// A press on a library is Steam's to carry out, and writes nothing into
+    /// the shell's own file.
+    #[test]
+    fn a_press_on_a_library_writes_nothing_down() {
+        with_displays(&[], || {
+            let mut written = false;
+            for press in [
+                SteamValue::AddLibrary("/mnt/x/SteamLibrary"),
+                SteamValue::RemoveLibrary("/mnt/x/SteamLibrary"),
+                SteamValue::RepairLibrary("/mnt/x/SteamLibrary"),
+            ] {
+                assert!(apply_with(Setting::Steam(press), |_| written = true));
+            }
+            assert!(!written);
+        });
+    }
+
+    /// A machine with one Steam library is never asked where a game goes, so
+    /// it has no row asking it either.
+    #[test]
+    fn a_machine_with_one_library_has_no_place_to_choose() {
+        with_displays(&[], || {
+            assert!(install_to_row().is_none(), "no libraries read");
+            note_steam_libraries(two_libraries()[..1].to_vec());
+            assert!(install_to_row().is_none(), "one library is one answer");
+            note_steam_libraries(two_libraries());
+            assert!(install_to_row().is_some(), "two is a choice");
+        });
+    }
+
+    /// Asking every time is the default and is first; each library is a value
+    /// after it, in Steam's order; and choosing one is written down under the
+    /// path Steam lists it by, said on the row, and read back.
+    #[test]
+    fn games_go_where_they_are_asked_to_until_a_library_is_chosen() {
+        with_displays(&[], || {
+            note_steam_libraries(two_libraries());
+            let row = install_to_row().expect("the row");
+            assert_eq!(row.comment(), Some("Ask every time"));
+            assert_eq!(
+                row.icon(),
+                Some(icons::SETTING_INSTALL_TO),
+                "not the drive every library beside it wears"
+            );
+            let values = row.entries().expect("a column of places").to_vec();
+            assert_eq!(
+                values.iter().map(Entry::title).collect::<Vec<_>>(),
+                ["Ask every time", "Home", "Games"]
+            );
+            assert!(values[0].chosen(), "asking is the default");
+            assert_eq!(
+                values[2].setting(),
+                Some(Setting::Steam(SteamValue::InstallTo(Some(
+                    "/mnt/games/SteamLibrary"
+                ))))
+            );
+
+            let mut persisted = None;
+            assert!(apply_with(
+                Setting::Steam(SteamValue::InstallTo(Some("/mnt/games/SteamLibrary"))),
+                |stored| persisted = stored.steam_install_to.clone(),
+            ));
+            assert_eq!(persisted.as_deref(), Some("/mnt/games/SteamLibrary"));
+            let row = install_to_row().expect("the row");
+            assert_eq!(row.comment(), Some("Games"), "the row says where");
+            let values = row.entries().expect("a column of places").to_vec();
+            assert_eq!(
+                values.iter().map(Entry::chosen).collect::<Vec<_>>(),
+                [false, false, true]
+            );
+
+            let body = toml::to_string_pretty(&stored()).unwrap();
+            assert!(body.contains("steam-install-to"), "{body}");
+            *STEAM_INSTALL_TO.lock().unwrap() = None;
+            adopt(toml::from_str(&body).unwrap());
+            assert_eq!(
+                steam_install_to().as_deref(),
+                Some("/mnt/games/SteamLibrary")
+            );
+
+            // And back to asking, which is the key being gone from the file:
+            // what every file from before the row existed says.
+            assert!(apply_with(
+                Setting::Steam(SteamValue::InstallTo(None)),
+                |stored| persisted = stored.steam_install_to.clone(),
+            ));
+            assert_eq!(persisted, None);
+            adopt(Stored::default());
+            assert_eq!(steam_install_to(), None);
+        });
+    }
+
+    /// A chosen library that is not there today stays on the page with its
+    /// tick, and both it and the row above say why games are being asked
+    /// about — unplugged, or no longer one of Steam's at all. And the row
+    /// stays even when that leaves one library, so the choice can be undone.
+    #[test]
+    fn a_chosen_library_that_is_not_there_says_so() {
+        with_displays(&[], || {
+            let mut libraries = two_libraries();
+            libraries[1].present = false;
+            note_steam_libraries(libraries);
+            *STEAM_INSTALL_TO.lock().unwrap() = Some("/mnt/games/SteamLibrary/".to_string());
+            let row = install_to_row().expect("the row");
+            assert_eq!(
+                row.comment(),
+                Some("Games · not available, so you are asked each time")
+            );
+            let values = row.entries().expect("a column of places").to_vec();
+            assert_eq!(values[2].comment(), Some("Not connected"));
+            assert!(values[2].chosen(), "a trailing slash is the same library");
+
+            note_steam_libraries(two_libraries()[..1].to_vec());
+            *STEAM_INSTALL_TO.lock().unwrap() = Some("/run/media/kate/Old".to_string());
+            let values = install_to_row()
+                .expect("a chosen library keeps the row")
+                .entries()
+                .expect("a column of places")
+                .to_vec();
+            assert_eq!(
+                values.iter().map(Entry::title).collect::<Vec<_>>(),
+                ["Ask every time", "Home", "Old"]
+            );
+            assert_eq!(values[2].comment(), Some("No longer a Steam library"));
+            assert!(values[2].chosen());
         });
     }
 
@@ -17751,14 +19794,21 @@ hdr = true
     #[test]
     fn update_sources_are_explicit_and_have_stable_action_identities() {
         use lxb_updates::SourceId as Id;
-        let sources: Vec<_> = [Id::System, Id::Flatpak, Id::Aur, Id::Snap, Id::Firmware]
-            .into_iter()
-            .map(|id| crate::updates::Row {
-                id,
-                note: "Up to date".into(),
-                items: vec![],
-            })
-            .collect();
+        let sources: Vec<_> = [
+            Id::System,
+            Id::Linexinbar,
+            Id::Flatpak,
+            Id::Aur,
+            Id::Snap,
+            Id::Firmware,
+        ]
+        .into_iter()
+        .map(|id| crate::updates::Row {
+            id,
+            note: "Up to date".into(),
+            items: vec![],
+        })
+        .collect();
         let page = update_entries(&sources, None);
         // AUR is in the sources this came from and has no row: the shell no
         // longer builds packages, and a row that could only ever refuse is
@@ -17768,6 +19818,7 @@ hdr = true
             [
                 "Update everything",
                 "Update the system",
+                "Update LineXinBar",
                 "Update Flatpaks",
                 "Update Snaps",
                 "Update firmware",
@@ -20770,5 +22821,360 @@ hdr = true
         assert_eq!(nearness(Some(-75)), Some("nearby"));
         assert_eq!(nearness(Some(-76)), Some("far away"));
         assert_eq!(nearness(None), None);
+    }
+
+    // -----------------------------------------------------------------------
+    // storage
+    // -----------------------------------------------------------------------
+
+    const GIB: u64 = 1024 * 1024 * 1024;
+
+    /// A partition, mounted or not, with none of the names a machine might
+    /// give it: the tests that want one say so.
+    fn partition(standing: crate::storage::Standing) -> crate::storage::Part {
+        crate::storage::Part {
+            device: "sda1".into(),
+            label: None,
+            part_name: None,
+            size: 400 * GIB,
+            kind: Some("ext4".into()),
+            model: Some("Example Disk 1TB".into()),
+            standing,
+        }
+    }
+
+    fn mounted(at: &str, role: crate::storage::Role, free: u64) -> crate::storage::Standing {
+        crate::storage::Standing::Mounted {
+            at: PathBuf::from(at),
+            role,
+            room: Some(crate::storage::Room {
+                whole: 100 * GIB,
+                free: free * GIB,
+            }),
+        }
+    }
+
+    fn details(row: &crate::apps::Partition) -> Vec<(String, String)> {
+        match &row.facts.about {
+            crate::apps::About::Listed(values) => values.clone(),
+            crate::apps::About::Machine => panic!("a partition lists its own facts"),
+        }
+    }
+
+    #[test]
+    fn a_partition_says_what_is_left_and_draws_how_much_is_taken() {
+        use crate::storage::Role;
+        let row = partition_row(&partition(mounted("/mnt/Games", Role::Other, 25)));
+        assert_eq!(row.facts.title, "Games", "named by where it is mounted");
+        assert_eq!(row.facts.comment, "25 GiB free of 100 GiB");
+        assert_eq!(row.used.map(|used| used.share), Some(0.75));
+        assert_eq!(row.facts.icon, icons::FILE_DRIVE);
+        assert_eq!(
+            details(&row),
+            [
+                ("Free".to_string(), "25 GiB".to_string()),
+                ("Used".to_string(), "75 GiB".to_string()),
+                ("Capacity".to_string(), "100 GiB".to_string()),
+                ("File system".to_string(), "ext4".to_string()),
+                ("Location".to_string(), "/mnt/Games".to_string()),
+                ("Drive".to_string(), "Example Disk 1TB".to_string()),
+            ]
+        );
+    }
+
+    /// The system, everybody's files and what the machine starts from are
+    /// called that whatever an installer labelled them; anything else goes by
+    /// the name somebody gave it.
+    #[test]
+    fn a_partition_is_named_by_what_it_is_for_and_then_by_its_label() {
+        use crate::storage::Role;
+        let labelled = |standing| crate::storage::Part {
+            label: Some("CachyOS".into()),
+            ..partition(standing)
+        };
+        let system = partition_row(&labelled(mounted("/", Role::System, 50)));
+        assert_eq!(system.facts.title, "System");
+        let home = partition_row(&labelled(mounted("/home", Role::Home, 50)));
+        assert_eq!(home.facts.title, "Home");
+        assert_eq!(home.facts.icon, icons::FILE_HOME);
+        let startup = partition_row(&labelled(mounted("/boot", Role::Startup, 50)));
+        assert_eq!(startup.facts.title, "Startup");
+        let games = partition_row(&labelled(mounted("/mnt/games", Role::Other, 50)));
+        assert_eq!(games.facts.title, "CachyOS");
+    }
+
+    #[test]
+    fn a_partition_that_cannot_be_measured_has_no_bar_and_says_why() {
+        use crate::storage::{Role, Standing};
+        let unused = partition_row(&partition(Standing::Unused));
+        assert_eq!(unused.facts.comment, "Not in use · 400 GiB");
+        assert_eq!(
+            unused.facts.title, "400 GiB drive",
+            "nothing names it but its size"
+        );
+        assert!(unused.used.is_none());
+        assert!(
+            !details(&unused).iter().any(|(name, _)| name == "Location"),
+            "somewhere it is not mounted is not a place"
+        );
+
+        let windows = partition_row(&crate::storage::Part {
+            part_name: Some("Basic data partition".into()),
+            ..partition(Standing::Unused)
+        });
+        assert_eq!(windows.facts.title, "Basic data partition");
+
+        let swap = partition_row(&crate::storage::Part {
+            size: 16 * GIB,
+            kind: Some("swap".into()),
+            ..partition(Standing::Memory)
+        });
+        assert_eq!(swap.facts.comment, "Used as extra memory · 16 GiB");
+        assert!(swap.used.is_none());
+
+        let unanswered = partition_row(&partition(Standing::Mounted {
+            at: PathBuf::from("/mnt/Games"),
+            role: Role::Other,
+            room: None,
+        }));
+        assert_eq!(
+            unanswered.facts.comment,
+            "Could not check the free space · 400 GiB"
+        );
+        assert!(unanswered.used.is_none());
+    }
+
+    /// The only test that hands the page a reading: [`STORAGE`] is one for the
+    /// whole process, and two tests writing it at once would read each other's.
+    #[test]
+    fn the_storage_page_follows_the_reading_and_is_rebuilt_only_for_a_visible_change() {
+        // Under the lock the rest of this module's statics are handled under:
+        // the Steam storage page's tests read and write the same listing.
+        with_displays(&[], || {
+            use crate::storage::Role;
+            let games = |free: u64| partition(mounted("/mnt/Games", Role::Other, free));
+            let page = || {
+                column()
+                    .into_iter()
+                    .find(|entry| entry.title() == "Storage")
+                    .expect("the Settings column has a Storage row")
+                    .entries()
+                    .expect("which opens onto its own page")
+                    .to_vec()
+            };
+
+            assert!(
+                note_storage(vec![games(25)]),
+                "the first reading is always news"
+            );
+            let rows = page();
+            assert_eq!(rows.len(), 1);
+            assert!(matches!(&rows[0], Entry::Partition(row) if row.facts.title == "Games"));
+            assert_eq!(rows[0].progress().map(|used| used.share), Some(0.75));
+            assert!(rows[0].facts().is_some(), "a press puts up its details");
+
+            // A few bytes written is a disk that looks exactly the same.
+            let mut busier = games(25);
+            if let crate::storage::Standing::Mounted {
+                room: Some(room), ..
+            } = &mut busier.standing
+            {
+                room.free -= 4096;
+            }
+            assert!(!note_storage(vec![busier]));
+            assert!(
+                note_storage(vec![games(20)]),
+                "five gigabytes is a different row"
+            );
+
+            assert!(note_storage(Vec::new()));
+            let rows = page();
+            assert_eq!(rows.len(), 1, "never an empty column");
+            assert_eq!(rows[0].title(), "No drives found");
+        });
+    }
+
+    /// The rows of a drive's own column on the Storage page, by title.
+    fn drive_page(entry: &Entry) -> Vec<String> {
+        entry
+            .entries()
+            .expect("a drive that can be put to use is a way in")
+            .iter()
+            .map(|row| row.title().to_string())
+            .collect()
+    }
+
+    /// A drive nothing has mounted is a way in: the press that mounts it,
+    /// whether the machine mounts it when it starts, and its facts under them.
+    #[test]
+    fn a_drive_nothing_has_mounted_offers_mount_and_mount_at_startup() {
+        use crate::storage::Standing;
+        let part = crate::storage::Part {
+            label: Some("GamesHDD".into()),
+            ..partition(Standing::Unused)
+        };
+        let known = crate::drives::Listing {
+            volumes: vec![crate::drives::a_drive(2049, "sda1", "GamesHDD")],
+            service: true,
+            ..Default::default()
+        };
+        let row = storage_row(&part, &known);
+        assert_eq!(row.title(), "GamesHDD");
+        assert_eq!(row.comment(), Some("Not mounted · 400 GiB"));
+        assert_eq!(
+            drive_page(&row),
+            ["Mount", "Mount at startup", "Drive information"]
+        );
+        let rows = row.entries().unwrap();
+        assert_eq!(
+            rows[0].setting(),
+            Some(Setting::Drive(DriveValue::Mount(2049)))
+        );
+        assert_eq!(rows[1].comment(), Some("Off"));
+        let values = rows[1].entries().unwrap();
+        assert_eq!(
+            values[0].setting(),
+            Some(Setting::Drive(DriveValue::AtStartup(2049, true)))
+        );
+        assert!(values[1].chosen(), "Off is what is in force");
+        assert!(
+            rows[2].facts().is_some(),
+            "the facts are a panel, as before"
+        );
+    }
+
+    /// A drive the machine already mounts at startup, mounted where that puts
+    /// it: Unmount, and Mount at startup reading On.
+    #[test]
+    fn a_drive_mounted_at_startup_offers_unmount_with_the_switch_on() {
+        use crate::storage::Role;
+        let part = crate::storage::Part {
+            device: "sdb1".into(),
+            label: Some("GamesSSD".into()),
+            ..partition(mounted("/mnt/GamesSSD", Role::Other, 25))
+        };
+        let mut volume = crate::drives::a_drive(2065, "sdb1", "GamesSSD");
+        volume.mounted_at = vec![PathBuf::from("/mnt/GamesSSD")];
+        volume.at_startup = Some(PathBuf::from("/mnt/GamesSSD"));
+        let known = crate::drives::Listing {
+            volumes: vec![volume],
+            service: true,
+            ..Default::default()
+        };
+        let row = storage_row(&part, &known);
+        assert_eq!(
+            drive_page(&row),
+            ["Unmount", "Mount at startup", "Drive information"]
+        );
+        assert_eq!(row.progress().map(|used| used.share), Some(0.75));
+        let rows = row.entries().unwrap();
+        assert_eq!(
+            rows[0].setting(),
+            Some(Setting::Drive(DriveValue::Unmount(2065)))
+        );
+        assert_eq!(rows[1].comment(), Some("On"));
+    }
+
+    /// A stick is put away with Safely remove, and never offered to the mount
+    /// table — it is mounted the moment it is plugged in.
+    #[test]
+    fn a_stick_offers_safely_remove_and_nothing_about_startup() {
+        use crate::storage::Role;
+        let part = crate::storage::Part {
+            device: "sdc1".into(),
+            ..partition(mounted("/run/media/kate/Stick", Role::Other, 5))
+        };
+        let mut stick = crate::drives::a_drive(2081, "sdc1", "Stick");
+        stick.mounted_at = vec![PathBuf::from("/run/media/kate/Stick")];
+        stick.removable = true;
+        stick.automount = true;
+        let known = crate::drives::Listing {
+            volumes: vec![stick],
+            service: true,
+            ..Default::default()
+        };
+        let row = storage_row(&part, &known);
+        assert_eq!(drive_page(&row), ["Safely remove", "Drive information"]);
+    }
+
+    /// While a press is being carried out, the drive says so and its row
+    /// cannot be pressed again; a Mount at startup that did not simply work
+    /// says what came of it under the switch.
+    #[test]
+    fn a_drive_being_worked_on_says_so_and_waits() {
+        use crate::drives::{Doing, Refusal};
+        use crate::storage::Standing;
+        let part = partition(Standing::Unused);
+        let known = crate::drives::Listing {
+            volumes: vec![crate::drives::a_drive(2049, "sda1", "GamesHDD")],
+            doing: vec![(2049, Doing::Mounting)],
+            service: true,
+            ..Default::default()
+        };
+        let row = storage_row(&part, &known);
+        assert_eq!(row.comment(), Some("Mounting…"));
+        let mount = &row.entries().unwrap()[0];
+        assert_eq!(mount.comment(), Some("Mounting…"));
+        assert_eq!(mount.setting(), None, "a second press is not offered");
+
+        let known = crate::drives::Listing {
+            doing: Vec::new(),
+            startup_trouble: vec![(2049, Refusal::Failed)],
+            ..known
+        };
+        let row = storage_row(&part, &known);
+        assert_eq!(
+            row.entries().unwrap()[1].comment(),
+            Some("Could not be changed")
+        );
+        let known = crate::drives::Listing {
+            startup_trouble: vec![(2049, Refusal::Later)],
+            ..known
+        };
+        let row = storage_row(&part, &known);
+        assert_eq!(
+            row.entries().unwrap()[1].comment(),
+            Some("A restart may be needed.")
+        );
+    }
+
+    /// The system's own partitions stay the panel they always were, whatever
+    /// UDisks says about them, and so does every partition on a machine
+    /// without UDisks.
+    #[test]
+    fn the_systems_own_partitions_and_a_machine_without_udisks_keep_the_panel() {
+        use crate::storage::{Role, Standing};
+        let system = crate::storage::Part {
+            device: "nvme0n1p3".into(),
+            ..partition(mounted("/", Role::System, 25))
+        };
+        let mut root = crate::drives::a_drive(66307, "nvme0n1p3", "root");
+        root.mounted_at = vec![PathBuf::from("/")];
+        root.at_startup = Some(PathBuf::from("/"));
+        root.systems = true;
+        let known = crate::drives::Listing {
+            volumes: vec![root],
+            service: true,
+            ..Default::default()
+        };
+        assert!(matches!(storage_row(&system, &known), Entry::Partition(_)));
+        assert!(matches!(
+            storage_row(
+                &partition(Standing::Unused),
+                &crate::drives::Listing::default()
+            ),
+            Entry::Partition(_)
+        ));
+    }
+
+    #[test]
+    fn storage_stands_between_users_and_system() {
+        let titles: Vec<String> = column()
+            .iter()
+            .map(|entry| entry.title().to_string())
+            .collect();
+        let at = |title: &str| titles.iter().position(|had| had == title).unwrap();
+        assert_eq!(at("Storage"), at("Users") + 1);
+        assert_eq!(at("System"), at("Storage") + 1);
     }
 }

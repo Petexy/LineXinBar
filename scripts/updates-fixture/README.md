@@ -30,6 +30,15 @@ it: the tally is the user's own account.
 Every call is appended to `LXB_FIXTURE_LOG`, or to `$HOME/fixture-calls.log`
 when that is unset.
 
+**Update LineXinBar** appears once the fake `pacman` reports a shell installed
+from a release page: write `$HOME/fixture-family` in the scratch home
+(`lxb-compositor 0.9.0-1` and `lxb-desktop 0.9.0-1`, one a line) before the run.
+`pacman -Q` then lists them, and `pacman -Qqm` says no repository offers them.
+`updates-shot.sh` points the check at `releases/`, where LineXinBar has
+"released" `v0.9.2-alpha`. The step that would install it is refused like every
+root step here, because the helper that would run as root is the test's own
+binary, so nothing is downloaded.
+
 Two things cannot be faked, by design. A root step runs only a root-owned
 executable through a root-owned `pkexec`, so `pacman -Syu` is refused with
 "is not protected against replacement" before either is reached — which is

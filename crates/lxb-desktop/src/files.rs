@@ -111,6 +111,15 @@ pub enum Place {
     /// A picker that offered it would be offering an answer that disappears
     /// the next time the trash is emptied.
     Trash,
+    /// A drive nothing has mounted yet, by its device number — see
+    /// [`crate::drives`].
+    ///
+    /// Not somewhere yet, so there is nothing to read: pressing it asks for it
+    /// to be mounted, and the row it comes back as is a [`Place::Directory`]
+    /// the shell then steps into. Offered where the disk is being browsed and
+    /// nowhere else, for the reason the trash is: a walk choosing a wallpaper
+    /// is not where a drive is put to use.
+    Unmounted(u64),
 }
 
 impl Place {
@@ -118,9 +127,9 @@ impl Place {
     pub fn shows(&self) -> Shows {
         match self {
             Self::Volumes(shows) | Self::Directory(_, shows) => *shows,
-            // The disk as it is, which is the only walk that reaches it — see
-            // [`Place::Trash`], which is offered from nowhere else.
-            Self::Trash => Shows::Everything,
+            // The disk as it is, which is the only walk that reaches either —
+            // see [`Place::Trash`], which is offered from nowhere else.
+            Self::Trash | Self::Unmounted(_) => Shows::Everything,
         }
     }
 }
@@ -344,15 +353,11 @@ pub fn volumes(query: &str, shows: Shows) -> Shown {
         None,
         shows,
     ));
-    for drive in drives(&read_mounts()) {
-        places.push(place(
-            &drive.title,
-            &drive.at,
-            crate::icons::FILE_DRIVE,
-            Some(drive.at.display().to_string()),
-            shows,
-        ));
-    }
+    places.extend(disks(
+        drives(&read_mounts()),
+        &crate::drives::known(),
+        shows,
+    ));
 
     // And the trash, under all of them, because it is not a disk: the three
     // rows above are places on this machine and this one is a place in the
@@ -426,6 +431,7 @@ fn trash_row() -> Entry {
         over_the_list: false,
         person: None,
         portrait: None,
+        used: None,
     })
 }
 
@@ -569,6 +575,88 @@ fn place(
         over_the_list: false,
         person: None,
         portrait: None,
+        used: None,
+    })
+}
+
+/// The drives in the list of disks, mounted or not, in one order by name.
+///
+/// One order rather than the mounted ones and then the rest: a drive keeps its
+/// place in the column whether or not it has been opened yet, so the row
+/// somebody pressed is the row the cursor is on when it arrives. The ones
+/// nothing has mounted are only where the disk is being browsed — see
+/// [`Place::Unmounted`].
+fn disks(mounted: Vec<Drive>, known: &crate::drives::Listing, shows: Shows) -> Vec<Entry> {
+    let mut disks: Vec<(String, Entry)> = mounted
+        .into_iter()
+        .map(|drive| {
+            let mut row = place(
+                &drive.title,
+                &drive.at,
+                crate::icons::FILE_DRIVE,
+                Some(drive.at.display().to_string()),
+                shows,
+            );
+            // What is being done to it says so, in place of the room on it.
+            if let (Entry::Folder(folder), Some(doing)) = (
+                &mut row,
+                known
+                    .mounted_at(&drive.at)
+                    .and_then(|volume| known.doing(volume.number)),
+            ) {
+                folder.comment = Some(doing_note(doing).to_string());
+            }
+            (drive.title.to_lowercase(), row)
+        })
+        .collect();
+    if shows == Shows::Everything {
+        disks.extend(
+            known
+                .unmounted()
+                .map(|volume| (volume.title().to_lowercase(), unmounted_row(volume, known))),
+        );
+    }
+    disks.sort_by(|a, b| a.0.cmp(&b.0));
+    disks.into_iter().map(|(_, row)| row).collect()
+}
+
+/// A drive nothing has mounted: its name, and that pressing it is what opens
+/// it — or, once it has been pressed, that it is being opened.
+///
+/// The drive's own mark, like every other disk in the column. It is a disk; it
+/// is only not open yet.
+fn unmounted_row(volume: &crate::drives::Volume, known: &crate::drives::Listing) -> Entry {
+    let comment = match known.doing(volume.number) {
+        Some(doing) => doing_note(doing).to_string(),
+        None => crate::message!(
+            "drive-not-mounted",
+            "size" => crate::appinfo::human_size(volume.size)
+        ),
+    };
+    Entry::Folder(Folder {
+        title_message: None,
+        comment_message: None,
+        identity: None,
+        title: volume.title(),
+        comment: Some(comment),
+        icon: Some(crate::icons::FILE_DRIVE.to_string()),
+        entries: Vec::new(),
+        place: Some(Place::Unmounted(volume.number)),
+        chosen: false,
+        over_the_list: false,
+        person: None,
+        portrait: None,
+        used: None,
+    })
+}
+
+/// What a drive's row says while a press on it is being carried out.
+pub fn doing_note(doing: crate::drives::Doing) -> &'static str {
+    use crate::drives::Doing;
+    crate::i18n::text(match doing {
+        Doing::Mounting => "drive-mounting",
+        Doing::Unmounting | Doing::Removing => "drive-unmounting",
+        Doing::AtStartup(_) => "shell-working",
     })
 }
 
@@ -693,6 +781,7 @@ pub fn listing(at: &Path, query: &str, how: How, shows: Shows) -> Shown {
                 over_the_list: false,
                 person: None,
                 portrait: None,
+                used: None,
             })
         } else {
             let (mime, glyph) = described(&path);
@@ -990,7 +1079,7 @@ fn parse_mounts(raw: &str) -> Vec<Mount> {
 /// `/proc/mounts` writes a space in a path as `\040`, and a backslash as
 /// `\134`. A drive called `My Films` is mounted at a path with a space in it on
 /// every machine that has one, so this is not an edge case, it is Tuesday.
-fn unescaped(field: &str) -> String {
+pub(crate) fn unescaped(field: &str) -> String {
     let mut out = String::with_capacity(field.len());
     let mut rest = field.chars();
     while let Some(c) = rest.next() {
@@ -1157,16 +1246,10 @@ pub fn drives(mounts: &[Mount]) -> Vec<Drive> {
     let mut drives: Vec<Drive> = Vec::new();
     for mount in mounts {
         let at = mount.at.as_path();
-        if at == Path::new("/") || PSEUDO.contains(&mount.kind.as_str()) {
+        if PSEUDO.contains(&mount.kind.as_str()) || !is_somewhere_a_drive_goes(at) {
             continue;
         }
-        // Before the system list rather than after it, because the one place a
-        // desktop mounts a stick is inside one of the places a machine mounts
-        // itself: `/run/media` is under `/run`.
         let removable = REMOVABLE.iter().any(|root| at.starts_with(root));
-        if !removable && SYSTEM.iter().any(|own| at.starts_with(own)) {
-            continue;
-        }
         let block = mount.source.starts_with("/dev/");
         if mount.source.starts_with("/dev/loop") && !removable {
             continue;
@@ -1192,6 +1275,25 @@ pub fn drives(mounts: &[Mount]) -> Vec<Drive> {
     }
     drives.sort_by_key(|drive| drive.title.to_lowercase());
     drives
+}
+
+/// Whether a filesystem mounted at `at` is a drive somebody keeps things on,
+/// rather than the machine's arrangement of itself.
+///
+/// `/` is the Root row, and one of the [`SYSTEM`] places is the machine's own —
+/// except under one of the [`REMOVABLE`] roots, which is asked first because
+/// the one place a desktop mounts a stick is inside one of the places a
+/// machine mounts itself: `/run/media` is under `/run`.
+///
+/// The one rule for Files' list of drives and for which drives
+/// [`crate::drives`] offers to unmount: a drive that is listed is a drive that
+/// can be put away, and a partition the system runs from is neither.
+pub fn is_somewhere_a_drive_goes(at: &Path) -> bool {
+    if at == Path::new("/") {
+        return false;
+    }
+    REMOVABLE.iter().any(|root| at.starts_with(root))
+        || !SYSTEM.iter().any(|own| at.starts_with(own))
 }
 
 fn home() -> Option<PathBuf> {
@@ -1388,6 +1490,101 @@ mod tests {
     /// column opens in.
     fn shown(at: &Path) -> Shown {
         listing(at, "", How::plain(), Shows::Everything)
+    }
+
+    /// A drive nothing has mounted is a disk in the list like any other, in
+    /// the place its name puts it — so the row somebody presses is the row the
+    /// cursor is on when it comes back mounted — and pressing it is a place
+    /// that asks for it to be mounted rather than one that is read.
+    #[test]
+    fn a_drive_nothing_has_mounted_stands_among_the_disks_by_name() {
+        let mounted = vec![Drive {
+            title: "GamesSSD".to_string(),
+            at: PathBuf::from("/nonexistent/lxb/GamesSSD"),
+        }];
+        let known = crate::drives::Listing {
+            volumes: vec![
+                crate::drives::a_drive(2049, "sda1", "GamesHDD"),
+                crate::drives::a_drive(2081, "sdc1", "Photographs"),
+            ],
+            service: true,
+            ..Default::default()
+        };
+        let rows = disks(mounted, &known, Shows::Everything);
+        assert_eq!(
+            rows.iter().map(Entry::title).collect::<Vec<_>>(),
+            ["GamesHDD", "GamesSSD", "Photographs"]
+        );
+        let Entry::Folder(hdd) = &rows[0] else {
+            panic!("a drive is a folder");
+        };
+        assert_eq!(hdd.place, Some(Place::Unmounted(2049)));
+        assert_eq!(hdd.icon.as_deref(), Some(crate::icons::FILE_DRIVE));
+        assert_eq!(hdd.comment.as_deref(), Some("Not mounted · 932 GiB"));
+        assert!(hdd.entries.is_empty());
+    }
+
+    /// Only where the disk is being browsed: a walk choosing a wallpaper or a
+    /// Steam library is not where a drive is put to use.
+    #[test]
+    fn a_drive_nothing_has_mounted_is_not_offered_to_a_walk_choosing_something() {
+        let known = crate::drives::Listing {
+            volumes: vec![crate::drives::a_drive(2049, "sda1", "GamesHDD")],
+            service: true,
+            ..Default::default()
+        };
+        assert!(disks(Vec::new(), &known, Shows::Scenery).is_empty());
+        assert!(disks(Vec::new(), &known, Shows::Portrait).is_empty());
+    }
+
+    /// A press being carried out on a drive is what its row says, in place of
+    /// what the row would otherwise say about it.
+    #[test]
+    fn a_drive_being_worked_on_says_so() {
+        let mut mounted_drive = crate::drives::a_drive(2065, "sdb1", "GamesSSD");
+        mounted_drive.mounted_at = vec![PathBuf::from("/nonexistent/lxb/GamesSSD")];
+        let known = crate::drives::Listing {
+            volumes: vec![
+                crate::drives::a_drive(2049, "sda1", "GamesHDD"),
+                mounted_drive,
+            ],
+            doing: vec![
+                (2049, crate::drives::Doing::Mounting),
+                (2065, crate::drives::Doing::Unmounting),
+            ],
+            service: true,
+            ..Default::default()
+        };
+        let mounted = vec![Drive {
+            title: "GamesSSD".to_string(),
+            at: PathBuf::from("/nonexistent/lxb/GamesSSD"),
+        }];
+        let rows = disks(mounted, &known, Shows::Everything);
+        let notes: Vec<_> = rows
+            .iter()
+            .map(|row| match row {
+                Entry::Folder(folder) => folder.comment.clone().unwrap_or_default(),
+                _ => String::new(),
+            })
+            .collect();
+        assert_eq!(notes, ["Mounting…", "Unmounting…"]);
+    }
+
+    /// The machine's own places are not drives: the root, and what is under
+    /// the system's own folders — except under the roots a desktop mounts a
+    /// stick in, which is inside one of them.
+    #[test]
+    fn somewhere_a_drive_goes_is_not_somewhere_the_system_keeps_itself() {
+        assert!(is_somewhere_a_drive_goes(Path::new("/mnt/GamesSSD")));
+        assert!(is_somewhere_a_drive_goes(Path::new(
+            "/run/media/kate/Stick"
+        )));
+        assert!(is_somewhere_a_drive_goes(Path::new("/data")));
+        assert!(!is_somewhere_a_drive_goes(Path::new("/")));
+        assert!(!is_somewhere_a_drive_goes(Path::new("/home")));
+        assert!(!is_somewhere_a_drive_goes(Path::new("/boot")));
+        assert!(!is_somewhere_a_drive_goes(Path::new("/var/lib/docker")));
+        assert!(!is_somewhere_a_drive_goes(Path::new("/run/user/1000")));
     }
 
     /// An archive is drawn as the box it is, and everything the shell has no

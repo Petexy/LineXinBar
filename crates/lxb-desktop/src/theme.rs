@@ -781,11 +781,13 @@ struct Chosen {
 }
 
 /// What the shell is made of: one answer for the picture behind it and one for
-/// the marks on top of it.
+/// the marks on top of it — and, kept with them because the Theme page previews
+/// and restores them together, whether the current carries its sparkles.
 #[derive(Debug, Clone, Copy, Default)]
 struct Material {
     wallpaper: Chosen,
     icons: Chosen,
+    particles: Particles,
 }
 
 impl Material {
@@ -883,14 +885,80 @@ pub fn commit_style(part: Part, name: &str) -> bool {
 
 /// Leave a preview behind and go back to the materials the user applied.
 ///
-/// Both halves at once, and deliberately: this is what a cursor leaving the
-/// Theme rows calls, and it cannot know which of the two it walked through.
+/// Both halves at once, and the particles with them, and deliberately: this is
+/// what a cursor leaving the Theme rows calls, and it cannot know which of them
+/// it walked through.
 pub fn restore_style() {
     let mut material = lock_material();
     for part in PARTS {
         let chosen = material.part(part);
         chosen.shown = chosen.applied;
     }
+    material.particles.shown = material.particles.applied;
+}
+
+// --- the particles: whether the current carries its sparkles ----------------
+//
+// Beside the materials rather than one of them, because it is not a material:
+// the sparkles are light the current carries, drawn the same over the water and
+// over the fine ribbons, and the question about them is simply whether they are
+// there. It lands whole and previews the way the materials beside it do —
+// highlighting Off takes them off the screen, and walking away puts them back.
+
+/// Whether the sparkles are drawn, and whether they will be once a preview is
+/// abandoned. On until somebody turns them off.
+#[derive(Debug, Clone, Copy)]
+struct Particles {
+    applied: bool,
+    shown: bool,
+}
+
+impl Default for Particles {
+    fn default() -> Self {
+        Self {
+            applied: true,
+            shown: true,
+        }
+    }
+}
+
+/// Whether the current carries its sparkles this frame, preview included.
+pub fn particles() -> bool {
+    lock_material().particles.shown
+}
+
+/// Whether the user has them on, which is what gets written down.
+pub fn applied_particles() -> bool {
+    lock_material().particles.applied
+}
+
+/// What the shader is told: one where the sparkles are drawn, and nought where
+/// they are not — the number every writer of the uniform that has never heard
+/// of them already sends, so a writer has to ask this to draw them.
+pub fn particles_flag() -> f32 {
+    if particles() {
+        1.0
+    } else {
+        0.0
+    }
+}
+
+/// Set them outright, applied and shown together. The startup path.
+pub fn set_particles(on: bool) {
+    lock_material().particles = Particles {
+        applied: on,
+        shown: on,
+    };
+}
+
+/// Draw them, or not, without choosing it, for a highlighted row.
+pub fn preview_particles(on: bool) {
+    lock_material().particles.shown = on;
+}
+
+/// Choose whether they are drawn.
+pub fn commit_particles(on: bool) {
+    set_particles(on);
 }
 
 /// Leave preview behind and flow back to the last accent the user applied.
@@ -960,6 +1028,15 @@ pub fn with_accent<T>(name: &str, body: impl FnOnce() -> T) -> T {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The sparkles are part of the look a person starts with: a shell that has
+    /// read no settings at all draws the current with them.
+    #[test]
+    fn the_particles_are_on_until_somebody_turns_them_off() {
+        let material = Material::default();
+        assert!(material.particles.applied);
+        assert!(material.particles.shown);
+    }
 
     /// The conversion is the whole point of authoring in hex: a mid grey must
     /// arrive at the GPU as mid *light*, which is a much lower number.

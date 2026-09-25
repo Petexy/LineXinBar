@@ -3,13 +3,16 @@
 [Documentation](index.md) · [Project home](../README.md)
 
 Updates are grouped by their owner. The desktop offers **Update the system**,
-**Update Flatpaks**, **Update Snaps**, independent Nix/Guix profiles, and
-**Update firmware** according to what it detects. “Update everything” checks all
+**Update LineXinBar**, **Update Flatpaks**, **Update Snaps**, independent
+Nix/Guix profiles, and **Update firmware** according to what it detects. “Update everything” checks all
 detected sources and presents a review before installation. Steam games and other
 applications with their own updater keep their own workflow.
 
 The desktop does not build AUR or other locally built packages. See
-[AUR and locally built packages](#aur-and-locally-built-packages).
+[AUR and locally built packages](#aur-and-locally-built-packages). The one
+exception is this desktop's own family, which it updates from its own releases
+where the system's repositories do not carry it — see
+[LineXinBar and the projects beside it](#linexinbar-and-the-projects-beside-it).
 
 ## Using the page
 
@@ -176,6 +179,133 @@ is labelled as one. An `aur_helper` key left in the administrator policy is
 accepted and ignored, so that one stale key does not
 stop the system updating.
 
+## LineXinBar and the projects beside it
+
+LineXinBar is released together with six projects: CEDM, lxb-toolkit,
+DistriBumpy, ImagOnSole, VideOnSole and SongOnSole. A distribution that packages
+them updates them with everything else, and then there is nothing more to say:
+**Update the system** covers them. Most distributions will not carry them at
+first, and a desktop installed from a release page would stay at that release
+for ever, because the system's update does not know it exists. **Update
+LineXinBar** is the row for that case.
+
+Each project publishes its versions as tagged releases on GitHub
+(`github.com/Petexy/<project>/releases`), with Arch, Debian and Fedora packages
+attached. The row appears only when some of the family is installed in a way no
+repository of this system will update. It decides project by project:
+
+* **Packages no repository offers.** A `.pkg.tar.zst`, `.deb` or `.rpm`
+  installed by hand, which is what `pacman -Qm`, `apt-cache policy` or DNF's
+  metadata cache say about it. The newer release's packages for the same format
+  and architecture are downloaded. Each file is checked against the SHA-256
+  that GitHub publishes for it, and all of them are handed to the system's own
+  package manager in one transaction: `pacman -U`, `apt-get install` or
+  `dnf install`. A project counts only when *every* package of it installed is
+  foreign. The shell's packages depend on exact versions of one another, so
+  taking some from a repository and some from a release is a dependency the
+  package manager would refuse. Fedora packages are named for the Fedora they
+  were built for (`1.fc44`). The one for this Fedora is used, or failing that
+  the newest one built for an older Fedora, and never one built for a newer
+  Fedora.
+* **Built from source.** The project's own `packaging/install.sh` put it under
+  `/usr`, `/usr/local` or `~/.local`, and no package owns the files. This is
+  Gentoo, and every distribution a release carries no package for. The new tag
+  is cloned from GitHub and built with `cargo build --release --locked`. The
+  tag's own `install.sh` stages the same components that are installed now,
+  into a directory of its own, and that tree is copied onto the machine. Under
+  `/usr` the system's package manager must say that nothing there is a
+  package's. That can be asked of pacman, dpkg, RPM and Portage; on other
+  systems only `/usr/local` and `~/.local` are updated. For the toolkit, the
+  library directory and python's site directory it was installed into are kept.
+* **Anything a repository carries** belongs to the system, and this row leaves
+  it alone.
+
+The version comes from the release's tag, pre-releases included. A tag reads as
+a version (`v0.9.0-alpha` is 0.9.0-alpha, which comes before 0.9.0), and drafts
+are never used. A release is offered only when it is newer than what is
+installed. A package is compared with the package manager's own ordering, and a
+build with the tag the updater last installed, or else with what the installed
+program says to `--version`. A machine running a build newer than any release is
+up to date and is never taken back to the release. A newer release that has no
+package for this system's format and architecture is listed as excluded rather
+than installed in part.
+
+The check asks GitHub's API for each project's release list and keeps the
+answer with its `ETag` beside the update journal, so a check that finds nothing
+new costs no request allowance. Unauthenticated requests are limited to sixty
+an hour per address. When GitHub refuses one, the row says “Could not check”,
+and Full output says for how many minutes.
+
+Update now runs these operations after the system's own update. The packages go
+in first, in one transaction, and then the builds in the family's order:
+LineXinBar, lxb-toolkit, CEDM, then the applications. An application built from
+source compiles the toolkit's sources in, so the toolkit has to be the new one
+before that build starts. The new desktop and login screen are in use from the
+next sign-in. “A restart may be needed afterwards” appears when either is among
+what would be installed.
+
+### What the step that installs checks for itself
+
+Each operation runs as `lxb-updates release <operation>` in the job's
+terminal, and it re-checks everything instead of relying on the check. As root,
+through the job's authorization, it:
+
+* accepts only a project of the family, a tag that reads as a version, that
+  project's own package names or `install.sh` components, and a prefix of
+  `/usr` or `/usr/local`. A library or site directory must lie inside that
+  prefix. A build into a home directory is never run as root; it runs as its
+  owner, with no password asked;
+* asks GitHub for the release by its tag itself, and refuses a draft;
+* refuses anything that is not newer than what is installed now, so nothing is
+  ever downgraded, and asks again whether each package is still one no
+  repository offers;
+* downloads only from `https://github.com/Petexy/<project>/releases/download/<tag>/`,
+  using its own TLS stack and root certificates, into a fresh root-owned
+  directory under `/var/cache/lxb-updates`. A file whose SHA-256 differs from
+  the published one is deleted, and nothing is installed;
+* builds in a fresh root-owned directory, as Portage does, with its own Cargo
+  registry cache under `/var/cache/lxb-updates/cargo`, and never reads root's
+  git configuration;
+* copies the staged tree onto the machine only when every path in it lies under
+  the prefix, or in `/etc` for CEDM's configuration. Each file is written in
+  full and then renamed into place. A file in `/etc` that differs from the new
+  one is kept, and the new one is written beside it as `.lxbnew`;
+* records the tag and every file it installed in
+  `<prefix>/share/lxb-updates/installed/<project>.json`. The next update then
+  knows `0.9.0-alpha` from `0.9.0`, and it removes files under the prefix that
+  a newer release no longer ships.
+
+A package install uses whatever the package manager's own signature policy
+allows for local files. The release packages are unsigned, and the SHA-256
+published by GitHub is what vouches for them. Building as root needs a Rust
+toolchain installed for the whole system (`cargo` on root's path, Rust 1.89 or
+newer), git, and the build dependencies listed in each project's README. A
+missing one shows up as the build's own error in Full output.
+
+### What a release has to look like
+
+The row reads releases exactly as they are published, so a release is usable
+only if it follows these rules:
+
+* **The tag is the version**, optionally prefixed with `v`, with a
+  semantic-versioning pre-release after a hyphen: `v0.9.0-alpha`, `v1.0.0-rc.1`,
+  `v1.0.0`. A tag that does not read as a version is skipped.
+* **Every package file keeps the name its builder gives it**:
+  `name-version-release-arch.pkg.tar.zst`, `name_version-release_arch.deb` and
+  `name-version-release.fcNN.arch.rpm`, with `any`, `all` and `noarch` for
+  architecture-independent packages.
+* **A package has to be newer than the last release's by its own version.** The
+  packages of `v0.9.0-alpha` are `0.9.0-1`. Publishing `v0.9.0` with packages
+  that are also `0.9.0-1` offers nothing to a machine that installed the alpha's
+  packages, because to the package manager they are the same version. Raise
+  the version, or the package release (`0.9.0-2`). Builds from source go by the
+  tag and see the difference either way.
+* **All of a project's packages ship in every release that ships any.** A newer
+  release missing a package that is installed, such as `lxb-retroarch`, is not
+  installed for that machine at all.
+* **The tag builds with `cargo build --release --locked` and installs with its
+  own `packaging/install.sh`**, with the same options as today.
+
 ## Firmware policy
 
 **fwupd is a required desktop runtime dependency.** The package also requires
@@ -224,6 +354,7 @@ No real package upgrades or firmware writes were used for development validation
 | Slackware / unknown hosts | Manual maintenance notice | Native maintenance outside Settings | Automatic installation disabled |
 | AppImages and application-owned content | No universal updater | Application/vendor workflow | No automatic adapter |
 | fwupd | Configured remote refresh, JSON inventory and releases | Validated devices only | Fake-tool PTY/recovery/exclusion tests; hardware pending |
+| LineXinBar and the projects beside it, where no repository carries them | GitHub release lists, compared with foreign packages or source builds | Release packages checked by SHA-256, then `pacman -U` / `apt-get install` / `dnf install`; or the tag built and installed as root | Plan, version, asset and merge tests, and real release lists and one real verified download; installation needs a VM |
 
 Host ownership requires distribution and package database evidence. Known image
 and declarative deployments take precedence over installed mutable tools. An
@@ -548,7 +679,7 @@ directory — a Unix socket path is limited to 107 bytes, which a state director
 under a long home would exceed, and the runtime directory is private to the
 account and cleared at logout. It falls back beside the state when there is no
 private runtime directory. Only same-account peers are answered. The desktop and
-helper must be from the same build. Protocol 3 checks the request version before
+helper must be from the same build. Protocol 4 checks the request version before
 any operation; older wire requests cannot start an installation. Old journals
 retain interruption and staged-restart evidence, but old reviews are invalidated.
 
@@ -560,7 +691,10 @@ reviewed grant over an inherited anonymous Unix socket. Subsequent requests name
 only a source and step index. The worker derives fixed commands itself, verifies
 protected executable paths and administrator policy, and reclassifies each
 firmware device before installation. It rejects repeated steps, unselected
-operations and user Flatpak installations. No arbitrary command, environment,
+operations and user Flatpak installations. A step of Update LineXinBar is the
+worker's own executable run with the reviewed operation, which is validated
+again there and then checked against GitHub and the machine itself. See
+[What the step that installs checks for itself](#what-the-step-that-installs-checks-for-itself). No arbitrary command, environment,
 user profile can be submitted to it, and AUR is refused outright.
 
 The coordinator and root worker disable core dumps and same-account ptrace/proc
@@ -667,6 +801,11 @@ and test logs stay under the output directory. The harness starts the integratio
 test executable with an injected fake power guard and stops that process afterwards.
 The shipped helper has no protection-bypass flag. These pictures validate layout,
 not real power inhibition or privileged authorization.
+
+`LXB_UPDATES_RELEASE_FIXTURES=DIR` makes the check read each project's release
+list from `DIR/<project>.json` instead of from GitHub. It exists for the
+integration test. It moves only what the check lists, and the step that installs
+still asks GitHub itself.
 
 Before a distribution release, run isolated VM tests for native prompts, declined
 transactions, package conflicts and locks, power loss/reconnect, staged boot
