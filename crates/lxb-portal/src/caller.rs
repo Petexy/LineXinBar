@@ -100,11 +100,41 @@ mod tests {
 
     // A real isolated bus supplies the sender name; no user session names are
     // acquired by this test, and no screen or file prompt is opened.
+    //
+    // The daemon is pointed at a config of this test's own rather than started
+    // with `--session`: that flag has it read the system's
+    // `/etc/dbus-1/session.conf`, which a build sandbox does not have — and
+    // which a distro may have configured in ways a test of who may own
+    // `org.freedesktop.portal.Desktop` should not depend on. The address is
+    // printed only once the config is loaded, so the file can go again as soon
+    // as it has been read.
     #[test]
     fn only_the_front_desk_is_trusted_and_only_its_own_may_close() {
+        let config = std::env::temp_dir().join(format!(
+            "lxb-portal-caller-test-bus-{}.conf",
+            std::process::id()
+        ));
+        std::fs::write(
+            &config,
+            concat!(
+                "<!DOCTYPE busconfig PUBLIC \"-//freedesktop//DTD D-Bus Bus Configuration 1.0//EN\" ",
+                "\"http://www.freedesktop.org/standards/dbus/1.0/busconfig.dtd\">\n",
+                "<busconfig>\n",
+                "  <type>session</type>\n",
+                "  <listen>unix:tmpdir=/tmp</listen>\n",
+                "  <policy context=\"default\">\n",
+                "    <allow send_destination=\"*\" eavesdrop=\"true\"/>\n",
+                "    <allow eavesdrop=\"true\"/>\n",
+                "    <allow own=\"*\"/>\n",
+                "  </policy>\n",
+                "</busconfig>\n",
+            ),
+        )
+        .expect("write the bus config");
         let mut bus = PrivateBus(
             Command::new("dbus-daemon")
-                .args(["--session", "--nofork", "--print-address=1"])
+                .arg(format!("--config-file={}", config.display()))
+                .args(["--nofork", "--print-address=1"])
                 .stdout(Stdio::piped())
                 .spawn()
                 .expect("start a private D-Bus"),
@@ -113,6 +143,7 @@ mod tests {
         std::io::BufReader::new(bus.0.stdout.take().unwrap())
             .read_line(&mut address)
             .unwrap();
+        let _ = std::fs::remove_file(&config);
         zbus::block_on(async {
             let backend = zbus::connection::Builder::address(address.trim())
                 .unwrap()
