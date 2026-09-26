@@ -107,6 +107,18 @@ rustPlatform.buildRustPackage {
   cargoTestFlags = crates ++ [ "--lib" "--bins" ];
   checkType = "debug";
 
+  # The tests that bring up a wayland-server Display load libwayland at
+  # runtime rather than by link: smithay's winit backend asks winit for
+  # `wayland-dlopen`, and feature unification makes every user of wayland-sys
+  # in the graph dlopen too. A normal machine has libwayland in its system
+  # library path; the build sandbox has none, so hand the test binaries one.
+  # The portal's caller test also starts a private `dbus-daemon`, which the
+  # sandbox has nowhere on its PATH without this.
+  preCheck = ''
+    export LD_LIBRARY_PATH="${lib.makeLibraryPath [ wayland ]}"
+    export PATH="$PATH:${lib.makeBinPath [ dbus ]}"
+  '';
+
   strictDeps = true;
   nativeBuildInputs = [
     pkg-config
@@ -236,9 +248,12 @@ rustPlatform.buildRustPackage {
       -t "$out/share/lxb/glyphs"
 
     patchShebangs "$out/bin/lxb-session"
+    # TryExec first: `Exec=lxb-session` is a substring of `TryExec=lxb-session`,
+    # so replacing Exec first would rewrite the TryExec line too and the second
+    # --replace-fail would then find nothing left to match.
     substituteInPlace "$out/share/wayland-sessions/lxb.desktop" \
-      --replace-fail "Exec=lxb-session" "Exec=$out/bin/lxb-session" \
-      --replace-fail "TryExec=lxb-session" "TryExec=$out/bin/lxb-session"
+      --replace-fail "TryExec=lxb-session" "TryExec=$out/bin/lxb-session" \
+      --replace-fail "Exec=lxb-session" "Exec=$out/bin/lxb-session"
     # And the same for the folder handler, which is started by whatever opens a
     # folder rather than by this package: a bare name would only be found if
     # the shell happened to be on that program's PATH.
