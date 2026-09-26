@@ -2176,6 +2176,94 @@ impl Steam {
         self.driving && game.standing.moving() && !self.client_running
     }
 
+    /// What is standing between a press on `app_id` and its game this frame,
+    /// in the words its loading screen should say — or nothing, where Steam is
+    /// doing nothing in front of it and what is left is the window.
+    ///
+    /// `step` is the launch's own account of itself as the loading screen last
+    /// heard it, and `asks_again` whether the client refused that press over
+    /// work it is still doing — see `Shell::steam_would_not_start_it`. Asked
+    /// once a frame by `Shell::sync_the_launch_downloads`; what the screen does
+    /// with the answer is [`crate::launch::Launch::follow_the_work`].
+    pub(crate) fn what_a_press_waits_on(
+        &self,
+        app_id: u32,
+        step: Option<&crate::launch::Step>,
+        asks_again: bool,
+    ) -> Option<crate::Underway> {
+        // The step first, because it is the client's own account of what it is
+        // doing with this very press — and because for half of these there is
+        // nothing on the disk that describes them at all. It is work in flight
+        // like any other here: the line says what it is, and the patience stops
+        // while it runs. See `Shell::steam_is_working_on_the_launch`.
+        //
+        // **This is what was missing when a press ran out of patience over a
+        // client that was one fifth of the way through answering it.** The
+        // game's manifest read `StateFlags 1158` — installed, update required,
+        // files corrupt, update started, which is a copy being repaired rather
+        // than one of the standings below — and its byte counters were nought.
+        // Steam's own launch window said "Downloading content (19%)" the whole
+        // time.
+        //
+        // Only while a client is running. A step is the last thing the client
+        // *said*, out of a log that outlives it, and the watcher goes on
+        // reading that log for five minutes — so a client that died mid-launch
+        // would otherwise hold a loading screen up on a sentence about work
+        // nothing is doing. The same guard the quiet stretch of an update is
+        // under, and for the same reason.
+        if let Some(step) = step.filter(|_| self.a_client_is_running()) {
+            return Some(crate::Underway {
+                // The manifest's own count where the client's interface has
+                // none to give, which on an ordinary press is always — see
+                // [`crate::launch::Step::said`]. Throwing it away here is what
+                // left a repair counting nothing on the screen while the file
+                // on the disk counted it perfectly well.
+                said: step.said(self.how_far_along_percent(app_id)),
+                arrived: self.game(app_id).map_or(0, |game| game.downloaded),
+                // Nothing on the disk counts these, so what says the work is
+                // moving is that the client is doing it — the same answer the
+                // quiet stretch of an update gives. What ends it is the client
+                // walking on to a step with nothing to say, or the launch
+                // ending.
+                quietly: true,
+            });
+        }
+        // Steam saying what it is doing to this game, and Steam doing it
+        // without saying — see [`Self::quietly_working_on_it`]. The second is
+        // what the first ten minutes of an update look like from here, and it
+        // is work in flight exactly as much as the first is.
+        let quietly = self.quietly_working_on_it(app_id);
+        self.game(app_id)
+            .filter(|game| game.standing.moving() || quietly.is_some())
+            .map(|game| crate::Underway {
+                said: match quietly {
+                    Some(standing) => game.note_working(standing),
+                    None => game.note(),
+                },
+                arrived: game.downloaded,
+                quietly: quietly.is_some(),
+            })
+            // And, under a press the client refused, anything it still has the
+            // game in hand for. That is what the refusal was judged against —
+            // `Shell::steam_would_not_start_it` counts a shader cache arriving
+            // as work in front of the press — and a wait that ended on less
+            // would make the second press into the middle of the same work, to
+            // be refused for the same reason. Said the way the client's own
+            // launch said it until the refusal, because it is the same work: on
+            // 2026-09-26 the `DownloadingDepots` that was refused over was
+            // Counter-Strike 2's shader cache.
+            .or_else(|| {
+                let game = self.game(app_id)?;
+                (asks_again && self.the_client_has_it_in_hand(app_id)).then(|| crate::Underway {
+                    said: crate::i18n::text("shell-downloading-content").to_string(),
+                    arrived: game.downloaded,
+                    // Counted by nothing on the disk, and ended by the job's
+                    // own last line or the client going.
+                    quietly: true,
+                })
+            })
+    }
+
     /// Whether Steam is in the middle of an update to `app_id` that the
     /// manifest has not begun to describe.
     ///
@@ -6459,6 +6547,206 @@ mod tests {
                 .collect(),
         );
         steam
+    }
+
+    /// A loading screen standing on a press of `app_id`, handed to the client.
+    fn loading(app_id: u32, now: Instant) -> crate::launch::Launch {
+        let mut splash = crate::launch::Launch::new(
+            "Counter-Strike 2".to_string(),
+            None,
+            crate::Display::for_a_test(0),
+            [0.0; 4],
+            None,
+            now,
+            crate::launch::Before {
+                windows: &[],
+                foreground: "",
+            },
+        )
+        .through_steam(app_id);
+        splash.now_starting_through_steam(now);
+        splash
+    }
+
+    /// The step the client's launch reports, as the watcher hands it on.
+    fn launch_step(task: &str, how_far: Option<u32>) -> crate::launch::Step {
+        crate::launch::Step {
+            doing: crate::launch::words_for(task).expect("a step the shell names"),
+            how_far,
+            action_id: None,
+        }
+    }
+
+    /// One frame of `Shell::sync_the_launch_downloads` for one loading
+    /// screen: the same two calls, and whether the press is made again.
+    fn a_frame(steam: &Steam, splash: &mut crate::launch::Launch, now: Instant) -> bool {
+        let work = steam.what_a_press_waits_on(
+            splash.game().expect("a game's loading screen"),
+            splash.step(),
+            splash.will_ask_again(),
+        );
+        splash.follow_the_work(now, work)
+    }
+
+    /// **Counter-Strike 2 on 2026-09-26, frame by frame**, off the shell's
+    /// journal and Valve's content log together. The press was refused with
+    /// `AppError_19` at 00:32:25, the moment the shader cache it was fetching
+    /// committed; the client then ran the game's update, which finished at
+    /// 00:32:32; the library was read again at 00:32:33. The press has to be
+    /// made again then — not before, into the middle of the update, and not
+    /// never, which is what the screen did.
+    #[test]
+    fn a_refused_press_is_made_again_when_the_update_it_was_refused_over_ends() {
+        use lxb_steam::client::InHand;
+        use lxb_steam::library::Standing;
+
+        let t0 = Instant::now();
+        let at = |seconds: u64| t0 + Duration::from_secs(seconds);
+        let mut steam = library(&[(730, "Counter-Strike 2", true)]);
+        steam.driving = true;
+        steam.client_running = true;
+        let installed = steam.games[0].clone();
+        assert_eq!(installed.standing, Standing::Ready);
+        // What the manifest said as the press was made: on the disk, and not
+        // to be started until Steam has fetched something.
+        steam.games[0].update_required = true;
+        let mut splash = loading(730, t0);
+
+        // 00:32:16 — the launch is on DownloadingDepots, which was the shader
+        // cache arriving.
+        steam.valve_is_fetching_shaders.insert(730);
+        splash.working_on(Some(launch_step("DownloadingDepots", None)));
+        for second in 1..=9 {
+            assert!(!a_frame(&steam, &mut splash, at(second)));
+        }
+        assert_eq!(splash.said(), Some("Downloading content"));
+        assert!(splash.is_fetching());
+
+        // 00:32:25 — the shader cache commits, the update starts, and the
+        // client gives up on the launch. What `Shell::steam_would_not_start_it`
+        // does to the screen:
+        steam.valve_is_fetching_shaders.clear();
+        steam.valve_is_doing.insert(730, InHand::Working);
+        splash.the_launch_was_refused();
+        assert!(splash.ask_again_when_the_work_ends());
+
+        // 00:32:27 to 00:32:31 — the update runs; the manifest has not said so
+        // yet, then does.
+        for second in 11..=13 {
+            assert!(
+                !a_frame(&steam, &mut splash, at(second)),
+                "not into the middle of the update the press was refused over"
+            );
+        }
+        assert_eq!(splash.said(), Some("Updating"));
+        steam.games[0] = steam.games[0].clone().doing(Standing::Updating);
+        for second in 14..=16 {
+            assert!(!a_frame(&steam, &mut splash, at(second)));
+        }
+        assert!(splash.is_fetching());
+
+        // 00:32:32 — `App update changed : None`. The client has let go of it,
+        // and the library in memory still carries the manifest from before.
+        steam.valve_is_doing.clear();
+        assert!(
+            !a_frame(&steam, &mut splash, at(17)),
+            "the manifest still says it is being updated"
+        );
+
+        // 00:32:33 — the library is read again: Fully Installed, and nothing
+        // required of Steam before it starts.
+        steam.games[0] = installed;
+        assert!(
+            a_frame(&steam, &mut splash, at(18)),
+            "this is the moment the game can be started, and the press is made"
+        );
+        assert!(!splash.is_fetching());
+        assert!(!a_frame(&steam, &mut splash, at(19)), "and it is made once");
+    }
+
+    /// **What the screen did on the 26th**, kept as the same frames with the
+    /// refusal's step left standing: the update over, nothing in hand, the
+    /// manifest settled — and the loading screen still reading work, for as
+    /// long as a client runs. It is here so the rule it breaks cannot be undone
+    /// without a test saying which session that was.
+    #[test]
+    fn a_step_left_behind_by_a_refusal_would_hold_the_press_for_ever() {
+        let t0 = Instant::now();
+        let mut steam = library(&[(730, "Counter-Strike 2", true)]);
+        steam.driving = true;
+        steam.client_running = true;
+        let mut splash = loading(730, t0);
+        splash.working_on(Some(launch_step("DownloadingDepots", Some(2))));
+        // Refused, and the step not forgotten — the defect.
+        assert!(splash.ask_again_when_the_work_ends());
+
+        // Ten minutes of frames over a game that is ready.
+        for second in 0..600 {
+            assert!(!a_frame(
+                &steam,
+                &mut splash,
+                t0 + Duration::from_secs(second)
+            ));
+        }
+        assert_eq!(splash.said(), Some("Downloading content · 2%"));
+
+        // And forgetting it is the whole of the difference.
+        splash.the_launch_was_refused();
+        assert!(a_frame(&steam, &mut splash, t0 + Duration::from_secs(600)));
+    }
+
+    /// A press refused over a shader cache alone waits for the shader cache,
+    /// and nothing else holds a loading screen on one.
+    ///
+    /// The first of the two refusals on 2026-09-26 came at 00:31:29, as a
+    /// shader cache committed and a second one started — work
+    /// `Shell::steam_would_not_start_it` counts as being in front of the press.
+    /// The manifest carried the update then; this is the same refusal where it
+    /// does not, and the in-hand job is all there is to wait on.
+    #[test]
+    fn a_press_refused_over_shaders_waits_for_the_shaders_and_only_then() {
+        let t0 = Instant::now();
+        let at = |seconds: u64| t0 + Duration::from_secs(seconds);
+        let mut steam = library(&[(730, "Counter-Strike 2", true)]);
+        steam.driving = true;
+        steam.client_running = true;
+        steam.valve_is_fetching_shaders.insert(730);
+
+        // An ordinary launch is **not** held by a shader cache: Steam fetches
+        // them while a game is played, and a loading screen that waited on one
+        // would wait on a game that is already open behind it.
+        let mut ordinary = loading(730, t0);
+        assert!(!a_frame(&steam, &mut ordinary, at(1)));
+        assert!(!ordinary.is_fetching(), "nothing held it");
+
+        // A refused one is.
+        let mut refused = loading(730, t0);
+        refused.working_on(Some(launch_step("DownloadingDepots", None)));
+        refused.the_launch_was_refused();
+        assert!(refused.ask_again_when_the_work_ends());
+        for second in 1..=30 {
+            assert!(!a_frame(&steam, &mut refused, at(second)));
+        }
+        assert!(refused.is_fetching());
+        assert_eq!(
+            refused.said(),
+            Some("Downloading content"),
+            "said as the client's own launch said it"
+        );
+
+        // `Shader update changed : None`.
+        steam.valve_is_fetching_shaders.clear();
+        assert!(a_frame(&steam, &mut refused, at(31)));
+
+        // And a client that goes away takes all of it with it: the step and
+        // the job are both things it said, and it is not there to be doing
+        // either.
+        let mut stranded = loading(730, t0);
+        stranded.working_on(Some(launch_step("DownloadingDepots", None)));
+        assert!(stranded.ask_again_when_the_work_ends());
+        steam.valve_is_fetching_shaders.insert(730);
+        steam.client_running = false;
+        assert!(a_frame(&steam, &mut stranded, at(32)));
     }
 
     /// A row whose manifest says Steam is in the middle of something says so

@@ -2462,8 +2462,9 @@ impl Jobs {
     /// then folded in as though they were this client's.
     ///
     /// So the run is found rather than guessed at: [`NEW_RUN`] is the first
-    /// line of every run, and the last one in the file is where this client's
-    /// own account of itself begins. Where there is none, the run began before
+    /// line of every run, and the last one in the file that is the client's own
+    /// — see [`where_this_run_starts`] — is where this client's own account of
+    /// itself begins. Where there is none, the run began before
     /// the log was rotated, and the rest of it is in the file that was moved
     /// aside — which is read first, exactly as far back as its own last run
     /// marker.
@@ -2480,7 +2481,7 @@ impl Jobs {
         self.read_to = whole as u64;
         self.file = Some(identity);
 
-        match this_run_in(&bytes[..whole]) {
+        match where_this_run_starts(&bytes[..whole]) {
             // The run began in this file, so nothing before that mark is this
             // client's.
             Some(at) => self.fold(&String::from_utf8_lossy(&bytes[at..whole])),
@@ -2493,7 +2494,7 @@ impl Jobs {
                     .and_then(|file| whole_lines_from(file, 0))
                 {
                     let (bytes, whole) = before;
-                    let at = this_run_in(&bytes[..whole]).unwrap_or_default();
+                    let at = where_this_run_starts(&bytes[..whole]).unwrap_or_default();
                     self.fold(&String::from_utf8_lossy(&bytes[at..whole]));
                 }
                 self.fold(&String::from_utf8_lossy(&bytes[..whole]));
@@ -2538,7 +2539,13 @@ impl Jobs {
             // without this a session that lost its Steam once would believe
             // that update was in flight for ever and nothing would ever close a
             // client again.
-            if line.contains(NEW_RUN) {
+            //
+            // A header a game's own Steamworks wrote is not one, and here it
+            // would forget, in the middle of a session, an update the client
+            // is still running — and let the client be closed under it. None
+            // has been seen in this log, but the rule is the same one the
+            // connection log needed. See [`starts_a_run`].
+            if starts_a_run(line) {
                 self.doing.clear();
                 continue;
             }
@@ -2568,25 +2575,6 @@ fn whole_lines_from(mut file: std::fs::File, from: u64) -> Option<(Vec<u8>, usiz
     file.read_to_end(&mut bytes).ok()?;
     let whole = bytes.iter().rposition(|byte| *byte == b'\n')? + 1;
     Some((bytes, whole))
-}
-
-/// Where the run of the client that is still going began, in a stretch of its
-/// log, or nothing where the whole stretch belongs to runs before it.
-///
-/// The offset of the start of the last [`NEW_RUN`] line: what follows it is
-/// this client's own account of itself, and what precedes it was written by a
-/// client that is no longer there.
-fn this_run_in(bytes: &[u8]) -> Option<usize> {
-    let marker = NEW_RUN.as_bytes();
-    let at = bytes
-        .windows(marker.len())
-        .rposition(|window| window == marker)?;
-    // Back to the start of the line it is on, so the fold begins on a line
-    // boundary rather than in the middle of one.
-    Some(match bytes[..at].iter().rposition(|byte| *byte == b'\n') {
-        Some(end) => end + 1,
-        None => 0,
-    })
 }
 
 /// The name the client moves this log aside to when it fills up.
@@ -2863,7 +2851,78 @@ const FAILED: &str = "Failed";
 const CONSOLE_LOG: &str = "console_log.txt";
 
 /// What the client writes as the first line of every run.
+///
+/// **Not every line that says this is one.** Ask [`starts_a_run`], never
+/// `contains`.
 const NEW_RUN: &str = "Client version:";
+
+/// Whether a line is the first line of a run of Valve's client: the marker
+/// and the client's build number after it.
+///
+/// **The marker alone was taken for a run, and a game's own Steamworks writes
+/// it.** A `steamclient.so` loaded by something other than Valve's bootstrapper
+/// — the game's Steam API coming up inside the game — opens the same logs the
+/// client keeps and writes the same header into them, with the words
+/// `no bootstrapper found` where the build number goes, followed by a
+/// connectivity test and nothing else. Read off this machine on 2026-09-26:
+/// Tekken 8's process started at 00:02:37, and at 00:03:00 the connection log
+/// of a client that had been signed in since 23:58 gained
+///
+/// ```text
+/// [2026-09-26 00:03:00] Client version: no bootstrapper found
+/// [2026-09-26 00:03:00] Connectivity test: Starting test, fetching 'http://steamconnecttest.com/204'
+/// ```
+///
+/// and not one more stamped line for twenty-six minutes, because a client that
+/// stays signed in has nothing to say about its connection. Every question
+/// asked of that log in the meantime was asked of the game's four lines: the
+/// client read as [`State::Starting`], and Open Steam pressed half an hour
+/// later waited thirty seconds for it to sign itself in, handed a client that
+/// was signed in all along its credential again — which Valve's client refuses
+/// and never answers — and spent the rest of its patience on that. Ten of
+/// these headers in one connection log here, and 647 across the client's logs.
+///
+/// A number and not a particular one: the client's own header has carried
+/// `1785799196`, `1788400362` and `1788652215` on this machine, and Valve's
+/// updater writes `0` into its own log. The one foreign form seen here is
+/// the words.
+fn starts_a_run(line: &str) -> bool {
+    let Some((_, version)) = line.split_once(NEW_RUN) else {
+        return false;
+    };
+    let version = version.trim();
+    !version.is_empty() && version.bytes().all(|byte| byte.is_ascii_digit())
+}
+
+/// Where the run of the client that is still going began, in a stretch of its
+/// log: the offset of the start of the last line that [`starts_a_run`], or
+/// nothing where the whole stretch belongs to runs before it.
+///
+/// Bytes, so the content log's reader can ask it of what it has read without
+/// making a string of it first — a seek lands wherever it is asked to, and
+/// that may be the middle of a character. Every line the marker is on is
+/// asked, latest first, because the latest is not always the client's own.
+fn where_this_run_starts(bytes: &[u8]) -> Option<usize> {
+    let marker = NEW_RUN.as_bytes();
+    let mut before = bytes.len();
+    loop {
+        let at = bytes[..before]
+            .windows(marker.len())
+            .rposition(|window| window == marker)?;
+        let start = bytes[..at]
+            .iter()
+            .rposition(|byte| *byte == b'\n')
+            .map_or(0, |end| end + 1);
+        let end = bytes[at..]
+            .iter()
+            .position(|byte| *byte == b'\n')
+            .map_or(bytes.len(), |end| at + end);
+        if starts_a_run(&String::from_utf8_lossy(&bytes[start..end])) {
+            return Some(start);
+        }
+        before = at;
+    }
+}
 
 /// The state a logged-on client stamps its lines with.
 const LOGGED_ON: &str = "Logged On";
@@ -2881,7 +2940,8 @@ const RUN_ENDED: &str = "Log session ended";
 /// The last line of the client's current run that says both what its
 /// connection is doing and whose it is.
 fn last_stamp(log: &str) -> Option<(&str, u32, &str)> {
-    let this_run = match log.rfind(NEW_RUN) {
+    // A line boundary, which is a character boundary, so the slice is safe.
+    let this_run = match where_this_run_starts(log.as_bytes()) {
         Some(at) => &log[at..],
         // No start marker in the tail. Either the client has been up long
         // enough to write 64 KB since, in which case all of this is its own,
@@ -4131,6 +4191,134 @@ mod tests {
         let _ = std::fs::remove_dir_all(&scratch);
     }
 
+    /// **The wake's own question, asked of the log a game had written into.**
+    /// Everything a press asks before it hands a client anything — whose it
+    /// is, whether it is signed in, whether it is this run's log — answered off
+    /// a scratch FIFO held by this process and the connection log exactly as
+    /// it stood on 2026-09-26 at 00:28:32, when Open Steam was pressed.
+    ///
+    /// `met` is what decides whether a wake returns at once or goes on to wait
+    /// for a sign-in and then hand the client its credential again — which is
+    /// the two minutes that press took. Nothing here reaches a client: no
+    /// interface is asked, so a Steam running on this machine is not touched.
+    #[test]
+    fn a_client_a_game_has_run_under_is_still_signed_in() {
+        use std::os::unix::ffi::OsStrExt;
+
+        let scratch = std::env::temp_dir().join(format!(
+            "lxb-after-a-game-{}-{:?}",
+            std::process::id(),
+            std::thread::current().id()
+        ));
+        let _ = std::fs::remove_dir_all(&scratch);
+        let options = Options {
+            root: scratch.join("root"),
+            home: scratch.join("home"),
+        };
+        std::fs::create_dir_all(options.root.join("logs")).expect("a scratch directory");
+        std::fs::create_dir_all(&options.home).expect("a scratch directory");
+        let client = Where::Native(std::path::PathBuf::from("/nonexistent/steam"));
+        let ours = Credential {
+            account: "somebody",
+            refresh_token: "not a real token",
+            steam_id: 82_105_993,
+        };
+        let pipe = options.home.join("steam.pipe");
+        let name = std::ffi::CString::new(pipe.as_os_str().as_bytes()).expect("a path");
+        assert_eq!(
+            unsafe { libc::mkfifo(name.as_ptr(), 0o600) },
+            0,
+            "a scratch FIFO"
+        );
+        let held = unsafe { libc::open(name.as_ptr(), libc::O_RDONLY | libc::O_NONBLOCK) };
+        assert!(held >= 0, "the FIFO could be held");
+        let log = options.root.join("logs").join(CONNECTION_LOG);
+        // The client standing in here is this process, and whether a log is its
+        // run's is its start against the log's write — both known to a
+        // hundredth of a second. A test run on its own writes the log a few
+        // milliseconds into the process, inside that hundredth, and the answer
+        // came out either way. The client this is about had been up for half
+        // an hour, so the stand-in is let get well clear of it first.
+        while age_of(Path::new("/proc"), std::process::id())
+            .is_some_and(|age| age < Duration::from_millis(200))
+        {
+            std::thread::sleep(Duration::from_millis(20));
+        }
+
+        // Signed in at 23:58, and Tekken 8's own Steamworks came up at 00:03.
+        let signed_in = "\
+[2026-09-25 23:58:30] Client version: 1788652215
+[2026-09-25 23:58:30] [Logged Off, 0, 0] [U:1:0] CCMInterface::SetSteamID( [U:1:0] )
+[2026-09-25 23:58:32] [Logged Off, 4, 0] [U:1:82105993] LogOn() called; not connected yet, scheduling connection. Schedule init returned 1
+[2026-09-25 23:58:34] [Logging On, 4, 7] [U:1:82105993] RecvMsgClientLogOnResponse() : [U:1:82105993] 'OK'
+[2026-09-25 23:58:34] [Logged On, 4, 7] [U:1:82105993] RecvMsgClientLogOnResponse() : processing complete
+[2026-09-25 23:58:34] CClientJobGetClientUpdateHosts: cached copy new expiration: Sun Sep 27 11:44:48 2026
+";
+        let a_game_came_up = format!(
+            "{signed_in}
+
+[2026-09-26 00:03:00] Client version: no bootstrapper found
+[2026-09-26 00:03:00] Connectivity test: Starting test, fetching 'http://steamconnecttest.com/204'
+[2026-09-26 00:03:00] Connectivity test (2.16.172.50:80 (2.16.172.50:80)): OK!
+[2026-09-26 00:03:00] Connectivity test: result=Connected (since 0.0s ago), prev=Unknown, in progress=0
+"
+        );
+        std::fs::write(&log, &a_game_came_up).expect("writable");
+
+        assert_eq!(state(Some(&client), &options), State::SignedIn(82_105_993));
+        assert_eq!(
+            state_now(Some(&client), &options),
+            State::SignedIn(82_105_993),
+            "the log is this run's, and says whose it is"
+        );
+        assert!(
+            met(Need::SignedIn, &client, &options, ours),
+            "so a wake returns at once, and never hands the client its credential again"
+        );
+        assert!(
+            settles(
+                Need::SignedIn,
+                &client,
+                &options,
+                ours,
+                Duration::from_millis(100)
+            ),
+            "and the wait for a sign-in is over on its first look"
+        );
+        let proven = prove(&client, &options, ours).expect("this session's client");
+        assert_eq!(proven.account, 82_105_993);
+
+        // Before the game, the same answers — so it is the game's lines that
+        // are being read past, and not the account read from anywhere else.
+        std::fs::write(&log, signed_in).expect("writable");
+        assert_eq!(
+            state_now(Some(&client), &options),
+            State::SignedIn(82_105_993)
+        );
+
+        // And a client of Valve's own starting after it is still a new run,
+        // which has not signed in yet and is refused as one.
+        std::fs::write(
+            &log,
+            format!(
+                "{a_game_came_up}\
+[2026-09-26 00:30:09] Client version: 1788652215
+[2026-09-26 00:30:09] [Logged Off, 0, 0] [U:1:0] CCMInterface::SetSteamID( [U:1:0] )
+"
+            ),
+        )
+        .expect("writable");
+        assert_eq!(state_now(Some(&client), &options), State::Starting);
+        assert!(!met(Need::SignedIn, &client, &options, ours));
+        assert!(matches!(
+            prove(&client, &options, ours),
+            Err(Refusal::Failed(_))
+        ));
+
+        unsafe { libc::close(held) };
+        let _ = std::fs::remove_dir_all(&scratch);
+    }
+
     /// A process's age comes off `/proc/uptime` and its own start time, and the
     /// name in the second field is not to be trusted to be one word.
     ///
@@ -4248,6 +4436,21 @@ mod tests {
         assert!(
             !write(orphaned).anything_in_hand(),
             "work the client before this one was killed in the middle of"
+        );
+
+        // And a header a game's own Steamworks wrote in the middle of the run
+        // is not the start of one: forgetting the update here would let the
+        // client be shut down under it. See [`starts_a_run`].
+        let a_game_came_up = "\
+[2026-09-02 21:03:12] Client version: 1788291500
+[2026-09-02 21:03:16] AppID 108600 App update changed : Running Update,Downloading,Staging,
+[2026-09-02 21:04:00] Client version: no bootstrapper found
+[2026-09-02 21:04:00] Connectivity test: Starting test, fetching 'http://steamconnecttest.com/204'
+";
+        assert_eq!(
+            write(a_game_came_up).to_the_game(108600),
+            Some(InHand::Working),
+            "the client that is running is still running the update"
         );
 
         // **The three tracks are three jobs, and they run at once.** A shader
@@ -4832,6 +5035,81 @@ mod tests {
 [2026-08-12 12:39:24] Client version: 1785799196
 [2026-08-12 12:39:24] [Logged Off, 0, 0] [U:1:0] CCMInterface::SetSteamID( [U:1:0] )";
         assert_eq!(logged_on_in(killed), None);
+    }
+
+    /// **A game's own Steamworks writes the client's header, and it is not a
+    /// run.** This machine's connection log on 2026-09-26, verbatim but for the
+    /// cache lines: a client signed in at 23:58, Tekken 8 came up inside it
+    /// and wrote the last four lines, and nothing stamped followed for
+    /// twenty-six minutes. Read with the header taken for a run, that client
+    /// was still starting the whole time — and Open Steam, pressed at 00:28,
+    /// spent two minutes signing in a client that had never signed out.
+    #[test]
+    fn a_game_s_own_steamworks_does_not_start_a_run() {
+        let log = "\
+[2026-09-25 23:58:30] Client version: 1788652215
+[2026-09-25 23:58:30] [Logged Off, 0, 0] [U:1:0] CCMInterface::SetSteamID( [U:1:0] )
+[2026-09-25 23:58:32] [Logged Off, 4, 0] [U:1:82105993] LogOn() called; not connected yet, scheduling connection. Schedule init returned 1
+[2026-09-25 23:58:33] [Logging On, 4, 7] [U:1:82105993] Using JWT …, persistence: 1
+[2026-09-25 23:58:34] [Logging On, 4, 7] [U:1:82105993] RecvMsgClientLogOnResponse() : [U:1:82105993] 'OK'
+[2026-09-25 23:58:34] [Logged On, 4, 7] [U:1:82105993] RecvMsgClientLogOnResponse() : processing complete
+[2026-09-25 23:58:34] CClientJobGetClientUpdateHosts: cached copy new expiration: Sun Sep 27 11:44:48 2026
+
+
+[2026-09-26 00:03:00] Client version: no bootstrapper found
+[2026-09-26 00:03:00] Connectivity test: Starting test, fetching 'http://steamconnecttest.com/204'
+[2026-09-26 00:03:00] Connectivity test (2.16.172.50:80 (2.16.172.50:80)): OK!
+[2026-09-26 00:03:00] Connectivity test: result=Connected (since 0.0s ago), prev=Unknown, in progress=0
+";
+        assert_eq!(
+            logged_on_in(log),
+            Some(82105993),
+            "signed in since 23:58, whatever the game wrote at 00:03"
+        );
+
+        // Narrowed, not dropped: a client of Valve's own starting after it
+        // still ends the run before, which is what the marker is for.
+        let restarted = format!(
+            "{log}\
+[2026-09-26 00:30:09] Client version: 1788652215
+[2026-09-26 00:30:09] [Logged Off, 0, 0] [U:1:0] CCMInterface::SetSteamID( [U:1:0] )
+"
+        );
+        assert_eq!(logged_on_in(&restarted), None);
+    }
+
+    /// What makes a line the start of a run: the marker, and a build number
+    /// after it. Every form of the header this machine's logs carry.
+    #[test]
+    fn a_run_starts_with_the_marker_and_a_build_number() {
+        for header in [
+            "[2026-09-25 23:58:30] Client version: 1788652215",
+            "[2026-09-03 19:02:11] Client version: 1788400362",
+            "[2026-08-12 12:39:24] Client version: 1785799196",
+            // Valve's updater, which is still Valve's client coming up.
+            "[2026-09-25 23:58:27] Client version: 0",
+        ] {
+            assert!(starts_a_run(header), "{header}");
+        }
+        for not_a_run in [
+            "[2026-09-26 00:03:00] Client version: no bootstrapper found",
+            "[2026-09-26 00:03:00] Client version:",
+            "[2026-09-26 00:03:00] Connectivity test: Starting test",
+            "",
+        ] {
+            assert!(!starts_a_run(not_a_run), "{not_a_run}");
+        }
+
+        // And where a stretch's run begins is the last line that is one,
+        // however many headers that are not come after it.
+        let log = "a\n[1] Client version: 17\nb\n[2] Client version: no bootstrapper found\nc\n";
+        assert_eq!(where_this_run_starts(log.as_bytes()), Some(2));
+        assert_eq!(where_this_run_starts(b"[2] Client version: 5"), Some(0));
+        assert_eq!(
+            where_this_run_starts(b"x\n[2] Client version: no bootstrapper found\n"),
+            None
+        );
+        assert_eq!(where_this_run_starts(b""), None);
     }
 
     /// A line stamped with an account but no state block says nothing about

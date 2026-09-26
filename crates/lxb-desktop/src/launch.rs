@@ -772,6 +772,31 @@ impl Launch {
         self.step = step;
     }
 
+    /// Valve's client has given up on the launch this screen was watching:
+    /// forget the step it was on.
+    ///
+    /// **A step is the client's account of one launch, and that launch is
+    /// over.** The watcher that reported it stops at the refusal and sends
+    /// nothing after it, so a step left here is never replaced — and
+    /// `Shell::sync_the_launch_downloads` reads any step as work in flight,
+    /// ahead of everything on the disk, for as long as a client is running.
+    /// The press Steam refused is made again when that work ends, so a step
+    /// that never ends is a press never made again.
+    ///
+    /// Reported from use on 2026-09-26. Counter-Strike 2 was refused with
+    /// `AppError_19` at the moment its shader cache finished arriving; the
+    /// update behind it ran for seven seconds and finished, the guide said so,
+    /// and this screen went on saying "Downloading content" over a game that
+    /// was ready — still saying it three minutes later, when the session was
+    /// logged out of. What it says from the refusal on comes from the disk and
+    /// the client's own jobs, which is where the work it was refused over is
+    /// described.
+    pub fn the_launch_was_refused(&mut self) {
+        if let Some(step) = self.step.take() {
+            tracing::info!(app = %self.name, ?step, "the launch that step belonged to is over");
+        }
+    }
+
     /// Somebody has pressed past the compile: take the line and the hint away
     /// now, and do not put them back.
     pub fn step_was_skipped(&mut self) {
@@ -806,6 +831,33 @@ impl Launch {
         }
         self.ask_again = true;
         true
+    }
+
+    /// Take one frame's answer to what the press is waiting on, and say whether
+    /// the answer is to make the press again.
+    ///
+    /// Work in front of it keeps the screen saying what the work is, and keeps
+    /// its patience off — see [`Self::now_fetching`]. No work is the wait for
+    /// the window starting again — see [`Self::done_fetching`] — and, for a
+    /// press the client refused over the work that has just ended, the moment
+    /// to press again, which is answered once. The answer itself is
+    /// `Steam::what_a_press_waits_on`.
+    pub fn follow_the_work(&mut self, now: Instant, work: Option<crate::Underway>) -> bool {
+        match work {
+            Some(work) => {
+                self.now_fetching(now, work.said, work.arrived, work.quietly);
+                false
+            }
+            None => {
+                self.done_fetching(now);
+                self.take_the_second_press()
+            }
+        }
+    }
+
+    /// Whether the press is waiting to be made again, without spending it.
+    pub fn will_ask_again(&self) -> bool {
+        self.ask_again
     }
 
     /// Whether now is that moment, asked once — the answer is taken away by
@@ -1377,6 +1429,48 @@ mod tests {
             "one press is made again; the next refusal is answered on the screen"
         );
         assert!(!splash.take_the_second_press());
+    }
+
+    /// A refused launch takes its step with it, or the work in front of the
+    /// press never ends.
+    ///
+    /// Reported from use on 2026-09-26: Counter-Strike 2's launch was on
+    /// `DownloadingDepots` when the client refused it, the watcher stopped at
+    /// the refusal, and the step stayed — so the screen read it as work in
+    /// flight for as long as a client was running, and the second press the
+    /// update was waiting for was never made. See
+    /// [`Launch::the_launch_was_refused`].
+    #[test]
+    fn a_refused_launch_leaves_no_step_behind() {
+        let t0 = Instant::now();
+        let mut splash = game(t0);
+        splash.working_on(Some(Step {
+            doing: words_for("DownloadingDepots").expect("a step the shell names"),
+            how_far: Some(2),
+            action_id: None,
+        }));
+        assert!(splash.step().is_some());
+
+        splash.the_launch_was_refused();
+        assert!(
+            splash.step().is_none(),
+            "the launch that step was about is over"
+        );
+        // And the press is still to be made again: forgetting the step is what
+        // lets the end of the work be seen, not a way of giving up on it.
+        assert!(!splash.will_ask_again());
+        assert!(splash.ask_again_when_the_work_ends());
+        assert!(
+            splash.will_ask_again(),
+            "and it can be asked without spending it"
+        );
+        assert!(splash.will_ask_again());
+        assert!(splash.take_the_second_press());
+        assert!(!splash.will_ask_again());
+
+        // Nothing to forget is not an error either.
+        splash.the_launch_was_refused();
+        assert!(splash.step().is_none());
     }
 
     /// A launch stopped on the game's shaders says so on the loading screen,

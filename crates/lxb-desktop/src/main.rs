@@ -3456,6 +3456,109 @@ fn why_nothing_can_be_said(steam: &steam::Steam, with: u64) -> Option<String> {
     }
 }
 
+/// One of Valve's windows to be brought to the display a press for the client
+/// was made on. See [`Shell::bring_the_storefront_to_the_press`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct Bring {
+    id: u32,
+    /// On the screen on some other display now, rather than kept off it — so
+    /// its leaving that display is the shell's doing, not the client ending.
+    showing_elsewhere: bool,
+}
+
+/// Which of Valve's windows to move to the display a press for the client was
+/// made on: the storefront, wherever it is and however many of it there are,
+/// and nothing else.
+///
+/// `here` is what is already on that display; `showing` and `kept_off` are
+/// Valve's windows on some display and off every display, by id and title.
+///
+/// **By its title, exactly.** [`lxb_steam::client::STOREFRONT`] is `Steam`,
+/// and the client's small menus are titled `steam` — read off the compositor's
+/// journal on 2026-09-26, a 132×165 popup and a 238×235 one, both
+/// `title="steam" class="steam"`, beside the storefront's `title="Steam"`. The
+/// compositor re-tiles a moved window across its whole new display, so a match
+/// that folded case would stretch a menu over a screen.
+fn storefronts_to_bring<'a>(
+    here: &HashSet<u32>,
+    showing: impl IntoIterator<Item = (u32, &'a str)>,
+    kept_off: impl IntoIterator<Item = (u32, &'a str)>,
+) -> Vec<Bring> {
+    let is_the_storefront = |title: &str| title.trim() == lxb_steam::client::STOREFRONT;
+    let showing = showing
+        .into_iter()
+        .filter(|(id, title)| is_the_storefront(title) && !here.contains(id))
+        .map(|(id, _)| Bring {
+            id,
+            showing_elsewhere: true,
+        });
+    // Kept off the screen, and so on no display's list — but mapped on one,
+    // and a move to the display a window is already on is ignored.
+    let kept_off = kept_off
+        .into_iter()
+        .filter(|(_, title)| is_the_storefront(title))
+        .map(|(id, _)| Bring {
+            id,
+            showing_elsewhere: false,
+        });
+    showing.chain(kept_off).collect()
+}
+
+#[cfg(test)]
+mod storefront_tests {
+    use super::*;
+
+    /// The windows of 2026-09-26, off the compositor's journal: the storefront
+    /// (33554495) mapped on DP-2 behind a game's launch and kept off the
+    /// screen, a toast, and the two menus the client titles in lower case.
+    /// Steam (Client) was pressed on HDMI-A-1, which had nothing on it.
+    #[test]
+    fn the_storefront_and_only_the_storefront_is_brought_to_the_press() {
+        let hdmi = HashSet::new();
+        let kept_off = [
+            (33_554_495, "Steam"),
+            (56_623_108, "notificationtoasts_2_desktop"),
+            (23_068_729, "steam"),
+            (23_068_693, "steam"),
+            (33_554_600, "Shutdown"),
+        ];
+        assert_eq!(
+            storefronts_to_bring(&hdmi, [], kept_off),
+            vec![Bring {
+                id: 33_554_495,
+                showing_elsewhere: false,
+            }],
+            "the storefront, and never a menu stretched over a screen"
+        );
+
+        // Showing on the other display, where the person left it open: brought
+        // here, and marked as moved rather than ended.
+        assert_eq!(
+            storefronts_to_bring(&hdmi, [(33_554_495, "Steam"), (23_068_729, "steam")], []),
+            vec![Bring {
+                id: 33_554_495,
+                showing_elsewhere: true,
+            }]
+        );
+
+        // Already here: nothing to do, and nothing marked — its leaving later
+        // would be the client closing it.
+        let here = HashSet::from([33_554_495]);
+        assert!(storefronts_to_bring(&here, [(33_554_495, "Steam")], []).is_empty());
+
+        // Titles as the client sets them, spaces and all; nothing that merely
+        // contains the name.
+        assert_eq!(
+            storefronts_to_bring(&hdmi, [], [(1, " Steam "), (2, "Sign in to Steam")]),
+            vec![Bring {
+                id: 1,
+                showing_elsewhere: false,
+            }]
+        );
+        assert!(storefronts_to_bring(&hdmi, [], []).is_empty());
+    }
+}
+
 /// Whether one window Valve's client is being kept from showing is a question
 /// somebody has to answer.
 ///
@@ -20379,8 +20482,74 @@ impl Shell {
             arrived: false,
             gone_since: None,
         });
+        // Before anything is shown, so that it is never shown anywhere else.
+        self.bring_the_storefront_to_the_press();
         if shown {
             self.keep_steam_out_of_sight(false);
+        }
+    }
+
+    /// Put Valve's storefront on the display its press was made on, wherever
+    /// the client last had it.
+    ///
+    /// **The storefront is one window for the life of the client, and where it
+    /// is was decided by whatever was in flight when it last mapped.** The
+    /// client unmaps and maps the same window as it pleases, and raises it
+    /// behind every game it starts — out of sight, but mapped, and placed like
+    /// any other window: on the display of the launch that was loading at the
+    /// time. The per-launch record that sends a *new* window of the client's to
+    /// the screen a press was made on cannot move one that already exists, so
+    /// giving sight showed it where the last game had been.
+    ///
+    /// Reported from use on 2026-09-26, and read off both journals. A game was
+    /// loading on DP-2 and Steam (Client) was pressed on HDMI-A-1. The
+    /// storefront had mapped on DP-2 half a minute earlier, hidden, behind that
+    /// game's launch; sight put it up on DP-2, where the game's own loading
+    /// screen took it for the game, while the loading screen on HDMI-A-1 waited
+    /// its whole minute for a window that was never coming there and said
+    /// Steam had not opened.
+    ///
+    /// The storefront alone, by its exact title — see [`storefronts_to_bring`],
+    /// which is the choice, and why case matters to it. The compositor re-tiles
+    /// a moved window across its new display, which is what a storefront is and
+    /// what a toast, a menu or a small dialog of the client's is not — and
+    /// those are opened fresh for their own press and placed by its record. Only where a
+    /// loading screen is standing on a press for the client: that is the press
+    /// that names a display. Sight given for a question a launch stopped on
+    /// names none, and its window is where the launch is.
+    fn bring_the_storefront_to_the_press(&mut self) {
+        let Some(control) = self.shell_control.clone() else {
+            return;
+        };
+        if control.version() < WINDOW_MOVE_AND_CAPTURE_VERSION {
+            return;
+        }
+        let Some((at, _)) = self.the_client_splash() else {
+            return;
+        };
+        let Some(here) = self.panels.get(at) else {
+            return;
+        };
+        let output = here.output.clone();
+        // `on`, not `display`: `tracing`'s own macros bring a function of that
+        // name into scope, and a local one is shadowed by it.
+        let on = here.name.clone();
+        let here: HashSet<u32> = here.windows.iter().map(|window| window.id).collect();
+        let bring = storefronts_to_bring(
+            &here,
+            self.valves_windows_on_screen()
+                .map(|window| (window.id, window.title.as_str())),
+            self.valves_windows_kept_off()
+                .map(|window| (window.id, window.title.as_str())),
+        );
+        for storefront in bring {
+            // Showing on another display: it is about to leave that display's
+            // list, and that is not the client ending. See `ended_by_the_shell`.
+            if storefront.showing_elsewhere {
+                self.ended_by_the_shell.insert(storefront.id);
+            }
+            tracing::info!(id = storefront.id, %on, "Valve's storefront belongs on the display it was asked for on");
+            control.move_window_to_output(storefront.id, &output);
         }
     }
 
@@ -21516,6 +21685,17 @@ impl Shell {
         // There is nothing left for that thread to report: the client has
         // finished with this launch, whatever this shell does next.
         self.steam.stop_watching_the_launch(app_id);
+        // And nothing left of the step it last reported. It would otherwise
+        // stand on the loading screen as work in flight for the rest of the
+        // client's life, and the second press below waits for the work to end.
+        // See [`launch::Launch::the_launch_was_refused`].
+        if let Some(splash) = self
+            .launching
+            .iter_mut()
+            .find(|splash| splash.game() == Some(app_id))
+        {
+            splash.the_launch_was_refused();
+        }
         // Whether Steam is getting on with something that would make the same
         // press work — the update it refused over, most of all. The same two
         // sources the loading screen's own line is drawn from, so the screen
@@ -27786,75 +27966,23 @@ impl Shell {
         if self.launching.is_empty() {
             return;
         }
-        // Whether there is still a client to be doing any of it. A step is the
-        // last thing the client *said*, out of a log that outlives it, and the
-        // watcher goes on reading that log for five minutes — so a client that
-        // died mid-launch would otherwise hold a loading screen up on a
-        // sentence about work nothing is doing. The same guard the quiet
-        // stretch of an update is under, and for the same reason.
-        let client_running = self.steam.a_client_is_running();
         // Read out first, because the splash below is borrowed from the same
-        // shell the library is on.
+        // shell the library is on. What a press is waiting on is one question
+        // with one answer — [`steam::Steam::what_a_press_waits_on`] — and what
+        // its loading screen does about the answer is another —
+        // [`launch::Launch::follow_the_work`]. Both live there rather than
+        // here so that a test can walk a press through them frame by frame.
         let fetching: Vec<(Display, Option<Underway>)> = self
             .launching
             .iter()
-            .filter_map(|splash| Some((splash.display, splash.game()?, splash.step().copied())))
-            .map(|(display, app_id, step)| {
-                // The step first, because it is the client's own account of
-                // what it is doing with this very press — and because for half
-                // of these there is nothing on the disk that describes them at
-                // all. It is work in flight like any other here: the line says
-                // what it is, and the patience stops while it runs. See
-                // [`Self::steam_is_working_on_the_launch`].
-                //
-                // **This is what was missing when a press ran out of patience
-                // over a client that was one fifth of the way through
-                // answering it.** The game's manifest read `StateFlags 1158` —
-                // installed, update required, files corrupt, update started,
-                // which is a copy being repaired rather than one of the
-                // standings below — and its byte counters were nought. Steam's
-                // own launch window said "Downloading content (19%)" the whole
-                // time.
-                if let Some(step) = step.filter(|_| client_running) {
-                    return (
-                        display,
-                        Some(Underway {
-                            // The manifest's own count where the client's
-                            // interface has none to give, which on an ordinary
-                            // press is always — see [`launch::Step::said`].
-                            // Throwing it away here is what left a repair
-                            // counting nothing on the screen while the file on
-                            // the disk counted it perfectly well.
-                            said: step.said(self.steam.how_far_along_percent(app_id)),
-                            arrived: self.steam.game(app_id).map_or(0, |game| game.downloaded),
-                            // Nothing on the disk counts these, so what says
-                            // the work is moving is that the client is doing it
-                            // — the same answer the quiet stretch of an update
-                            // gives. What ends it is the client walking on to a
-                            // step with nothing to say, or the launch ending.
-                            quietly: true,
-                        }),
-                    );
-                }
-                // Steam saying what it is doing to this game, and Steam doing
-                // it without saying — see [`steam::Steam::quietly_working_on_it`].
-                // The second is what the first ten minutes of an update look
-                // like from here, and it is work in flight exactly as much as
-                // the first is.
-                let quietly = self.steam.quietly_working_on_it(app_id);
-                let work = self
-                    .steam
-                    .game(app_id)
-                    .filter(|game| game.standing.moving() || quietly.is_some())
-                    .map(|game| Underway {
-                        said: match quietly {
-                            Some(standing) => game.note_working(standing),
-                            None => game.note(),
-                        },
-                        arrived: game.downloaded,
-                        quietly: quietly.is_some(),
-                    });
-                (display, work)
+            .filter_map(|splash| {
+                let app_id = splash.game()?;
+                let work = self.steam.what_a_press_waits_on(
+                    app_id,
+                    splash.step(),
+                    splash.will_ask_again(),
+                );
+                Some((splash.display, work))
             })
             .collect();
         let mut ask_again = Vec::new();
@@ -27862,20 +27990,13 @@ impl Shell {
             let Some(splash) = self.launch_on_mut(display) else {
                 continue;
             };
-            match work {
-                Some(work) => splash.now_fetching(now, work.said, work.arrived, work.quietly),
-                // Whatever Steam was doing to it is done. What is left is the
-                // window, which is the wait the splash was always for.
-                None => {
-                    splash.done_fetching(now);
-                    // Unless the client refused this press over the very work
-                    // that has just finished, in which case there is no launch
-                    // left to wait for and the press is made again. See
-                    // [`Self::steam_would_not_start_it`].
-                    if splash.take_the_second_press() {
-                        ask_again.extend(splash.game().map(|app_id| (display, app_id)));
-                    }
-                }
+            // Whatever Steam was doing to it may be done. Unless the client
+            // refused this press over the very work that has just finished,
+            // what is left is the window; where it did, there is no launch left
+            // to wait for and the press is made again. See
+            // [`Self::steam_would_not_start_it`].
+            if splash.follow_the_work(now, work) {
+                ask_again.extend(splash.game().map(|app_id| (display, app_id)));
             }
         }
         // After the walk, because each of these hands a game to Valve's client
