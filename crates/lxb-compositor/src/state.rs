@@ -207,18 +207,6 @@ pub struct Lxb {
     /// there — the host compositor owns the display — so a client inside one
     /// synchronises the way it did before.
     pub syncobj_state: Option<DrmSyncobjState>,
-    /// How many client commits are being held right now waiting for the GPU
-    /// work behind them to finish — an explicit acquire point that has not
-    /// signalled yet.
-    ///
-    /// Normally none, or one for an instant. A number that stays up is a client
-    /// whose frame this compositor is sitting on, which from the client's side
-    /// is indistinguishable from a compositor that has stopped answering: see
-    /// [`crate::render`], which prints this beside an application that has gone
-    /// quiet.
-    pub blocked_commits: usize,
-    /// When the run of held commits started, cleared when the last one clears.
-    pub blocked_since: Option<std::time::Instant>,
     pub xwayland_shell_state: XWaylandShellState,
     #[allow(dead_code)]
     pub xwayland_keyboard_grab_state: XWaylandKeyboardGrabState,
@@ -535,8 +523,6 @@ impl LxbState {
                 activation_state,
                 dmabuf_state,
                 syncobj_state: None,
-                blocked_commits: 0,
-                blocked_since: None,
                 xwayland_shell_state,
                 xwayland_keyboard_grab_state,
                 shell_control,

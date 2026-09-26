@@ -3,6 +3,8 @@
 //! Both the nested and the DRM backend need the exact same element list for a
 //! given output, so it is built once here and is generic over the renderer.
 
+use std::collections::VecDeque;
+
 use smithay::backend::renderer::element::memory::MemoryRenderBufferRenderElement;
 use smithay::backend::renderer::element::solid::SolidColorRenderElement;
 use smithay::backend::renderer::element::surface::{
@@ -14,8 +16,9 @@ use smithay::backend::renderer::element::utils::{
 };
 use smithay::backend::renderer::element::{
     default_primary_scanout_output_compare, AsRenderElements, Element, Id, Kind,
-    RenderElementStates,
+    RenderElementPresentationState, RenderElementStates,
 };
+use smithay::backend::renderer::sync::Fence;
 use smithay::backend::renderer::utils::{CommitCounter, RendererSurfaceStateUserData};
 use smithay::backend::renderer::{ImportAll, ImportMem, Renderer};
 use smithay::desktop::utils::{update_surface_primary_scanout_output, OutputPresentationFeedback};
@@ -24,7 +27,8 @@ use smithay::output::Output;
 use smithay::reexports::wayland_server::protocol::wl_surface::WlSurface;
 use smithay::reexports::wayland_server::Resource;
 use smithay::utils::{Logical, Physical, Point, Rectangle, Scale};
-use smithay::wayland::compositor::{with_surface_tree_downward, TraversalAction};
+use smithay::wayland::compositor::{with_states, with_surface_tree_downward, TraversalAction};
+use smithay::wayland::drm_syncobj::DrmSyncPoint;
 use smithay::wayland::seat::WaylandFocus;
 use smithay::wayland::shell::wlr_layer::Layer;
 
@@ -1317,7 +1321,7 @@ pub fn post_repaint(
         .then(|| front_application_on_screen(lxb, output))
         .flatten();
     if let Some(front) = &front {
-        watch_for_a_quiet_application(lxb, front);
+        watch_for_a_quiet_application(lxb, output, front, drawn);
     }
 
     // Whatever is answered here was never put on the screen, and its client has
@@ -2057,6 +2061,119 @@ pub fn drew(window: &Window) {
     }
 }
 
+/// How many of a surface's release points are remembered: more than any
+/// swapchain has images, so a client every one of whose buffers is waiting on
+/// this compositor shows as that many owed rather than as however many fitted.
+const RELEASES_REMEMBERED: usize = 16;
+
+/// What a surface's client has handed this compositor and is waiting to have
+/// back — the two things a client that has stopped drawing can be waiting on
+/// here, kept per surface for [`watch_for_a_quiet_application`].
+///
+/// * **A commit held for its GPU work.** See `new_surface` in
+///   [`crate::handlers`]: a frame whose acquire point has not signalled is not
+///   applied until it does, and the client cannot have it back meanwhile.
+/// * **A release point.** Under explicit synchronisation a client reuses a
+///   buffer only once the point it named with it has been signalled, and it is
+///   this compositor that signals it — when the buffer is off the screen and
+///   nothing here reads it any more. A swapchain whose every image is waiting
+///   on one of those draws nothing, however many frames it is sent.
+///
+/// Per surface, because the question is always about one application. This
+/// was a count for the whole session until a game on Nvidia stopped for good
+/// and the line beside it said "one commit held, for 567 µs" — which, with the
+/// shell on the same driver committing through the same path, could have been
+/// anybody's.
+///
+/// The release points are the last [`RELEASES_REMEMBERED`] handed over, not
+/// every one, so a client presenting hundreds of frames a second costs one
+/// clone a frame and nothing that grows.
+#[derive(Debug, Default)]
+pub(crate) struct HandedOver {
+    held: std::cell::Cell<usize>,
+    held_since: std::cell::Cell<Option<std::time::Instant>>,
+    releases: std::cell::RefCell<VecDeque<(DrmSyncPoint, std::time::Instant)>>,
+}
+
+fn handed_over<T>(surface: &WlSurface, read: impl FnOnce(&HandedOver) -> T) -> T {
+    with_states(surface, |states| {
+        states.data_map.insert_if_missing(HandedOver::default);
+        read(
+            states
+                .data_map
+                .get::<HandedOver>()
+                .expect("inserted just above"),
+        )
+    })
+}
+
+/// Note that one of `surface`'s commits is being held until its GPU work
+/// finishes.
+pub(crate) fn a_commit_was_held(surface: &WlSurface, since: std::time::Instant) {
+    handed_over(surface, |handed| {
+        handed.held.set(handed.held.get() + 1);
+        if handed.held_since.get().is_none() {
+            handed.held_since.set(Some(since));
+        }
+    });
+}
+
+/// Note that one of `surface`'s held commits has been let go.
+pub(crate) fn a_held_commit_went(surface: &WlSurface) {
+    handed_over(surface, |handed| {
+        let held = handed.held.get().saturating_sub(1);
+        handed.held.set(held);
+        if held == 0 {
+            handed.held_since.set(None);
+        }
+    });
+}
+
+/// Note the release point `surface`'s client has just handed over with a
+/// buffer.
+pub(crate) fn a_release_point_was_handed_over(surface: &WlSurface, point: DrmSyncPoint) {
+    handed_over(surface, |handed| {
+        remember_the_last(
+            &mut handed.releases.borrow_mut(),
+            (point, std::time::Instant::now()),
+            RELEASES_REMEMBERED,
+        );
+    });
+}
+
+fn remember_the_last<T>(kept: &mut VecDeque<T>, newest: T, at_most: usize) {
+    kept.push_back(newest);
+    while kept.len() > at_most {
+        kept.pop_front();
+    }
+}
+
+/// How many of `releases` have not been signalled yet, and when the oldest of
+/// those was handed over.
+///
+/// A timeline point is signalled for good once it, or any point after it on
+/// the same timeline, has been — so this is asked of each point rather than
+/// worked out from the order they were handed over in.
+fn still_owed<F: Fence>(
+    releases: &VecDeque<(F, std::time::Instant)>,
+) -> (usize, Option<std::time::Instant>) {
+    let mut owed = releases.iter().filter(|(point, _)| !point.is_signaled());
+    let oldest = owed.next().map(|(_, at)| *at);
+    (oldest.map_or(0, |_| 1 + owed.count()), oldest)
+}
+
+/// How `surface` was put on the screen in the frame `drawn` describes.
+fn how_it_was_shown(surface: &WlSurface, drawn: &RenderElementStates) -> &'static str {
+    match drawn
+        .element_render_state(Id::from_wayland_resource(surface))
+        .map(|state| state.presentation_state)
+    {
+        Some(RenderElementPresentationState::ZeroCopy) => "its own buffer, scanned out",
+        Some(RenderElementPresentationState::Rendering { .. }) => "composited",
+        Some(RenderElementPresentationState::Skipped) | None => "not in this frame",
+    }
+}
+
 /// Say so when the application in front stops drawing while this compositor is
 /// still asking it to.
 ///
@@ -2065,27 +2182,66 @@ pub fn drew(window: &Window) {
 /// and is not waiting for anything. The case worth a line is the other one: a
 /// game whose render thread has parked inside its own present call, waiting for
 /// something this compositor was supposed to hand back. It looks identical from
-/// here, so what is logged beside it is what tells the two apart — whether any
-/// of this client's commits is being held by us waiting on its GPU work, and
-/// for how long.
+/// here, so what is logged beside it is what tells the two apart — see
+/// [`HandedOver`] for what this compositor can be sitting on — together with
+/// the two ways the frame could have reached the screen that a driver can
+/// treat differently from compositing it: straight off the client's own buffer,
+/// and without waiting for the retrace.
+///
+/// Read the release points like this. One owed is the buffer on the screen,
+/// which is this compositor's to hold. Two for a moment is that one and the
+/// next, waiting for its flip. More than that, and old, is buffers this
+/// compositor has finished with and not said so — a fault here, and the
+/// swapchain behind them stopped because of it. None owed at all, with the
+/// client still silent, is a client stopped on something that is not this
+/// compositor's to give.
 ///
 /// Once per silence. The line is the transition, and the one that follows it
 /// when the client comes back says how long it lasted.
-fn watch_for_a_quiet_application(lxb: &Lxb, window: &Window) {
+fn watch_for_a_quiet_application(
+    lxb: &Lxb,
+    output: &Output,
+    window: &Window,
+    drawn: &RenderElementStates,
+) {
     window.user_data().insert_if_missing(LastDrawn::default);
-    let Some(drawn) = window.user_data().get::<LastDrawn>() else {
+    let Some(last) = window.user_data().get::<LastDrawn>() else {
         return;
     };
-    let quiet_for = drawn.at.get().elapsed();
-    if quiet_for < QUIET || drawn.reported.replace(true) {
+    let quiet_for = last.at.get().elapsed();
+    if quiet_for < QUIET || last.reported.replace(true) {
         return;
     }
+    let surface = window.wl_surface();
+    let (held, held_since, explicit, owed, oldest_owed) = surface
+        .as_deref()
+        .map(|surface| {
+            handed_over(surface, |handed| {
+                let releases = handed.releases.borrow();
+                let (owed, oldest) = still_owed(&releases);
+                (
+                    handed.held.get(),
+                    handed.held_since.get(),
+                    !releases.is_empty(),
+                    owed,
+                    oldest,
+                )
+            })
+        })
+        .unwrap_or_default();
     tracing::warn!(
         app_id = crate::shell_control::window_app_id(window),
         title = crate::shell_control::window_title(window),
         quiet_for = ?quiet_for,
-        commits_held_for_its_gpu = lxb.blocked_commits,
-        held_since = ?lxb.blocked_since.map(|since| since.elapsed()),
+        commits_held_for_its_gpu = held,
+        held_since = ?held_since.map(|since| since.elapsed()),
+        explicit_sync = explicit,
+        releases_owed = owed,
+        oldest_owed_for = ?oldest_owed.map(|since| since.elapsed()),
+        shown_as = surface
+            .as_deref()
+            .map_or("no surface", |surface| how_it_was_shown(surface, drawn)),
+        tearing = output_may_tear(lxb, output),
         "the application in front has stopped drawing, and is still being sent frames"
     );
 }
@@ -2130,7 +2286,7 @@ pub(crate) fn same_application(window: &Window, other: &Window) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use super::{covered, region_hides, Standing};
+    use super::{covered, region_hides, remember_the_last, still_owed, Standing};
     use lxb_protocol::overview::Rect;
     use smithay::utils::{Logical, Physical, Point, Rectangle, Scale};
 
@@ -2358,5 +2514,73 @@ mod tests {
             (2560, 0).into(),
             display
         ));
+    }
+
+    /// A timeline point as the quiet watch sees one: signalled or not.
+    #[derive(Debug)]
+    struct TimelinePoint(bool);
+
+    impl smithay::backend::renderer::sync::Fence for TimelinePoint {
+        fn is_signaled(&self) -> bool {
+            self.0
+        }
+        fn wait(&self) -> Result<(), smithay::backend::renderer::sync::Interrupted> {
+            Ok(())
+        }
+        fn is_exportable(&self) -> bool {
+            false
+        }
+        fn export(&self) -> Option<std::os::unix::io::OwnedFd> {
+            None
+        }
+    }
+
+    fn handed(points: &[bool]) -> std::collections::VecDeque<(TimelinePoint, std::time::Instant)> {
+        let start = std::time::Instant::now();
+        points
+            .iter()
+            .enumerate()
+            .map(|(i, &signalled)| {
+                (
+                    TimelinePoint(signalled),
+                    start + std::time::Duration::from_millis(i as u64),
+                )
+            })
+            .collect()
+    }
+
+    #[test]
+    fn a_buffer_on_the_screen_is_the_one_release_owed() {
+        let releases = handed(&[true, true, true, false]);
+        let (owed, oldest) = still_owed(&releases);
+        assert_eq!(owed, 1);
+        assert_eq!(oldest, Some(releases[3].1));
+    }
+
+    #[test]
+    fn releases_held_back_are_counted_from_the_oldest() {
+        // The swapchain stopped: two buffers this compositor finished with and
+        // never said so, and the one it is showing.
+        let releases = handed(&[true, false, true, false, false]);
+        let (owed, oldest) = still_owed(&releases);
+        assert_eq!(owed, 3);
+        assert_eq!(oldest, Some(releases[1].1));
+    }
+
+    #[test]
+    fn nothing_owed_says_so() {
+        assert_eq!(still_owed(&handed(&[true, true])), (0, None));
+        assert_eq!(still_owed(&handed(&[])), (0, None));
+    }
+
+    #[test]
+    fn only_the_last_release_points_are_remembered() {
+        let mut kept = std::collections::VecDeque::new();
+        for point in 0..40 {
+            remember_the_last(&mut kept, point, 16);
+        }
+        assert_eq!(kept.len(), 16);
+        assert_eq!(kept.front(), Some(&24));
+        assert_eq!(kept.back(), Some(&39));
     }
 }

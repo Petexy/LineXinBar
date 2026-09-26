@@ -129,7 +129,7 @@ Settings commands.
 ## One version, in one file
 
 The version this project releases under is the single line in `VERSION` at the
-root of the checkout — **0.9.1** — and what a package claims and what
+root of the checkout — **0.9.2** — and what a package claims and what
 `lxb --version` reports are the same number because both come from there.
 
 Almost everything reads that file where it stands: the Arch, Debian and Nix

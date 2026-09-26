@@ -99,17 +99,21 @@ impl CompositorHandler for LxbState {
     /// when it does.
     fn new_surface(&mut self, surface: &WlSurface) {
         add_pre_commit_hook::<Self, _>(surface, |state, _dh, surface| {
-            let acquire = with_states(surface, |states| {
-                states
-                    .cached_state
-                    .get::<DrmSyncobjCachedState>()
-                    .pending()
-                    .acquire_point
-                    .clone()
+            let (acquire, release) = with_states(surface, |states| {
+                let mut cached = states.cached_state.get::<DrmSyncobjCachedState>();
+                let pending = cached.pending();
+                (pending.acquire_point.clone(), pending.release_point.clone())
             });
             let Some(acquire) = acquire else {
                 return;
             };
+            // Whatever happens to the acquire point below, the client now
+            // waits on this one before it can use the buffer again, and it is
+            // ours to signal. Remembered so that a client that stops drawing
+            // can be asked whether that is what it is waiting for.
+            if let Some(release) = release {
+                crate::render::a_release_point_was_handed_over(surface, release);
+            }
             // Already done: taking the slow path here would cost a round trip
             // through the event loop for a frame that is ready to be drawn.
             if acquire.is_signaled() {
@@ -128,15 +132,15 @@ impl CompositorHandler for LxbState {
             // handed over and cannot have back, and from its own side that is
             // indistinguishable from a compositor that has stopped listening.
             // A game that stops drawing is asked about this: see
-            // [`crate::render`]'s quiet-application watch.
+            // [`crate::render::HandedOver`].
             let held_since = std::time::Instant::now();
+            let held = surface.downgrade();
             let inserted = state
                 .lxb
                 .loop_handle
                 .insert_source(source, move |_, _, state| {
-                    state.lxb.blocked_commits = state.lxb.blocked_commits.saturating_sub(1);
-                    if state.lxb.blocked_commits == 0 {
-                        state.lxb.blocked_since = None;
+                    if let Ok(surface) = held.upgrade() {
+                        crate::render::a_held_commit_went(&surface);
                     }
                     // A frame's GPU work outlasting a whole second is not a
                     // slow frame, it is a client waiting on something it is not
@@ -157,8 +161,7 @@ impl CompositorHandler for LxbState {
                 tracing::warn!(?err, "could not wait on a client's acquire point");
                 return;
             }
-            state.lxb.blocked_commits += 1;
-            state.lxb.blocked_since.get_or_insert(held_since);
+            crate::render::a_commit_was_held(surface, held_since);
             add_blocker(surface, blocker);
         });
     }

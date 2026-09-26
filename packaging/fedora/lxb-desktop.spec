@@ -1,5 +1,5 @@
 Name:           lxb-desktop
-Version:        0.9.1
+Version:        0.9.2
 Release:        1%{?dist}
 Summary:        Multi-display Wayland desktop with a console-style shell
 
@@ -304,6 +304,17 @@ cp -p third_party/lxb-rcheevos/LICENSE rcheevos-LICENSE.txt
 %{_datadir}/lxb/glyphs/epic.svg
 
 %changelog
+* Sat Sep 26 2026 Piotr Lewandowski <piotr.petexy@gmail.com> - 0.9.2-1
+- Three Steam fixes on from 0.9.1, and nothing else:
+- A game's own Steamworks writes the header of Steam's logs, and was taken for
+  Steam starting again: after Tekken 8, Steam (Client) and the next press
+  waited up to two minutes for a sign-in that had already happened.
+- A launch Steam refuses over an update it has scheduled no longer leaves
+  "Downloading content" on the loading screen for good; the press is made
+  again, once, when the update ends.
+- Steam's storefront opens on the display it was pressed on, not the one the
+  last game loaded on.
+
 * Thu Sep 24 2026 Piotr Lewandowski <piotr.petexy@gmail.com> - 0.9.1-1
 - A hundred and thirty-eight commits on from 0.9.0. What is new since then:
 - Ten languages — two Englishes, Polish, German, French, Spanish, Brazilian
