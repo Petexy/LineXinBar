@@ -294,6 +294,12 @@ pub enum Command {
     /// them leaves the drive where it is and the other makes it go away, and
     /// the menu offers one or the other, never both.
     SafelyRemove(u64),
+    /// Open the tray of the drive a game's disc is in — the menu over the
+    /// disc's row at the head of the RetroArch column, by the drive's number.
+    ///
+    /// What a folder's game has Rename and Delete for: the disc's game is not a
+    /// file of the user's, and the one thing to do to a disc is take it out.
+    EjectDisc(u64),
     /// Stop looking for a BIOS, and put the question away with the panel.
     ///
     /// Not [`Command::Dismiss`], because there is something to forget: which

@@ -182,6 +182,28 @@ const CATEGORY_LABEL: f32 = 26.0;
 const CATEGORY_LABEL_ABOVE: f32 = 3.0;
 const CATEGORY_LABEL_BELOW: f32 = 25.0;
 
+/// What is being searched for, written beside the one button the category row
+/// has gathered into.
+///
+/// Larger than anything else on the bar, and on the wallpaper rather than on a
+/// field of glass: it stands where the next category would have been, it is
+/// the only thing on that side of the row, and it is being written by the user
+/// letter by letter — the one line on the screen that has to be readable from
+/// a sofa without looking for it.
+const SEARCH_FIELD: f32 = 46.0;
+/// And the air between the edge of that button's glass and the first letter.
+const SEARCH_FIELD_GAP: f32 = 28.0;
+
+/// Where, in steps along the row, a button travelling in to a search begins to
+/// go and has gone. The second is where its glass first touches the glass of
+/// the button it is travelling to — half of each, the chosen one at full size
+/// and itself at rest — and the first is well inside that one's edge, so what
+/// is seen going is a button being taken into another rather than one fading
+/// where it stands.
+const GATHERING_AT: f32 =
+    (CATEGORY_ICON_FOCUSED + CATEGORY_ICON) * CATEGORY_DISC / 2.0 / CATEGORY_SPACING;
+const GATHERED_INTO: f32 = GATHERING_AT * 0.4;
+
 /// The category row sits in a gap in the item column: these are the distances
 /// from the row to the centre of the nearest item above and below it.
 const ITEM_GAP_ABOVE: f32 = 168.0;
@@ -1790,6 +1812,19 @@ impl Cards {
     }
 }
 
+/// The cards one column of the bar shows, or `None` for a column of icons.
+///
+/// [`cards_in`], except for what a search of the whole bar found: that column is
+/// a program, then a Steam cover, then a page of Settings, and the one shape all
+/// of them can stand in is a row. A game in it wears its cover in the round
+/// hole a row's mark goes in — see the preview in [`build`].
+fn column_cards(column: &crate::model::Column) -> Option<Cards> {
+    match column.found {
+        true => None,
+        false => cards_in(column.entries),
+    }
+}
+
 /// The cards a column shows, or `None` for a column of icons.
 ///
 /// A property of the *column* and not of what has loaded: the rows have to
@@ -1850,6 +1885,13 @@ fn cards_in(entries: &[Entry]) -> Option<Cards> {
             // picture cannot fill on all but one of them. The row carries the
             // answer — see [`crate::apps::Rom::shape`] — and a shelf nothing
             // has been measured for keeps the shape it had before.
+            //
+            // Except the game in the drive, which stands at the head of the
+            // RetroArch column among the consoles — a column of rows, and the
+            // disc one row of it, the way a PS3 puts its disc at the head of
+            // the Game column. It stands on a card of its own; see
+            // [`disc_shape`].
+            Entry::Rom(rom) if rom.disc.is_some() => {}
             Entry::Rom(rom) => return Some(Cards::of(rom.shape.unwrap_or(COVER_ASPECT))),
             // An Epic game's tall box art is 3:4, not a Steam capsule's 2:3,
             // so the column is its own shape — and a game whose box is not,
@@ -1859,6 +1901,92 @@ fn cards_in(entries: &[Entry]) -> Option<Cards> {
         }
     }
     None
+}
+
+/// The game on a disc in the drive, standing at the head of a column of rows on
+/// a card the size a shelf gives its covers.
+///
+/// The RetroArch column is a column of consoles — rows, one icon each — and the
+/// disc's game stands at the top of it. Drawn at the size a row has room for,
+/// its cover was a stamp beside the covers of the very same console one step
+/// in; so the column makes room for a whole shelf card instead, and moves
+/// nothing else:
+///
+/// * **Chosen**, it stands where a shelf's chosen card stands under the
+///   category's label, and every row under it is pushed down by what the card
+///   is taller than a chosen row's glass.
+/// * **Not chosen**, it is above the category row, lifted by what it is taller
+///   than an icon, so the air over the category's glass is the air a column of
+///   icons has — and the rows are exactly where they would be without it.
+///
+/// Between the two the column glides, the push shrinking as the cursor leaves
+/// the card. The same shift is what a press is measured against; see
+/// [`column_hit`].
+#[derive(Debug, Clone, Copy, PartialEq)]
+struct HeadCard {
+    cards: Cards,
+}
+
+impl HeadCard {
+    /// The head card of `column`, where its first row is the game on a disc and
+    /// the column is the outermost one and a column of rows.
+    fn of(column: &crate::model::Column, level: usize) -> Option<HeadCard> {
+        if level != 0 || column_cards(column).is_some() {
+            return None;
+        }
+        let shape = disc_shape(column.entries.first()?)?;
+        Some(HeadCard {
+            cards: Cards::of(shape),
+        })
+    }
+
+    /// How far row `index` stands from where a column of rows would put it,
+    /// with the column drawn at `position` and `spacing` between its rows.
+    fn shift(
+        &self,
+        index: usize,
+        position: f32,
+        cross_y: f32,
+        spacing: f32,
+        scale: f32,
+        near: f32,
+    ) -> f32 {
+        let card = Some(self.cards);
+        if index == 0 {
+            let offset = -position;
+            let at = |cards: Option<Cards>| {
+                item_y(
+                    offset,
+                    cross_y,
+                    gap_above(cards) * scale,
+                    gap_below(cards) * scale,
+                    spacing,
+                    0.0,
+                )
+            };
+            return at(card) - at(None);
+        }
+        let chosen = 1.0 - position.clamp(0.0, 1.0);
+        let pushed = (gap_below(card) - gap_below(None)) * scale
+            + (self.cards.focused - ITEM_ICON_FOCUSED * ITEM_DISC) / 2.0 * scale * near;
+        pushed * chosen
+    }
+}
+
+/// The shape the game on a disc in the drive stands at, where `entry` is that
+/// game: its console's own box, measured off the covers on this disk, or a
+/// Steam capsule's where nothing has been measured.
+///
+/// The one row of a column of rows that stands on a card — see where [`build`]
+/// gives it one. A game in a folder is on a shelf of cards already, and a game
+/// in what a search found goes in the round hole every row of that column has.
+fn disc_shape(entry: &Entry) -> Option<f32> {
+    let rom = entry.rom().filter(|rom| rom.disc.is_some())?;
+    Some(
+        rom.shape
+            .filter(|shape| shape.is_finite() && *shape > 0.0)
+            .unwrap_or(COVER_ASPECT),
+    )
 }
 
 /// The square out of the middle of a picture that a round hole shows, as
@@ -2233,7 +2361,7 @@ pub fn build(
     // a question about panels, splashes and the guide that a scene builder
     // cannot see. See `Shell::start_legend`.
     if let Some(legend) = legend {
-        let hints = start_hints(legend.pad, legend.options, legend.friends);
+        let hints = searching_hints(legend.pad, legend.options, legend.friends, legend.search);
         legend_row(
             &mut quads,
             &mut texts,
@@ -2300,35 +2428,99 @@ pub fn build(
     // carries the whole chain along by one, so a column takes the place of the
     // one it came out of and the far end of a long path leaves the screen
     // rather than the near end running off it.
-    let columns = cursor.columns(lattice);
     let depth = cursor.depth_position();
     let column_x = |level: usize| bar_column_x(level as f32, depth, width, height);
 
+    // A search of the whole bar, gathering the row into one button or letting
+    // it go again. Two sets of columns share the screen while it moves: where
+    // the cursor was, going as the row closes up, and what the search found,
+    // arriving once it has — and the other way round as it opens out. They
+    // never stand at full strength together: the first half of the move is the
+    // one leaving and the second half the one arriving, so the rows of the one
+    // are never printed over the rows of the other.
+    let gather = cursor.gathered().clamp(0.0, 1.0);
+    let (home, found) = if cursor.searching() {
+        let before = cursor.before_the_search();
+        (
+            before
+                .map(|before| before.columns(lattice))
+                .unwrap_or_default(),
+            cursor.columns(lattice),
+        )
+    } else {
+        (
+            cursor.columns(lattice),
+            cursor.leaving_search(lattice).into_iter().collect(),
+        )
+    };
+    let home_alpha = 1.0 - smoothstep(0.0, 0.45, gather);
+    let found_alpha = smoothstep(0.55, 1.0, gather);
+
     // --- the columns of the path taken -----------------------------------
     // Drawn first so the category row overlaps them, as on the real bar.
-    if let Some(category) = cursor.current_category(lattice) {
-        if category.entries.is_empty() && column_alpha > 0.01 {
-            texts.push(Text {
-                content: category.empty_note().to_string(),
-                x: column_x(0) + ITEM_ICON_FOCUSED * ITEM_DISC * scale / 2.0 + 12.0 * scale,
-                y: cross_y + empty_gap_below - 14.0 * scale,
-                size: 22.0 * scale,
-                color: theme.text_soft.a(0.7 * column_alpha),
-                bold: false,
-                max_width: width,
-                align: TextAlign::Left,
-                clip: None,
-                halo: 0.0,
-                lines: 1,
-                cut: Cut::Tail,
-                mono: false,
-            });
+    let note_x = column_x(0) + ITEM_ICON_FOCUSED * ITEM_DISC * scale / 2.0 + 12.0 * scale;
+    let note_y = cross_y + empty_gap_below - 14.0 * scale;
+    let empty_note = |content: String, alpha: f32| Text {
+        content,
+        x: note_x,
+        y: note_y,
+        size: 22.0 * scale,
+        color: theme.text_soft.a(0.7 * alpha),
+        bold: false,
+        max_width: width,
+        align: TextAlign::Left,
+        clip: None,
+        halo: 0.0,
+        lines: 1,
+        cut: Cut::Tail,
+        mono: false,
+    };
+    match cursor.search_drawn() {
+        // A search that found nothing says what it was looking for, so the
+        // reason the column is empty is on the screen with it. One with
+        // nothing typed in it yet — every letter taken back — says what
+        // typing will do.
+        Some(search) => {
+            let alpha = column_alpha * found_alpha;
+            if found.iter().all(|column| column.entries.is_empty()) && alpha > 0.01 {
+                let note = match search.query.trim().is_empty() {
+                    true => crate::i18n::text("search-type-to-find").to_string(),
+                    false => {
+                        crate::message!("search-found-nothing", "query" => search.query.trim())
+                    }
+                };
+                texts.push(empty_note(note, alpha));
+            }
+        }
+        None => {
+            if let Some(category) = cursor.current_category(lattice) {
+                if category.entries.is_empty() && column_alpha > 0.01 {
+                    texts.push(empty_note(category.empty_note().to_string(), column_alpha));
+                }
+            }
         }
     }
 
-    for (level, column) in columns.iter().enumerate() {
+    // Every column on the screen, whichever of the two it belongs to, with how
+    // much of it that one is showing. Each keeps its own level and its own list
+    // of neighbours: the columns of where the cursor was and the one column of
+    // what was found are two paths, not one.
+    let drawn: Vec<(usize, &crate::model::Column, f32, &[crate::model::Column])> = [
+        (home.as_slice(), home_alpha),
+        (found.as_slice(), found_alpha),
+    ]
+    .into_iter()
+    .flat_map(|(columns, shown)| {
+        columns
+            .iter()
+            .enumerate()
+            .map(move |(level, column)| (level, column, shown, columns))
+    })
+    .collect();
+    for (level, column, shown, columns) in drawn {
+        let column_alpha = column_alpha * shown;
         if column_alpha <= 0.01 {
-            break;
+            continue;
         }
         // How much this column is the one the user is standing in. It owns the
         // focus: the light, the glass, and the rows either side of the one
@@ -2361,7 +2553,8 @@ pub fn build(
         // A column of pictures is measured differently from a column of
         // applications: taller rows, further apart, and a text column that
         // clears a card rather than a disc.
-        let cards = cards_in(column.entries);
+        let cards = column_cards(column);
+        let head = HeadCard::of(column, level);
         let item_spacing = match cards {
             Some(cards) => cards.spacing() * scale,
             None => item_spacing,
@@ -2380,9 +2573,15 @@ pub fn build(
         // The whole column recedes about its own icons, this offset included:
         // a label that kept its distance from an icon half the size would read
         // as a name that had drifted off the row it belongs to.
-        let text_x = match cards {
-            Some(cards) => x + (cards.reach() / 2.0 + 14.0) * scale * near,
-            None => x + (ITEM_ICON_FOCUSED * ITEM_DISC / 2.0 + 12.0) * scale * near,
+        //
+        // A column with a disc's game at its head is measured off that card
+        // for every row: the names of a column stand on one line, and a card
+        // is wider than the glass an icon stands on.
+        let text_x = match (cards, head) {
+            (Some(cards), _) | (None, Some(HeadCard { cards })) => {
+                x + (cards.reach() / 2.0 + 14.0) * scale * near
+            }
+            (None, None) => x + (ITEM_ICON_FOCUSED * ITEM_DISC / 2.0 + 12.0) * scale * near,
         };
         // A column gives up its half of the screen to the one opened in front
         // of it, over the glide but ahead of it — see [`COLUMN_CONCEDE`]. Not
@@ -2397,9 +2596,7 @@ pub fn build(
         // have. Clamped rather than trusted, because a column three steps back
         // is three of these glides behind and would otherwise be handed a box
         // of negative width.
-        let ahead = columns
-            .get(level + 1)
-            .and_then(|next| cards_in(next.entries));
+        let ahead = columns.get(level + 1).and_then(column_cards);
         let text_max = lerp(
             (width - text_x - 48.0 * scale).max(0.0),
             (column_x(level + 1) - column_clear(ahead) * scale - text_x).max(0.0),
@@ -2470,7 +2667,18 @@ pub fn build(
                 )
             };
 
-            let y = y + trophy_sections.row_shift(index);
+            let y = y
+                + trophy_sections.row_shift(index)
+                + head.map_or(0.0, |head| {
+                    head.shift(
+                        index,
+                        column.position,
+                        cross_y,
+                        item_spacing * near,
+                        scale,
+                        near,
+                    )
+                });
 
             // Skip rows that cannot be on screen.
             if y < -item_spacing
@@ -2562,6 +2770,28 @@ pub fn build(
                 let room = lerp(cards.height, cards.focused, focus) * scale * near;
                 let (w, h) = card_fit(shape.unwrap_or(cards.aspect), cards.aspect, room);
                 [x - w / 2.0, y - h / 2.0, w, h]
+            });
+            // And the game on a disc in the drive, which is a row among the
+            // consoles and still a box: its cover stands whole on a card of
+            // its own, the height of the glass a chosen row stands on, rather
+            // than cut round to fit the hole a console's mark goes in. The
+            // room is the glass's, so the row keeps the column's rhythm and
+            // its name stays where every other name in the column is.
+            //
+            // At the head of the column it is the card a shelf gives its
+            // covers, at the same size — the column makes room for it, see
+            // [`HeadCard`]. A second disc further down, in a machine with two
+            // drives, keeps to the glass a chosen row stands on.
+            let disc_card = cards.is_none() && disc_shape(entry).is_some();
+            let card = card.or_else(|| {
+                if let Some(HeadCard { cards: head }) = head.filter(|_| index == 0) {
+                    let room = lerp(head.height, head.focused, focus) * scale * near;
+                    let (w, h) = card_fit(head.aspect, head.aspect, room);
+                    return Some([x - w / 2.0, y - h / 2.0, w, h]);
+                }
+                let shape = disc_shape(entry)?;
+                let (w, h) = card_fit(shape, COVER_ASPECT, icon_size * ITEM_DISC);
+                Some([x - w / 2.0, y - h / 2.0, w, h])
             });
 
             if distance < 0.5 && active > 0.01 {
@@ -2723,8 +2953,11 @@ pub fn build(
                 // Anything else — a portrait photograph in a column of films —
                 // is fitted inside that room and centred, and shows more glass
                 // on the two sides it does not reach.
-                let mount =
-                    cards.map_or(0.0, |cards| card_mount(shape.unwrap_or(cards.aspect), ch));
+                let mount = match (cards, disc_card) {
+                    (Some(cards), _) => card_mount(shape.unwrap_or(cards.aspect), ch),
+                    (None, true) => card_mount(disc_shape(entry).unwrap_or(COVER_ASPECT), ch),
+                    (None, false) => 0.0,
+                };
                 let (room_w, room_h) = (cw - mount * 2.0, ch - mount * 2.0);
                 // Fitted rather than filled: a photograph cropped to the
                 // card's shape is a photograph with its subject cut off, and
@@ -2772,6 +3005,11 @@ pub fn build(
             // covers, and the hole went on being filled from the same file.
             // An achievement, in the plain column that opens out of a game,
             // has no card and keeps its mark here.
+            //
+            // And a game in what a search found, which is a column of rows for
+            // the reason [`column_cards`] gives: the cover its own library
+            // stands on a card goes in the hole instead, so a game looks like
+            // itself wherever it turns up rather than like its store's mark.
             let preview = card
                 .is_none()
                 .then(|| {
@@ -2782,6 +3020,7 @@ pub fn build(
                 })
                 .flatten()
                 .and_then(|at| slots.thumbnail(at))
+                .or_else(|| held.filter(|_| column.found && card.is_none()))
                 .filter(|thumb| thumb.aspect.is_finite() && thumb.aspect > 0.0);
             if let Some(thumb) = preview {
                 let size = icon_size * ITEM_PREVIEW;
@@ -2798,6 +3037,10 @@ pub fn build(
                         size / 2.0
                     },
                     crop: round_crop(thumb.aspect),
+                    // A game that is not on this disk is drawn without colour
+                    // here too, as its own column draws it. Nothing else a hole
+                    // shows is ever drained.
+                    drain: colourless,
                     ..Quad::default()
                 });
             }
@@ -3003,15 +3246,33 @@ pub fn build(
     // the thing the cursor is on.
     let (row_near, row_clarity) = category_row_recession(depth);
     let category_spacing = category_spacing * row_near;
-    for (index, category) in lattice.categories.iter().enumerate() {
-        let offset = index as f32 - cursor.category_position;
+    // A search gathers the row into the button it began on, in two movements
+    // that overlap: the other buttons travel in, each going as it reaches that
+    // button's glass, and then that button becomes the search's. Spreading back
+    // out is the same two, reversed, and it is one number that drives them, so
+    // a search given up halfway through gathering opens out again from
+    // wherever it had got to.
+    let closing = smoothstep(0.0, 0.75, gather);
+    let turning = smoothstep(0.55, 0.95, gather);
+    // That button is drawn last, so the rest arrive *behind* it.
+    let focal = cursor.selected_category;
+    let order = (0..lattice.categories.len())
+        .filter(|&index| index != focal)
+        .chain((focal < lattice.categories.len()).then_some(focal));
+    for index in order {
+        let category = &lattice.categories[index];
+        // Where the button stands on the row, which is what everything about
+        // how selected it looks is measured by — and where it is drawn, which
+        // is that closed up towards the one the row is gathering into.
+        let spread = index as f32 - cursor.category_position;
+        let offset = spread * (1.0 - closing);
         let x = bar_category_x(offset, depth, width, height);
 
         if x < -category_spacing || x > width + category_spacing {
             continue;
         }
 
-        let distance = offset.abs();
+        let distance = spread.abs();
         let focus = 1.0 - distance.min(1.0);
         let selected = distance < 0.5;
         // Fades over the half-step where selection hands over, so during a
@@ -3040,11 +3301,30 @@ pub fn build(
         // "Settings" was still sitting under it would not read as a category
         // leaving, it would read as a missing icon.
         let gone = lerp(1.0, leaving(x, scale), inside);
+        // And the others go as a search gathers them in, each as it reaches
+        // the edge of the glass of the one they gather into — by where it is
+        // drawn, so the nearest is taken in first and the far ones, which
+        // travel furthest, last. Faded on a clock of their own instead, they
+        // piled up behind that button still half there, and a dozen panes of
+        // glass stacked in one place caught the light as a bright bar across
+        // it. The one they gather into stays: it is the button the search is
+        // drawn on.
+        let gathered = match index == focal {
+            true => 1.0,
+            false if gather > 0.0 => smoothstep(GATHERED_INTO, GATHERING_AT, offset.abs()),
+            false => 1.0,
+        };
+        // And how far this button has become the search's.
+        let turned = match index == focal {
+            true => turning,
+            false => 0.0,
+        };
         let alpha = (1.0 - distance * 0.10).clamp(CATEGORY_MIN_ALPHA, 1.0)
             * attention
             * (1.0 - stepped_in * (1.0 - handover))
             * row_clarity
-            * gone;
+            * gone
+            * gathered;
         let icon_size = lerp(CATEGORY_ICON, CATEGORY_ICON_FOCUSED, focus) * scale * row_near;
 
         // Every category stands on its own tile of glass, sized to the icon
@@ -3124,15 +3404,17 @@ pub fn build(
             // that has come away from the thing it names.
             let label_size = CATEGORY_LABEL * scale * row_near;
             let box_w = category_spacing * 1.7;
-            texts.push(Text {
-                content: category.display_title().to_string(),
+            let label = |content: String, shown: f32| Text {
+                content,
                 x: x - box_w / 2.0,
                 y: cross_y
                     + (CATEGORY_ICON_FOCUSED * CATEGORY_DISC / 2.0 + CATEGORY_LABEL_ABOVE)
                         * scale
                         * row_near,
                 size: label_size,
-                color: theme.text.a(handover * attention * row_clarity * gone),
+                color: theme
+                    .text
+                    .a(handover * attention * row_clarity * gone * gathered * shown),
                 bold: true,
                 max_width: box_w,
                 align: TextAlign::Center,
@@ -3141,18 +3423,83 @@ pub fn build(
                 lines: 1,
                 cut: Cut::Tail,
                 mono: false,
-            });
+            };
+            texts.push(label(category.display_title().to_string(), 1.0 - turned));
+            // And, as the button becomes the search's, the search's name in
+            // place of the category's: what is under the button is now
+            // everything, and the name of one column would be a lie about it.
+            if turned > 0.0 {
+                texts.push(label(crate::i18n::text("shell-search").to_string(), turned));
+            }
         }
 
-        quads.push(icon_quad(
-            slots.slot_for(Some(category.icon)),
-            Some(category.icon),
-            x - icon_size / 2.0,
-            cross_y - icon_size / 2.0,
-            icon_size,
-            alpha,
-            theme.accent_soft.a(alpha * 0.85),
+        // The category's own mark, giving way to the magnifier as the button
+        // becomes the search's — the same magnifier every field on the bar
+        // wears, because this is the same act on a larger thing. The one
+        // shrinks a little as it goes and the other grows into its place, so
+        // the change reads as the button turning into something rather than
+        // as two drawings laid over each other.
+        let mark = |name: &str, size: f32, shown: f32| {
+            icon_quad(
+                slots.slot_for(Some(name)),
+                Some(name),
+                x - size / 2.0,
+                cross_y - size / 2.0,
+                size,
+                alpha * shown,
+                theme.accent_soft.a(alpha * shown * 0.85),
+            )
+        };
+        quads.push(mark(
+            category.icon,
+            icon_size * (1.0 - 0.25 * turned),
+            1.0 - turned,
         ));
+        if turned > 0.0 {
+            quads.push(mark(
+                icons::SEARCH,
+                icon_size * (0.75 + 0.25 * turned),
+                turned,
+            ));
+        }
+    }
+
+    // What is being searched for, beside the button, for as long as it is
+    // being typed. Kept, it goes: the phrase is what the column below is the
+    // answer to, and the column is what is left to look at.
+    //
+    // Cut at its head rather than its tail when it is longer than the room,
+    // because the end of it is where the next letter goes.
+    if let Some(search) = cursor.search_drawn() {
+        let shown = cursor.field_shown() * turning * attention * row_clarity;
+        if shown > 0.01 {
+            let focal_x = bar_category_x(
+                (focal as f32 - cursor.category_position) * (1.0 - closing),
+                depth,
+                width,
+                height,
+            );
+            let size = SEARCH_FIELD * scale * row_near;
+            let left = focal_x
+                + (CATEGORY_ICON_FOCUSED * CATEGORY_DISC / 2.0 + SEARCH_FIELD_GAP)
+                    * scale
+                    * row_near;
+            texts.push(Text {
+                content: format!("{}{CARET}", search.query),
+                x: left,
+                y: cross_y - size * 0.62,
+                size,
+                color: theme.text.a(shown),
+                bold: false,
+                max_width: (width - left - 48.0 * scale).max(0.0),
+                align: TextAlign::Left,
+                clip: None,
+                halo: 0.0,
+                lines: 1,
+                cut: Cut::Head,
+                mono: false,
+            });
+        }
     }
 
     Scene { quads, texts }
@@ -3368,6 +3715,11 @@ fn category_row_hit(
     height: f32,
     depth: f32,
 ) -> Option<BarSpot> {
+    // Gathered into one button for a search, the row has nothing on it a
+    // press could choose between, and the others are not on the screen.
+    if cursor.searching() {
+        return None;
+    }
     let scale = guide_scale(height);
     let cross_y = height * BAR_CROSS_Y;
     let (row_near, _) = category_row_recession(depth);
@@ -3428,9 +3780,13 @@ fn column_hit(
         // name is as much the row as its icon is.
         // A column of pictures is wider and taller than one of applications,
         // and the hand has to land where the eye says the row is.
-        let cards = cards_in(column.entries);
-        let row_reach =
-            cards.map_or(ITEM_ICON_FOCUSED * ITEM_DISC, |cards| cards.reach()) * scale * near;
+        let cards = column_cards(column);
+        let head = HeadCard::of(column, level);
+        let row_reach = match (cards, head) {
+            (Some(cards), _) | (None, Some(HeadCard { cards })) => cards.reach(),
+            (None, None) => ITEM_ICON_FOCUSED * ITEM_DISC,
+        } * scale
+            * near;
         let column_x = bar_column_x(level as f32, depth, width, height);
         let left = column_x - row_reach * 0.5;
         // The strip ends where the next column *the user can act on* begins, so
@@ -3446,7 +3802,7 @@ fn column_hit(
             // of a cover has to be that cover and not the name behind it.
             Some(next) => {
                 bar_column_x(level as f32 + 1.0, depth, width, height)
-                    - column_clear(cards_in(next.entries)) * scale
+                    - column_clear(column_cards(next)) * scale
             }
             None => width,
         };
@@ -3460,9 +3816,13 @@ fn column_hit(
         }
 
         let band = cards.map_or(ITEM_SPACING, |cards| cards.spacing()) * scale * near;
+        let cross_y = height * BAR_CROSS_Y;
         let row_at = |index: usize| {
             bar_item_y(index as f32 - column.position, level, near, height, cards)
                 + trophy_sections.row_shift(index)
+                + head.map_or(0.0, |head| {
+                    head.shift(index, column.position, cross_y, band, scale, near)
+                })
         };
 
         // A column behind the open one shows one row and no more — the row it
@@ -12031,6 +12391,54 @@ fn start_hints(pad: bool, options: bool, friends: bool) -> Vec<Hint> {
     hints
 }
 
+/// The start screen's row while a search of the whole bar is up, or the
+/// ordinary one while none is.
+///
+/// While the phrase is being typed every key is a letter, so the row is the
+/// two presses that end the typing — Done keeps the phrase and Cancel gives
+/// the whole search up — and the Guide, which nothing takes away. Done is
+/// Start on a pad, the button that finishes typing over the board everywhere
+/// in this shell.
+///
+/// Once it is kept, the row is the ordinary one with **Cancel** before the
+/// Guide: the one press that closes the search and spreads the row back out.
+/// It is the only place the start screen names that button, because it is
+/// the only place it is not simply one step back — it undoes everything the
+/// search did at once.
+fn searching_hints(pad: bool, options: bool, friends: bool, search: Searching) -> Vec<Hint> {
+    let one = |label, on_a_pad, otherwise| Hint {
+        label,
+        glyph: if pad { on_a_pad } else { otherwise },
+    };
+    let cancel = one(
+        crate::i18n::text("shell-cancel"),
+        icons::PAD_EAST,
+        icons::KEY_ESCAPE,
+    );
+    match search {
+        Searching::No => start_hints(pad, options, friends),
+        Searching::Typing => vec![
+            one(
+                crate::i18n::text("shell-done"),
+                icons::PAD_START,
+                icons::KEY_ENTER,
+            ),
+            cancel,
+            one(
+                crate::i18n::text("shell-guide"),
+                icons::PAD_GUIDE,
+                icons::KEY_SUPER,
+            ),
+        ],
+        Searching::Looking => {
+            let mut hints = start_hints(pad, options, friends);
+            let guide = hints.len().saturating_sub(1);
+            hints.insert(guide, cancel);
+            hints
+        }
+    }
+}
+
 /// What the guide's buttons do, read left to right.
 ///
 /// The start screen's row said about the other screen the user spends time on,
@@ -12188,6 +12596,25 @@ pub struct Legend {
     /// the Guide the row already names, and a second word for the same press
     /// would be the corner offering two doors into one room.
     pub floating: Floating,
+    /// Where a search of the whole bar stands, which changes what two of the
+    /// buttons are for. Always [`Searching::No`] in the guide.
+    pub search: Searching,
+}
+
+/// Where the start screen's search of the whole bar stands, as far as the
+/// buttons are concerned. See `Shell::start_legend`, which answers it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum Searching {
+    /// No search is up.
+    #[default]
+    No,
+    /// What to look for is still being typed. Two presses mean anything then:
+    /// the one that keeps it, and the one that gives the search up. Nothing
+    /// else on the row does — every key is a letter while the field is up.
+    Typing,
+    /// It has been kept, and what it found is being looked through. The
+    /// ordinary row, with the way out of the search added to it.
+    Looking,
 }
 
 /// Where the videos floating over the guide stand in relation to the buttons.
@@ -13077,7 +13504,7 @@ pub fn column_bar_track(
         level,
         near,
         height,
-        cards_in(column.entries),
+        column_cards(column),
     );
     Some(column_bar_box(
         column_x,
@@ -13293,6 +13720,14 @@ fn shaded_shape(mut quad: Quad) -> Quad {
 
 fn lerp(a: f32, b: f32, t: f32) -> f32 {
     a + (b - a) * t.clamp(0.0, 1.0)
+}
+
+/// How far `x` is between `from` and `to`, eased at both ends: 0 before `from`,
+/// 1 after `to`. For one part of a longer move that should start and finish
+/// gently inside it — see the category row gathering for a search in [`build`].
+fn smoothstep(from: f32, to: f32, x: f32) -> f32 {
+    let t = ((x - from) / (to - from)).clamp(0.0, 1.0);
+    t * t * (3.0 - 2.0 * t)
 }
 
 fn lerp_rect(from: [f32; 4], to: [f32; 4], t: f32) -> [f32; 4] {
@@ -15946,6 +16381,10 @@ mod tests {
                 // whichever quad came first and pass for the wrong reason.
                 "asked-for-the-material" => 38,
                 "an-ordinary-icon" => 39,
+                // The magnifier a search of the whole bar turns the category
+                // row's button into, so a test can tell it from the category's
+                // own mark in the same place.
+                icons::SEARCH => 41,
                 _ => 13,
             }
         }
@@ -16128,6 +16567,7 @@ mod tests {
             own_background: false,
             shape: None,
             glyph: "lxb:console-psp".to_string(),
+            disc: None,
         })
     }
 
@@ -18738,6 +19178,7 @@ mod tests {
             friends: true,
             pad: true,
             floating: Floating::None,
+            search: Searching::No,
         }));
         let word = |content: &str| {
             scene
@@ -21103,6 +21544,7 @@ mod tests {
                 selected: 10,
                 position: step as f32 / 20.0,
                 standing: Standing::Open,
+                found: false,
             };
             let layout = TrophySections::new(&column, 1, 1.0, 1080.0);
             let headers: Vec<_> = layout.headers().map(|(_, y)| y).collect();
@@ -21256,6 +21698,91 @@ mod tests {
     /// 3:4 — the shape its tall art arrives at — so the picture fills the
     /// card rather than standing in glass above and below it, which is what
     /// a 2:3 Steam card did with it. It weighs what a Steam cover weighs.
+    /// The game on a disc stands at the head of the RetroArch column, which is
+    /// a column of consoles — and a column of rows it stays. The first game row
+    /// of a column decides it is a shelf of covers, and a disc going in must
+    /// not turn nine consoles into nine empty cards.
+    #[test]
+    fn a_disc_at_the_head_of_the_consoles_leaves_them_rows() {
+        let Entry::Rom(mut game) = rom("Tekken 4") else {
+            unreachable!("it is a game");
+        };
+        game.disc = Some(2816);
+        let consoles = folder("PlayStation Portable", vec![rom("Tekken 6")]);
+        assert!(cards_in(&[Entry::Rom(game), consoles]).is_none());
+        // And a shelf is still a shelf.
+        assert!(cards_in(&[rom("Tekken 6")]).is_some());
+    }
+
+    /// At the head of the column the disc's game stands on the card a shelf
+    /// gives its covers, and the column makes room for it without moving
+    /// anything it does not have to.
+    #[test]
+    fn a_disc_at_the_head_of_the_column_is_given_a_shelfs_card() {
+        let head = HeadCard {
+            cards: Cards::of(COVER_ASPECT),
+        };
+        let spacing = ITEM_SPACING;
+        let icons =
+            |offset: f32| item_y(offset, 0.0, gap_above(None), gap_below(None), spacing, 0.0);
+        let at = |index: usize, position: f32| {
+            icons(index as f32 - position) + head.shift(index, position, 0.0, spacing, 1.0, 1.0)
+        };
+        let glass = ITEM_ICON_FOCUSED * ITEM_DISC;
+
+        // Chosen: where a shelf's chosen card stands under the label, and the
+        // row under it clear of the card by the air a column of icons leaves
+        // under its chosen glass.
+        let card = at(0, 0.0);
+        assert!((card - gap_below(Some(head.cards))).abs() < 0.01);
+        let under_the_card = at(1, 0.0) - ITEM_ICON / 2.0 - (card + head.cards.focused / 2.0);
+        let under_the_glass = icons(1.0) - ITEM_ICON / 2.0 - (icons(0.0) + glass / 2.0);
+        assert!(
+            (under_the_card - under_the_glass).abs() < 0.01,
+            "{under_the_card} vs {under_the_glass}"
+        );
+
+        // Not chosen: every other row is where a column of icons puts it, and
+        // the card clears the category's glass by the air an icon would.
+        for row in 1..5 {
+            assert!((at(row, 1.0) - icons(row as f32 - 1.0)).abs() < 0.01);
+        }
+        let card_bottom = at(0, 1.0) + head.cards.height / 2.0;
+        let icon_bottom = icons(-1.0) + ITEM_ICON / 2.0;
+        assert!((card_bottom - icon_bottom).abs() < 0.01);
+
+        // And nothing jumps on the way between the two.
+        let mut last = at(1, 0.0);
+        for step in 1..=20 {
+            let now = at(1, step as f32 / 20.0);
+            assert!((now - last).abs() < spacing, "{last} to {now}");
+            last = now;
+        }
+    }
+
+    /// And that one row stands on a card of its own, at its console's box, so
+    /// its cover is drawn whole rather than cut round to fit a console's hole.
+    /// A game in a folder, or found by a search, is not the disc's and keeps
+    /// what its own column gives it.
+    #[test]
+    fn the_game_on_a_disc_stands_on_a_card_at_its_boxs_shape() {
+        let Entry::Rom(mut game) = rom("Tekken 4") else {
+            unreachable!("it is a game");
+        };
+        game.disc = Some(2816);
+        assert_eq!(disc_shape(&Entry::Rom(game.clone())), Some(COVER_ASPECT));
+        game.shape = Some(0.7);
+        assert_eq!(disc_shape(&Entry::Rom(game)), Some(0.7));
+        assert_eq!(disc_shape(&rom("Tekken 6")), None);
+
+        // Its card fits the glass a chosen row stands on, and no wider — the
+        // names beside the column are measured from that glass.
+        let glass = ITEM_ICON_FOCUSED * ITEM_DISC;
+        let (w, h) = card_fit(0.7, COVER_ASPECT, glass);
+        assert!(h <= glass + 0.01 && w <= glass, "{w} x {h} in {glass}");
+        assert!(h > w, "a box stands upright");
+    }
+
     #[test]
     fn an_epic_column_is_cards_at_epics_own_box_shape() {
         let epic = |shape: Option<f32>| {
@@ -22447,6 +22974,7 @@ mod tests {
                 friends: true,
                 pad: true,
                 floating: Floating::None,
+                search: Searching::No,
             },
         );
         let word = |content: &str| {
@@ -22696,6 +23224,7 @@ mod tests {
             friends: true,
             pad: true,
             floating: Floating::Directions,
+            search: Searching::No,
         };
         let scene = |elsewhere| {
             guide_scene_with(
@@ -22754,6 +23283,7 @@ mod tests {
             friends: true,
             pad: true,
             floating: Floating::None,
+            search: Searching::No,
         };
 
         let line = |scene: &Scene| {
@@ -22809,6 +23339,7 @@ mod tests {
             friends: true,
             pad: true,
             floating: Floating::None,
+            search: Searching::No,
         };
         let line = |guide: &Guide| {
             guide_scene_legend(guide, &cards, legend)
@@ -30775,5 +31306,209 @@ mod tests {
         });
         hide_text_under_guide_cards(&mut none, &Guide::default(), 1920.0, 1080.0);
         assert_eq!(none.texts.len(), 1);
+    }
+
+    /// Three columns, the cursor in the middle one, and a search of the whole
+    /// bar for `query` that found `rows`, gathered all the way.
+    fn searching(query: &str, rows: Vec<Entry>) -> (Lattice, Cursor) {
+        let categories: Vec<Category> = ["a", "b", "c"]
+            .into_iter()
+            .map(|id| Category {
+                id,
+                title: "Category",
+                icon: "icon",
+                entries: vec![app("only")],
+            })
+            .collect();
+        let mut lattice = Lattice::new(categories);
+        let mut found = crate::search::Found::empty(1);
+        found.column.entries = rows;
+        lattice.searches.push(found);
+        let mut cursor = Cursor::new(lattice.categories.len());
+        cursor.point_at_category(1, &lattice);
+        while cursor.animate(1.0 / 60.0) {}
+        cursor.begin_search(1, query.into());
+        while cursor.animate(1.0 / 60.0) {}
+        (lattice, cursor)
+    }
+
+    /// How much of a quad is on the screen, wherever the layout put its alpha.
+    fn seen(quad: &Quad) -> f32 {
+        quad.color[3] * quad.fade
+    }
+
+    #[test]
+    fn the_row_gathers_into_one_button_that_becomes_the_search() {
+        let (lattice, cursor) = searching("fire", vec![app("Firefox")]);
+        let scene = build_with(&lattice, &cursor, 1280.0, 800.0, true, &Named);
+        let row_y = 800.0 * BAR_CROSS_Y;
+        let on_the_row = |quad: &&Quad| quad.y < row_y && quad.y + quad.h > row_y;
+
+        let magnifiers: Vec<&Quad> = scene
+            .quads
+            .iter()
+            .filter(on_the_row)
+            .filter(|quad| quad.slot == 41 && seen(quad) > 0.5)
+            .collect();
+        assert_eq!(magnifiers.len(), 1, "one button, and it is the search's");
+        let marks = scene
+            .quads
+            .iter()
+            .filter(on_the_row)
+            .filter(|quad| quad.slot == Named::slot_of("icon") && seen(quad) > 0.01)
+            .count();
+        assert_eq!(marks, 0, "every category's own mark has gone into it");
+
+        let label = scene
+            .texts
+            .iter()
+            .find(|text| text.content == "Search")
+            .expect("the button is called what it now is");
+        assert!(label.color[3] > 0.5);
+        assert!(
+            scene
+                .texts
+                .iter()
+                .all(|text| text.content != "Category" || text.color[3] < 0.01),
+            "and not what it was"
+        );
+        let field = scene
+            .texts
+            .iter()
+            .find(|text| text.content == "fire|")
+            .expect("what is being typed is beside the button");
+        assert!(field.color[3] > 0.5);
+        assert!(
+            field.x > magnifiers[0].x + magnifiers[0].w,
+            "to the right of the button"
+        );
+        assert!(scene.texts.iter().any(|text| text.content == "Firefox"));
+    }
+
+    #[test]
+    fn the_field_goes_once_the_phrase_is_kept() {
+        let (lattice, mut cursor) = searching("fire", vec![app("Firefox")]);
+        cursor.search_mut().expect("a search is up").typing = false;
+        while cursor.animate(1.0 / 60.0) {}
+        let scene = build_with(&lattice, &cursor, 1280.0, 800.0, true, &Named);
+        assert!(scene.texts.iter().all(|text| !text.content.contains('|')));
+        assert!(
+            scene.texts.iter().any(|text| text.content == "Search"),
+            "the button is still the search's"
+        );
+    }
+
+    #[test]
+    fn the_row_spreads_back_out_when_the_search_is_given_up() {
+        let (lattice, mut cursor) = searching("fire", vec![app("Firefox")]);
+        cursor.end_search(&lattice);
+        while cursor.animate(1.0 / 60.0) {}
+        let scene = build_with(&lattice, &cursor, 1280.0, 800.0, true, &Named);
+        let row_y = 800.0 * BAR_CROSS_Y;
+        let marks = scene
+            .quads
+            .iter()
+            .filter(|quad| quad.y < row_y && quad.y + quad.h > row_y)
+            .filter(|quad| quad.slot == Named::slot_of("icon") && seen(quad) > 0.5)
+            .count();
+        assert_eq!(marks, 3, "every category is back on the row");
+        assert!(scene
+            .quads
+            .iter()
+            .all(|quad| quad.slot != 41 || seen(quad) < 0.01));
+        assert!(scene.texts.iter().all(|text| text.content != "Firefox"));
+    }
+
+    #[test]
+    fn a_search_that_found_nothing_says_what_it_was_looking_for() {
+        let (lattice, cursor) = searching("zzz", Vec::new());
+        let scene = build_with(&lattice, &cursor, 1280.0, 800.0, true, &Named);
+        assert!(scene
+            .texts
+            .iter()
+            .any(|text| text.content == "Nothing found for “zzz”"));
+        let (lattice, cursor) = searching("", Vec::new());
+        let scene = build_with(&lattice, &cursor, 1280.0, 800.0, true, &Named);
+        assert!(scene
+            .texts
+            .iter()
+            .any(|text| text.content == "Type to search everything"));
+    }
+
+    #[test]
+    fn what_a_search_found_is_drawn_as_rows_whatever_is_in_it() {
+        let games = [Entry::Game(crate::apps::Game {
+            ways: 1,
+            progress: None,
+            app_id: 10,
+            name: "Portal".into(),
+            note: String::new(),
+            installed: true,
+            updating: false,
+            steam_client: true,
+            standing: lxb_steam::library::Standing::Ready,
+            stuck: false,
+            waiting_for_steam: false,
+        })];
+        let column = |found| crate::model::Column {
+            entries: &games,
+            selected: 0,
+            position: 0.0,
+            standing: Standing::Open,
+            found,
+        };
+        assert!(
+            column_cards(&column(false)).is_some(),
+            "a library is covers"
+        );
+        assert_eq!(column_cards(&column(true)), None, "a search is rows");
+    }
+
+    #[test]
+    fn the_row_answers_no_press_while_a_search_is_up() {
+        let (lattice, cursor) = searching("fire", vec![app("Firefox")]);
+        let row_y = 800.0 * BAR_CROSS_Y;
+        for x in [200.0, 400.0, 640.0, 900.0] {
+            assert!(
+                !matches!(
+                    bar_hit(&lattice, &cursor, x, row_y, 1280.0, 800.0),
+                    Some(BarSpot::Category(_))
+                ),
+                "nothing on the row to choose between at {x}"
+            );
+        }
+    }
+
+    #[test]
+    fn the_legend_says_how_a_search_is_kept_and_given_up() {
+        let words = |search| -> Vec<&'static str> {
+            searching_hints(true, true, true, search)
+                .iter()
+                .map(|hint| hint.label)
+                .collect()
+        };
+        assert_eq!(
+            words(Searching::No),
+            ["Select", "Options", "Friends", "Guide"]
+        );
+        assert_eq!(words(Searching::Typing), ["Done", "Cancel", "Guide"]);
+        assert_eq!(
+            words(Searching::Looking),
+            ["Select", "Options", "Friends", "Cancel", "Guide"]
+        );
+        let glyphs = |pad| -> Vec<&'static str> {
+            searching_hints(pad, false, false, Searching::Typing)
+                .iter()
+                .map(|hint| hint.glyph)
+                .collect()
+        };
+        assert_eq!(
+            glyphs(true),
+            [icons::PAD_START, icons::PAD_EAST, icons::PAD_GUIDE]
+        );
+        assert_eq!(
+            glyphs(false),
+            [icons::KEY_ENTER, icons::KEY_ESCAPE, icons::KEY_SUPER]
+        );
     }
 }

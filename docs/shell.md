@@ -121,6 +121,61 @@ The guide draws its own row, in the mirror of this corner and by these rules —
 see [what the menu's buttons do](guide.md#what-the-menus-buttons-do), where the
 one screen that has three rows rather than one is set out.
 
+### Searching the whole bar
+
+Start typing on the start screen and the bar looks for what you type
+everywhere at once. The category row closes up into the button you were on —
+the others travel in and are taken into it — the button becomes a magnifier
+called **Search**, and what you type is written large beside it. The column
+under it is everything on the bar the name fits, narrowing with every letter.
+
+It begins with any letter, digit or mark typed on a keyboard, or with the
+on-screen keyboard summoned on the start screen and the first key pressed on
+it. The row does not close up for the board alone, only for a letter typed on
+it. Because every letter begins a search there, the letters that used to move
+the bar on the start screen — WASD, HJKL, and `Y` for the context menu — are
+letters there now; the arrows, `Enter`, the space bar, `F10` and the `Menu` key
+keep their jobs. `Shift` on its own still opens the friends list, when it is let
+go of with nothing typed under it, so a capital can begin a search.
+
+**Enter**, or **Start** on a pad, keeps the phrase: the field goes, and the
+column is left to be looked through from the best match. Typing again, or
+asking for the board again, takes the phrase up where it was left.
+**Escape**, or **B**, gives the search up at any point — typing or looking — and
+the row spreads back out onto exactly where you were, a path into Settings
+included.
+
+What is looked through:
+
+- every application in every category;
+- the Steam, Epic Games and RetroArch rows, every game of both stores — the
+  whole library, whatever its own column's field is narrowed to — and every ROM
+  on every console's shelf;
+- the games on the Trophies shelf;
+- every page of Settings, however deep, and the rows that open a panel;
+- the Files row and the Music, Video and Images shelves themselves.
+
+What is not: the user's own files, which the shelves and the explorer already
+search better than a list mixed in with programs could; values — "On", "Large",
+an accent — which mean nothing without the page they answer; and the rows of
+any other list that carries a field of its own, like the six hundred keyboard
+arrangements, which are found as the page they are on. Names are matched without
+regard to case, the whole name first, then its start, then the start of one of
+its words, then anywhere in it, and last an application's own keywords — so
+"browser" finds a browser that is not called one. Ties keep the bar's order,
+left to right and top to bottom. The line under each result says where it lives:
+`Settings › Display · How the picture reaches the screen`.
+
+**Pressing a result** does what it does in its own column. A program, a game or
+a ROM starts from the results. Anything that is a place — a page of Settings, a
+store's row, a shelf, the Files row — puts the search away and takes you to it:
+the row spreads out on the category it lives in, with every page on the way
+opened, and it is pressed there, so you arrive standing in it with the rest of
+its column around you. The context menu works on a result as it does anywhere.
+
+Each display has a search of its own, like everything else on the bar; one typed
+on one screen is not what the other is showing.
+
 ### Music, Video and Images
 
 All three rows list what is on the disk: every audio, video or image file

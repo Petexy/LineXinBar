@@ -1257,6 +1257,8 @@ search-none-match = { $what ->
     [game] 没有匹配的游戏
    *[layout] 没有匹配的布局
     }
+search-type-to-find = 输入即可搜索全部内容
+search-found-nothing = 未找到与“{ $query }”相关的内容
 search-matched = { $found } { $what ->
     [audio] 个音频文件
     [video] 个视频文件
@@ -1480,6 +1482,9 @@ retroarch-helper-answered-nothing = { $helper } 没有任何回应（{ $status }
 retroarch-helper-could-not-be-waited-for = 无法等待 { $helper }：{ $error }
 retroarch-getting-progress = { $getting } — { $at } / { $of }
 retroarch-console-needs-download = { $console } — 需要下载
+retroarch-game-disc = 游戏光盘
+retroarch-disc-of = { $console } 光盘
+retroarch-eject-disc = 弹出
 retroarch-console-no-emulator = { $console } — 这里没有能运行它的程序
 retroarch-get-missing-emulators = 获取缺少的 { $count } 个模拟器
 retroarch-console-ready = { $console } 已就绪
@@ -1560,6 +1565,7 @@ drive-mount-failed = 无法挂载此驱动器。
 drive-unmount-failed = 无法取消挂载此驱动器。
 drive-in-use = 此驱动器仍在使用中。请关闭正在使用它的程序，然后重试。
 drive-not-allowed = 此账户无权执行此操作。
+disc-eject-failed = 无法弹出光盘。
 
 # Countries, by ISO 3166 code, as the keyboard-layout column names them.
 country-none = 无国家/地区

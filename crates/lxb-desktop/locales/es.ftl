@@ -1344,6 +1344,8 @@ search-none-match = { $what ->
     [game] Ningún juego coincide
    *[layout] Ninguna distribución coincide
     }
+search-type-to-find = Escribe para buscar en todo
+search-found-nothing = No se encontró nada para «{ $query }»
 search-matched = { $matched } { $matched ->
     [one] coincidencia
    *[other] coincidencias
@@ -1646,6 +1648,9 @@ retroarch-helper-answered-nothing = { $helper } no respondió nada ({ $status })
 retroarch-helper-could-not-be-waited-for = No se pudo esperar a { $helper }: { $error }
 retroarch-getting-progress = { $getting } — { $at } de { $of }
 retroarch-console-needs-download = { $console } — hace falta una descarga
+retroarch-game-disc = Disco de juego
+retroarch-disc-of = Disco de { $console }
+retroarch-eject-disc = Expulsar
 retroarch-console-no-emulator = { $console } — nada de aquí puede reproducirla
 retroarch-get-missing-emulators = { $count ->
     [one] Obtener el emulador que falta
@@ -1732,6 +1737,7 @@ drive-mount-failed = No se pudo montar esta unidad.
 drive-unmount-failed = No se pudo desmontar esta unidad.
 drive-in-use = Algo sigue usando esta unidad. Ciérrelo e inténtelo de nuevo.
 drive-not-allowed = Esta cuenta no tiene permiso para hacerlo.
+disc-eject-failed = No se pudo expulsar el disco.
 
 # Countries, by ISO 3166 code, as the keyboard-layout column names them.
 country-none = Ningún país

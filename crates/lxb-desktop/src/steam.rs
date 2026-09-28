@@ -3157,6 +3157,20 @@ impl Steam {
         rows
     }
 
+    /// Every game of the account as a row of the column, in the library's own
+    /// order — installed first, each half by name — whatever the column's own
+    /// field has narrowed it to. What a search of the whole bar reads; see
+    /// [`crate::search::Libraries`].
+    ///
+    /// Built by [`Self::row`] like every other row of a game, so a game found
+    /// by a search says what its row in the column says.
+    pub fn every_row(&self) -> Vec<crate::apps::Entry> {
+        if !self.signed_in() {
+            return Vec::new();
+        }
+        self.games.iter().map(|game| self.row(game)).collect()
+    }
+
     /// The index at the head of the library: the whole of what the column shows
     /// again, under the letter each game starts with.
     ///

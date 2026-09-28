@@ -1397,6 +1397,8 @@ search-none-match = { $what ->
     [game] Ни одна игра не подходит
    *[layout] Ни одна раскладка не подходит
     }
+search-type-to-find = Начните вводить, чтобы искать везде
+search-found-nothing = Ничего не найдено по запросу «{ $query }»
 search-matched = { $matched ->
     [one] Подходит
    *[other] Подходят
@@ -1754,6 +1756,9 @@ retroarch-helper-answered-nothing = { $helper } ничего не ответил
 retroarch-helper-could-not-be-waited-for = { $helper } не удалось дождаться: { $error }
 retroarch-getting-progress = { $getting } — { $at } из { $of }
 retroarch-console-needs-download = { $console } — нужна загрузка
+retroarch-game-disc = Игровой диск
+retroarch-disc-of = Диск: { $console }
+retroarch-eject-disc = Извлечь
 retroarch-console-no-emulator = { $console } — здесь нечем это запустить
 retroarch-get-missing-emulators = { $count ->
     [one] Получить недостающий эмулятор
@@ -1845,6 +1850,7 @@ drive-mount-failed = Не удалось смонтировать этот ди�
 drive-unmount-failed = Не удалось размонтировать этот диск.
 drive-in-use = Этот диск ещё используется. Закройте то, что его использует, и повторите попытку.
 drive-not-allowed = У этой учётной записи нет на это прав.
+disc-eject-failed = Не удалось извлечь диск.
 
 # Countries, by ISO 3166 code, as the keyboard-layout column names them.
 country-none = Без страны

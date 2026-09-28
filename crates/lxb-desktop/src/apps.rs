@@ -978,6 +978,18 @@ pub struct Rom {
     /// `String` rather than a `&'static str` because it names a drawing that
     /// arrived with a *package*, and there is no static list of those.
     pub glyph: String,
+    /// The drive this game's disc is in, by the kernel's number for the drive
+    /// — `None` for a game in somebody's folder, which is every game but the
+    /// one in the drive.
+    ///
+    /// What makes the row the disc's. It stands at the head of the RetroArch
+    /// column among the consoles rather than on a shelf of covers, so the
+    /// column stays a column of rows — see `ui::cards_in` — and its menu
+    /// offers Eject where a folder's game offers Rename and Delete: the file it
+    /// is started from is one the RetroArch helper made up out of the disc,
+    /// and there is nothing of the user's there to rename. See
+    /// [`crate::retroarch`].
+    pub disc: Option<u64>,
 }
 
 /// The row that answers a folder picker.
@@ -3141,6 +3153,83 @@ impl Entry {
         }
     }
 
+    /// Put `line` under the title in place of whatever the row said there.
+    ///
+    /// For the one column whose rows are other columns' rows: a search of the
+    /// whole bar says under each thing it found where that thing lives, which
+    /// no column needs to say about its own rows. See [`crate::search`]. A row
+    /// that has no second line of its own to replace is left as it is.
+    pub fn say_instead(&mut self, line: String) {
+        match self {
+            Entry::Trophy(row) => row.facts.comment = line,
+            Entry::App(app) => app.comment = Some(line),
+            Entry::Folder(folder) => {
+                folder.comment_message = None;
+                folder.comment = Some(line);
+            }
+            Entry::Steam(service) => service.comment = line,
+            Entry::RetroArch(emulation) | Entry::Epic(emulation) => emulation.comment = line,
+            Entry::Game(game) => game.note = line,
+            Entry::Rom(rom) => rom.note = line,
+            Entry::EpicGame(game) => game.note = line,
+            Entry::Facts(facts) => facts.comment = line,
+            Entry::Typed(typed) => typed.comment = line,
+            Entry::Partition(partition) => partition.facts.comment = line,
+            Entry::Choice(choice) => choice.comment = Some(line),
+            Entry::Stored(stored) => stored.note = line,
+            Entry::Media(_)
+            | Entry::File(_)
+            | Entry::Bar(_)
+            | Entry::Search(_)
+            | Entry::Pick(_)
+            | Entry::Make(_)
+            | Entry::Sweep(_)
+            | Entry::Done(_)
+            | Entry::Trashed(_) => {}
+        }
+    }
+
+    /// The row without the column it opens into.
+    ///
+    /// A copy for somewhere that shows the row and never steps into it — the
+    /// search's results, where a page of Settings is a place to be taken to
+    /// rather than a column opened in the middle of a list of programs. Copied
+    /// whole, a keyboard-layout page would bring six hundred arrangements with
+    /// it on every letter typed.
+    ///
+    /// Field by field rather than cloned and then emptied, because the clone is
+    /// exactly the cost this exists to avoid.
+    pub fn bare(&self) -> Entry {
+        match self {
+            Entry::Folder(folder) => Entry::Folder(Folder {
+                title_message: folder.title_message,
+                comment_message: folder.comment_message,
+                identity: folder.identity.clone(),
+                title: folder.title.clone(),
+                comment: folder.comment.clone(),
+                icon: folder.icon.clone(),
+                entries: Vec::new(),
+                place: folder.place.clone(),
+                chosen: folder.chosen,
+                over_the_list: folder.over_the_list,
+                person: folder.person,
+                portrait: folder.portrait.clone(),
+                used: folder.used,
+            }),
+            Entry::Trophy(row) => Entry::Trophy(crate::trophies::Row {
+                key: row.key.clone(),
+                facts: row.facts.clone(),
+                picture: row.picture.clone(),
+                entries: None,
+                section: row.section.clone(),
+                shape: row.shape,
+                installed: row.installed,
+                platform: row.platform.clone(),
+            }),
+            _ => self.clone(),
+        }
+    }
+
     /// The bar under the second line, for the rows that are counting up.
     ///
     /// A game being fetched, and RetroArch fetching itself or the cores a
@@ -4439,6 +4528,7 @@ mod tests {
             own_background: false,
             shape: None,
             glyph: "lxb:console-psp".to_string(),
+            disc: None,
             start: startable.then(|| {
                 vec![
                     "retroarch".to_string(),

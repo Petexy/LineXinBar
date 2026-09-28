@@ -400,11 +400,23 @@ fn fresh(at: &Path) -> bool {
 /// rather than an error: a game whose cover would not come down keeps the mark
 /// it had, which is what the column looked like before any of this existed.
 pub fn fetch(agent: &ureq::Agent, cache: &Path, shelves: &Shelves, title: &str) -> Pictures {
+    fetch_telling(agent, cache, shelves, title).0
+}
+
+/// [`fetch`], and whether any of it failed for want of the server — which is a
+/// reason to ask again later, where a 404 is an answer.
+fn fetch_telling(
+    agent: &ureq::Agent,
+    cache: &Path,
+    shelves: &Shelves,
+    title: &str,
+) -> (Pictures, bool) {
     let Some((shelf, name)) = shelves.look_for(title) else {
-        return Pictures::default();
+        return (Pictures::default(), false);
     };
     let file = format!("{name}.png");
     let mut got = Pictures::default();
+    let mut unreached = false;
     for piece in [Piece::Boxart, Piece::Snap] {
         let at = picture_at(cache, shelf, piece, &file);
         if at.is_file() {
@@ -420,10 +432,58 @@ pub fn fetch(agent: &ureq::Agent, cache: &Path, shelves: &Shelves, title: &str) 
             // A picture that is not there is a fact about the game, written
             // down so it is never asked about again.
             Ok(false) => mark_absent(&at),
-            Err(why) => eprintln!("art: {name} ({shelf}) — {why}"),
+            Err(why) => {
+                eprintln!("art: {name} ({shelf}) — {why}");
+                unreached = true;
+            }
         }
     }
-    got
+    (got, unreached)
+}
+
+/// What looking for one game's pictures came to.
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
+pub struct Looked {
+    pub pictures: Pictures,
+    /// Whether the server could not be reached to answer — no listing of the
+    /// shelf on this disk and none to be had, or a picture that did not come
+    /// down. The one outcome worth asking about again: a game libretro has no
+    /// picture of is an answer, and one it could not be asked about is not.
+    pub unreached: bool,
+}
+
+/// Look for one game's pictures on its console's shelves, fetching the
+/// listings first where they are stale — the game in the drive's question.
+///
+/// A listing that cannot be fetched is not fatal where an older one is on the
+/// disk: which games exist barely changes in a fortnight. Where there is none,
+/// nothing can be matched, and that is the server not being reached.
+pub fn look_for_one(
+    agent: &ureq::Agent,
+    cache: &Path,
+    machine: &'static Machine,
+    title: &str,
+) -> Looked {
+    let mut unreached = false;
+    for shelf in machine.shelves {
+        let at = listing_file(cache, shelf);
+        if fresh(&at) {
+            continue;
+        }
+        match fetch_listing(agent, shelf) {
+            Ok(names) => store_listing(&at, &names),
+            Err(why) => {
+                eprintln!("art: {shelf} could not be listed: {why}");
+                unreached |= !at.is_file();
+            }
+        }
+    }
+    let shelves = shelves_here(cache, Some(machine));
+    let (pictures, failed) = fetch_telling(agent, cache, &shelves, title);
+    Looked {
+        pictures,
+        unreached: unreached || failed,
+    }
 }
 
 impl Pictures {
@@ -622,12 +682,21 @@ fn decoded(link: &str) -> String {
 /// off one host, and a fresh TLS session for each of them is most of the cost
 /// of the picture — as well as being an impolite way to treat somebody's free
 /// server.
-fn agent() -> ureq::Agent {
+pub fn agent() -> ureq::Agent {
+    agent_with(PATIENCE)
+}
+
+/// [`agent`], giving up sooner — for a question something is waiting on, where
+/// a machine that is off the air has to be found out in seconds rather than
+/// minutes. The connection itself is given a fraction of it: a server that
+/// cannot be reached at all says so long before one that is merely slow.
+pub fn agent_with(patience: Duration) -> ureq::Agent {
     ureq::Agent::config_builder()
         // A game with no cover answers 404, and that is an answer this acts on
         // rather than an error to be raised.
         .http_status_as_error(false)
-        .timeout_global(Some(PATIENCE))
+        .timeout_global(Some(patience))
+        .timeout_connect(Some(patience / 4))
         .user_agent(concat!("LineXinBar/", env!("CARGO_PKG_VERSION")))
         .build()
         .into()

@@ -28,6 +28,12 @@
 //!   library on it valid from one boot to the next. See [`at_startup_as_root`]
 //!   for why that one goes through `pkexec`.
 //!
+//! And a disc in an optical drive is listed for itself — see [`Disc`] — whatever
+//! is on it, because a game disc is very often not a file system UDisks can
+//! name: a PC Engine CD begins with a track of music, a 3DO disc is a file
+//! system of its own. What is on it is the RetroArch helper's question; see
+//! `crate::retroarch`. **Eject** is the one press made on a disc.
+//!
 //! ## Plugged in, mounted
 //!
 //! A drive UDisks marks as one to mount by itself — a USB stick, an SD card:
@@ -168,6 +174,30 @@ impl Volume {
     }
 }
 
+/// A disc in an optical drive.
+///
+/// Listed apart from [`Volume`] because it is asked about apart from one: what
+/// matters about a disc is that it has just gone in, and a game disc need hold
+/// nothing UDisks recognises as a file system at all.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Disc {
+    /// The drive's block device — `/dev/sr0` — which is what a disc is read
+    /// through.
+    pub device: PathBuf,
+    /// The kernel's number for that device, as a [`Volume`]'s is: what a press
+    /// on the disc carries, and what the worker says it is working on.
+    pub number: u64,
+    /// UDisks' object for the drive, which is what ejects it.
+    pub drive: String,
+    /// When UDisks saw this disc arrive. A different number for every disc
+    /// put in — the same one taken out and put back included — which is what
+    /// makes it the disc's identity rather than the drive's.
+    pub inserted: u64,
+    /// Whether it holds any data at all. A music CD holds none, and is nobody's
+    /// game.
+    pub data: bool,
+}
+
 /// What the worker is doing to a drive, while it does it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Doing {
@@ -175,6 +205,7 @@ pub enum Doing {
     Unmounting,
     Removing,
     AtStartup(bool),
+    Ejecting,
 }
 
 /// Why a press did not do what it said.
@@ -219,12 +250,15 @@ pub enum Act {
     Unmount,
     Remove,
     AtStartup(bool),
+    Eject,
 }
 
 /// Every drive that could be mounted, and what is being done to which.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Listing {
     pub volumes: Vec<Volume>,
+    /// The discs in the optical drives.
+    pub discs: Vec<Disc>,
     /// Drives a press is being carried out on, by number.
     pub doing: Vec<(u64, Doing)>,
     /// What the last Mount at startup press on a drive came to, when it did
@@ -237,6 +271,10 @@ pub struct Listing {
 impl Listing {
     pub fn volume(&self, number: u64) -> Option<&Volume> {
         self.volumes.iter().find(|volume| volume.number == number)
+    }
+
+    pub fn disc(&self, number: u64) -> Option<&Disc> {
+        self.discs.iter().find(|disc| disc.number == number)
     }
 
     /// The one the kernel calls `device`.
@@ -307,6 +345,7 @@ enum Ask {
     Unmount(u64),
     Remove(u64),
     AtStartup(u64, bool),
+    Eject(u64),
 }
 
 /// The drives, and the worker that keeps them true.
@@ -385,6 +424,11 @@ impl Drives {
 
     pub fn at_startup(&self, number: u64, on: bool) -> bool {
         self.ask(number, Doing::AtStartup(on), Ask::AtStartup(number, on))
+    }
+
+    /// Unmount whatever on a disc was mounted, and open the tray.
+    pub fn eject(&self, number: u64) -> bool {
+        self.ask(number, Doing::Ejecting, Ask::Eject(number))
     }
 
     fn ask(&self, number: u64, doing: Doing, ask: Ask) -> bool {
@@ -514,6 +558,7 @@ impl Worker {
         match managed_objects(bus) {
             Some(objects) => Listing {
                 volumes: volumes(&objects, unsafe { libc::getuid() }),
+                discs: discs(&objects),
                 service: true,
                 ..Listing::default()
             },
@@ -583,17 +628,38 @@ impl Worker {
             Ask::Mount { number, .. }
             | Ask::Unmount(number)
             | Ask::Remove(number)
-            | Ask::AtStartup(number, _) => *number,
+            | Ask::AtStartup(number, _)
+            | Ask::Eject(number) => *number,
         };
         let (act, open) = match &ask {
             Ask::Mount { open, .. } => (Act::Mount, *open),
             Ask::Unmount(_) => (Act::Unmount, false),
             Ask::Remove(_) => (Act::Remove, false),
             Ask::AtStartup(_, on) => (Act::AtStartup(*on), false),
+            Ask::Eject(_) => (Act::Eject, false),
         };
         // Read afresh rather than taken from the listing the press was made
         // on: it is the object UDisks has *now* that the call goes to.
         let listing = self.read();
+        // A disc is not a volume — it may hold nothing UDisks can mount — so
+        // it is found among the discs, and answered here.
+        if act == Act::Eject {
+            let result = match (self.bus.as_ref(), listing.disc(number)) {
+                (Some(bus), Some(disc)) => eject(bus, &listing, disc),
+                (_, None) => {
+                    tracing::info!(number, "the disc that was to be ejected has gone already");
+                    Ok(())
+                }
+                (None, _) => Err(Refusal::Failed),
+            };
+            return Outcome {
+                number,
+                title: String::new(),
+                act,
+                result: result.map(|()| None),
+                open,
+            };
+        }
         let Some(volume) = listing.volume(number).cloned() else {
             tracing::warn!(number, "the drive that was pressed has gone");
             return Outcome {
@@ -637,6 +703,7 @@ impl Worker {
                 }),
             (Some(bus), Act::Remove) => safely_remove(bus, &listing, &volume).map(|()| None),
             (Some(_), Act::AtStartup(on)) => ask_root_for_startup(&volume, on).map(|()| None),
+            (Some(_), Act::Eject) => Err(Refusal::Failed),
         };
         Outcome {
             number,
@@ -806,6 +873,82 @@ fn volumes(objects: &Objects, uid: u32) -> Vec<Volume> {
     // whose rows swap under a cursor for no reason at all.
     found.sort_by(|a, b| a.device.cmp(&b.device));
     found
+}
+
+/// Every optical drive with a disc in it.
+///
+/// The drive's own block device, whatever the disc holds — not a partition of
+/// it, which a disc does not have, and not only one with a file system UDisks
+/// recognises. A blank disc waiting to be written is not a disc anybody can
+/// open, and is left out.
+fn discs(objects: &Objects) -> Vec<Disc> {
+    let mut found = Vec::new();
+    for interfaces in objects.values() {
+        let Some(block) = interfaces.get(BLOCK) else {
+            continue;
+        };
+        if interfaces.contains_key(PARTITION) {
+            continue;
+        }
+        let Some(drive) = object_path(block, "Drive") else {
+            continue;
+        };
+        let Some(facts) = objects
+            .iter()
+            .find(|(path, _)| path.as_str() == drive)
+            .and_then(|(_, interfaces)| interfaces.get(DRIVE))
+        else {
+            continue;
+        };
+        if !flag(facts, "Optical") || !flag(facts, "MediaAvailable") || flag(facts, "OpticalBlank")
+        {
+            continue;
+        }
+        let Some(device) = bytes(block, "Device") else {
+            continue;
+        };
+        found.push(Disc {
+            device: PathBuf::from(device),
+            number: number(Some(block), "DeviceNumber").unwrap_or_default(),
+            drive,
+            inserted: number(Some(facts), "TimeMediaDetected").unwrap_or_default(),
+            data: number(Some(facts), "OpticalNumDataTracks").unwrap_or_default() > 0,
+        });
+    }
+    found.sort_by(|a, b| a.device.cmp(&b.device));
+    found
+}
+
+/// Unmount whatever on the disc is mounted, then open the tray.
+///
+/// UDisks refuses to eject a drive with something mounted on it, and an eject
+/// is a press that means "I am done with this disc", so the unmounting is the
+/// press's own. A game still reading the disc keeps it busy, which is what the
+/// refusal says.
+fn eject(bus: &zbus::blocking::Connection, listing: &Listing, disc: &Disc) -> Result<(), Refusal> {
+    for volume in listing
+        .volumes
+        .iter()
+        .filter(|volume| volume.drive.as_deref() == Some(disc.drive.as_str()))
+        .filter(|volume| !volume.mounted_at.is_empty())
+    {
+        unmount(bus, &volume.object).map_err(|(refusal, why)| {
+            tracing::warn!(
+                drive = volume.device,
+                ?refusal,
+                why,
+                "the disc was not unmounted"
+            );
+            refusal
+        })?;
+    }
+    let options: HashMap<&str, Value> = HashMap::new();
+    call::<_, ()>(bus, &disc.drive, DRIVE, "Eject", &(options,), true).map_err(|err| {
+        tracing::warn!(drive = disc.drive, ?err, "the disc was not ejected");
+        refusal(&err)
+    })?;
+    tracing::info!(device = %disc.device.display(), "ejected");
+    Ok(())
 }
 
 /// One line of the machine's mount table, as UDisks hands it over.

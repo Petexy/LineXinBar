@@ -224,6 +224,7 @@ package_lxb-retroarch() {
     optdepends=(
         'flatpak: installing RetroArch from the shell, and running the flatpak build'
         'retroarch: the distribution package, which is preferred over the flatpak'
+        'fuse3: playing a CD game disc straight from the drive (fusermount3)'
     )
 
     cd "$pkgbase-$pkgver"

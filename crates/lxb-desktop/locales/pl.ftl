@@ -1357,6 +1357,8 @@ search-none-match = { $what ->
     [game] Żadna gra nie pasuje
    *[layout] Żaden układ nie pasuje
     }
+search-type-to-find = Zacznij pisać, aby przeszukać wszystko
+search-found-nothing = Nic nie znaleziono dla „{ $query }”
 search-matched = { $matched ->
     [few] Pasują
    *[other] Pasuje
@@ -1706,6 +1708,9 @@ retroarch-helper-answered-nothing = { $helper } nie odpowiedział ({ $status })
 retroarch-helper-could-not-be-waited-for = Nie udało się poczekać na { $helper }: { $error }
 retroarch-getting-progress = { $getting } — { $at } z { $of }
 retroarch-console-needs-download = { $console } — wymagane pobranie
+retroarch-game-disc = Płyta z grą
+retroarch-disc-of = Płyta: { $console }
+retroarch-eject-disc = Wysuń
 retroarch-console-no-emulator = { $console } — brak emulatora do uruchomienia
 retroarch-get-missing-emulators = { $count ->
     [one] Pobierz brakujący emulator
@@ -1795,6 +1800,7 @@ drive-mount-failed = Nie udało się zamontować tego dysku.
 drive-unmount-failed = Nie udało się odmontować tego dysku.
 drive-in-use = Coś nadal używa tego dysku. Zamknij to i spróbuj ponownie.
 drive-not-allowed = To konto nie ma do tego uprawnień.
+disc-eject-failed = Nie udało się wysunąć płyty.
 
 # Kraje według kodu ISO 3166, tak jak nazywa je kolumna układów klawiatury.
 country-none = Bez kraju

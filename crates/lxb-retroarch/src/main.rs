@@ -13,7 +13,7 @@
 //! plumbing, or a walk over somebody's ROM folder, and a distribution should be
 //! able to ship the shell without shipping an opinion about emulators.
 //!
-//! ## Seven questions and no state
+//! ## Eight questions and no state
 //!
 //! ```text
 //! lxb-retroarch probe          is there a RetroArch, and could there be one
@@ -23,10 +23,12 @@
 //! lxb-retroarch cores A,B ...  fetch a core per console, from libretro's server
 //! lxb-retroarch options        what every installed core can be set to
 //! lxb-retroarch art DIR        fetch the covers and screenshots of those games
+//! lxb-retroarch disc DEVICE    the game disc in a drive, served for as long as it is in
 //! ```
 //!
 //! Nothing here remembers anything between runs, and nothing here starts a
-//! game. Three of the seven reach the network, and only when asked: `install`
+//! game. `disc` is the one verb that stays: a disc's game has to be somewhere
+//! RetroArch can open for as long as the disc is in — see `disc.rs`. Three of the seven reach the network, and only when asked: `install`
 //! fetches RetroArch from Flathub, `cores` fetches a core from libretro's build
 //! server — the same one RetroArch's own Online Updater uses — and `art`
 //! fetches pictures from libretro's thumbnail server.
@@ -44,11 +46,16 @@ mod art;
 mod assets;
 mod consoles;
 mod cores;
+mod disc;
+mod drive;
 mod execstack;
 mod find;
 mod firmware;
+mod fuse;
+mod identify;
 mod install;
 mod options;
+mod rdb;
 mod report;
 mod scan;
 mod zip;
@@ -273,6 +280,19 @@ enum Asked {
         #[arg(long)]
         again: bool,
     },
+    /// Read the game disc in a drive and serve it to RetroArch for as long as
+    /// the disc is in.
+    ///
+    /// One record when the game can be started — once its cover has been
+    /// looked for — another if the cover comes down later, and another
+    /// whenever a line saying `again` on stdin asks for its core to be looked
+    /// up afresh. `pictures` on stdin looks for a missing cover again. The end
+    /// of stdin ends it, and takes away everything it put in the cache.
+    Disc {
+        /// The drive: `/dev/sr0`. A file is read as an image of a disc, which
+        /// is how the whole path is tried without one.
+        device: PathBuf,
+    },
 }
 
 fn main() -> ExitCode {
@@ -437,74 +457,7 @@ fn main() -> ExitCode {
         }
         Asked::Scan { roms } => {
             let mut library = scan::library(&roms);
-            // One listing of the core directories for the whole library rather
-            // than one per console: it is a `readdir` of two or three places,
-            // and a machine with forty consoles in its folder would otherwise
-            // do it forty times over.
-            if let Some(installation) = find::installation() {
-                let cores = find::Cores::of(&installation);
-                // Before anything is looked up: a core built asking for a stack
-                // it can execute is one no current glibc will load, and the
-                // repair is one bit in a header. Done here because this is the
-                // run that happens whenever the shell starts and whenever the
-                // folder changes, so a core that arrived by RetroArch's own
-                // updater is fixed as surely as one this helper fetched.
-                if let Some(own) = cores.own() {
-                    execstack::repair(own);
-                }
-                // Where the files a core reads beside itself would be, read
-                // once for the whole library for the reason the core listing
-                // is: it is one look at one configuration file.
-                let system = find::config_dir(&installation).map(|at| assets::system_dir(&at));
-                // And libretro's own descriptions of those cores, which is
-                // where what a core cannot boot without is written down. Read
-                // once for the library, like the two above it.
-                let info = find::info_dir(&installation);
-                // Cores this machine has already tried and could not open. Read
-                // once, like everything else out here.
-                let refused = find::refused();
-                for console in &mut library.consoles {
-                    // The table's own order, less whatever this machine has
-                    // already downloaded and found it could not open.
-                    //
-                    // Deliberately *not* reordered by what can boot without a
-                    // BIOS. It was, once, and it put Play! in front of pcsx2 on
-                    // a machine with no PlayStation 2 BIOS — a core that starts
-                    // and plays almost nothing in front of the one people
-                    // actually use. What a console is best played with is a
-                    // question about emulators, and the answer to a missing
-                    // BIOS is to ask for the BIOS.
-                    find::drop_refused(&mut console.wanted, &refused);
-                    let wanted: Vec<&str> = console.wanted.iter().map(String::as_str).collect();
-                    console.core = cores.first_of(&wanted);
-                    // A core on the disk is not the same as a core that can
-                    // play something. The ones that read a folder beside
-                    // themselves are only half installed until it is there.
-                    console.incomplete = match (&console.core, &system) {
-                        (Some(core), Some(system)) => assets::wanted(system, &core.name).is_some(),
-                        _ => false,
-                    };
-                    // And what it cannot boot without — every required file it
-                    // declares, whether or not this machine has it, because the
-                    // shell keeps a row offering to go and find one and that row
-                    // has to be there after somebody has. Reported rather than
-                    // acted on: these are the console maker's files and nobody
-                    // may fetch them.
-                    console.needs = match (&console.core, &system, &info) {
-                        (Some(core), Some(system), Some(info)) => {
-                            firmware::declared(info, system, &core.name)
-                                .into_iter()
-                                // Less whatever this integration fetches for
-                                // itself, which is not a thing to ask anybody
-                                // for — see `assets::fetched`.
-                                .filter(|need| !assets::fetched(&core.name, &need.path))
-                                .collect()
-                        }
-                        _ => Vec::new(),
-                    };
-                }
-                library.system = system.map(|at| at.to_string_lossy().into_owned());
-            }
+            library.system = resolve(&mut library.consoles);
             // And the pictures already on this disk, which is a look at one
             // listing per console and two `stat`s per game. Nothing is fetched
             // here: a scan runs every time the shell starts and whenever a
@@ -512,6 +465,10 @@ fn main() -> ExitCode {
             // bar waiting on somebody's line to draw a row.
             pictures(&mut library);
             say(&mut out, &library)
+        }
+        Asked::Disc { device } => {
+            drop(out);
+            disc::run(&mut std::io::stdout().lock(), &device)
         }
         Asked::Art { roms, only, again } => {
             let mut library = scan::library(&roms);
@@ -523,6 +480,74 @@ fn main() -> ExitCode {
             }
         }
     }
+}
+
+/// Settle what plays each console: the core, whether it is whole, and what it
+/// cannot boot without — and answer where RetroArch's system folder is.
+///
+/// What a folder's scan and a disc in the drive both need, asked the same way
+/// so that a console played off a disc is exactly the console played out of a
+/// folder. Nothing at all is settled where there is no RetroArch.
+fn resolve(consoles: &mut [report::Console]) -> Option<String> {
+    let installation = find::installation()?;
+    // One listing of the core directories for all of them rather than one per
+    // console: it is a `readdir` of two or three places, and a machine with
+    // forty consoles in its folder would otherwise do it forty times over.
+    let cores = find::Cores::of(&installation);
+    // Before anything is looked up: a core built asking for a stack it can
+    // execute is one no current glibc will load, and the repair is one bit in
+    // a header. Done here because this is the run that happens whenever the
+    // shell starts and whenever the folder changes, so a core that arrived by
+    // RetroArch's own updater is fixed as surely as one this helper fetched.
+    if let Some(own) = cores.own() {
+        execstack::repair(own);
+    }
+    // Where the files a core reads beside itself would be, read once for all of
+    // them for the reason the core listing is: it is one look at one
+    // configuration file.
+    let system = find::config_dir(&installation).map(|at| assets::system_dir(&at));
+    // And libretro's own descriptions of those cores, which is where what a
+    // core cannot boot without is written down. Read once, like the two above.
+    let info = find::info_dir(&installation);
+    // Cores this machine has already tried and could not open. Read once, like
+    // everything else out here.
+    let refused = find::refused();
+    for console in consoles.iter_mut() {
+        // The table's own order, less whatever this machine has already
+        // downloaded and found it could not open.
+        //
+        // Deliberately *not* reordered by what can boot without a BIOS. It
+        // was, once, and it put Play! in front of pcsx2 on a machine with no
+        // PlayStation 2 BIOS — a core that starts and plays almost nothing in
+        // front of the one people actually use. What a console is best played
+        // with is a question about emulators, and the answer to a missing BIOS
+        // is to ask for the BIOS.
+        find::drop_refused(&mut console.wanted, &refused);
+        let wanted: Vec<&str> = console.wanted.iter().map(String::as_str).collect();
+        console.core = cores.first_of(&wanted);
+        // A core on the disk is not the same as a core that can play
+        // something. The ones that read a folder beside themselves are only
+        // half installed until it is there.
+        console.incomplete = match (&console.core, &system) {
+            (Some(core), Some(system)) => assets::wanted(system, &core.name).is_some(),
+            _ => false,
+        };
+        // And what it cannot boot without — every required file it declares,
+        // whether or not this machine has it, because the shell keeps a row
+        // offering to go and find one and that row has to be there after
+        // somebody has. Reported rather than acted on: these are the console
+        // maker's files and nobody may fetch them.
+        console.needs = match (&console.core, &system, &info) {
+            (Some(core), Some(system), Some(info)) => firmware::declared(info, system, &core.name)
+                .into_iter()
+                // Less whatever this integration fetches for itself, which is
+                // not a thing to ask anybody for — see `assets::fetched`.
+                .filter(|need| !assets::fetched(&core.name, &need.path))
+                .collect(),
+            _ => Vec::new(),
+        };
+    }
+    system.map(|at| at.to_string_lossy().into_owned())
 }
 
 /// Say which of a library's games already have their pictures on this disk.

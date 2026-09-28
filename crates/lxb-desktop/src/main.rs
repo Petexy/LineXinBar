@@ -73,6 +73,7 @@ mod retroachievements;
 mod retroarch;
 mod reveal;
 mod screenshot;
+mod search;
 mod secret;
 mod settings;
 mod sound;
@@ -1335,6 +1336,10 @@ fn main() -> anyhow::Result<()> {
         open_with_keeps: false,
         sorting: None,
         searching: None,
+        next_search: 0,
+        searches_stale: false,
+        search_offered: None,
+        shift_alone: false,
         file_sort: settings::file_sort().unwrap_or_default(),
         file_orders: media::Orders::default(),
         show_hidden: settings::show_hidden(),
@@ -1353,6 +1358,7 @@ fn main() -> anyhow::Result<()> {
         net: network::Net::start(),
         network_seen: 0,
         signal_seen: None,
+        online_seen: None,
         power: match cli.debug_power_supply.clone() {
             Some(root) => {
                 tracing::warn!(?root, "reading the battery out of a fixture");
@@ -1643,6 +1649,11 @@ fn main() -> anyhow::Result<()> {
         // board — with the difference that walking away from a name is giving
         // up on it. See [`Shell::sync_rename`].
         shell.sync_rename();
+        // And a search of the whole bar, whose control can have moved to
+        // another display and whose results may be about a bar a worker has
+        // since rebuilt. Before the workers below hand in this frame's news,
+        // which is found again on the next one.
+        shell.sync_bar_searches();
         // A package manager answering is not a Wayland event and cannot wake
         // this loop, but the loop wakes anyway to poll the controller — which
         // is the only reason a worker can hand its answer to a frame at all.
@@ -4161,6 +4172,31 @@ struct Shell {
     /// shelf with. `None` whenever the board is not in a search, which is
     /// nearly always.
     searching: Option<Searching>,
+    /// The number the next search of the whole bar is given. Each display's
+    /// search finds its own column of results by it — see
+    /// [`model::Lattice::searches`] — so it is never given out twice.
+    next_search: u64,
+    /// Whether what the searches of the whole bar have found may no longer be
+    /// what the bar holds: something on it has been rebuilt since. Every search
+    /// that is up is looked for again, once, on the next frame. See
+    /// [`Shell::sync_bar_searches`].
+    searches_stale: bool,
+    /// The display the on-screen keyboard was raised over to begin a search of
+    /// the whole bar, while nothing has been typed on it yet.
+    ///
+    /// The row does not gather for a board coming up — the user may be about
+    /// to put it away again — only for the first letter typed on it. Until then
+    /// this is what says the board's letters are the shell's.
+    search_offered: Option<usize>,
+    /// Shift is down on the start screen and nothing has been pressed under
+    /// it yet.
+    ///
+    /// Shift on its own raises the friends list. On the start screen it is
+    /// also the key capital letters are typed with, and a search that began
+    /// with one would open the friends list instead — so there it is answered
+    /// when it comes back *up* with nothing typed in between. See
+    /// [`Shell::on_key`].
+    shift_alone: bool,
     /// What order every folder of the file explorer is listed in, and what the
     /// last folder read could be ordered by.
     ///
@@ -4298,6 +4334,11 @@ struct Shell {
     /// depend on that being true: what says something has to be redrawn in this
     /// shell is the change itself, and nothing else.
     signal_seen: Option<network::Signal>,
+    /// Whether the machine could reach the internet, as of the last frame that
+    /// asked. Kept so that coming back online is an event: a game disc that
+    /// went in while the machine was offline is on the bar without its cover,
+    /// and this is the moment to ask for it again.
+    online_seen: Option<bool>,
     /// What is in this machine's battery, and the worker that keeps it true.
     /// The other mark in the start screen's corner is drawn from it, and the
     /// row under Appearance that decides whether it carries a number exists
@@ -7411,7 +7452,11 @@ impl Shell {
             return;
         }
         let keysym = held.keysym;
-        if !key_repeats(keysym, self.password_wanted()) {
+        // A letter held down in a search of the whole bar is a letter typed
+        // again, as it is in a password — and not, as it would be on the bar
+        // underneath, a direction for the handful of letters that used to be
+        // one there.
+        if !key_repeats(keysym, self.password_wanted() || self.bar_search_typing()) {
             // Acted once when it was pressed, and that was the whole of it.
             // Dropped rather than left to be asked about every pass: what the
             // key is worth cannot change while it is down.
@@ -7934,6 +7979,12 @@ impl Shell {
         // arriving by a shorter route; on any other one it is the only route
         // there is, and it covers the shell's own screens.
         self.hands_moved_to_the_keyboard();
+        // Anything pressed while Shift is down makes Shift a modifier, and
+        // letting go of it afterwards is not a press of it. See
+        // [`Shell::shift_alone`].
+        if !matches!(keysym, Keysym::Shift_L | Keysym::Shift_R) {
+            self.shift_alone = false;
+        }
         // A field of the shell's own takes the whole keyboard while it is up,
         // and takes it first. Everything below this line turns keys into
         // *actions* — Q would be Back, Escape would leave the panel — and a
@@ -7976,6 +8027,11 @@ impl Shell {
             // A key the board's keymap has no character for — a bare modifier,
             // a volume key — is not this field's and is not an action either
             // while the field is up.
+            return;
+        }
+        // The start screen, where a letter is the beginning of a search of the
+        // whole bar rather than a direction or a button.
+        if self.search_by_typing(keysym) {
             return;
         }
         // Page Up, Page Down and End over the terminal frame, which is what
@@ -8032,6 +8088,50 @@ impl Shell {
         }
     }
 
+    /// A key pressed on the start screen with nothing in front of it. Whether
+    /// it was the search's.
+    ///
+    /// Every letter, digit and mark there begins a search of the whole bar, or
+    /// takes up typing again into one that has been kept — which is why the
+    /// letters that used to be directions and buttons on the bar (W, A, S and
+    /// D, H, J, K and L, Y) are letters there now. The arrows, Enter, the
+    /// space bar, Escape, Tab and the Menu key keep their jobs, and so does
+    /// Backspace until there is a kept search for it to take a letter off.
+    ///
+    /// Shift is held back until it is let go of: it is also what a capital is
+    /// typed with. See [`Shell::shift_alone`].
+    fn search_by_typing(&mut self, keysym: Keysym) -> bool {
+        if !self.the_bar_takes_a_search() {
+            return false;
+        }
+        if matches!(keysym, Keysym::Shift_L | Keysym::Shift_R) {
+            self.shift_alone = true;
+            return true;
+        }
+        let kept = self
+            .panels
+            .get(self.focused_panel)
+            .and_then(|panel| panel.cursor.search())
+            .map(|search| search.query.clone());
+        match keyboard::stroke_for(keysym) {
+            Some(keyboard::Stroke::Char(character)) if !character.is_whitespace() => {
+                let mut query = kept.unwrap_or_default();
+                query.push(character);
+                self.begin_bar_search(query);
+                true
+            }
+            Some(keyboard::Stroke::BACKSPACE) => match kept {
+                Some(mut query) => {
+                    query.pop();
+                    self.begin_bar_search(query);
+                    true
+                }
+                None => false,
+            },
+            _ => false,
+        }
+    }
+
     /// Apply one keystroke to whichever field of the shell's own is waiting for
     /// it. Returns whether there was one.
     ///
@@ -8053,6 +8153,7 @@ impl Shell {
             || self.type_into_steam(stroke)
             || self.type_into_picker(stroke)
             || self.type_into_search(stroke)
+            || self.type_into_bar_search(stroke)
             || self.type_into_rename(stroke)
             // Last, because it is the field that is hardest to reach: the
             // friends panel is drawn over everything the rows above belong to,
@@ -8070,6 +8171,7 @@ impl Shell {
             || self.steam.field_wanted()
             || self.retroachievements.typing()
             || self.search_wanted()
+            || self.bar_search_typing()
             || self.rename_wanted()
             || self.picker_field_wanted()
             || self.composing()
@@ -8833,6 +8935,12 @@ impl Shell {
                 if self.skip_the_shader_wait() {
                     return;
                 }
+                // A place a search of the whole bar found is opened where it
+                // lives, not here. Everything else it found — a program, a game
+                // — is pressed from where it is, and goes on down this road.
+                if self.press_found() {
+                    return;
+                }
                 // While a column is being marked, the press that opens things
                 // ticks them instead. Ahead of the read below, because a folder
                 // under the cursor is a row being ticked rather than a column
@@ -9433,6 +9541,15 @@ impl Shell {
             self.needs_redraw = true;
             return;
         }
+        // A search of the whole bar is given up whole, at whatever stage: the
+        // phrase being typed, board and all, or what it found being looked
+        // through. Ahead of the plain "put the board away" below for the reason
+        // a rename is — the board is up for the search, and Back is the one
+        // press the user was told gives it up. The row spreads back out onto
+        // wherever they were standing when they began.
+        if self.cancel_bar_search() {
+            return;
+        }
         // The keyboard is in front of everything else the shell draws, so it
         // is the first thing Back takes away — and the field it was typing
         // into is still there afterwards, which is what the corner hint is
@@ -9681,6 +9798,20 @@ impl Shell {
     /// does nothing.
     fn toggle_keyboard(&mut self) {
         if self.osk.close() {
+            // Put away over a search of the whole bar: what was typed is kept,
+            // as Start would have kept it, and one nobody typed into is gone
+            // with the board that was waiting for it.
+            if self.search_offered.take().is_none() {
+                self.keep_bar_search();
+            }
+            self.sync_surface_state();
+            self.needs_redraw = true;
+            return;
+        }
+        // Asked for on the start screen, where the board is for searching the
+        // whole bar: there is nothing else on it to type into.
+        if self.offer_bar_search() {
+            self.guide.close();
             self.sync_surface_state();
             self.needs_redraw = true;
             return;
@@ -12644,6 +12775,439 @@ impl Shell {
         self.needs_redraw = true;
     }
 
+    // -- searching the whole bar -------------------------------------------
+    //
+    // Somebody on the start screen who starts typing is looking for something
+    // by name. The row gathers into one button, what they type is written
+    // beside it, and the column under it is everything on the bar that the
+    // name fits — see [`search`] for what is looked through, and
+    // [`model::Cursor::begin_search`] for how the cursor stands in it. Enter or
+    // Start keeps the phrase and hands the column over to be looked through;
+    // Escape or B gives the whole search up and the row spreads back out.
+
+    /// Whether the start screen is where the keys are going and nothing is
+    /// standing in front of it, so that a letter typed now is somebody
+    /// looking for something.
+    ///
+    /// Not while anything with buttons of its own is up — a menu, a panel, the
+    /// friends list, the guide — and not in the middle of a walk the bar is
+    /// doing for somebody else: carrying a file, marking a column, naming
+    /// something, choosing a picture. Those are all answered by the presses
+    /// they are already waiting for.
+    fn the_bar_takes_a_search(&self) -> bool {
+        // The bar itself on the display being driven: nothing in front of it,
+        // or it drawn over what is.
+        let bar_on_screen = matches!(self.guide.mode(), guide::Mode::BarOverApp)
+            || (!self.guide.is_menu() && !self.app_in_front_of(self.focused_panel));
+        self.startup.ready
+            && !self.is_leaving()
+            && bar_on_screen
+            && !self.lattice.categories.is_empty()
+            && !self.osk.is_open()
+            && !self.dialog.is_open()
+            && !self.context_menu.is_open()
+            && !self.friends.is_open()
+            && !self.file_question_is_open()
+            && self.carrying.is_none()
+            && self.renaming.is_none()
+            && self.marking.is_none()
+            && !self.choosing_a_wallpaper()
+            && self.choosing_a_game_picture().is_none()
+            && !self.choosing_a_portrait()
+            && !self.splash_on_screen(self.focused_panel)
+            && !self.field_wanted()
+    }
+
+    /// Whether the driven display's search of the whole bar is being typed
+    /// into — or the board was raised to begin one and is waiting for its
+    /// first letter.
+    ///
+    /// Not while the guide is open over it: the menu has the keys then, and
+    /// the phrase waits under it for the menu to go.
+    fn bar_search_typing(&self) -> bool {
+        if self.guide.is_menu() {
+            return false;
+        }
+        let typing = self
+            .panels
+            .get(self.focused_panel)
+            .and_then(|panel| panel.cursor.search())
+            .is_some_and(|search| search.typing);
+        typing || (self.search_offered == Some(self.focused_panel) && self.osk.is_open())
+    }
+
+    /// Apply one keystroke to the search of the whole bar. Whether there was
+    /// one for it to go into.
+    fn type_into_bar_search(&mut self, stroke: keyboard::Stroke) -> bool {
+        if !self.bar_search_typing() {
+            return false;
+        }
+        let focused = self.focused_panel;
+        let typed = self
+            .panels
+            .get(focused)
+            .and_then(|panel| panel.cursor.search())
+            .map(|search| search.query.clone());
+        match stroke {
+            keyboard::Stroke::Char(character) => {
+                let mut query = typed.unwrap_or_default();
+                query.push(character);
+                self.begin_bar_search(query);
+            }
+            keyboard::Stroke::BACKSPACE => {
+                // Down to nothing is still a search: the row stays gathered
+                // and the column says what typing will do. Taking a letter back
+                // is not asking for the search to be given up.
+                if let Some(mut query) = typed {
+                    query.pop();
+                    self.begin_bar_search(query);
+                }
+            }
+            keyboard::Stroke::ENTER => self.keep_bar_search(),
+            keyboard::Stroke::ESCAPE => {
+                self.cancel_bar_search();
+            }
+            // Tab, the arrows, the function keys: a field of one line has no
+            // use for any of them, and passing them to the bar underneath would
+            // walk the cursor while the phrase is still being written.
+            _ => {}
+        }
+        true
+    }
+
+    /// Begin a search of the whole bar on the driven display, or go on with the
+    /// one that is up, with `query` as what has been typed.
+    fn begin_bar_search(&mut self, query: String) {
+        let focused = self.focused_panel;
+        let Some(panel) = self.panels.get_mut(focused) else {
+            return;
+        };
+        if !panel.cursor.searching() {
+            self.next_search += 1;
+            let id = self.next_search;
+            self.lattice.searches.push(search::Found::empty(id));
+            panel.cursor.begin_search(id, query.clone());
+            tracing::debug!("a search of the whole bar began");
+        } else {
+            panel.cursor.begin_search(0, query.clone());
+        }
+        self.search_offered = None;
+        self.look_again(focused, false);
+        self.needs_redraw = true;
+    }
+
+    /// Keep the phrase: the field goes, and what it found is left to be looked
+    /// through from the first thing it found.
+    ///
+    /// Silent, as keeping a column's own search is: nothing has been chosen
+    /// yet, and the next press is the one that will be answered.
+    fn keep_bar_search(&mut self) {
+        let focused = self.focused_panel;
+        // A board raised to begin a search that nobody typed into: there is
+        // nothing to keep, so the board simply goes.
+        if self.search_offered.take().is_some() && self.osk.close() {
+            self.sync_surface_state();
+        }
+        let Some(panel) = self.panels.get_mut(focused) else {
+            return;
+        };
+        let Some(search) = panel.cursor.search_mut().filter(|search| search.typing) else {
+            return;
+        };
+        search.typing = false;
+        panel.cursor.stand_on(0);
+        if self.osk.types_here() && self.osk.close() {
+            self.sync_surface_state();
+        }
+        self.needs_redraw = true;
+    }
+
+    /// Take up typing into a search that has been kept, from where the phrase
+    /// was left — a letter typed over the results, or the board asked for.
+    fn type_into_the_kept_search(&mut self) {
+        if let Some(search) = self
+            .panels
+            .get_mut(self.focused_panel)
+            .and_then(|panel| panel.cursor.search_mut())
+        {
+            search.typing = true;
+            self.needs_redraw = true;
+        }
+    }
+
+    /// Give the driven display's search up: the board goes if it was up for
+    /// it, and the row spreads back out onto where the user was. Whether there
+    /// was one to give up.
+    fn cancel_bar_search(&mut self) -> bool {
+        let offered = self.search_offered.take().is_some();
+        let focused = self.focused_panel;
+        let ended = match self.panels.get_mut(focused) {
+            Some(panel) => panel.cursor.end_search(&self.lattice),
+            None => false,
+        };
+        if !offered && !ended {
+            return false;
+        }
+        if self.osk.types_here() && self.osk.close() {
+            self.sync_surface_state();
+        }
+        tracing::debug!("the search of the whole bar was given up");
+        // The way back out, and it sounds like one.
+        self.stepped_back();
+        true
+    }
+
+    /// Raise the board to begin a search of the whole bar, where that is what
+    /// the board being asked for on the start screen means. Whether it did.
+    ///
+    /// Here rather than through the virtual keyboard, for the reason every
+    /// field of the shell's own is: what is typed belongs to the shell, and a
+    /// letter sent the other way would go to whichever client holds the keys —
+    /// on the start screen, nobody. A search that has been kept is typed into
+    /// again from where it was left.
+    fn offer_bar_search(&mut self) -> bool {
+        // Only where the bar is on the screen with nothing in front of it — a
+        // kept search behind a game is not what a board asked for over that
+        // game is for.
+        if !self.the_bar_takes_a_search() {
+            return false;
+        }
+        let kept = self
+            .panels
+            .get(self.focused_panel)
+            .is_some_and(|panel| panel.cursor.searching());
+        if kept {
+            self.type_into_the_kept_search();
+        } else {
+            self.search_offered = Some(self.focused_panel);
+        }
+        self.osk.open_here();
+        true
+    }
+
+    /// What a search of the whole bar reads the three libraries from: every
+    /// game each holds, whatever its own column has been narrowed to.
+    fn search_libraries(&self) -> search::Libraries {
+        search::Libraries {
+            steam: self.steam.every_row(),
+            epic: self.heroic.every_row(),
+            trophies: self.trophy_games().0,
+        }
+    }
+
+    /// Look for what display `panel` is searching for, again.
+    ///
+    /// `keep` is whether the cursor stays on the row it was on: yes where the
+    /// bar was rebuilt under a phrase that has not changed, so somebody reading
+    /// the list is not moved off what they are reading; no where the phrase
+    /// itself changed, which is a different list with nothing in it to stay on
+    /// — the cursor goes to the first thing found, which is the best.
+    fn look_again(&mut self, panel: usize, keep: bool) {
+        let Some((id, query)) = self
+            .panels
+            .get(panel)
+            .and_then(|panel| panel.cursor.search_held().zip(panel.cursor.search()))
+            .map(|(id, search)| (id, search.query.clone()))
+        else {
+            return;
+        };
+        let libraries = self.search_libraries();
+        let found = search::find(id, &self.lattice.categories, &libraries, &query);
+        let was = keep
+            .then(|| {
+                let cursor = &self.panels.get(panel)?.cursor;
+                let row = cursor.selected_item();
+                self.lattice.found(id)?.key(row).map(str::to_owned)
+            })
+            .flatten();
+        let row = was.and_then(|key| found.row_of(&key)).unwrap_or(0);
+        match self.lattice.searches.iter_mut().find(|held| held.id == id) {
+            Some(held) => *held = found,
+            None => self.lattice.searches.push(found),
+        }
+        if let Some(panel) = self.panels.get_mut(panel) {
+            panel.cursor.stand_on(row);
+        }
+        self.needs_redraw = true;
+    }
+
+    /// Keep every search of the whole bar in step with the bar, once a frame.
+    ///
+    /// What a search found are copies of rows, so a bar rebuilt underneath one
+    /// — a game finishing its download, a program installed, a setting changed
+    /// — is a search to be made again; [`Shell::searches_stale`] says one was.
+    /// A search typed on a display that control has left is kept as it stands,
+    /// and the column of one no display is holding any more is let go of.
+    fn sync_bar_searches(&mut self) {
+        let focused = self.focused_panel;
+        // And one left being typed into with nothing to type with: a pad in the
+        // user's hands and no board up — the guide took the board away, or the
+        // hands went from the keyboard to the pad. The phrase is kept, as Start
+        // would have kept it; the board brings the field back.
+        let nothing_to_type_with = settings::controller_in_hand() && !self.osk.is_open();
+        for (index, panel) in self.panels.iter_mut().enumerate() {
+            if index == focused && !nothing_to_type_with {
+                continue;
+            }
+            if let Some(search) = panel.cursor.search_mut().filter(|search| search.typing) {
+                search.typing = false;
+                self.needs_redraw = true;
+            }
+        }
+        if self
+            .search_offered
+            .is_some_and(|at| at != focused || !self.osk.is_open())
+        {
+            self.search_offered = None;
+        }
+        let held: Vec<u64> = self
+            .panels
+            .iter()
+            .filter_map(|panel| panel.cursor.search_held())
+            .collect();
+        self.lattice
+            .searches
+            .retain(|found| held.contains(&found.id));
+        if !std::mem::take(&mut self.searches_stale) {
+            return;
+        }
+        for index in 0..self.panels.len() {
+            if self.panels[index].cursor.searching() {
+                self.look_again(index, true);
+            }
+        }
+    }
+
+    /// Say that the bar has been rebuilt, so what the searches of it found is
+    /// looked for again on the next frame. See [`Shell::sync_bar_searches`].
+    fn searches_go_stale(&mut self) {
+        self.searches_stale = true;
+    }
+
+    /// Answer a press on what a search of the whole bar found. Whether the
+    /// press was the search's to answer.
+    ///
+    /// A program, a game or a ROM is started from where it is, by the same
+    /// press that starts it in its own column — so this answers nothing for
+    /// those, and the press goes on down the ordinary road. Anything else is a
+    /// place: see [`Shell::take_home`].
+    fn press_found(&mut self) -> bool {
+        let Some(panel) = self.panels.get(self.focused_panel) else {
+            return false;
+        };
+        let Some(id) = panel
+            .cursor
+            .search_held()
+            .filter(|_| panel.cursor.searching())
+        else {
+            return false;
+        };
+        let row = panel.cursor.selected_item();
+        let Some(home) = self
+            .lattice
+            .found(id)
+            .and_then(|found| found.homes.get(row))
+            .cloned()
+        else {
+            // Nothing found, so nothing was pressed.
+            return true;
+        };
+        // A press made with the field still up — a click on a row while typing
+        // — keeps the phrase on the way, as Enter would have.
+        if let Some(search) = self
+            .panels
+            .get_mut(self.focused_panel)
+            .and_then(|panel| panel.cursor.search_mut())
+        {
+            search.typing = false;
+        }
+        match home.press {
+            search::Press::Here => false,
+            search::Press::There => {
+                self.take_home(&home);
+                true
+            }
+        }
+    }
+
+    /// Take the driven display to where a result lives and open it there.
+    ///
+    /// The search is put away and the row spreads back out on the result's own
+    /// category, with the cursor already walked down to it — every page it is
+    /// inside opened on the way, as the user would have opened them — and then
+    /// pressed, exactly as a press on it in its own column would press it.
+    ///
+    /// The category is *placed*, not travelled to. At the moment this happens
+    /// the row is one button with everything gathered into it, so which
+    /// category that button is changes nothing on the screen; the row then
+    /// spreads out around the right one.
+    fn take_home(&mut self, home: &search::Home) {
+        let Some(at) = self
+            .lattice
+            .categories
+            .iter()
+            .position(|column| column.id == home.column)
+        else {
+            // The column has gone since the search looked. There is nowhere
+            // to take anybody, and the search is given up rather than left
+            // pointing at it.
+            self.cancel_bar_search();
+            return;
+        };
+        // A library's own field may be narrowing the column the result is in,
+        // and a narrowed column may not have it in it. Emptied first, so the
+        // row can be found: the user has asked for this row by name, which is
+        // a stronger request than the one they typed into that field earlier.
+        if let Some(of) = self.lattice.categories[at]
+            .entries
+            .first()
+            .and_then(apps::Entry::search)
+            .filter(|field| field.role == apps::Role::Field && !field.query.is_empty())
+            .map(|field| field.of)
+        {
+            self.set_search(of, String::new());
+        }
+        let focused = self.focused_panel;
+        let Some(panel) = self.panels.get_mut(focused) else {
+            return;
+        };
+        panel.cursor.arrive_at_category(at, &self.lattice);
+        let Some((last, inside)) = home.path.split_last() else {
+            return;
+        };
+        for step in inside {
+            let Some(row) = step.row_in(panel.cursor.current_entries(&self.lattice)) else {
+                return;
+            };
+            panel.cursor.stand_on(row);
+            if !panel.cursor.enter(&self.lattice) {
+                return;
+            }
+        }
+        let Some(row) = last.row_in(panel.cursor.current_entries(&self.lattice)) else {
+            return;
+        };
+        panel.cursor.stand_on(row);
+        tracing::debug!(column = home.column, "taken to what the search found");
+        // And pressed, down the one road every press on the bar takes.
+        self.handle_action(Action::Launch);
+    }
+
+    /// The games of the Trophies column, before its index, its order and its
+    /// own field are put on them — the list [`Shell::rebuild_trophies`] builds
+    /// the column out of, and a search of the whole bar reads — and whether any
+    /// of them came from the two stores rather than from RetroAchievements.
+    fn trophy_games(&self) -> (Vec<apps::Entry>, bool) {
+        let mut games = self.steam.trophy_games();
+        // Epic's beside Steam's, as games somebody has something to show for.
+        games.extend(self.heroic.trophy_rows());
+        let from_the_stores = !games.is_empty();
+        if retroarch::offered() && self.retroarch.command().is_some() {
+            games.extend(self.retroachievements.rows());
+        }
+        (games, from_the_stores)
+    }
+
     /// What the row the cursor is standing inside is called — "Music", "Video",
     /// "Images" — which is what the Sort list is titled after.
     ///
@@ -12858,7 +13422,9 @@ impl Shell {
             // A game in one of the console columns, which is a file on
             // somebody's disk exactly as the two above are — the same question,
             // the same trash, and the same panel if it will not go.
-            apps::Entry::Rom(rom) => Some(Doomed {
+            // Not the game on a disc: there is no file of the user's to put in
+            // the trash, only a link to the drive or a mount of it.
+            apps::Entry::Rom(rom) if rom.disc.is_none() => Some(Doomed {
                 name: rom.name.clone(),
                 path: rom.path.clone(),
                 glyph: retroarch::mark().to_string(),
@@ -13336,7 +13902,8 @@ impl Shell {
         // reason renaming one is worth offering at all: what libretro is asked
         // for the cover of is this name, so calling the file what the game is
         // called is how somebody with an oddly named dump gets its artwork.
-        if let Some(rom) = self.selected_rom() {
+        // Not the game on a disc, whose file is one the helper made up.
+        if let Some(rom) = self.selected_rom().filter(|rom| rom.disc.is_none()) {
             return Some(start(
                 &rom.path,
                 rom.name.clone(),
@@ -17460,6 +18027,7 @@ impl Shell {
             // and the row says what is happening until it has.
             menu::Command::Unmount(number) => self.put_the_drive_away(number, false),
             menu::Command::SafelyRemove(number) => self.put_the_drive_away(number, true),
+            menu::Command::EjectDisc(number) => self.eject_the_disc(number),
             // The trash's own four. Restore is the one row in this list with no
             // question in front of it, which is what it being the only act in
             // the shell that undoes a loss earns it — see
@@ -23685,6 +24253,20 @@ impl Shell {
             self.rebuild_retroarch();
             self.needs_redraw = true;
         }
+        // A disc's game has just come to be on the bar.
+        if let Some(path) = change.disc_in.as_deref() {
+            self.take_the_cursor_to_the_disc(path);
+        }
+        // And the game somebody pressed on a disc before its console had a
+        // core, whose helper has now looked the core up again.
+        if let Some(path) = self
+            .retroarch_play
+            .clone()
+            .filter(|path| change.disc_ready.contains(path))
+        {
+            self.retroarch_play = None;
+            self.play_that_rom(&path);
+        }
         // And the walk that was waiting for a page to be built, which is the
         // press that offered to go and find a BIOS. Tried until the row turns
         // up rather than once, because the cores answer one at a time and the
@@ -23774,6 +24356,38 @@ impl Shell {
         }
     }
 
+    /// Take the cursor to the game on a disc that has just gone in, the way a
+    /// PS3 does — so that the one press of A that starts it is the next press.
+    ///
+    /// Only where the start screen is what somebody is looking at, and doing
+    /// nothing with: not with an application in front of it, the guide or a
+    /// panel over it, a game loading, a menu open or a search being typed. The
+    /// row is at the head of the column either way; what this decides is only
+    /// whether the bar moves under somebody's hands to show it to them.
+    fn take_the_cursor_to_the_disc(&mut self, path: &Path) {
+        let index = self.focused_panel;
+        let busy = self.app_in_front_of(index)
+            || self.guide.is_over_app()
+            || self.guide.is_menu()
+            || self.dialog.is_open()
+            || self.context_menu.is_open()
+            || self.osk.is_open()
+            || self.file_question_is_open()
+            || self.splash_on_screen(index)
+            || self
+                .panels
+                .get(index)
+                .is_some_and(|panel| panel.cursor.searching());
+        if busy {
+            tracing::info!(game = %path.display(), "a disc went in; the start screen is busy, so the cursor stays");
+            return;
+        }
+        if self.stand_on_rom(path) {
+            tracing::info!(game = %path.display(), "a disc went in; the cursor is on it");
+            self.sounds.step();
+        }
+    }
+
     /// The folder has been read. Two things wait on that, and both of them are
     /// about cores.
     ///
@@ -23810,8 +24424,12 @@ impl Shell {
             self.rebuild_retroarch();
         }
         // And the game somebody pressed before it had a core, which is now a
-        // game with one.
-        if let Some(path) = self.retroarch_play.take() {
+        // game with one — unless it is the game on a disc, which is not in the
+        // folder and waits for its own helper to say so instead.
+        if let Some(path) = self
+            .retroarch_play
+            .take_if(|path| !self.retroarch.is_disc(path))
+        {
             self.play_that_rom(&path);
         }
         // Or before its console had a BIOS, which it now has. The cursor is
@@ -23963,6 +24581,23 @@ impl Shell {
     /// sent to the site again is decided at the one place the folder is read —
     /// see `change.scanned` in [`Self::sync_retroarch`].
     fn rebuild_retroarch(&mut self) {
+        // Where each display is standing in the RetroArch column, by what the
+        // row is rather than by its number: a disc going in or coming out puts
+        // a row at the head of the column or takes one away, and every row
+        // under it moves with it. Somebody standing on a console stays on it.
+        let standing: Vec<Option<RetroArchRow>> = match self.retroarch_column() {
+            Some(at) => self
+                .panels
+                .iter()
+                .map(|panel| {
+                    panel
+                        .cursor
+                        .entry_in_column(&self.lattice, at)
+                        .and_then(RetroArchRow::of)
+                })
+                .collect(),
+            None => Vec::new(),
+        };
         self.rebuild_trophies();
         let note = self.retroarch.note();
         let arriving = self.retroarch.arriving();
@@ -23975,6 +24610,14 @@ impl Shell {
         let rows = self.retroarch.rows(picking);
         let shifted = apps::shelve_retroarch(&mut self.lattice.categories, rows);
         self.absorb(shifted);
+        if let Some(at) = self.retroarch_column() {
+            let lattice = &self.lattice;
+            for (panel, row) in self.panels.iter_mut().zip(standing) {
+                if let Some(row) = row {
+                    panel.cursor.keep_on_row(lattice, at, |entry| row.is(entry));
+                }
+            }
+        }
         // The page under Settings > Games is built from the same setting, and
         // it grows and shrinks with the integration exactly as these rows do.
         settings::refresh(&mut self.lattice.categories);
@@ -24459,6 +25102,24 @@ impl Shell {
         let Some(at) = self.retroarch_column() else {
             return false;
         };
+        // The game on a disc, which is a row of the column itself rather than
+        // of a shelf in it.
+        let on_the_column = self.lattice.categories.get(at).and_then(|column| {
+            column
+                .entries
+                .iter()
+                .position(|row| row.rom().is_some_and(|rom| rom.path == path))
+        });
+        if let Some(row) = on_the_column {
+            let lattice = &self.lattice;
+            let Some(panel) = self.panels.get_mut(self.focused_panel) else {
+                return false;
+            };
+            panel.cursor.go_to_own_column(at, lattice);
+            panel.cursor.point_at_row(row, lattice);
+            self.needs_redraw = true;
+            return true;
+        }
         let found = self.lattice.categories.get(at).and_then(|column| {
             column
                 .entries
@@ -24857,17 +25518,19 @@ impl Shell {
     /// their business.
     fn rom_at(&self, path: &Path) -> Option<apps::Rom> {
         let at = self.retroarch_column()?;
-        self.lattice
-            .categories
-            .get(at)?
-            .entries
+        let column = &self.lattice.categories.get(at)?.entries;
+        // The game on a disc, at the head of the column, and then the shelves.
+        column
             .iter()
-            .find_map(|shelf| {
-                shelf
-                    .entries()?
-                    .iter()
-                    .find_map(|row| row.rom().filter(|rom| rom.path == path))
-                    .cloned()
+            .find_map(|row| row.rom().filter(|rom| rom.path == path).cloned())
+            .or_else(|| {
+                column.iter().find_map(|shelf| {
+                    shelf
+                        .entries()?
+                        .iter()
+                        .find_map(|row| row.rom().filter(|rom| rom.path == path))
+                        .cloned()
+                })
             })
     }
 
@@ -25182,15 +25845,8 @@ impl Shell {
             .iter()
             .map(|p| p.cursor.trophy_selection(&self.lattice))
             .collect();
-        let mut games = self.steam.trophy_games();
-        // Epic's beside Steam's, as games somebody has something to show for.
-        let epic = self.heroic.trophy_rows();
-        let steam_games = !games.is_empty() || !epic.is_empty();
-        games.extend(epic);
+        let (games, steam_games) = self.trophy_games();
         let available = retroarch::offered() && self.retroarch.command().is_some();
-        if available {
-            games.extend(self.retroachievements.rows());
-        }
         let invitation = retroachievements::offer_configuration(
             available,
             steam_games,
@@ -25558,6 +26214,9 @@ impl Shell {
     /// and signing out takes one away, and either can happen while somebody is
     /// standing three columns further along.
     fn absorb(&mut self, shifted: apps::Shifted) {
+        // Every column hung on the bar comes through here, so it is where a
+        // search of the whole bar hears that what it found may have changed.
+        self.searches_go_stale();
         for panel in &mut self.panels {
             if let Some(at) = shifted.added {
                 panel.cursor.category_added(at);
@@ -25921,6 +26580,13 @@ impl Shell {
         let panel = self.panels.get(self.focused_panel)?;
         let rom = self.selected_rom()?;
         let anchor = ui::launch_origin(panel.width as f32, panel.height as f32);
+        if let Some(number) = rom.disc {
+            return Some((
+                anchor,
+                Some(rom.name.clone()),
+                disc_rows(number, self.retroarch.core_of(&rom.console).is_some()),
+            ));
+        }
         Some((
             anchor,
             Some(rom.name.clone()),
@@ -28617,6 +29283,17 @@ impl Shell {
             // from the guide, so the press this corner would be naming is the
             // Guide it already names — see [`ui::Legend::floating`].
             floating: ui::Floating::None,
+            // Asked of the display being driven, which is the one whose corner
+            // this is. A search typed on the other screen is that screen's.
+            search: match self
+                .panels
+                .get(self.focused_panel)
+                .and_then(|panel| panel.cursor.search())
+            {
+                None => ui::Searching::No,
+                Some(search) if search.typing => ui::Searching::Typing,
+                Some(_) => ui::Searching::Looking,
+            },
         })
     }
 
@@ -28686,6 +29363,8 @@ impl Shell {
             friends: self.why_there_are_no_friends().is_none(),
             pad: settings::controller_in_hand(),
             floating,
+            // A search is the start screen's, and the menu is over it.
+            search: ui::Searching::No,
         })
     }
 
@@ -31537,6 +32216,7 @@ impl Shell {
 
     fn rebuild_settings(&mut self) {
         settings::refresh(&mut self.lattice.categories);
+        self.searches_go_stale();
         let mut moved = false;
         for panel in &mut self.panels {
             moved |= panel.cursor.keep_in_bounds(&self.lattice);
@@ -31676,6 +32356,15 @@ impl Shell {
             self.signal_seen = signal;
             self.needs_redraw = true;
         }
+        // Coming back online, which is the moment a game disc that went in
+        // while the machine was offline can have its cover fetched. Read on the
+        // corner's pass, so it is fresh whenever the start screen is showing —
+        // which is where that disc's row is looked at.
+        let online = self.net.online();
+        if online == Some(true) && self.online_seen != Some(true) {
+            self.retroarch.back_online();
+        }
+        self.online_seen = online;
         // Asked before the listing is copied out, and the copy skipped when the
         // answer is the same as last frame's — which it is on nearly all of
         // them. See [`network::Net::published`].
@@ -32083,7 +32772,15 @@ impl Shell {
         let published = self.drives.published();
         if published != self.drives_seen {
             self.drives_seen = published;
-            if drives::note(self.drives.listing()) {
+            let listing = self.drives.listing();
+            // A disc that has come out takes its game off the bar with it; one
+            // that has gone in is handed to the RetroArch helper, and is on the
+            // bar once that has said what it is.
+            if self.retroarch.discs_changed(&listing.discs) {
+                self.rebuild_retroarch();
+                self.needs_redraw = true;
+            }
+            if drives::note(listing) {
                 self.rebuild_settings();
                 if self.standing_in_the_drives() {
                     self.reread_the_open_folder();
@@ -32186,6 +32883,21 @@ impl Shell {
         self.sync_drives();
     }
 
+    /// Open the tray of the drive a disc is in, from the menu over its game.
+    ///
+    /// The row goes when UDisks says the disc has — which is the tray opening
+    /// — and what came of a press that did not work is said by
+    /// [`Shell::answer_drive`], by the game's name.
+    fn eject_the_disc(&mut self, number: u64) {
+        if !self.drives.eject(number) {
+            tracing::debug!(
+                number,
+                "this disc is already being ejected, so the press was spent"
+            );
+        }
+        self.sync_drives();
+    }
+
     /// One press on a drive's page under Settings > Storage.
     fn carry_out_drive(&mut self, value: settings::DriveValue) {
         let asked = match value {
@@ -32240,6 +32952,22 @@ impl Shell {
                     _ => "drive-unmount-failed",
                 },
             ),
+            // Named by its game, which is what is on the row that was pressed:
+            // the drive has no name anybody would know it by.
+            (Act::Eject, Err(refusal)) => {
+                let title = self
+                    .retroarch
+                    .disc_title(outcome.number)
+                    .unwrap_or_else(|| crate::i18n::text("retroarch-game-disc").to_string());
+                self.say_about_a_drive(
+                    &title,
+                    match refusal {
+                        Refusal::Busy => "drive-in-use",
+                        Refusal::NotAllowed => "drive-not-allowed",
+                        _ => "disc-eject-failed",
+                    },
+                );
+            }
         }
     }
 
@@ -37066,6 +37794,69 @@ fn rom_rows(deletable: bool, fetching: bool, emulated: bool, own: [bool; 2]) -> 
     ]
 }
 
+/// A row of the RetroArch column, by what it is: a game by its path, anything
+/// else by its title. What [`Shell::rebuild_retroarch`] keeps a cursor on.
+enum RetroArchRow {
+    Game(PathBuf),
+    Titled(String),
+}
+
+impl RetroArchRow {
+    fn of(entry: &apps::Entry) -> Option<RetroArchRow> {
+        match entry {
+            apps::Entry::Rom(rom) => Some(RetroArchRow::Game(rom.path.clone())),
+            apps::Entry::Folder(folder) => Some(RetroArchRow::Titled(folder.title.clone())),
+            _ => None,
+        }
+    }
+
+    fn is(&self, entry: &apps::Entry) -> bool {
+        match (self, entry) {
+            (RetroArchRow::Game(path), apps::Entry::Rom(rom)) => rom.path == *path,
+            (RetroArchRow::Titled(title), apps::Entry::Folder(folder)) => folder.title == *title,
+            _ => false,
+        }
+    }
+}
+
+/// The menu over the game on a disc in the drive.
+///
+/// [`rom_rows`] less everything that is about a file — the pictures, Rename,
+/// Delete — because the file the game is started from is one the RetroArch
+/// helper made up out of the disc, and there is nothing of the user's there to
+/// change. What a disc has instead is the one thing a person does to a disc:
+/// take it out.
+fn disc_rows(number: u64, emulated: bool) -> Vec<menu::Entry> {
+    let settings = menu::Entry::new(
+        menu::Command::RetroArchCoreSettings,
+        crate::i18n::text("shell-emulator-settings"),
+    )
+    .glyph(icons::CATEGORY_SETTINGS);
+    vec![
+        menu::Entry::new(menu::Command::Launch, crate::i18n::text("shell-play"))
+            .glyph(icons::LAUNCH),
+        if emulated {
+            settings
+        } else {
+            settings.disabled()
+        },
+        menu::Entry::new(
+            menu::Command::Resolution,
+            crate::i18n::text("shell-resolution"),
+        )
+        .glyph(icons::SETTING_RESOLUTION),
+        // The snapped chain Safely remove wears, for the same act on a disc:
+        // the thing the drive was holding, handed back.
+        menu::Entry::new(
+            menu::Command::EjectDisc(number),
+            crate::i18n::text("retroarch-eject-disc"),
+        )
+        .glyph(icons::SETTING_DISCONNECT)
+        .group(1),
+        menu::Entry::new(menu::Command::Dismiss, crate::i18n::text("shell-cancel")).group(1),
+    ]
+}
+
 /// The row that offers to choose one of a game's two pictures, or to take away
 /// the one already chosen.
 ///
@@ -40561,6 +41352,14 @@ impl KeyboardHandler for Shell {
             .is_some_and(|held| held.released_by(event.raw_code))
         {
             self.held_key = None;
+        }
+        // Shift let go of with nothing typed under it, on the start screen
+        // where its press was held back: the friends list, which is what it
+        // was pressed for. See [`Shell::shift_alone`].
+        if matches!(event.keysym, Keysym::Shift_L | Keysym::Shift_R)
+            && std::mem::take(&mut self.shift_alone)
+        {
+            self.on_action(Action::Friends);
         }
     }
 
@@ -45820,6 +46619,7 @@ mod file_menu_tests {
             own_background,
             shape: None,
             glyph: "lxb:console-psp".to_string(),
+            disc: None,
         };
         let at = PathBuf::from("/pictures/behind.png");
         assert_eq!(

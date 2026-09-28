@@ -458,3 +458,48 @@ pub enum Picturing {
     Done,
     Failed,
 }
+
+/// What `lxb-retroarch disc` says about the disc in a drive.
+///
+/// The same shape of answer a scan gives, so that the shell draws a disc with
+/// what it already draws a folder's games with: [`Disc::console`] is one
+/// console holding one game, whose path is the file RetroArch is to be given —
+/// see the helper's `disc` module for what that file is.
+///
+/// Said more than once for one disc. `Ready` when the game can be started —
+/// which is after its cover has been looked for, so that the game arrives on
+/// the bar as itself — and again whenever the shell asks for the core to be
+/// looked up afresh; `Pictured` when a cover that could not be fetched then has
+/// come down since. A disc that is not a game, or
+/// could not be read, is said once and the run ends.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Disc {
+    pub protocol: u32,
+    pub stage: DiscStage,
+    /// The drive, as it was given.
+    pub device: String,
+    /// The console and the one game on it, where the disc is a game.
+    pub console: Option<Console>,
+    /// The game's catalogue number, where the disc carries one. For the log;
+    /// the shell draws nothing from it.
+    pub serial: Option<String>,
+    /// Where RetroArch reads the files a core needs beside itself, exactly as
+    /// [`Library::system`] reports it.
+    pub system: Option<String>,
+    /// One sentence about a disc that is not a game, for the log.
+    pub note: String,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum DiscStage {
+    /// The game is where RetroArch can open it.
+    Ready,
+    /// Its cover or its screenshot has come down since.
+    Pictured,
+    /// Music, a film, somebody's files, or a console's disc a PC drive cannot
+    /// read.
+    NotAGame,
+    /// The drive would not read it, or there was nowhere to put it.
+    Failed,
+}

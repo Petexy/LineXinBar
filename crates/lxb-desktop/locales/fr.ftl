@@ -1341,6 +1341,8 @@ search-none-match = { $what ->
     [game] Aucun jeu ne correspond
    *[layout] Aucune disposition ne correspond
     }
+search-type-to-find = Tapez pour tout rechercher
+search-found-nothing = Aucun résultat pour « { $query } »
 search-matched = { $matched } { $matched ->
     [one] correspondance
    *[other] correspondances
@@ -1643,6 +1645,9 @@ retroarch-helper-answered-nothing = { $helper } n'a rien répondu ({ $status })
 retroarch-helper-could-not-be-waited-for = Impossible d'attendre { $helper } : { $error }
 retroarch-getting-progress = { $getting } — { $at } sur { $of }
 retroarch-console-needs-download = { $console } — un téléchargement est nécessaire
+retroarch-game-disc = Disque de jeu
+retroarch-disc-of = Disque { $console }
+retroarch-eject-disc = Éjecter
 retroarch-console-no-emulator = { $console } — rien ici ne peut y jouer
 retroarch-get-missing-emulators = { $count ->
     [one] Récupérer l'émulateur manquant
@@ -1729,6 +1734,7 @@ drive-mount-failed = Impossible de monter ce disque.
 drive-unmount-failed = Impossible de démonter ce disque.
 drive-in-use = Ce disque est encore utilisé. Fermez ce qui l’utilise et réessayez.
 drive-not-allowed = Ce compte n’est pas autorisé à le faire.
+disc-eject-failed = Le disque n’a pas pu être éjecté.
 
 # Countries, by ISO 3166 code, as the keyboard-layout column names them.
 country-none = Aucun pays

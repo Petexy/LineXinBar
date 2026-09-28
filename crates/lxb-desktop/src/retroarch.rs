@@ -52,6 +52,20 @@
 //! — the names are a list from the helper's own table and the choosing is the
 //! helper's. See `lxb-retroarch`'s `cores.rs`.
 //!
+//! ## And a disc in the drive, which is a game of its own
+//!
+//! ```text
+//!   a disc goes in ─► lxb-retroarch disc /dev/sr0 ─► "ready" ─► a row at the
+//!   head of the column, and the cursor on it ─► A plays it
+//! ```
+//!
+//! Every data disc that goes into an optical drive is handed to the helper,
+//! which says whether it is a game and which, and — for as long as the disc is
+//! in — keeps it somewhere RetroArch can open. The row it becomes stands at the
+//! top of the RetroArch column, above the consoles, the way a PS3 puts the disc
+//! at the head of its Game column; see [`DiscSlot`]. A disc that is music, a
+//! film or somebody's files says so to the log and is not on the bar at all.
+//!
 //! ## Why the shell launches the games itself
 //!
 //! The helper answers with a command line and never runs one. A game started
@@ -62,7 +76,7 @@
 //! [`crate::model::Lattice::launch_selected`], which is where every other row
 //! on this bar starts what it starts.
 
-use std::io::{BufRead, BufReader};
+use std::io::{BufRead, BufReader, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::sync::mpsc::{Receiver, Sender};
@@ -361,6 +375,40 @@ struct Library {
     system: Option<String>,
 }
 
+/// What `lxb-retroarch disc` says about the disc in a drive: the same console
+/// and game a scan would give, for the one game the disc is.
+#[derive(Debug, Clone, Deserialize)]
+struct DiscRecord {
+    protocol: u32,
+    stage: DiscStage,
+    device: String,
+    console: Option<Console>,
+    #[serde(default)]
+    serial: Option<String>,
+    #[serde(default)]
+    system: Option<String>,
+    #[serde(default)]
+    note: String,
+}
+
+impl Record for DiscRecord {
+    fn protocol(&self) -> u32 {
+        self.protocol
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+enum DiscStage {
+    /// The game can be started — said again whenever its core is looked up
+    /// afresh.
+    Ready,
+    /// Its pictures have come down.
+    Pictured,
+    NotAGame,
+    Failed,
+}
+
 /// One file a core cannot start without, as libretro describes it.
 ///
 /// Both halves are libretro's own words and neither is composed here — see the
@@ -635,6 +683,10 @@ enum Heard {
     Tunable(CoreOptions),
     /// One game's pictures, or a line about the run they are part of.
     Pictured(Artwork),
+    /// What the helper serving a disc said, under when the disc went in.
+    Disc(u64, DiscRecord),
+    /// That helper has ended.
+    DiscEnded(u64),
     /// The helper could not be run, or said something this shell cannot read.
     /// Which is not the same as it saying "no": a broken helper leaves the row
     /// saying so rather than offering an install that will not happen.
@@ -731,6 +783,16 @@ pub struct RetroArch {
 struct Inner {
     ask: Sender<Ask>,
     heard: Receiver<Heard>,
+    /// Where the helper is, for the one question not asked on the worker: a
+    /// disc, whose helper runs for as long as the disc is in.
+    helper: PathBuf,
+    /// The way back into [`Inner::heard`], for those helpers' lines.
+    tell: Sender<Heard>,
+    /// The discs in this machine's drives.
+    discs: Vec<DiscSlot>,
+    /// Whether the drives have been listed yet: a disc already in when the
+    /// session starts is on the bar, and is not somewhere the cursor is taken.
+    drives_listed: bool,
     /// Whether there is a RetroArch, and what starts it.
     found: Found,
     /// The install on screen, if one is happening.
@@ -799,6 +861,48 @@ struct Inner {
     wants_options: bool,
     /// The helper could not be run, and what it said.
     broken: Option<String>,
+}
+
+/// A disc in a drive, and what serving it has come to.
+///
+/// One per disc rather than one per drive: the same disc taken out and put back
+/// is a new one — see `drives::Disc::inserted` — and a helper that was serving
+/// the first has already let it go.
+struct DiscSlot {
+    disc: crate::drives::Disc,
+    /// The helper's stdin. Closing it is how the helper is told to let go.
+    stdin: Option<std::process::ChildStdin>,
+    child: Option<std::process::Child>,
+    /// The console and its one game, once the helper has said.
+    console: Option<Console>,
+    /// Whether the helper has ended, which is final for this disc: a disc that
+    /// is not a game is not asked about again, and neither is one whose helper
+    /// could not serve it.
+    ended: bool,
+    /// Whether the cursor has been offered this disc's game — or was never
+    /// going to be, for a disc that was in before the session started.
+    announced: bool,
+}
+
+impl DiscSlot {
+    /// Tell the helper to let go, and stop waiting for it.
+    fn let_go(&mut self) {
+        drop(self.stdin.take());
+        if let Some(mut child) = self.child.take() {
+            // Reaped on a thread of its own: letting go means unmounting, and
+            // that is a moment the frame should not wait for.
+            let _ = std::thread::Builder::new()
+                .name("lxb-retroarch-disc-end".to_string())
+                .spawn(move || {
+                    let _ = child.wait();
+                });
+        }
+    }
+
+    /// Whether this is the disc now in `disc`'s drive.
+    fn is(&self, disc: &crate::drives::Disc) -> bool {
+        self.disc.device == disc.device && self.disc.inserted == disc.inserted
+    }
 }
 
 /// Whether there is a RetroArch on this machine.
@@ -936,6 +1040,12 @@ pub struct Change {
     /// [`Inner::picturing_about`], which is where the reason a whole
     /// collection finding nothing says nothing is written down.
     pub unpictured: Option<String>,
+    /// A disc's game has just come to be on the bar, and the path it is held
+    /// under: the one moment the cursor is taken to it.
+    pub disc_in: Option<PathBuf>,
+    /// The discs whose core has just been looked up again, by their games'
+    /// paths — which is what a game pressed before its core arrived waits on.
+    pub disc_ready: Vec<PathBuf>,
     /// The covers that landed in this poll: the ROM's path, and where its box
     /// art now is.
     ///
@@ -984,6 +1094,8 @@ impl RetroArch {
     pub fn start(helper: PathBuf) -> RetroArch {
         let (ask, asked) = std::sync::mpsc::channel::<Ask>();
         let (back, heard) = std::sync::mpsc::channel::<Heard>();
+        let tell = back.clone();
+        let serving = helper.clone();
         let started = std::thread::Builder::new()
             .name("lxb-retroarch".to_string())
             .spawn(move || {
@@ -999,6 +1111,10 @@ impl RetroArch {
         let inner = Inner {
             ask,
             heard,
+            helper: serving,
+            tell,
+            discs: Vec::new(),
+            drives_listed: false,
             found: Found::Asking,
             installing: None,
             fetching: None,
@@ -1154,6 +1270,13 @@ impl RetroArch {
             inner.system = None;
             inner.config = None;
             inner.wants_options = false;
+            // A disc's game is RetroArch's to play, and there is none. The
+            // disc stays known, so that a RetroArch installed while it is in
+            // is handed it — see [`RetroArch::serve_waiting_discs`].
+            for slot in &mut inner.discs {
+                slot.let_go();
+                slot.console = None;
+            }
         }
         TUNABLES
             .lock()
@@ -1500,51 +1623,10 @@ impl RetroArch {
                     // both read it. Only the scan knows both halves: the
                     // console's own name, and RetroArch's system folder on this
                     // machine.
-                    let wanted: Vec<Firmware> = match &inner.system {
-                        Some(system) => inner
-                            .consoles
-                            .iter()
-                            .flat_map(|console| {
-                                // The core that wants it, which is what files
-                                // the question: a console with none installed
-                                // has no settings page to put the row on.
-                                let core = console.core.as_ref().map(|core| core.name.clone());
-                                console.needs.iter().filter_map(move |need| {
-                                    Some(Firmware {
-                                        console: console.title.clone(),
-                                        core: core.clone()?,
-                                        note: need.note.clone(),
-                                        into: system.join(&need.path),
-                                        here: need.here,
-                                    })
-                                })
-                            })
-                            .collect(),
-                        None => Vec::new(),
-                    };
-                    for missing in wanted.iter().filter(|had| !had.here) {
-                        tracing::info!(
-                            console = %missing.console,
-                            core = %missing.core,
-                            note = %missing.note,
-                            into = %missing.into.display(),
-                            "a console is missing its firmware"
-                        );
-                    }
-                    *FIRMWARE.lock().unwrap_or_else(|err| err.into_inner()) = wanted;
-                    // And which console's mark each of those cores plays under,
-                    // so that an emulator's settings page wears the drawing its
-                    // shelf does. The same pass over the same consoles: only
-                    // the scan holds both the core's name and the console's
-                    // mark, and reading them apart is how the two lists start
-                    // disagreeing.
-                    *CORE_MARKS.lock().unwrap_or_else(|err| err.into_inner()) = inner
-                        .consoles
-                        .iter()
-                        .filter_map(|console| {
-                            Some((console.core.as_ref()?.name.clone(), console.glyph.clone()?))
-                        })
-                        .collect();
+                    // What a game cannot be started without, and which console's
+                    // mark each core's settings page wears — out of this folder
+                    // and the disc in the drive together. See [`publish_needs`].
+                    publish_needs(inner);
                     change.rows = true;
                     change.scanned = true;
                 }
@@ -1600,6 +1682,85 @@ impl RetroArch {
                     }
                     change.rows = true;
                 }
+                Heard::Disc(_, record) if !record.usable() => {
+                    tracing::warn!(
+                        device = record.device,
+                        "a disc record this shell cannot read"
+                    );
+                }
+                Heard::Disc(inserted, record) => {
+                    let Some(at) = inner
+                        .discs
+                        .iter()
+                        .position(|slot| slot.disc.inserted == inserted)
+                    else {
+                        // A disc that has already come out.
+                        continue;
+                    };
+                    match record.stage {
+                        DiscStage::Ready | DiscStage::Pictured => {
+                            let Some(mut console) = record.console else {
+                                continue;
+                            };
+                            measure_shelves(std::slice::from_mut(&mut console));
+                            let path = console.roms.first().map(|rom| PathBuf::from(&rom.path));
+                            let slot = &mut inner.discs[at];
+                            if record.stage == DiscStage::Ready {
+                                change.disc_ready.extend(path.clone());
+                            }
+                            if !slot.announced {
+                                slot.announced = true;
+                                change.disc_in = path.clone();
+                            }
+                            tracing::info!(
+                                device = record.device,
+                                console = console.title,
+                                game = console.roms.first().map_or("", |rom| rom.title.as_str()),
+                                serial = record.serial.as_deref().unwrap_or("none"),
+                                core = console
+                                    .core
+                                    .as_ref()
+                                    .map_or("none", |core| core.name.as_str()),
+                                "the disc in the drive is a game"
+                            );
+                            slot.console = Some(console);
+                            if inner.system.is_none() {
+                                inner.system = record.system.map(PathBuf::from);
+                            }
+                            publish_needs(inner);
+                            change.rows = true;
+                        }
+                        DiscStage::NotAGame => {
+                            tracing::info!(
+                                device = record.device,
+                                "the disc in the drive is not a game"
+                            );
+                        }
+                        DiscStage::Failed => {
+                            tracing::warn!(
+                                device = record.device,
+                                note = record.note,
+                                "the disc in the drive could not be served"
+                            );
+                        }
+                    }
+                }
+                Heard::DiscEnded(inserted) => {
+                    if let Some(slot) = inner
+                        .discs
+                        .iter_mut()
+                        .find(|slot| slot.disc.inserted == inserted)
+                    {
+                        slot.ended = true;
+                        slot.let_go();
+                        // Whatever it was serving went with it.
+                        if slot.console.take().is_some() {
+                            tracing::warn!(device = %slot.disc.device.display(), "the disc's helper ended while the disc was in");
+                            publish_needs(inner);
+                            change.rows = true;
+                        }
+                    }
+                }
                 Heard::Broken(why) => {
                     tracing::warn!(%why, "the RetroArch integration");
                     inner.reading = false;
@@ -1622,6 +1783,15 @@ impl RetroArch {
             // Whatever it says it fetched, ask the disk: what a console can be
             // played with is a file being there, and the scan is what looks.
             inner.asked = None;
+            // A disc in the drive may be of the console the core is for, and
+            // its helper settled what plays it when the disc went in.
+            if worked {
+                for slot in &mut inner.discs {
+                    if let Some(stdin) = slot.stdin.as_mut() {
+                        let _ = writeln!(stdin, "again").and_then(|()| stdin.flush());
+                    }
+                }
+            }
             // And the new core has to be asked what it can be set to, which is
             // the other half of it arriving. Wanted here as well as after the
             // probe because a core installed during a session was not on the
@@ -1662,7 +1832,119 @@ impl RetroArch {
         if ask {
             self.rescan();
         }
+        self.serve_waiting_discs();
         change
+    }
+
+    /// The drives have been listed again: start serving every disc that has
+    /// gone in, and let go of every one that has come out.
+    ///
+    /// Answers whether the bar has to be rebuilt, which is whether a disc
+    /// whose game was on it has gone. A disc that has just gone in is not on
+    /// the bar until its helper has said what it is.
+    pub fn discs_changed(&mut self, now: &[crate::drives::Disc]) -> bool {
+        let Some(inner) = self.inner.as_mut() else {
+            return false;
+        };
+        let first = !std::mem::replace(&mut inner.drives_listed, true);
+        let mut changed = false;
+        let mut kept = Vec::new();
+        for mut slot in std::mem::take(&mut inner.discs) {
+            if now.iter().any(|disc| slot.is(disc)) {
+                kept.push(slot);
+                continue;
+            }
+            tracing::info!(device = %slot.disc.device.display(), "the disc has come out");
+            slot.let_go();
+            changed |= slot.console.is_some();
+        }
+        inner.discs = kept;
+        for disc in now.iter().filter(|disc| disc.data) {
+            if inner.discs.iter().any(|slot| slot.is(disc)) {
+                continue;
+            }
+            tracing::info!(device = %disc.device.display(), "a disc has gone in");
+            inner.discs.push(DiscSlot {
+                disc: disc.clone(),
+                stdin: None,
+                child: None,
+                console: None,
+                ended: false,
+                announced: first,
+            });
+        }
+        if changed {
+            publish_needs(inner);
+        }
+        self.serve_waiting_discs();
+        changed
+    }
+
+    /// Hand every disc nobody is serving yet to a helper of its own — once
+    /// there is a RetroArch to serve it to.
+    fn serve_waiting_discs(&mut self) {
+        let Some(inner) = self.inner.as_mut() else {
+            return;
+        };
+        if !matches!(inner.found, Found::Here(_)) {
+            return;
+        }
+        for slot in inner
+            .discs
+            .iter_mut()
+            .filter(|slot| slot.child.is_none() && !slot.ended)
+        {
+            serve_disc(&inner.helper, slot, &inner.tell);
+        }
+    }
+
+    /// Whether `path` is the game on a disc in the drive.
+    pub fn is_disc(&self, path: &Path) -> bool {
+        self.disc_consoles()
+            .flat_map(|console| console.roms.iter())
+            .any(|rom| Path::new(&rom.path) == path)
+    }
+
+    /// What the game on the disc in drive `number` is called, where it has a
+    /// name — for the panel an eject that failed puts up.
+    pub fn disc_title(&self, number: u64) -> Option<String> {
+        let inner = self.inner.as_ref()?;
+        let slot = inner.discs.iter().find(|slot| slot.disc.number == number)?;
+        let title = &slot.console.as_ref()?.roms.first()?.title;
+        (!title.is_empty()).then(|| title.clone())
+    }
+
+    /// The machine has just come back online: ask again for the cover of every
+    /// disc whose game is on the bar without one.
+    ///
+    /// A disc's game waits for its cover before it is shown at all, and is
+    /// shown without one only where the pictures server could not be reached —
+    /// so a disc that went in while the machine was offline is exactly the one
+    /// this is for. The helper asks nothing where the cover has come down since
+    /// or a look is already under way.
+    pub fn back_online(&mut self) {
+        let Some(inner) = self.inner.as_mut() else {
+            return;
+        };
+        for slot in &mut inner.discs {
+            let uncovered = slot
+                .console
+                .as_ref()
+                .and_then(|console| console.roms.first())
+                .is_some_and(|rom| rom.boxart.is_none());
+            let Some(stdin) = slot.stdin.as_mut().filter(|_| uncovered) else {
+                continue;
+            };
+            tracing::info!(device = %slot.disc.device.display(), "back online; asking for the disc's cover again");
+            let _ = writeln!(stdin, "pictures").and_then(|()| stdin.flush());
+        }
+    }
+
+    /// The consoles of the games on discs in the drives.
+    fn disc_consoles(&self) -> impl Iterator<Item = &Console> {
+        self.inner
+            .iter()
+            .flat_map(|inner| inner.discs.iter().filter_map(|slot| slot.console.as_ref()))
     }
 
     /// The install is over and has been answered; put the panel's state away.
@@ -1814,6 +2096,14 @@ impl RetroArch {
         }
 
         let mut rows = Vec::new();
+        // The game in the drive, first: it is what somebody who has just put a
+        // disc in came to play, and the head of the column is where a console
+        // puts it.
+        for slot in &inner.discs {
+            if let Some(console) = &slot.console {
+                rows.extend(self.disc_row(slot.disc.number, console));
+            }
+        }
         // For exactly as long as the question is open, which is what makes it
         // a question rather than a setting. A folder nobody has chosen, one
         // that cannot be read this morning, one with nothing in it yet: all
@@ -1886,6 +2176,29 @@ impl RetroArch {
             portrait: None,
             used: None,
         })
+    }
+
+    /// The game on a disc in the drive, as the row at the head of the column.
+    ///
+    /// A game row like any on a shelf — the same start, the same pictures, the
+    /// same panels when there is nothing to play it with — marked as the
+    /// disc's, and saying so: its line names the console *and* that this is the
+    /// disc, because it stands among consoles rather than among games.
+    fn disc_row(&self, number: u64, console: &Console) -> Option<Entry> {
+        let rom = console.roms.first()?;
+        let chosen = chosen_for(&console.title);
+        let mut row = self.rom_row(console, rom, &chosen, None);
+        if let Entry::Rom(game) = &mut row {
+            game.disc = Some(number);
+            if game.name.is_empty() {
+                game.name = crate::i18n::text("retroarch-game-disc").to_string();
+            }
+            if game.start.is_some() {
+                game.note =
+                    crate::message!("retroarch-disc-of", "console" => console.title.as_str());
+            }
+        }
+        Some(row)
     }
 
     /// One game — or, while somebody is choosing a picture for it, the row that
@@ -2017,6 +2330,7 @@ impl RetroArch {
             // instead of saying only that it came out of RetroArch — which the
             // column it is standing in has already said.
             glyph: console_mark(console.glyph.as_deref()),
+            disc: None,
         })
     }
 
@@ -2069,6 +2383,7 @@ impl RetroArch {
     /// waiting on a download, and neither has settings to be taken to.
     pub fn core_of(&self, console: &str) -> Option<&str> {
         self.consoles()
+            .chain(self.disc_consoles())
             .find(|held| held.title == console)
             .filter(|held| !held.incomplete)
             .and_then(|held| Some(held.core.as_ref()?.name.as_str()))
@@ -2086,6 +2401,131 @@ impl RetroArch {
             Found::Here(installation) => Some(&installation.command),
             _ => None,
         }
+    }
+}
+
+/// Put what every console on the bar needs where the Settings tree and the
+/// panels read it: the files each core cannot boot without, and which console's
+/// mark each core's settings page wears.
+///
+/// Out of the folder's consoles and the discs' together, so that a console
+/// played only off a disc is asked about exactly as one on a shelf is — the
+/// panel over a game that would not start reads the same list either way.
+fn publish_needs(inner: &Inner) {
+    let consoles: Vec<&Console> = inner
+        .consoles
+        .iter()
+        .chain(inner.discs.iter().filter_map(|slot| slot.console.as_ref()))
+        .collect();
+    let mut wanted: Vec<Firmware> = Vec::new();
+    if let Some(system) = &inner.system {
+        for console in &consoles {
+            // The core that wants it, which is what files the question: a
+            // console with none installed has no settings page to put the row
+            // on.
+            let Some(core) = console.core.as_ref().map(|core| core.name.clone()) else {
+                continue;
+            };
+            for need in &console.needs {
+                let into = system.join(&need.path);
+                // A disc of a console that is also on a shelf declares the
+                // same files, and one question is asked once.
+                if wanted
+                    .iter()
+                    .any(|had| had.console == console.title && had.into == into)
+                {
+                    continue;
+                }
+                wanted.push(Firmware {
+                    console: console.title.clone(),
+                    core: core.clone(),
+                    note: need.note.clone(),
+                    into,
+                    here: need.here,
+                });
+            }
+        }
+    }
+    for missing in wanted.iter().filter(|had| !had.here) {
+        tracing::info!(
+            console = %missing.console,
+            core = %missing.core,
+            note = %missing.note,
+            into = %missing.into.display(),
+            "a console is missing its firmware"
+        );
+    }
+    *FIRMWARE.lock().unwrap_or_else(|err| err.into_inner()) = wanted;
+    // And which console's mark each of those cores plays under, so that an
+    // emulator's settings page wears the drawing its shelf does. The same pass
+    // over the same consoles: only these hold both the core's name and the
+    // console's mark, and reading them apart is how the two lists start
+    // disagreeing.
+    let mut marks: Vec<(String, String)> = Vec::new();
+    for console in &consoles {
+        let (Some(core), Some(glyph)) = (console.core.as_ref(), console.glyph.as_ref()) else {
+            continue;
+        };
+        if !marks.iter().any(|(named, _)| *named == core.name) {
+            marks.push((core.name.clone(), glyph.clone()));
+        }
+    }
+    *CORE_MARKS.lock().unwrap_or_else(|err| err.into_inner()) = marks;
+}
+
+/// Start the helper serving one disc, and a thread passing on what it says.
+///
+/// Not on the worker every other question goes to: this helper runs for as
+/// long as the disc is in, and the worker answers one question at a time.
+fn serve_disc(helper: &Path, slot: &mut DiscSlot, tell: &Sender<Heard>) {
+    let spawned = Command::new(helper)
+        .arg("disc")
+        .arg(&slot.disc.device)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .spawn();
+    let mut child = match spawned {
+        Ok(child) => child,
+        Err(err) => {
+            tracing::warn!(%err, device = %slot.disc.device.display(), "the disc's helper could not be started");
+            slot.ended = true;
+            return;
+        }
+    };
+    tracing::info!(device = %slot.disc.device.display(), "reading the disc in the drive");
+    let Some(out) = child.stdout.take() else {
+        slot.ended = true;
+        return;
+    };
+    slot.stdin = child.stdin.take();
+    slot.child = Some(child);
+    let inserted = slot.disc.inserted;
+    let tell = tell.clone();
+    let started = std::thread::Builder::new()
+        .name("lxb-retroarch-disc".to_string())
+        .spawn(move || {
+            for line in BufReader::new(out).lines().map_while(Result::ok) {
+                let line = line.trim();
+                if line.is_empty() {
+                    continue;
+                }
+                match serde_json::from_str::<DiscRecord>(line) {
+                    Ok(record) => {
+                        if tell.send(Heard::Disc(inserted, record)).is_err() {
+                            return;
+                        }
+                    }
+                    Err(err) => {
+                        tracing::warn!(%err, line, "the disc's helper said something unreadable")
+                    }
+                }
+            }
+            let _ = tell.send(Heard::DiscEnded(inserted));
+        });
+    if let Err(err) = started {
+        tracing::warn!(?err, "no thread to hear the disc's helper");
+        slot.let_go();
+        slot.ended = true;
     }
 }
 
@@ -3977,11 +4417,19 @@ input_player1_right_btn = \"14\"
     /// asks it anything.
     fn found(consoles: Vec<Console>) -> RetroArch {
         let (ask, _) = std::sync::mpsc::channel::<Ask>();
-        let (_, heard) = std::sync::mpsc::channel::<Heard>();
+        let (tell, heard) = std::sync::mpsc::channel::<Heard>();
         RetroArch {
             inner: Some(Inner {
                 ask,
                 heard,
+                // Nothing a test runs may start a real helper against a real
+                // drive, so this names a program that is not there: a disc
+                // handed to it is one whose helper could not be started, and
+                // what the helper would have said is sent by the test itself.
+                helper: PathBuf::from("/nonexistent/lxb-retroarch"),
+                tell,
+                discs: Vec::new(),
+                drives_listed: false,
                 found: Found::Here(Installation {
                     command: vec!["retroarch".to_string()],
                     version: Some("1.22.2".to_string()),
@@ -4027,6 +4475,207 @@ input_player1_right_btn = \"14\"
                 .collect(),
             shape: None,
         }
+    }
+
+    /// A disc as UDisks lists one: the drive, and when this disc went in.
+    fn in_the_drive(inserted: u64) -> crate::drives::Disc {
+        crate::drives::Disc {
+            device: PathBuf::from("/dev/sr0"),
+            number: 2816,
+            drive: "/org/freedesktop/UDisks2/drives/test".to_string(),
+            inserted,
+            data: true,
+        }
+    }
+
+    /// What the helper says about the disc this was written against.
+    fn tekken_4(title: &str, stage: DiscStage) -> DiscRecord {
+        let mut console = console("PlayStation 2", &[title]);
+        console.glyph = Some("lxb:console-ps2".to_string());
+        console.roms[0].path = "/home/x/.cache/lxb/discs/sr0/Tekken 4 (Europe).iso".to_string();
+        DiscRecord {
+            protocol: PROTOCOL,
+            stage,
+            device: "/dev/sr0".to_string(),
+            console: Some(console),
+            serial: Some("SCES-50878".to_string()),
+            system: Some("/home/x/.config/retroarch/system".to_string()),
+            note: String::new(),
+        }
+    }
+
+    /// Say something to the integration as the disc's helper would, and take
+    /// what the next turn of the loop makes of it. A disc that is a game states
+    /// the module's facts about the machine, so every test that says one holds
+    /// [`GLOBALS`].
+    fn hear(integration: &mut RetroArch, heard: Heard) -> Change {
+        integration
+            .inner
+            .as_ref()
+            .expect("an integration")
+            .tell
+            .send(heard)
+            .expect("heard");
+        integration.poll()
+    }
+
+    /// The game on a disc stands at the head of the column, above the
+    /// consoles, as a row of its own: marked as the disc's, named as the
+    /// database names it, and saying which console's disc it is.
+    #[test]
+    fn a_disc_that_is_a_game_stands_at_the_head_of_the_column() {
+        let _held = GLOBALS.lock().unwrap_or_else(|err| err.into_inner());
+        let mut integration = found(vec![console("PlayStation Portable", &["Tekken 6"])]);
+        integration.discs_changed(&[]);
+        integration.discs_changed(&[in_the_drive(7)]);
+        assert_eq!(
+            integration.rows(None).len(),
+            1,
+            "nothing until the helper has said"
+        );
+
+        let change = hear(
+            &mut integration,
+            Heard::Disc(7, tekken_4("Tekken 4", DiscStage::Ready)),
+        );
+        assert!(change.rows);
+        let rows = integration.rows(None);
+        assert_eq!(rows.len(), 2);
+        let Entry::Rom(game) = &rows[0] else {
+            panic!("the disc is a game row");
+        };
+        assert_eq!(game.name, "Tekken 4");
+        assert_eq!(game.disc, Some(2816));
+        assert_eq!(game.console, "PlayStation 2");
+        assert!(game.start.is_some(), "its console has a core");
+        assert!(game.note.contains("PlayStation 2"), "{}", game.note);
+        assert!(
+            matches!(&rows[1], Entry::Folder(folder) if folder.title == "PlayStation Portable")
+        );
+        assert!(integration.is_disc(&game.path));
+        assert_eq!(integration.core_of("PlayStation 2"), Some("mesen"));
+    }
+
+    /// A disc the database has no name for is still a game somebody can play,
+    /// and the row says so in their own language rather than showing nothing.
+    #[test]
+    fn a_disc_with_no_name_is_a_game_disc() {
+        let _held = GLOBALS.lock().unwrap_or_else(|err| err.into_inner());
+        let mut integration = found(Vec::new());
+        integration.discs_changed(&[in_the_drive(7)]);
+        hear(
+            &mut integration,
+            Heard::Disc(7, tekken_4("", DiscStage::Ready)),
+        );
+        let rows = integration.rows(None);
+        let Entry::Rom(game) = &rows[0] else {
+            panic!("the disc is a game row");
+        };
+        assert_eq!(game.name, crate::i18n::text("retroarch-game-disc"));
+        // And with no folder chosen, the question still stands under it.
+        assert!(matches!(&rows[1], Entry::Folder(folder) if folder.over_the_list));
+    }
+
+    /// The cursor is taken to a disc that goes in while the session is
+    /// running, and only once; a disc that was already in when it started is
+    /// on the bar and is not somewhere the bar moves to.
+    #[test]
+    fn only_a_disc_that_has_just_gone_in_is_announced() {
+        let _held = GLOBALS.lock().unwrap_or_else(|err| err.into_inner());
+        let mut integration = found(Vec::new());
+        integration.discs_changed(&[in_the_drive(7)]);
+        let change = hear(
+            &mut integration,
+            Heard::Disc(7, tekken_4("Tekken 4", DiscStage::Ready)),
+        );
+        assert!(
+            change.disc_in.is_none(),
+            "it was in before the session began"
+        );
+
+        integration.discs_changed(&[]);
+        integration.discs_changed(&[in_the_drive(8)]);
+        let change = hear(
+            &mut integration,
+            Heard::Disc(8, tekken_4("Tekken 4", DiscStage::Ready)),
+        );
+        assert!(change.disc_in.is_some(), "put in while the session ran");
+        assert_eq!(change.disc_ready.len(), 1);
+        let change = hear(
+            &mut integration,
+            Heard::Disc(8, tekken_4("Tekken 4", DiscStage::Pictured)),
+        );
+        assert!(change.disc_in.is_none(), "announced once");
+        assert!(
+            change.disc_ready.is_empty(),
+            "a picture is not the core being looked up"
+        );
+    }
+
+    /// Taking the disc out takes its game off the bar, and a helper that was
+    /// serving a disc that has gone is not listened to.
+    #[test]
+    fn a_disc_that_comes_out_takes_its_game_with_it() {
+        let _held = GLOBALS.lock().unwrap_or_else(|err| err.into_inner());
+        let mut integration = found(Vec::new());
+        integration.discs_changed(&[in_the_drive(7)]);
+        hear(
+            &mut integration,
+            Heard::Disc(7, tekken_4("Tekken 4", DiscStage::Ready)),
+        );
+        assert!(integration.discs_changed(&[]), "the bar has to be rebuilt");
+        assert!(integration.rows(None).iter().all(|row| row.rom().is_none()));
+
+        let change = hear(
+            &mut integration,
+            Heard::Disc(7, tekken_4("Tekken 4", DiscStage::Ready)),
+        );
+        assert!(!change.rows);
+        assert!(integration.rows(None).iter().all(|row| row.rom().is_none()));
+    }
+
+    /// A disc that is music, a film or somebody's photographs is nobody's game
+    /// and is not on the bar at all.
+    #[test]
+    fn a_disc_that_is_not_a_game_is_not_on_the_bar() {
+        let _held = GLOBALS.lock().unwrap_or_else(|err| err.into_inner());
+        let mut integration = found(Vec::new());
+        integration.discs_changed(&[in_the_drive(7)]);
+        let mut record = tekken_4("", DiscStage::NotAGame);
+        record.console = None;
+        let change = hear(&mut integration, Heard::Disc(7, record));
+        assert!(!change.rows);
+        assert!(change.disc_in.is_none());
+        assert!(integration.rows(None).iter().all(|row| row.rom().is_none()));
+    }
+
+    /// What a disc's console cannot boot without is asked about exactly as a
+    /// shelf's is: the panel over a game that would not start reads one list.
+    #[test]
+    fn a_discs_bios_is_asked_about_like_a_shelfs() {
+        let _held = GLOBALS.lock().unwrap_or_else(|err| err.into_inner());
+        let mut integration = found(Vec::new());
+        integration.discs_changed(&[in_the_drive(7)]);
+        let mut record = tekken_4("Tekken 4", DiscStage::Ready);
+        if let Some(console) = record.console.as_mut() {
+            console.needs = vec![Need {
+                note: "'pcsx2/bios' folder".to_string(),
+                path: "pcsx2/bios".to_string(),
+                here: false,
+            }];
+        }
+        hear(&mut integration, Heard::Disc(7, record));
+        let wanted = wanting("PlayStation 2");
+        assert_eq!(wanted.len(), 1);
+        assert_eq!(
+            wanted[0].into,
+            Path::new("/home/x/.config/retroarch/system/pcsx2/bios")
+        );
+        integration.discs_changed(&[]);
+        assert!(
+            wanting("PlayStation 2").is_empty(),
+            "the disc took its question with it"
+        );
     }
 
     /// A game whose pictures the helper has found carries them onto the row,
@@ -4964,6 +5613,10 @@ input_player1_right_btn = \"14\"
             inner: Some(Inner {
                 ask,
                 heard,
+                helper: PathBuf::from("/nonexistent/lxb-retroarch"),
+                tell: back.clone(),
+                discs: Vec::new(),
+                drives_listed: false,
                 found: Found::Here(Installation {
                     command: vec!["retroarch".to_string()],
                     version: None,

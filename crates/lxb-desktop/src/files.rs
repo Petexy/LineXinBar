@@ -656,7 +656,7 @@ pub fn doing_note(doing: crate::drives::Doing) -> &'static str {
     crate::i18n::text(match doing {
         Doing::Mounting => "drive-mounting",
         Doing::Unmounting | Doing::Removing => "drive-unmounting",
-        Doing::AtStartup(_) => "shell-working",
+        Doing::AtStartup(_) | Doing::Ejecting => "shell-working",
     })
 }
 

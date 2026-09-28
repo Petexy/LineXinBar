@@ -126,6 +126,8 @@ Summary:        RetroArch integration for the LineXinBar shell
 # step with the shell beside it is refused outright rather than half understood.
 Requires:       lxb-desktop%{?_isa} = %{version}-%{release}
 Recommends:     flatpak
+# fusermount3, for a CD game disc played straight from the drive.
+Recommends:     fuse3
 Suggests:       retroarch
 
 %description -n lxb-retroarch

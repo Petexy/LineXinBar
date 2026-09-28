@@ -161,6 +161,35 @@ pub fn info_dir(installation: &Installation) -> Option<PathBuf> {
     places.into_iter().find(|at| at.is_dir())
 }
 
+/// Where this installation keeps RetroArch's database of games, best first.
+///
+/// The copy RetroArch's own Online Updater refreshes first — it lives beside
+/// the configuration — and then the one that shipped with the installation.
+/// One `<System Name>.rdb` per console in each; see [`crate::rdb`].
+pub fn database_dirs(installation: &Installation) -> Vec<PathBuf> {
+    let mut places = Vec::new();
+    if let Some(config) = config_dir(installation) {
+        places.push(config.join("database/rdb"));
+    }
+    match installation.kind {
+        Kind::System => places.extend(
+            [
+                "/usr/share/libretro/database/rdb",
+                "/usr/share/retroarch/database/rdb",
+                "/usr/local/share/libretro/database/rdb",
+            ]
+            .iter()
+            .map(PathBuf::from),
+        ),
+        kind @ (Kind::FlatpakUser | Kind::FlatpakSystem) => {
+            if let Some(deploy) = scope(kind).and_then(deploy) {
+                places.push(deploy.join("files/share/libretro/database/rdb"));
+            }
+        }
+    }
+    places.into_iter().filter(|at| at.is_dir()).collect()
+}
+
 /// Whether a core that is on the disk can actually be loaded here.
 ///
 /// A core downloading cleanly is not the same as a core that runs. libretro's

@@ -3,6 +3,7 @@
 [Documentation](index.md) · [Project home](../README.md)
 
 - [RetroArch, and your own console games](#retroarch-and-your-own-console-games)
+- [A game disc in the drive](#a-game-disc-in-the-drive)
 
 ## RetroArch, and your own console games
 
@@ -295,3 +296,96 @@ files, save states, playlists and each core's own options are written elsewhere
 and are untouched. Deleting the file loses nothing; the next game writes it
 again.
 
+## A game disc in the drive
+
+**Put a game disc in and it is on the bar.** A disc that goes into an optical
+drive while the session runs becomes a row at the head of the RetroArch column,
+above the consoles — the way a PS3 puts the disc at the head of its Game column
+— and the cursor is taken to it, so the next press of A starts it. Nothing moves
+while a game or an application covers the start screen, while the guide or a
+panel is up, or while a search is being typed; the row is there either way. A
+disc that was already in when the session started is on the bar and is not
+somewhere the bar moves to. The column exists as soon as RetroArch is installed,
+so a disc plays on a machine where nobody has chosen a ROM folder yet.
+
+The row is the game, not the drive: its name as RetroArch's own database names
+it, with the tags that tell one dump from another taken off — *Tekken 4*, not
+`TEKKEN4` and not `Tekken 4 (Europe) (En,Fr,De,Es,It) (v1.00)` — its screenshot
+behind the display, under it which console's disc it is, and its **cover whole,
+on a card of its own**: a box at its console's own shape, the height of the
+glass a chosen row stands on, rather than cut round to fit the hole a console's
+mark goes in. The card keeps to the room that glass has, so the column of
+consoles under it keeps its rhythm and every name stays where the others are. A
+disc the database does not know is a **Game disc**. One that is music, a film or
+somebody's files is not a game and is not on the bar at all. Taking the disc out
+takes the row with it.
+
+**The cover comes before the row.** A game that arrived wearing its console's
+mark and turned into its box a moment later would be the bar changing under
+somebody as they reached for it, so a disc whose cover is not on this disk yet
+is not on the bar until the cover has been fetched from libretro's thumbnail
+collection — a second or two on any connection. Only where the server cannot be
+reached at all is the game shown without it, and then the cover is fetched as
+soon as the machine is back online (NetworkManager's own answer, read whenever
+the start screen is showing), and on a timer that backs off from a minute to
+half an hour for a network that is up and still cannot get out. A game libretro
+simply has no cover for is shown at once and not asked about again.
+
+**Every console a PC drive can read.** The disc says which machine it is for, in
+the same place that machine's own boot code looks:
+
+| Console | What says so |
+|---|---|
+| PlayStation, PlayStation 2 | ISO 9660, and `SYSTEM.CNF` naming the program to boot — `BOOT2` for a PlayStation 2 |
+| Sega Saturn | `SEGA SEGASATURN` at the head of the data track, the product number beside it |
+| Sega CD | `SEGADISCSYSTEM` at the head of the data track, the product number after `GM` |
+| PC Engine CD | `PC Engine CD-ROM SYSTEM` in the data track's second sector |
+| PC-FX | `PC-FX:Hu_CD-ROM` at the head of the data track |
+| 3DO | the Opera file system's volume header |
+| Neo Geo CD | ISO 9660 with `IPL.TXT` at the root |
+
+The catalogue number the first four carry — `SCES-50878` — is what the name is
+looked up by, in RetroArch's own `.rdb` files. A Dreamcast's GD-ROM and a
+GameCube's or a Wii's disc are the wrong kind of disc for a PC drive and are
+never asked about.
+
+**Played from the disc, not copied off it.** Nothing is copied first, which is
+why a disc starts as soon as it has been recognised:
+
+- **A DVD** — a PlayStation 2 disc — is a disc image already. The block device
+  reads it the way a `.iso` is read, and the PlayStation 2 core opens the drive
+  itself. What the shell hands RetroArch is a link to the drive under the game's
+  own name, because RetroArch names save states and a game's own settings after
+  the file it was given, and every disc would otherwise be `sr0`.
+- **A CD** is not an image anything can open as it stands. Its sectors are 2352
+  bytes, a PlayStation's films and speech are in sectors the kernel will not
+  read as data, and a Sega CD's music is not data at all — and the emulators want
+  a `.cue` and a `.bin`. So `lxb-retroarch` makes those two up out of the drive,
+  through FUSE: a read of the `.bin` at some offset is a SCSI READ CD of the
+  sectors under it, sent to `/dev/srN` with the access the seat already has.
+  A sector of music that will not read plays as a moment of silence; a sector
+  of data that will not read is an error, because a game handed the wrong bytes
+  does worse than stop.
+
+RetroArch has a disc reader of its own that does the same, and it opens
+`/dev/sgN` — the kernel's SCSI generic driver, which is not loaded on every
+machine and is not something to load behind somebody's back. The block device
+takes the same command, so nothing about the system changes.
+
+Both live in `$XDG_CACHE_HOME/lxb/discs/<drive>/` for as long as the disc is in:
+under the home directory, which a sandboxed RetroArch sees at the same path. The
+helper that serves them is `lxb-retroarch disc /dev/srN`, one per disc, and it
+takes everything away when the shell lets go of it — the disc coming out, the
+shell ending, or a signal. A mount left behind by a helper that was killed
+outright is unmounted by `fusermount3`'s own watcher where it allows
+`auto_unmount`, and by the next run at the same place where it does not. The CD
+path needs `fusermount3`, from `fuse3`, which flatpak itself already depends on.
+
+**A disc plays like any game in the folder.** The same core is chosen for its
+console, a console with none offers to fetch one and starts the game when it is
+there, and a game that will not start without a BIOS raises the same panel
+asking where the BIOS is. Its menu is shorter: play, the emulator's settings, the
+resolution, and **Eject** — there is no file of the user's to rename or delete,
+and the one thing somebody does to a disc is take it out. Eject unmounts
+whatever on the disc was mounted and opens the tray; a game still reading the
+disc keeps it busy, and the panel says so.

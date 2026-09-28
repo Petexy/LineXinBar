@@ -2308,6 +2308,28 @@ impl Heroic {
         rows
     }
 
+    /// Every game of the account as a row of the column, installed first and
+    /// each half by name, whatever the column's own field has narrowed it to —
+    /// what a search of the whole bar reads. Empty wherever the column is. See
+    /// [`crate::steam::Steam::every_row`], which is the same for Steam.
+    pub fn every_row(&self) -> Vec<Entry> {
+        let Some(inner) = self.inner.as_ref() else {
+            return Vec::new();
+        };
+        let Found::Here { command, .. } = &inner.found else {
+            return Vec::new();
+        };
+        if inner.account.is_none() {
+            return Vec::new();
+        }
+        let mut library: Vec<&Game> = inner.games.iter().collect();
+        library.sort_by(|a, b| compare(lxb_steam::library::Sort::InstalledFirst, a, b));
+        library
+            .into_iter()
+            .map(|game| game_row(inner, command, game))
+            .collect()
+    }
+
     /// Narrow the column to what is being typed. Whether that changed it.
     pub fn set_search(&mut self, query: &str) -> bool {
         let Some(inner) = self.inner.as_mut() else {

@@ -29,6 +29,7 @@
 //! one.
 
 /// One console, as the folder that holds it.
+#[derive(Debug, PartialEq, Eq)]
 pub struct Machine {
     /// Every folder name that means this console — lowercased, with spaces,
     /// dashes and underscores taken out, because `Mega Drive`, `mega-drive` and
@@ -402,6 +403,14 @@ pub const CONSOLES: &[Machine] = &[
         shelves: &["SNK - Neo Geo"],
         cores: &["fbneo", "fbalpha2012_neogeo", "mame2003_plus"],
         extensions: &["neo"],
+    },
+    Machine {
+        aliases: &["neogeocd", "ngcd"],
+        title: "Neo Geo CD",
+        glyph: "lxb:console-neogeocd",
+        shelves: &["SNK - Neo Geo CD"],
+        cores: &["neocd"],
+        extensions: &["cue", "chd"],
     },
     Machine {
         aliases: &["arcade", "mame", "fbneo", "fba"],

@@ -1,0 +1,37 @@
+<!--
+  The Neo Geo CD: the AES's deck and its two big controller ports, with a thin
+  disc tray where the cartridge slot was and the disc itself where the memory
+  card was.
+
+  The same machine in a different case, and drawn as one — the deck, the ports
+  and their places are the Neo Geo's, so the two sit together on a shelf.  What
+  tells them apart is the two things the CD model changed: the slot the width of
+  a hardback book became a tray a disc slides in on, and the memory card went,
+  because the CD machine keeps its saves inside.
+
+  See console-nes.svg for the set's rules.
+
+  lxb:shape
+-->
+
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32">
+  <defs>
+    <rect id="deck" x="3" y="8.6" width="26" height="15" rx="2.2"/>
+    <rect id="tray" x="6.4" y="11" width="19.2" height="2.2" rx="0.8"/>
+    <g id="ports">
+      <rect x="6" y="17.6" width="5.6" height="3" rx="0.9"/>
+      <rect x="20.4" y="17.6" width="5.6" height="3" rx="0.9"/>
+    </g>
+    <circle id="disc" cx="16" cy="18.4" r="2.6"/>
+    <mask id="pierced">
+      <use href="#deck" fill="#ffffff"/>
+      <use href="#tray" fill="#000000"/>
+      <use href="#ports" fill="#000000"/>
+      <use href="#disc" fill="#000000"/>
+    </mask>
+  </defs>
+
+  <g mask="url(#pierced)">
+    <use href="#deck" fill="#ffffff"/>
+  </g>
+</svg>

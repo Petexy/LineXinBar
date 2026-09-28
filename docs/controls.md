@@ -71,17 +71,21 @@ passes it to a neighbour.
 | `Tab` / `Shift+Tab`, `L1` / `R1`            | Move to another display             |
 | `Alt+Tab` / `Alt+Shift+Tab`                 | Walk [the guide's cards](guide.md#the-cards) while Alt is held; letting it go switches to the one the walk landed on |
 | `Esc`, `Backspace` or controller `B`        | Step back out one level, and nothing at the top of a column |
+| Any letter, digit or mark on the start screen, or the on-screen keyboard summoned there | [Search the whole bar](shell.md#searching-the-whole-bar) |
+| `Esc` or controller `B` with a search up    | Give the search up, and put the bar back where it was |
 | `Home`, `Super`, mouse side button, controller Guide/STEAM button | Open the guide overlay |
-| `Y`, `F10`, right mouse button, controller `Y`/`Triangle` | Open [the context menu](guide.md#the-context-menu) on what is selected |
-| `Shift`, controller `X`/`Square` | Open [the friends list](steam.md#who-is-on-steam-and-talking-to-them) down the right of the screen |
+| `F10`, `Menu`, right mouse button, controller `Y`/`Triangle`, and `Y` anywhere but the start screen | Open [the context menu](guide.md#the-context-menu) on what is selected |
+| `Shift`, controller `X`/`Square` — on the start screen, `Shift` let go of with nothing typed under it | Open [the friends list](steam.md#who-is-on-steam-and-talking-to-them) down the right of the screen |
 | `P`, controller right stick pressed, with the guide open | Hand the guide's directions to the [videos floating over it](settings.md#picture-in-picture), and hand them back |
 | `Print` (with anything held), `Ctrl+Shift+3`, `Alt+Shift+3`, controller Guide/STEAM + `R1` | [Photograph](desktop-integration.md#screenshots) the display being driven |
 | Controller Guide/STEAM + Select/View | Ask [Valve's own overlay](#the-guide-button-is-the-shells-alone) to come up over the Steam game in front |
 | The volume keys, with anything held | Turn [the session](guide.md#quick-settings) up or down a step, or silence it |
 
-Keyboard navigation also accepts the keypad arrows, WASD, and HJKL. Held
-directions repeat after a short delay; the analogue stick uses a dead zone
-with hysteresis so drift near its edge cannot rapidly change selection.
+Keyboard navigation also accepts the keypad arrows, and WASD and HJKL
+everywhere but the start screen — there every letter begins a search of the
+whole bar, so those are letters too. Held directions repeat after a short delay;
+the analogue stick uses a dead zone with hysteresis so drift near its edge
+cannot rapidly change selection.
 
 Controllers are discovered and hot-plugged directly through the Linux gamepad
 API, using SDL-compatible mappings (including `SDL_GAMECONTROLLERCONFIG`, as

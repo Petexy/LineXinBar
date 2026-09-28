@@ -32,5 +32,10 @@ ureq = "3"
 # same crate the shell decodes every PNG with, so it costs this tree nothing.
 flate2 = "1"
 
+# Reading a game disc: SG_IO to the drive, and the kernel's FUSE protocol to
+# serve a CD to RetroArch as an image — see `drive.rs` and `fuse.rs`. Already
+# in the tree for the shell.
+libc = "0.2"
+
 [build-dependencies]
 cc = "1"

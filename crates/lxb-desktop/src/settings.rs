@@ -9413,7 +9413,7 @@ fn drive_mount_row(
     };
     let title = crate::i18n::text(title);
     match doing {
-        Some(doing @ (Doing::Mounting | Doing::Unmounting | Doing::Removing)) => {
+        Some(doing @ (Doing::Mounting | Doing::Unmounting | Doing::Removing | Doing::Ejecting)) => {
             reading_marked(title, crate::files::doing_note(doing), icon)
         }
         Some(Doing::AtStartup(_)) => reading_marked(title, crate::i18n::text(note), icon),

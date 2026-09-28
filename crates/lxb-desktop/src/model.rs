@@ -39,6 +39,24 @@ const EASE_RATE: f32 = 19.0;
 /// the bar does, which reads as a jump rather than as a move.
 const DEPTH_EASE_RATE: f32 = 14.0;
 
+/// The same for the category row gathering into one button when a search
+/// begins, and spreading back out when it ends.
+///
+/// Slower again, because it is the longest journey the row makes: every
+/// category on the screen travels to the one in the middle, the far ones from
+/// off its edges, and the move has to be *seen* — it is the whole of how the
+/// user is told that what they are about to look at is everything at once. At
+/// the row's own rate it read as the other buttons blinking out, and at 11 it
+/// was still over before the eye had found it: photographed a sixth of a
+/// second after the first letter, every other button had already gone.
+const GATHER_EASE_RATE: f32 = 8.0;
+
+/// How long the field beside that button takes to come and go, in seconds.
+///
+/// A fade rather than a spring: it is text appearing where there was none, and
+/// nothing about it travels.
+const FIELD_FADE: f32 = 0.16;
+
 /// Below this distance the animation is finished and we stop redrawing.
 const SETTLED: f32 = 0.001;
 
@@ -263,6 +281,18 @@ pub struct Lattice {
     /// [`crate::apps::take_off_the_bar`].
     pub aside: Vec<crate::apps::App>,
 
+    /// What each display that is searching the whole bar has found: one column
+    /// per search, held here rather than on the cursor for the reason every
+    /// other column is — a cursor hands out rows borrowed from the catalogue,
+    /// and a column it held itself would be borrowed from the cursor instead.
+    ///
+    /// One per display rather than one for the session, because two screens
+    /// are two bars: a search typed on one must not become what the other one
+    /// is showing. A cursor finds its own by the number it was given — see
+    /// [`Cursor::begin_search`] — and the shell drops the ones no cursor is
+    /// holding any more. See [`crate::search`].
+    pub searches: Vec<crate::search::Found>,
+
     /// Socket selected before connecting the shell. Child applications are
     /// pinned to the same socket instead of inheriting a nested host display.
     wayland_display: OsString,
@@ -322,6 +352,71 @@ pub struct Cursor {
     category_speed: f32,
     item_speed: f32,
     depth_speed: f32,
+
+    /// The search of the whole bar this display is in, or is still putting
+    /// away. See [`Seeking`].
+    search: Option<Seeking>,
+    /// How far the category row has gathered into one button for it: 0 spread
+    /// out as it always is, 1 a single button. Eased, so the row closes up and
+    /// opens out rather than being swapped for something else.
+    gather: f32,
+    gather_speed: f32,
+    /// How much of the field beside that button is on screen, 0 to 1.
+    field: f32,
+}
+
+/// One display's search of the whole bar.
+///
+/// While it is up the cursor stands in the search's own column instead of the
+/// category's — the category stays selected underneath, because the row
+/// gathers *into* it and spreads back out *from* it — and everything the
+/// cursor answers is about the rows the search found. The path the user had
+/// open is put to one side rather than lost: giving up on a search puts them
+/// back exactly where they were. See [`Cursor::begin_search`].
+#[derive(Debug, Clone)]
+pub struct Seeking {
+    /// Which of [`Lattice::searches`] this is.
+    id: u64,
+    /// What has been typed.
+    pub query: String,
+    /// Whether it is still being typed. False once the phrase has been kept —
+    /// Enter on a keyboard, Start on a pad — which is when the field goes and
+    /// what it found is left to be looked through.
+    pub typing: bool,
+    /// Whether it is being put away. What it found goes on being drawn,
+    /// fading, while the row spreads back out; nothing else asks about it.
+    ending: bool,
+    /// Where the cursor was when the search began.
+    left: Left,
+    /// The row the cursor was on among the results, and where their column was
+    /// drawn, as they were when the search was put away — what the results
+    /// are drawn from while they fade.
+    selected: usize,
+    position: f32,
+}
+
+/// Where a cursor was standing when it began to search, to be handed back.
+#[derive(Debug, Clone)]
+struct Left {
+    row: Option<usize>,
+    stack: Vec<SubColumn>,
+    open: usize,
+    position: f32,
+    speed: f32,
+}
+
+impl Left {
+    /// The top of the category, never walked down: what a search hands back
+    /// when the path it put aside led somewhere that has gone.
+    fn nowhere() -> Left {
+        Left {
+            row: None,
+            stack: Vec::new(),
+            open: 0,
+            position: 0.0,
+            speed: 0.0,
+        }
+    }
 }
 
 /// Read the place on `entries[row]` off the disk, keeping what answers to
@@ -490,6 +585,10 @@ pub struct Column<'a> {
     pub position: f32,
     /// Where this column stands in relation to the cursor.
     pub standing: Standing,
+    /// Whether this is what a search of the whole bar found, rather than a
+    /// column of the bar. Its rows are every kind of row at once — programs,
+    /// covers, pages — and it is drawn as the one shape all of them can share.
+    pub found: bool,
 }
 
 /// Where a column of the path stands in relation to the cursor.
@@ -575,10 +674,16 @@ impl Lattice {
         Self {
             categories,
             aside: Vec::new(),
+            searches: Vec::new(),
             wayland_display,
             xwayland_display,
             launched_apps: Vec::new(),
         }
+    }
+
+    /// The search a cursor holding `id` is standing in.
+    pub fn found(&self, id: u64) -> Option<&crate::search::Found> {
+        self.searches.iter().find(|found| found.id == id)
     }
 
     /// Whether there is nothing here to launch.
@@ -1121,6 +1226,10 @@ impl Cursor {
             category_speed: 0.0,
             item_speed: 0.0,
             depth_speed: 0.0,
+            search: None,
+            gather: 0.0,
+            gather_speed: 0.0,
+            field: 0.0,
         }
     }
 
@@ -1185,8 +1294,13 @@ impl Cursor {
         self.depth_position
     }
 
+    /// The column the cursor is standing in at the top: the category's, or
+    /// the search's while one is up.
     pub fn current_category<'a>(&self, lattice: &'a Lattice) -> Option<&'a Category> {
-        lattice.categories.get(self.selected_category)
+        match self.searching_in() {
+            Some(id) => lattice.found(id).map(|found| &found.column),
+            None => lattice.categories.get(self.selected_category),
+        }
     }
 
     /// The row the column the cursor is standing in was opened from — the last
@@ -1265,6 +1379,7 @@ impl Cursor {
                     std::cmp::Ordering::Equal => Standing::Open,
                     std::cmp::Ordering::Greater => Standing::Leaving,
                 },
+                found: self.searching(),
             });
         }
         out
@@ -1275,6 +1390,18 @@ impl Cursor {
     /// left over from a catalogue that has since changed — stops short instead
     /// of drawing something that is no longer there.
     fn level_entries<'a>(&self, lattice: &'a Lattice, level: usize) -> Option<&'a [Entry]> {
+        // A search is one column deep and never deeper: what it finds is
+        // pressed from where it is, or taken home to be opened there.
+        if let Some(id) = self.searching_in() {
+            return match level {
+                0 => Some(
+                    lattice
+                        .found(id)
+                        .map_or(&[][..], |found| &found.column.entries),
+                ),
+                _ => None,
+            };
+        }
         let mut entries = lattice
             .categories
             .get(self.selected_category)?
@@ -1295,6 +1422,11 @@ impl Cursor {
         lattice: &'a mut Lattice,
         level: usize,
     ) -> Option<&'a mut [Entry]> {
+        // What a search found are copies, and nothing is chosen in them: a
+        // change written there would be a change to nothing.
+        if self.searching() {
+            return None;
+        }
         let mut entries = lattice
             .categories
             .get_mut(self.selected_category)?
@@ -1316,6 +1448,9 @@ impl Cursor {
     /// [`Self::level_entries_mut`] hands back a slice and this is separate
     /// rather than the two being one call.
     pub fn open_column_mut<'a>(&self, lattice: &'a mut Lattice) -> Option<&'a mut Vec<Entry>> {
+        if self.searching() {
+            return None;
+        }
         let mut entries = &mut lattice.categories.get_mut(self.selected_category)?.entries;
         for step in 0..self.open {
             entries = entries.get_mut(self.row_at(step))?.entries_vec_mut()?;
@@ -1706,7 +1841,9 @@ impl Cursor {
     /// with a path still open would leave the cross showing a trail belonging
     /// to a category the user is no longer in.
     pub fn point_at_category(&mut self, index: usize, lattice: &Lattice) -> bool {
-        if index >= lattice.categories.len() {
+        // While a search is up the row is one button, and the others are not
+        // on the screen to be pointed at.
+        if index >= lattice.categories.len() || self.searching() {
             return false;
         }
         if index == self.selected_category && self.open == 0 {
@@ -1738,6 +1875,9 @@ impl Cursor {
     /// passes of the walk — is a different handle, and the cursor treats it as
     /// the file having gone, which is what it did.
     pub fn keep_on_media(&mut self, lattice: &Lattice, file: &crate::media::Shelved) {
+        if self.searching() {
+            return;
+        }
         let was = self.selected_item();
         let Some(row) = self
             .current_entries(lattice)
@@ -1773,7 +1913,17 @@ impl Cursor {
     /// standing on, and it would be followed to wherever the finished order
     /// puts it — leaving somebody who has never opened Steam to walk in on the
     /// middle of their library rather than the top of the order they chose.
+    ///
+    /// Nothing at all while a search is up. The category's slot is holding the
+    /// row the search is on, and the row it was left on is put aside until the
+    /// search ends — so every question keyed on a column's number, and every
+    /// move made to keep a cursor on a game in one, waits until then. What was
+    /// put aside is brought back inside its column when it is handed back; see
+    /// [`Cursor::end_search`].
     fn row_in_column(&self, at: usize) -> Option<usize> {
+        if self.searching() {
+            return None;
+        }
         match *self.selected_items.get(at)? {
             Some(row) => Some(row),
             // Standing in it without having moved down it. The head of the
@@ -1839,6 +1989,9 @@ impl Cursor {
     }
 
     pub fn keep_on_trophy(&mut self, lattice: &Lattice, path: &[crate::trophies::Position]) {
+        if self.searching() {
+            return;
+        }
         let Some(at) = lattice
             .categories
             .iter()
@@ -1907,8 +2060,16 @@ impl Cursor {
         });
     }
 
+    /// The row this cursor has of its own in the column at `at` — see
+    /// [`Self::row_in_column`] — as the row itself, for somebody who has to know
+    /// what it is before the column is rebuilt under it.
+    pub fn entry_in_column<'a>(&self, lattice: &'a Lattice, at: usize) -> Option<&'a Entry> {
+        let row = self.row_in_column(at)?;
+        lattice.categories.get(at)?.entries.get(row)
+    }
+
     /// Keep the cursor on the row `is` picks out, wherever the column moved it.
-    fn keep_on_row(&mut self, lattice: &Lattice, at: usize, is: impl Fn(&Entry) -> bool) {
+    pub fn keep_on_row(&mut self, lattice: &Lattice, at: usize, is: impl Fn(&Entry) -> bool) {
         let Some(was) = self.row_in_column(at) else {
             return;
         };
@@ -1946,7 +2107,7 @@ impl Cursor {
     /// tree but a Steam library and the letters of its index, so an answer here
     /// is by itself the news that this cursor is inside one.
     pub fn game_inside(&self, lattice: &Lattice) -> Option<u32> {
-        if self.open == 0 {
+        if self.open == 0 || self.searching() {
             return None;
         }
         Some(self.current_entry(lattice)?.game()?.app_id)
@@ -1969,7 +2130,7 @@ impl Cursor {
     /// column — a letter of its index — is on, for keeping it there across a
     /// rebuild. See [`Self::game_inside`].
     pub fn epic_game_inside(&self, lattice: &Lattice) -> Option<String> {
-        if self.open == 0 {
+        if self.open == 0 || self.searching() {
             return None;
         }
         Some(self.current_entry(lattice)?.epic_game()?.app_name.clone())
@@ -1987,7 +2148,7 @@ impl Cursor {
 
     /// Keep a display standing inside a folder on the row `is` picks out.
     fn keep_inside_on(&mut self, lattice: &Lattice, is: impl Fn(&Entry) -> bool) {
-        if self.open == 0 {
+        if self.open == 0 || self.searching() {
             return;
         }
         let was = self.selected_item();
@@ -2019,20 +2180,7 @@ impl Cursor {
     /// standing over the shelf is not it.
     pub fn rest_on_first_row(&mut self, lattice: &Lattice) {
         let row = first_row(self.current_entries(lattice));
-        self.select_row(row);
-        let at = row as f32;
-        match self.open.checked_sub(1) {
-            None => {
-                self.item_position = at;
-                self.item_speed = 0.0;
-            }
-            Some(level) => {
-                if let Some(column) = self.stack.get_mut(level) {
-                    column.position = at;
-                    column.speed = 0.0;
-                }
-            }
-        }
+        self.stand_on(row);
     }
 
     /// Move where a column is *drawn* without moving what is selected in it.
@@ -2102,6 +2250,19 @@ impl Cursor {
         if was >= at {
             self.leave_subcolumns();
             self.rest_on_first_row(lattice);
+            self.forget_where_the_search_began();
+        }
+    }
+
+    /// Let a search that is up hand back the top of its category, rather than
+    /// the path it put aside, when it ends.
+    ///
+    /// For a search whose category has moved out from under it — the column
+    /// it began in has gone, and the one standing in its place is a different
+    /// column, where the rows put aside lead nowhere.
+    fn forget_where_the_search_began(&mut self) {
+        if let Some(search) = self.search_mut() {
+            search.left = Left::nowhere();
         }
     }
 
@@ -2238,6 +2399,7 @@ impl Cursor {
             None => {
                 self.leave_subcolumns();
                 self.rest_on_first_row(lattice);
+                self.forget_where_the_search_began();
             }
         }
     }
@@ -2340,7 +2502,14 @@ impl Cursor {
     /// library — and the whole point of the bar sliding is that they can see
     /// where they were taken.
     pub fn select_category(&mut self, at: usize, lattice: &Lattice) {
-        if at >= lattice.categories.len() || at == self.selected_category {
+        if at >= lattice.categories.len() {
+            return;
+        }
+        // Somewhere else on the bar is not somewhere inside a search: the
+        // search is put away on the way, and the row spreads out on the column
+        // the shell is taking the user to.
+        self.end_search(lattice);
+        if at == self.selected_category {
             return;
         }
         self.leave_subcolumns();
@@ -2365,12 +2534,34 @@ impl Cursor {
         if at >= lattice.categories.len() {
             return;
         }
+        self.end_search(lattice);
         if at == self.selected_category {
             self.leave_subcolumns();
             self.restore_column(lattice);
             return;
         }
         self.select_category(at, lattice);
+    }
+
+    /// Put the cursor at the top of category `at`, with the row placed there
+    /// rather than travelling to it.
+    ///
+    /// For the one arrival that has no journey to show: a search of the whole
+    /// bar handing the user to where something lives. The row is gathered into
+    /// a single button when this happens, so which category that button is
+    /// changes nothing on the screen — the row spreads out around the new one
+    /// as the search goes, and a glide along it as well would be two moves at
+    /// once.
+    pub fn arrive_at_category(&mut self, at: usize, lattice: &Lattice) {
+        if at >= lattice.categories.len() {
+            return;
+        }
+        self.end_search(lattice);
+        self.leave_subcolumns();
+        self.selected_category = at;
+        self.category_position = at as f32;
+        self.category_speed = 0.0;
+        self.restore_column(lattice);
     }
 
     /// Come back out of every subcategory this cursor is standing in.
@@ -2382,6 +2573,11 @@ impl Cursor {
     /// Step into the subcategory under the cursor. `false` if the row is not
     /// one — an application, or a setting, both of which are the end of a path.
     pub fn enter(&mut self, lattice: &Lattice) -> bool {
+        // A page a search found is opened where it lives, not in the middle of
+        // the results. See [`crate::search::Press::There`].
+        if self.searching() {
+            return false;
+        }
         let Some(entries) = self.current_entry(lattice).and_then(Entry::entries) else {
             return false;
         };
@@ -2538,6 +2734,184 @@ impl Cursor {
         self.stack.truncate(self.open);
     }
 
+    // -- searching the whole bar -------------------------------------------
+    //
+    // A search stands in the category the cursor was in when it began: the
+    // row gathers into that category's button and spreads back out from it.
+    // The cursor steps out of any path it had open and stands in the search's
+    // own column instead, with the path put aside — so every question below
+    // this line that is asked of "the column the cursor is in" is asked of
+    // what the search found, and giving the search up hands the path back.
+
+    /// Whether a search of the whole bar is up on this display — being typed
+    /// or being looked through, and not on its way out.
+    pub fn searching(&self) -> bool {
+        self.searching_in().is_some()
+    }
+
+    /// Which of [`Lattice::searches`] this cursor is standing in, while it is.
+    fn searching_in(&self) -> Option<u64> {
+        self.search().map(|search| search.id)
+    }
+
+    /// The search this display is in, while it is in one.
+    pub fn search(&self) -> Option<&Seeking> {
+        self.search.as_ref().filter(|search| !search.ending)
+    }
+
+    /// The same, to type into or to keep what was typed.
+    pub fn search_mut(&mut self) -> Option<&mut Seeking> {
+        self.search.as_mut().filter(|search| !search.ending)
+    }
+
+    /// The search this cursor still has a column of, up or on its way out —
+    /// the one the shell must not take away from under it.
+    pub fn search_held(&self) -> Option<u64> {
+        self.search.as_ref().map(|search| search.id)
+    }
+
+    /// The search as the drawing sees it: up, or still leaving.
+    pub fn search_drawn(&self) -> Option<&Seeking> {
+        self.search.as_ref()
+    }
+
+    /// How far the category row has gathered into one button, 0 to 1.
+    pub fn gathered(&self) -> f32 {
+        self.gather
+    }
+
+    /// How much of the field beside that button is on screen, 0 to 1.
+    pub fn field_shown(&self) -> f32 {
+        self.field
+    }
+
+    /// Begin searching the whole bar for `query`, in the column the lattice
+    /// holds under `id`.
+    ///
+    /// The cursor comes out of whatever path it had open — the row it gathers
+    /// into is the category's, and the category is at the top — and stands on
+    /// the first thing found. The path is kept, and [`Self::end_search`]
+    /// hands it back.
+    ///
+    /// A search that is already up is only typed into again, whatever `id`
+    /// says: there is one search per display.
+    pub fn begin_search(&mut self, id: u64, query: String) {
+        if let Some(search) = self.search_mut() {
+            search.query = query;
+            search.typing = true;
+            return;
+        }
+        let left = Left {
+            row: self
+                .selected_items
+                .get(self.selected_category)
+                .copied()
+                .flatten(),
+            stack: std::mem::take(&mut self.stack),
+            open: std::mem::replace(&mut self.open, 0),
+            position: self.item_position,
+            speed: self.item_speed,
+        };
+        // One on its way out is simply replaced. Its column goes with it, and
+        // the row that was spreading gathers again from wherever it had got to.
+        self.search = Some(Seeking {
+            id,
+            query,
+            typing: true,
+            ending: false,
+            left,
+            selected: 0,
+            position: 0.0,
+        });
+        self.stand_on(0);
+    }
+
+    /// Put the search away and hand back where the cursor was when it began.
+    /// Whether there was one to put away.
+    ///
+    /// What it found goes on being drawn while the row spreads back out, from
+    /// the row the cursor was on, and is let go of when the row has finished
+    /// — see [`Self::animate`]. The path handed back is brought inside its
+    /// columns first: the bar may have been rebuilt while the search was up.
+    pub fn end_search(&mut self, lattice: &Lattice) -> bool {
+        if !self.searching() {
+            return false;
+        }
+        let selected = self.selected_item();
+        let position = self.item_position;
+        let Some(search) = self.search.as_mut() else {
+            return false;
+        };
+        search.ending = true;
+        search.typing = false;
+        search.selected = selected;
+        search.position = position;
+        let left = std::mem::replace(&mut search.left, Left::nowhere());
+        if let Some(slot) = self.selected_items.get_mut(self.selected_category) {
+            *slot = left.row;
+        }
+        self.stack = left.stack;
+        self.open = left.open;
+        self.item_position = left.position;
+        self.item_speed = left.speed;
+        self.keep_in_bounds(lattice);
+        self.settle(lattice);
+        true
+    }
+
+    /// Where the cursor was when the search began, as a cursor of its own:
+    /// what the drawing shows going while the row gathers. `None` unless a
+    /// search is up.
+    pub fn before_the_search(&self) -> Option<Cursor> {
+        let search = self.search()?;
+        let mut before = self.clone();
+        if let Some(slot) = before.selected_items.get_mut(before.selected_category) {
+            *slot = search.left.row;
+        }
+        before.stack.clone_from(&search.left.stack);
+        before.open = search.left.open;
+        before.item_position = search.left.position;
+        before.search = None;
+        Some(before)
+    }
+
+    /// What a search on its way out had found, as the column it fades from.
+    /// `None` unless one is leaving.
+    pub fn leaving_search<'a>(&self, lattice: &'a Lattice) -> Option<Column<'a>> {
+        let search = self.search.as_ref().filter(|search| search.ending)?;
+        let entries = lattice.found(search.id)?.column.entries.as_slice();
+        Some(Column {
+            entries,
+            selected: search.selected.min(entries.len().saturating_sub(1)),
+            position: search.position,
+            standing: Standing::Open,
+            found: true,
+        })
+    }
+
+    /// Put the cursor on `row` of the column it is standing in, with the
+    /// column drawn there rather than travelling to it.
+    ///
+    /// For a column that has become another list under the cursor — reordered,
+    /// or found afresh for another letter — where there is no journey through
+    /// it to show.
+    pub fn stand_on(&mut self, row: usize) {
+        self.select_row(row);
+        let at = row as f32;
+        match self.open.checked_sub(1) {
+            None => {
+                self.item_position = at;
+                self.item_speed = 0.0;
+            }
+            Some(level) => {
+                if let Some(column) = self.stack.get_mut(level) {
+                    column.position = at;
+                    column.speed = 0.0;
+                }
+            }
+        }
+    }
+
     /// Apply a navigation action. Returns `true` if anything moved.
     ///
     /// Launching is not here: it acts on the shared catalogue rather than on
@@ -2557,6 +2931,12 @@ impl Cursor {
     /// and Right's again from the moment there is a path to walk.
     pub fn navigate(&mut self, action: Action, lattice: &Lattice) -> bool {
         if lattice.categories.is_empty() {
+            return false;
+        }
+        // The row is one button while a search is up. There is nowhere along
+        // it to go, and a press that walked off into a category would be a way
+        // out of the search that is not the one the user was told about.
+        if self.searching() && matches!(action, Action::Left | Action::Right) {
             return false;
         }
 
@@ -2710,11 +3090,46 @@ impl Cursor {
             }
         }
 
+        // The row gathering into one button for a search, or spreading back
+        // out after one. A search being put away is let go of when the row
+        // has finished spreading, and not before: its rows are what the
+        // drawing fades out over the first half of the way.
+        let target_gather = if self.searching() { 1.0 } else { 0.0 };
+        (self.gather, self.gather_speed) = step(
+            self.gather,
+            self.gather_speed,
+            target_gather,
+            GATHER_EASE_RATE,
+        );
+        let gathering =
+            (target_gather - self.gather).abs() > SETTLED || self.gather_speed.abs() > SETTLED;
+        if !gathering {
+            self.gather = target_gather;
+            self.gather_speed = 0.0;
+            if self.search.as_ref().is_some_and(|search| search.ending) {
+                self.search = None;
+            }
+        }
+        // And the field beside it, which is there only while it is typed into.
+        let target_field = match self.search() {
+            Some(search) if search.typing => 1.0,
+            _ => 0.0,
+        };
+        let fade = dt / FIELD_FADE;
+        self.field = if self.field < target_field {
+            (self.field + fade).min(target_field)
+        } else {
+            (self.field - fade).max(target_field)
+        };
+        let fading = self.field != target_field;
+
         // Still moving while it is either away from its target or on its way
         // back to it: a spring an instant from crossing centre is at the
         // target and nowhere near finished.
         let item_close = settled_within(target_item);
         let moving = columns_moving
+            || gathering
+            || fading
             || (target_category - self.category_position).abs() > SETTLED
             || (target_item - self.item_position).abs() > item_close
             || (target_depth - self.depth_position).abs() > SETTLED
@@ -6100,6 +6515,7 @@ mod tests {
                 own_background: false,
                 shape: None,
                 glyph: "lxb:console-ps1".to_string(),
+                disc: None,
             })
         };
         let reap = |lattice: &mut Lattice| {
@@ -6188,5 +6604,183 @@ mod tests {
         };
         assert_eq!(get("DISPLAY"), Some(Some(OsStr::new(":62"))));
         assert_eq!(get("LXB_XWAYLAND_DISPLAY"), Some(Some(OsStr::new(":62"))));
+    }
+
+    /// Two columns, a page inside the second, and what a search of the whole
+    /// bar found, held under the number 1.
+    fn searched_bar() -> Lattice {
+        let mut lattice = Lattice::new(vec![
+            Category {
+                id: "a",
+                title: "A",
+                icon: "a",
+                entries: vec![entry("one"), entry("two")],
+            },
+            Category {
+                id: "b",
+                title: "B",
+                icon: "b",
+                entries: vec![folder("page", vec![entry("inner"), entry("deeper")])],
+            },
+        ]);
+        let mut found = crate::search::Found::empty(1);
+        found.column.entries = vec![entry("found one"), entry("found two"), entry("found three")];
+        lattice.searches.push(found);
+        lattice
+    }
+
+    #[test]
+    fn a_search_stands_in_what_it_found_and_hands_the_path_back() {
+        let lattice = searched_bar();
+        let mut cursor = Cursor::new(lattice.categories.len());
+        assert!(cursor.navigate(Action::Right, &lattice));
+        assert!(cursor.enter(&lattice));
+        assert!(cursor.navigate(Action::Down, &lattice));
+
+        cursor.begin_search(1, "found".into());
+        assert!(cursor.searching());
+        assert_eq!(cursor.depth(), 0, "a search is one column deep");
+        assert_eq!(
+            cursor.current_category(&lattice).map(|column| column.id),
+            Some(crate::search::COLUMN)
+        );
+        assert_eq!(
+            titles(cursor.current_entries(&lattice)),
+            ["found one", "found two", "found three"]
+        );
+        assert!(cursor.navigate(Action::Down, &lattice));
+        assert_eq!(
+            cursor.current_entry(&lattice).map(Entry::title),
+            Some("found two")
+        );
+        // Where it began is still there to be drawn going, and handed back.
+        let before = cursor.before_the_search().expect("a search is up");
+        assert_eq!(
+            before.current_entry(&lattice).map(Entry::title),
+            Some("deeper")
+        );
+
+        assert!(cursor.end_search(&lattice));
+        assert!(!cursor.searching());
+        assert_eq!(cursor.selected_category, 1);
+        assert_eq!(cursor.depth(), 1, "the page is open again");
+        assert_eq!(
+            cursor.current_entry(&lattice).map(Entry::title),
+            Some("deeper")
+        );
+    }
+
+    #[test]
+    fn the_row_is_one_button_while_a_search_is_up() {
+        let lattice = searched_bar();
+        let mut cursor = Cursor::new(lattice.categories.len());
+        cursor.begin_search(1, "found".into());
+        assert!(!cursor.navigate(Action::Left, &lattice));
+        assert!(!cursor.navigate(Action::Right, &lattice));
+        assert!(!cursor.point_at_category(1, &lattice));
+        assert_eq!(cursor.selected_category, 0);
+        assert!(cursor.searching());
+    }
+
+    #[test]
+    fn nothing_a_search_found_is_stepped_into_or_chosen() {
+        let mut lattice = searched_bar();
+        lattice.searches[0].column.entries = vec![
+            folder("a page", vec![entry("inside")]),
+            choice("Purple", false),
+        ];
+        let mut cursor = Cursor::new(lattice.categories.len());
+        cursor.begin_search(1, "p".into());
+        assert!(!cursor.enter(&lattice), "a page is opened where it lives");
+        assert!(cursor.open_column_mut(&mut lattice).is_none());
+        cursor.navigate(Action::Down, &lattice);
+        assert_eq!(cursor.choose(&mut lattice), None, "the results are copies");
+    }
+
+    #[test]
+    fn the_row_gathers_for_a_search_and_lets_it_go_once_it_has_spread_out() {
+        let lattice = searched_bar();
+        let mut cursor = Cursor::new(lattice.categories.len());
+        cursor.begin_search(1, "f".into());
+        while cursor.animate(1.0 / 60.0) {}
+        assert_eq!(cursor.gathered(), 1.0);
+        assert_eq!(cursor.field_shown(), 1.0, "the field is up while typing");
+
+        cursor.search_mut().expect("a search is up").typing = false;
+        while cursor.animate(1.0 / 60.0) {}
+        assert_eq!(
+            cursor.field_shown(),
+            0.0,
+            "and goes once the phrase is kept"
+        );
+        assert_eq!(cursor.gathered(), 1.0, "the row stays gathered");
+
+        cursor.end_search(&lattice);
+        cursor.animate(1.0 / 60.0);
+        assert_eq!(
+            cursor.search_held(),
+            Some(1),
+            "held while its rows are drawn going"
+        );
+        assert!(cursor.leaving_search(&lattice).is_some());
+        while cursor.animate(1.0 / 60.0) {}
+        assert_eq!(cursor.gathered(), 0.0);
+        assert_eq!(cursor.search_held(), None, "let go of once the row is out");
+    }
+
+    #[test]
+    fn a_library_resorted_under_a_search_does_not_move_the_cursor_in_it() {
+        // Keeping a display on its game is done by the column's number, and
+        // while a search is up that number is holding a row of the results.
+        let mut lattice = searched_bar();
+        lattice.categories[0].entries = vec![game(10, "Alpha", true), game(20, "Beta", true)];
+        let mut cursor = Cursor::new(lattice.categories.len());
+        cursor.begin_search(1, "found".into());
+        cursor.navigate(Action::Down, &lattice);
+        assert_eq!(cursor.game_in_column(&lattice, 0), None);
+        cursor.keep_on_game(&lattice, 0, 20);
+        assert_eq!(
+            cursor.current_entry(&lattice).map(Entry::title),
+            Some("found two")
+        );
+    }
+
+    #[test]
+    fn arriving_at_a_category_ends_the_search_and_is_placed() {
+        let lattice = searched_bar();
+        let mut cursor = Cursor::new(lattice.categories.len());
+        cursor.begin_search(1, "found".into());
+        cursor.arrive_at_category(1, &lattice);
+        assert!(!cursor.searching());
+        assert_eq!(cursor.selected_category, 1);
+        assert_eq!(cursor.category_position, 1.0, "placed, not travelled to");
+        assert_eq!(cursor.depth(), 0);
+        assert_eq!(
+            cursor.current_entry(&lattice).map(Entry::title),
+            Some("page")
+        );
+    }
+
+    #[test]
+    fn a_column_gone_from_under_a_search_hands_back_its_top() {
+        let mut lattice = searched_bar();
+        let mut cursor = Cursor::new(lattice.categories.len());
+        cursor.navigate(Action::Right, &lattice);
+        cursor.enter(&lattice);
+        cursor.begin_search(1, "found".into());
+        lattice.categories.remove(1);
+        cursor.category_removed(1, &lattice);
+        assert!(cursor.searching(), "the search is still up");
+        cursor.end_search(&lattice);
+        assert_eq!(cursor.selected_category, 0);
+        assert_eq!(
+            cursor.depth(),
+            0,
+            "the page it had open went with the column"
+        );
+        assert_eq!(
+            cursor.current_entry(&lattice).map(Entry::title),
+            Some("one")
+        );
     }
 }
