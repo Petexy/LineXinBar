@@ -10,7 +10,7 @@ members = [
     "crates/lxb-heroic",
     "crates/lxb-updates",
 ]
-# The two forked crates in `third_party/` are dependencies, not members: the
+# The forked crates in `third_party/` are dependencies, not members: the
 # workspace's own lints, tests and formatting are about this project's code, and
 # a fork is carried to be built, not to be worked on. Each is named `lxb-` for
 # what it is — see the note beside each one, and the file each note names.
@@ -43,6 +43,20 @@ exclude = [
     # and the .proto — nothing published was changed to make room for them. See
     # third_party/lxb-steam-cm-protocol/README.LXB.md.
     "third_party/lxb-steam-cm-protocol",
+
+    # `lxb-gilrs-core` — 0.6.8 verbatim but for one thing: its Linux backend
+    # read one hot-plug message per wake-up and left the rest for the next
+    # hot-plug to find. The pad guard takes every pad away and gives back a
+    # copy, so turning a pad off takes two devices away in the same moment —
+    # and the shell was left holding the silent original of a pad it never saw
+    # come back. Upstream has the same code on master, checked at 07e286e.
+    # See third_party/lxb-gilrs-core/README.LXB.md.
+    "third_party/lxb-gilrs-core",
+
+    # `lxb-gilrs` — 0.11.2 verbatim, carried only to be built on the copy
+    # above rather than on the registry's `gilrs-core`, which a renamed fork
+    # cannot replace any other way.
+    "third_party/lxb-gilrs",
 ]
 
 [workspace.package]

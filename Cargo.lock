@@ -1533,40 +1533,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "gilrs"
-version = "0.11.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "902fb00d3f6398e635be22e5c837b303c501835cca7ac11a47bba138f7aafdd8"
-dependencies = [
- "fnv",
- "gilrs-core",
- "log",
- "uuid",
- "vec_map",
-]
-
-[[package]]
-name = "gilrs-core"
-version = "0.6.8"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "dc7f0ce6237abcc0523f2a5502b1e3fe5802daaae47ac14e166fe49551301ea9"
-dependencies = [
- "inotify",
- "js-sys",
- "libc",
- "libudev-sys",
- "log",
- "nix 0.31.3",
- "objc2-core-foundation",
- "objc2-io-kit",
- "uuid",
- "vec_map",
- "wasm-bindgen",
- "web-sys",
- "windows",
-]
-
-[[package]]
 name = "gl_generator"
 version = "0.14.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2436,10 +2402,10 @@ dependencies = [
  "evdev",
  "ffmpeg-next",
  "fluent-bundle",
- "gilrs",
  "glyphon",
  "image",
  "libc",
+ "lxb-gilrs",
  "lxb-protocol",
  "lxb-steam",
  "lxb-updates",
@@ -2462,6 +2428,36 @@ dependencies = [
  "wgpu",
  "xkbcommon",
  "zbus",
+]
+
+[[package]]
+name = "lxb-gilrs"
+version = "0.11.2"
+dependencies = [
+ "fnv",
+ "log",
+ "lxb-gilrs-core",
+ "uuid",
+ "vec_map",
+]
+
+[[package]]
+name = "lxb-gilrs-core"
+version = "0.6.8"
+dependencies = [
+ "inotify",
+ "js-sys",
+ "libc",
+ "libudev-sys",
+ "log",
+ "nix 0.31.3",
+ "objc2-core-foundation",
+ "objc2-io-kit",
+ "uuid",
+ "vec_map",
+ "wasm-bindgen",
+ "web-sys",
+ "windows",
 ]
 
 [[package]]

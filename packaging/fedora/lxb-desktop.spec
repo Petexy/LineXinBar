@@ -246,9 +246,10 @@ cp -p font/Roboto/LICENSE.txt Roboto-LICENSE.txt
 cp -p font/RobotoMono/OFL.txt RobotoMono-OFL.txt
 cp -p third_party/lxb-smithay/LICENSE.txt Smithay-LICENSE.txt
 cp -p third_party/lxb-rcheevos/LICENSE rcheevos-LICENSE.txt
+cp -p third_party/lxb-gilrs/LICENSE-MIT GilRs-LICENSE-MIT.txt
 
 %files
-%license LICENSE Roboto-LICENSE.txt RobotoMono-OFL.txt Smithay-LICENSE.txt rcheevos-LICENSE.txt
+%license LICENSE Roboto-LICENSE.txt RobotoMono-OFL.txt Smithay-LICENSE.txt rcheevos-LICENSE.txt GilRs-LICENSE-MIT.txt
 %doc README.md
 %{_bindir}/lxb-desktop
 %{_bindir}/lxb-portal
@@ -272,7 +273,7 @@ cp -p third_party/lxb-rcheevos/LICENSE rcheevos-LICENSE.txt
 # under. The cursor theme goes here because the compositor is what loads it
 # and draws the pointer from it.
 %files -n       lxb-compositor
-%license LICENSE Roboto-LICENSE.txt RobotoMono-OFL.txt Smithay-LICENSE.txt rcheevos-LICENSE.txt
+%license LICENSE Roboto-LICENSE.txt RobotoMono-OFL.txt Smithay-LICENSE.txt rcheevos-LICENSE.txt GilRs-LICENSE-MIT.txt
 %doc docs/configuration.md examples/config.toml
 %{_bindir}/lxb
 %{_datadir}/icons/Bibata-Modern-Classic/
@@ -289,7 +290,7 @@ cp -p third_party/lxb-rcheevos/LICENSE rcheevos-LICENSE.txt
 # is shared with lxb-heroic, which stages its own mark into it, so each package
 # owns the directory and its own files in it rather than the whole of it.
 %files -n       lxb-retroarch
-%license LICENSE Roboto-LICENSE.txt RobotoMono-OFL.txt Smithay-LICENSE.txt rcheevos-LICENSE.txt
+%license LICENSE Roboto-LICENSE.txt RobotoMono-OFL.txt Smithay-LICENSE.txt rcheevos-LICENSE.txt GilRs-LICENSE-MIT.txt
 %{_bindir}/lxb-retroarch
 %dir %{_datadir}/lxb
 %dir %{_datadir}/lxb/glyphs

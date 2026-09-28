@@ -49,7 +49,20 @@
 //! * **Nothing virtual is ever guarded.** A device `uinput` made is this
 //!   guard's own replacement, or Steam Input's pad for a game, or another
 //!   session's; cloning one would clone a clone, and grabbing one would take
-//!   Steam's own pad out of Steam's hands.
+//!   Steam's own pad out of Steam's hands. A Bluetooth LE pad is the one real
+//!   pad the kernel files as virtual, and it is guarded like any other — see
+//!   [`made_in_software`].
+//! * **Only what the pad says travels forwards, and only rumble travels
+//!   back.** A pad's node also carries what was written *to* it — the rumble
+//!   this guard plays on it comes straight back out — and repeating that onto
+//!   the replacement made a circle that froze every pad the guard held. See
+//!   [`sift`].
+//! * **A button the shell was pressing is not an application's.** The shell
+//!   reads the replacement too, so a press on its menu reaches every other
+//!   reader at the same moment — and the press that closes the menu hands the
+//!   keys back to the game while the thumb is still on it. When the shell lets
+//!   go of the pad, whatever is down on it is let go of on the replacement, and
+//!   stays up there until the thumb comes off. See [`PadGuard::hand_back`].
 //!
 //! ## What this cannot reach
 //!
@@ -68,9 +81,9 @@
 //! this shell builds needs nothing taken away from it. Its ids join the ignore
 //! list below on the same terms as any other pad the shell stands in front of.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeSet, HashMap, HashSet};
 use std::io::ErrorKind;
-use std::os::fd::AsRawFd;
+use std::os::fd::{AsRawFd, FromRawFd, OwnedFd};
 use std::os::unix::fs::MetadataExt;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -79,8 +92,7 @@ use std::time::{Duration, Instant};
 
 use evdev::uinput::VirtualDevice;
 use evdev::{
-    Device, EventSummary, EventType, FFEffect, InputEvent, KeyCode, MiscCode, UInputCode,
-    UinputAbsSetup,
+    Device, EventSummary, EventType, FFEffect, InputEvent, KeyCode, UInputCode, UinputAbsSetup,
 };
 
 /// The button in the middle of a pad with a logo on it: Xbox Guide, the
@@ -92,12 +104,14 @@ const GUIDE: KeyCode = KeyCode::BTN_MODE;
 /// Where the kernel's event devices are.
 const DEV_INPUT: &str = "/dev/input";
 
-/// How often to look for a pad that was not there last time.
+/// How often to look for a pad that was not there last time, when nothing has
+/// said to look sooner.
 ///
-/// A directory listing, and an `open` of each node that has appeared since the
-/// last one, which is nothing four times a second. It is also the longest a
-/// freshly plugged-in pad can send the guide button to whatever is running
-/// before the guard has it, so it is short rather than tidy.
+/// The guard watches the directory itself — see [`watch_for_pads`] — and looks
+/// the moment a node appears or its permissions change, which is what decides
+/// how quickly a pad is taken. This is only what is left if the watch cannot be
+/// set up, and a floor under it if a change is ever missed: a directory listing
+/// four times a second, which is nothing.
 const RESCAN: Duration = Duration::from_millis(250);
 
 /// How long to wait for udev to give the replacement pad a device node and the
@@ -112,15 +126,21 @@ const REPLACEMENT_PATIENCE: Duration = Duration::from_secs(1);
 /// How often to look, inside that wait.
 const REPLACEMENT_POLL: Duration = Duration::from_millis(10);
 
-/// How many rescans a device that cannot be opened yet is given before the
-/// guard stops asking.
+/// How long a device that cannot be opened yet is asked again before the guard
+/// stops asking.
 ///
 /// A node appears a moment before the ACL that makes it readable, so the first
 /// attempt at a pad that has just been plugged in fails routinely. Everything
 /// else in `/dev/input` that this shell may not open — every keyboard, for one
-/// — must be given up on, or the guard would open the whole directory four
-/// times a second forever.
-const OPEN_ATTEMPTS: u8 = 8;
+/// — must be given up on, or the guard would open the whole directory on every
+/// change to it forever.
+///
+/// A time rather than a number of tries, because a plugged-in pad is several
+/// changes to the directory in a row — its node, its owner, its ACL, its
+/// joystick node, the replacement's nodes — and each is a look. Counted in
+/// tries, a pad could spend its whole allowance before the one change that
+/// makes it readable.
+const OPEN_PATIENCE: Duration = Duration::from_secs(2);
 
 /// One poll's worth of the guide button.
 ///
@@ -166,6 +186,60 @@ struct Shared {
     /// by an earlier poll.
     held: AtomicBool,
     edges: Mutex<Edges>,
+    /// Set by [`PadGuard::hand_back`] and taken by the thread, which lets go
+    /// on every replacement of whatever is down on it.
+    hand_back: AtomicBool,
+    /// How the shell wakes the thread to do that now rather than at the next
+    /// thing a pad happens to say.
+    knock: Knock,
+}
+
+/// A way for the shell's thread to wake the guard's.
+///
+/// The guard sleeps in `poll` until a pad says something or the directory
+/// changes, and a pad with a button held down and nothing else moving says
+/// nothing at all — which is exactly the pad a hand-back is about. Left to
+/// the next rescan, the button would be let go of a quarter of a second after
+/// the game had already been given the keys and read it as pressed.
+#[derive(Debug)]
+struct Knock(Option<OwnedFd>);
+
+impl Default for Knock {
+    fn default() -> Self {
+        // SAFETY: `eventfd` takes no pointers, and a descriptor it returns is
+        // a new one that nothing else owns.
+        let fd = unsafe { libc::eventfd(0, libc::EFD_CLOEXEC | libc::EFD_NONBLOCK) };
+        if fd < 0 {
+            // A guard that cannot be knocked on still hands the pad back, at
+            // the next thing a pad says or the next rescan; worth a line, not
+            // worth refusing to guard anything.
+            tracing::warn!(err = %std::io::Error::last_os_error(), "the pad guard cannot be woken early");
+            return Self(None);
+        }
+        // SAFETY: as above — `fd` is open and owned by nobody else.
+        Self(Some(unsafe { OwnedFd::from_raw_fd(fd) }))
+    }
+}
+
+impl Knock {
+    fn knock(&self) {
+        let Some(fd) = &self.0 else { return };
+        let one: u64 = 1;
+        // SAFETY: `one` is eight readable bytes for the call's duration, which
+        // is what an eventfd is written in. A counter already at its limit is
+        // a knock already waiting, so a failure here loses nothing.
+        unsafe { libc::write(fd.as_raw_fd(), (&one as *const u64).cast(), 8) };
+    }
+
+    /// Take the knock, so the next `poll` sleeps again.
+    fn answer(&self) {
+        let Some(fd) = &self.0 else { return };
+        let mut count: u64 = 0;
+        // SAFETY: `count` is eight writable bytes for the call's duration, and
+        // the descriptor is non-blocking, so an eventfd with nothing in it
+        // answers at once.
+        unsafe { libc::read(fd.as_raw_fd(), (&mut count as *mut u64).cast(), 8) };
+    }
 }
 
 /// The pads the guard currently holds, for [`hidapi_ignore_list`] and
@@ -232,6 +306,37 @@ impl PadGuard {
         self.shared
             .as_ref()
             .is_some_and(|shared| shared.held.load(Ordering::Relaxed))
+    }
+
+    /// The shell is letting go of the pad: let go on every replacement of
+    /// whatever is down on it, and keep each of those buttons up there until
+    /// the thumb comes off it.
+    ///
+    /// The shell reads pads through the replacement like everybody else, so it
+    /// cannot keep a press from an application — by the time the shell has
+    /// seen `A`, so has every other reader. What it can do is decide what `A`
+    /// is *afterwards*. The press that picks a card in the guide, or Resume,
+    /// is the one that gives the game the keys back, and it does that within a
+    /// frame or two — while the thumb is still on the button. A game that
+    /// ignores the pad while it is not in front, which is most of them, is then
+    /// in front with `A` held, and a game that reads its pad as a state rather
+    /// than as a stream of presses — XInput, and every game under Proton —
+    /// sees a button that was up last time it looked and is down now. That is
+    /// a press, and it was the shell's.
+    ///
+    /// Released rather than kept back from the start, because the shell has to
+    /// see the press too, and kept up until the real release so that the game
+    /// never sees the second half of a press it was not given the first half
+    /// of. Held buttons only: a stick or a trigger is a position, and wherever
+    /// the thumb has it when the game is back in front is where it is.
+    ///
+    /// Asked at the moment the shell gives the keyboard up — see
+    /// `Shell::sync_surface_state` — which is before the commit that hands it
+    /// over, so the replacement has let go before the game has the keys.
+    pub fn hand_back(&self) {
+        let Some(shared) = &self.shared else { return };
+        shared.hand_back.store(true, Ordering::Release);
+        shared.knock.knock();
     }
 }
 
@@ -404,12 +509,36 @@ struct Sifted {
 
 /// Split one packet into what applications may see and what only the shell may.
 ///
-/// Two things are dropped, not one. The guide button itself is obvious. The
-/// other is `MSC_SCAN`, the scancode a driver sends immediately before a key to
-/// say which physical control it came from: it names the button as plainly as
-/// the button does, so a packet that carries a guide press loses its scancodes
-/// too. That costs a simultaneous press its own scancode, which nothing reads —
-/// SDL, GilRs and the kernel's own gamepad mapping all work from the key code.
+/// Only what the pad *reported* is repeated — its buttons, its axes, relative
+/// motion and switches — and of that, everything but the guide button. The
+/// rest of what a pad's node carries was said *to* the pad rather than by it,
+/// and repeating it is how the guard came to freeze every controller it held.
+///
+/// Rumble is the one that did it. Playing an effect is a write to the pad, and
+/// the kernel hands every force-feedback write back to whoever reads the pad —
+/// which is this guard, the moment after it played the effect itself. Repeated
+/// onto the replacement, the echo was handed back to the guard a second time,
+/// as a request to play, because that is what `uinput` does with every
+/// force-feedback event its device is given; so the guard played it again, and
+/// the pad echoed it again. Measured on a pad made for the purpose: **one** play
+/// from an application came back 500 times in two seconds — once for every
+/// packet the pad sent, and never stopping — and every rumble the game asked
+/// for added one more to the circle. Within minutes of a game that shakes the
+/// pad, the circle overran the sixteen-event queue the kernel asks rumble
+/// questions through, the question an application was waiting on was written
+/// over before the guard could read it, and the application — Steam, which
+/// holds every pad's lock while it waits — sat thirty seconds for an answer
+/// that was never coming. Every controller it drives froze with it.
+///
+/// `MSC_SCAN` stays behind for the second half of the same reason. It is the
+/// scancode a driver sends beside a key to say which physical control it came
+/// from, and nothing reads it off a gamepad — SDL, GilRs and the kernel's own
+/// gamepad mapping all work from the key code. But writing one into a `uinput`
+/// device hands it back to the device's owner through that same queue: twenty
+/// packets with a scancode in each left four in it, the other sixteen written
+/// over. A burst of button presses would do to a waiting rumble question what
+/// the circle did. The replacement still *declares* the scancode, as it
+/// declares the guide button — see the module note — and simply never says one.
 ///
 /// A packet left with nothing in it is not sent at all. An empty frame is still
 /// a frame: it tells whatever is reading that the pad reported *something*, and
@@ -431,11 +560,63 @@ fn sift(packet: &[InputEvent]) -> Sifted {
     let events = packet
         .iter()
         .copied()
+        .filter(the_pad_said_it)
         .filter(|event| !is_guide(event))
-        .filter(|event| guide.is_none() || !is_scancode(event))
         .collect();
 
     Sifted { events, guide }
+}
+
+/// Take out of a packet every button still kept back since a hand-back, and
+/// stop keeping back each one that has come up.
+///
+/// The release is taken out with the rest. The replacement let go of the
+/// button when the pad was handed back, so the pad's own release is the second
+/// half of a press nobody else was given the first half of — and the moment
+/// after it, the button is an ordinary button again. See
+/// [`PadGuard::hand_back`].
+fn withhold(events: Vec<InputEvent>, withheld: &mut BTreeSet<u16>) -> Vec<InputEvent> {
+    if withheld.is_empty() {
+        return events;
+    }
+    events
+        .into_iter()
+        .filter(|event| {
+            if event.event_type() != EventType::KEY || !withheld.contains(&event.code()) {
+                return true;
+            }
+            if event.value() == 0 {
+                withheld.remove(&event.code());
+            }
+            false
+        })
+        .collect()
+}
+
+/// Keep [`Pad::down`] true to what the replacement has just been told.
+fn note_what_is_down(events: &[InputEvent], down: &mut BTreeSet<u16>) {
+    for event in events {
+        if event.event_type() != EventType::KEY {
+            continue;
+        }
+        match event.value() {
+            0 => {
+                down.remove(&event.code());
+            }
+            _ => {
+                down.insert(event.code());
+            }
+        }
+    }
+}
+
+/// Whether an event is something the pad reported, rather than something
+/// written to it that the kernel is handing back. See [`sift`].
+fn the_pad_said_it(event: &InputEvent) -> bool {
+    matches!(
+        event.event_type(),
+        EventType::KEY | EventType::ABSOLUTE | EventType::RELATIVE | EventType::SWITCH
+    )
 }
 
 /// Whether a device is one this guard should take.
@@ -455,12 +636,16 @@ fn worth_guarding(keys: Option<&evdev::AttributeSetRef<KeyCode>>) -> bool {
     keys.contains(GUIDE) && !keys.contains(KeyCode::KEY_A) && !keys.contains(KeyCode::KEY_SPACE)
 }
 
-fn is_guide(event: &InputEvent) -> bool {
-    event.event_type() == EventType::KEY && event.code() == GUIDE.0
+/// Whether a device is the pad Steam Input makes for a game — every one of
+/// them answers to Valve's vendor id and this product id. It is software, and
+/// [`is_virtual`] already refuses it by where it lives; this refuses it by what
+/// it says it is, so that no reading of a sysfs path can ever put a grab on it.
+fn is_steam_inputs_pad(id: evdev::InputId) -> bool {
+    id.vendor() == 0x28de && id.product() == 0x11ff
 }
 
-fn is_scancode(event: &InputEvent) -> bool {
-    event.event_type() == EventType::MISC && event.code() == MiscCode::MSC_SCAN.0
+fn is_guide(event: &InputEvent) -> bool {
+    event.event_type() == EventType::KEY && event.code() == GUIDE.0
 }
 
 /// The guard's own thread.
@@ -470,6 +655,9 @@ struct Worker {
     /// directory of the test's own where the guard is being made to guard a
     /// pad that does not exist.
     dir: PathBuf,
+    /// The watch on [`Worker::dir`], or `None` where it could not be set up and
+    /// the guard falls back on [`RESCAN`] alone.
+    watch: Option<OwnedFd>,
     /// Every event device the guard has made up its mind about, by the inode of
     /// its node.
     ///
@@ -487,8 +675,8 @@ enum Slot {
     /// Not a pad, or a pad that could not be taken. Either way it is never
     /// looked at again while its node lasts.
     LeftAlone,
-    /// Could not be opened yet, and has this many attempts left.
-    Waiting(u8),
+    /// Could not be opened yet, and is asked again until this moment.
+    Waiting(Instant),
 }
 
 /// One pad, and the replacement standing in for it.
@@ -511,6 +699,12 @@ struct Pad {
     /// replacement's own kernel side gave it. The value is the same effect on
     /// the real pad, which erases itself from the pad when it is dropped.
     effects: HashMap<u16, FFEffect>,
+    /// Every button the replacement is saying is down, by key code — what a
+    /// hand-back has to let go of. See [`Pad::hand_back`].
+    down: BTreeSet<u16>,
+    /// Buttons let go of on the replacement by a hand-back while still held on
+    /// the pad, kept off the replacement until they come up. See [`withhold`].
+    withheld: BTreeSet<u16>,
 }
 
 impl Worker {
@@ -518,26 +712,54 @@ impl Worker {
         Self {
             shared,
             dir: PathBuf::from(DEV_INPUT),
+            watch: None,
             known: HashMap::new(),
         }
     }
 
     fn run(mut self) {
+        self.watch = watch_for_pads(&self.dir);
         let mut next_scan = Instant::now();
         while !self.shared.stop.load(Ordering::Relaxed) {
             if Instant::now() >= next_scan {
                 self.scan();
                 next_scan = Instant::now() + RESCAN;
             }
-            self.wait(next_scan.saturating_duration_since(Instant::now()));
+            if self.wait(next_scan.saturating_duration_since(Instant::now())) {
+                // Something in the directory changed: a pad may have arrived,
+                // or been given the permissions that let it be taken. Look now.
+                next_scan = Instant::now();
+            }
+            // Before the pads are read: what the shell asked about is what the
+            // replacement had been told when it asked, and a release still
+            // waiting to be read is a release of a button already let go of.
+            if self.shared.hand_back.swap(false, Ordering::AcqRel) {
+                self.hand_back();
+            }
             self.pump();
         }
         tracing::info!("pad guard stopping; every pad goes back to how it was found");
     }
 
-    /// Sleep until a pad has something to say, or until the next rescan is due.
-    fn wait(&self, timeout: Duration) {
+    /// Sleep until a pad has something to say, the directory changes, the
+    /// shell knocks, or the next rescan is due. Says whether it was the
+    /// directory.
+    fn wait(&self, timeout: Duration) -> bool {
         let mut fds: Vec<libc::pollfd> = Vec::new();
+        if let Some(watch) = &self.watch {
+            fds.push(libc::pollfd {
+                fd: watch.as_raw_fd(),
+                events: libc::POLLIN,
+                revents: 0,
+            });
+        }
+        if let Some(knock) = &self.shared.knock.0 {
+            fds.push(libc::pollfd {
+                fd: knock.as_raw_fd(),
+                events: libc::POLLIN,
+                revents: 0,
+            });
+        }
         for slot in self.known.values() {
             let Slot::Guarded(pad) = slot else { continue };
             // The pad, for what the user is doing with it, and the replacement,
@@ -552,11 +774,22 @@ impl Worker {
         }
         let timeout = timeout.as_millis().min(i32::MAX as u128) as libc::c_int;
         // SAFETY: `fds` is a valid slice of that many pollfds for the call's
-        // duration, and every descriptor in it is owned by a pad this guard
-        // still holds. With no pads the count is zero, which poll reads as a
-        // plain sleep and never dereferences the pointer for.
+        // duration, and every descriptor in it is owned by this guard — the
+        // watch, or a pad it still holds. With neither the count is zero, which
+        // poll reads as a plain sleep and never dereferences the pointer for.
         unsafe {
             libc::poll(fds.as_mut_ptr(), fds.len() as libc::nfds_t, timeout);
+        }
+        // Answered whether or not it was the knock that woke this: the flag it
+        // stands for is read after every wait, so a knock left in the eventfd
+        // would only wake the next one for nothing.
+        self.shared.knock.answer();
+        match &self.watch {
+            Some(watch) if fds[0].revents & libc::POLLIN != 0 => {
+                drain(watch);
+                true
+            }
+            _ => false,
         }
     }
 
@@ -598,6 +831,16 @@ impl Worker {
         }
     }
 
+    /// Let go on every replacement of whatever is down on it. See
+    /// [`PadGuard::hand_back`].
+    fn hand_back(&mut self) {
+        for slot in self.known.values_mut() {
+            if let Slot::Guarded(pad) = slot {
+                pad.hand_back();
+            }
+        }
+    }
+
     /// Look for pads that were not here last time, and forget the ones that
     /// have gone.
     fn scan(&mut self) {
@@ -626,12 +869,16 @@ impl Worker {
             let ino = meta.ino();
             present.insert(ino);
 
-            let attempts = match self.known.get(&ino) {
-                Some(Slot::Waiting(left)) if *left > 0 => *left,
+            let give_up_at = match self.known.get(&ino) {
+                Some(Slot::Waiting(until)) if Instant::now() < *until => *until,
+                Some(Slot::Waiting(_)) => {
+                    self.known.insert(ino, Slot::LeftAlone);
+                    continue;
+                }
                 Some(_) => continue,
-                None => OPEN_ATTEMPTS,
+                None => Instant::now() + OPEN_PATIENCE,
             };
-            let slot = self.consider(&entry.path(), attempts);
+            let slot = self.consider(&entry.path(), give_up_at);
             let taken = matches!(slot, Slot::Guarded(_));
             self.known.insert(ino, slot);
             if taken {
@@ -659,7 +906,7 @@ impl Worker {
     }
 
     /// Decide what one device node is, and take it if it is a pad.
-    fn consider(&mut self, path: &Path, attempts: u8) -> Slot {
+    fn consider(&mut self, path: &Path, give_up_at: Instant) -> Slot {
         if is_virtual(path) {
             return Slot::LeftAlone;
         }
@@ -670,12 +917,12 @@ impl Worker {
                 // Every keyboard and mouse on the machine lands here, and so
                 // does a pad for the moment between its node appearing and its
                 // ACL arriving. Only the second is worth another look.
-                return Slot::Waiting(attempts.saturating_sub(1));
+                return Slot::Waiting(give_up_at);
             }
             Err(_) => return Slot::LeftAlone,
         };
 
-        if !worth_guarding(device.supported_keys()) {
+        if !worth_guarding(device.supported_keys()) || is_steam_inputs_pad(device.input_id()) {
             return Slot::LeftAlone;
         }
 
@@ -751,12 +998,16 @@ impl Pad {
                     }
                     None => {}
                 }
-                if !sifted.events.is_empty() {
+                let events = withhold(sifted.events, &mut self.withheld);
+                if !events.is_empty() {
                     // `emit` ends what it writes with a `SYN_REPORT` of its
                     // own, so the replacement reports the same moments the pad
                     // did — one packet in, one packet out.
-                    if let Err(err) = self.replacement.emit(&sifted.events) {
-                        tracing::warn!(pad = %self.path.display(), %err, "could not repeat a pad packet");
+                    match self.replacement.emit(&events) {
+                        Ok(()) => note_what_is_down(&events, &mut self.down),
+                        Err(err) => {
+                            tracing::warn!(pad = %self.path.display(), %err, "could not repeat a pad packet")
+                        }
                     }
                 }
             }
@@ -764,6 +1015,34 @@ impl Pad {
 
         self.rumble();
         Ok(())
+    }
+
+    /// Let go on the replacement of every button it is saying is down, and
+    /// keep each of them off it until it comes up on the pad. See
+    /// [`PadGuard::hand_back`].
+    ///
+    /// Kept back only once the release has been written: a button marked kept
+    /// back that the replacement still says is down would stay down there until
+    /// the pad was unplugged, because its real release is the one thing the
+    /// marking throws away.
+    fn hand_back(&mut self) {
+        if self.down.is_empty() {
+            return;
+        }
+        let releases: Vec<InputEvent> = self
+            .down
+            .iter()
+            .map(|&code| InputEvent::new(EventType::KEY.0, code, 0))
+            .collect();
+        match self.replacement.emit(&releases) {
+            Ok(()) => {
+                tracing::debug!(pad = %self.path.display(), buttons = ?self.down, "handed back with buttons held; they stay up for applications until let go");
+                self.withheld.append(&mut self.down);
+            }
+            Err(err) => {
+                tracing::warn!(pad = %self.path.display(), %err, "could not let go of the buttons held when the pad was handed back")
+            }
+        }
     }
 
     /// Pass force feedback the other way: from the application, through the
@@ -903,6 +1182,8 @@ fn take(mut device: Device, path: &Path) -> std::io::Result<Pad> {
         packet: Vec::new(),
         guide_down: false,
         effects: HashMap::new(),
+        down: BTreeSet::new(),
+        withheld: BTreeSet::new(),
     })
 }
 
@@ -946,6 +1227,15 @@ fn build_replacement(device: &Device) -> std::io::Result<VirtualDevice> {
 /// read it, and both happen after the device itself exists. Until they have,
 /// the pad has been taken and nothing has been given back.
 ///
+/// The node is asked whether it *could* be opened rather than opened, and that
+/// difference is a thirty-second freeze. Opening an event node takes the lock
+/// every ioctl on that node holds, and an application uploading rumble to a pad
+/// holds it until the upload is answered — which on a replacement is this
+/// guard's thread, the one doing the waiting. An application quick enough to
+/// open the new pad and shake it before this wait had looked would have had
+/// each side waiting on the other until the kernel gave up on the upload.
+/// `access(2)` reads the node's permissions, ACL and all, and touches no lock.
+///
 /// Shared with [`crate::steam_stand_in`], which makes a gamepad for a pad the
 /// kernel drives no part of. Its wait is not this one's — nothing has been
 /// taken away there, so a node that never arrives costs an application a
@@ -960,8 +1250,8 @@ pub(crate) fn wait_for_node(device: &mut VirtualDevice) -> std::io::Result<PathB
             .map(|nodes| nodes.flatten().collect::<Vec<_>>())
             .unwrap_or_default();
         for node in nodes {
-            match std::fs::File::open(&node) {
-                Ok(_) => return Ok(node),
+            match could_be_opened(&node) {
+                Ok(()) => return Ok(node),
                 Err(err) => last = err,
             }
         }
@@ -972,25 +1262,130 @@ pub(crate) fn wait_for_node(device: &mut VirtualDevice) -> std::io::Result<PathB
     }
 }
 
-/// Whether a device node belongs to something `uinput` made.
+/// A watch on the directory pads appear in, so a pad is taken the moment it can
+/// be rather than at the next rescan.
+///
+/// The moment matters because of who else is watching. udev makes a pad's node,
+/// gives it an owner, then the ACL that lets this session open it — each a
+/// change this watch sees — and tells the rest of the machine the pad exists at
+/// about the same instant as the ACL lands: measured on a `uinput` pad, the two
+/// were a tenth of a millisecond apart, one run each way round. Steam, SDL and
+/// GilRs open the pad on that word. So a guard that looks on the ACL's change
+/// holds the pad about as soon as anybody else can open it, and the guide button
+/// and everything else reach them from the copy; one that looked every quarter
+/// of a second left the pad live to all of them for up to that long, every time
+/// it was plugged in or its wireless link came back.
+///
+/// It does not make the grabbed original invisible — nothing this shell may do
+/// can — so a reader that finds both still finds both. See [`crate::pads`].
+///
+/// `None` where the watch cannot be made, which leaves [`RESCAN`] to find pads
+/// as it always did.
+fn watch_for_pads(dir: &Path) -> Option<OwnedFd> {
+    use std::os::fd::FromRawFd;
+    use std::os::unix::ffi::OsStrExt;
+
+    // SAFETY: no pointer arguments.
+    let fd = unsafe { libc::inotify_init1(libc::IN_NONBLOCK | libc::IN_CLOEXEC) };
+    if fd < 0 {
+        tracing::debug!(err = %std::io::Error::last_os_error(), "cannot watch for pads; rescanning instead");
+        return None;
+    }
+    // SAFETY: `fd` was returned just now and nothing else owns it.
+    let fd = unsafe { OwnedFd::from_raw_fd(fd) };
+    let path = std::ffi::CString::new(dir.as_os_str().as_bytes()).ok()?;
+    let changes = libc::IN_CREATE | libc::IN_ATTRIB | libc::IN_DELETE | libc::IN_MOVED_TO;
+    // SAFETY: a descriptor this function owns and a NUL-terminated path.
+    if unsafe { libc::inotify_add_watch(fd.as_raw_fd(), path.as_ptr(), changes) } < 0 {
+        tracing::debug!(
+            err = %std::io::Error::last_os_error(),
+            dir = %dir.display(),
+            "cannot watch for pads; rescanning instead"
+        );
+        return None;
+    }
+    Some(fd)
+}
+
+/// Read everything the watch has queued. What changed does not matter — a scan
+/// looks at the whole directory — only that something did.
+fn drain(watch: &OwnedFd) {
+    let mut buffer = [0u8; 4096];
+    loop {
+        // SAFETY: `buffer` is valid for its whole length, and the descriptor
+        // is non-blocking, so this returns once the queue is empty.
+        let read =
+            unsafe { libc::read(watch.as_raw_fd(), buffer.as_mut_ptr().cast(), buffer.len()) };
+        if read <= 0 {
+            return;
+        }
+    }
+}
+
+/// Whether this session may open a node for reading and writing, which is how
+/// every gamepad reader opens one — asked without opening it. See
+/// [`wait_for_node`] for why that matters.
+fn could_be_opened(node: &Path) -> std::io::Result<()> {
+    use std::os::unix::ffi::OsStrExt;
+    let path = std::ffi::CString::new(node.as_os_str().as_bytes())
+        .map_err(|err| std::io::Error::new(ErrorKind::InvalidInput, err))?;
+    // SAFETY: `path` is a valid NUL-terminated string for the call's duration,
+    // and `access` reads nothing else.
+    match unsafe { libc::access(path.as_ptr(), libc::R_OK | libc::W_OK) } {
+        0 => Ok(()),
+        _ => Err(std::io::Error::last_os_error()),
+    }
+}
+
+/// Whether a device node belongs to something made in software rather than a
+/// pad in somebody's hands.
 ///
 /// Everything virtual hangs off `/sys/devices/virtual`, and a device node's
 /// entry under `/sys/class/input` is a symlink into wherever its device really
 /// is. Nothing else distinguishes a replacement pad from the pad it replaces —
 /// that is the whole point of one — so this is the test that keeps the guard
-/// from cloning its own work.
+/// from cloning its own work. See [`made_in_software`] for the one kind of
+/// real pad that lives there too.
 pub(crate) fn is_virtual(path: &Path) -> bool {
     let Some(name) = path.file_name() else {
         return false;
     };
     let link = Path::new("/sys/class/input").join(name);
     std::fs::read_link(link)
-        .map(|target| {
-            target
-                .components()
-                .any(|part| part.as_os_str() == "virtual")
-        })
+        .map(|target| made_in_software(&target))
         .unwrap_or(false)
+}
+
+/// The rule behind [`is_virtual`], asked of where a node's device really is.
+///
+/// Under `/sys/devices/virtual` is software — a `uinput` device, which is
+/// this guard's own replacement, Steam Input's pad for a game or another
+/// session's — with one exception, which is a pad somebody is holding. A
+/// Bluetooth LE controller has no kernel transport of its own: BlueZ speaks
+/// to it and hands its reports to the kernel through `uhid`, so the device
+/// is made under `virtual/misc/uhid`, named for its bus, `0005`, like every
+/// HID device is. Every Xbox pad on current firmware connects over Bluetooth
+/// this way, and the guard, which never takes anything virtual, never took
+/// one — so the guide button of the commonest wireless pad there is reached
+/// every application.
+///
+/// Only Bluetooth. Anything else `uhid` makes is a program's, and the bus is
+/// what says so. Steam Input's own pad is refused by its ids besides, however
+/// it is made — see [`is_steam_inputs_pad`] — because taking that one would
+/// take every game's controller out of Steam's hands.
+fn made_in_software(target: &Path) -> bool {
+    let parts: Vec<&std::ffi::OsStr> = target.components().map(|part| part.as_os_str()).collect();
+    let Some(at) = parts.iter().position(|part| *part == "virtual") else {
+        return false;
+    };
+    let bluetooth_through_uhid = matches!(
+        &parts[at..],
+        [_, misc, uhid, hid, ..]
+            if *misc == "misc"
+                && *uhid == "uhid"
+                && hid.as_encoded_bytes().starts_with(b"0005:")
+    );
+    !bluetooth_through_uhid
 }
 
 fn set_nonblocking(fd: std::os::fd::RawFd) -> std::io::Result<()> {
@@ -1041,7 +1436,7 @@ fn serial() -> Serial {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use evdev::AttributeSet;
+    use evdev::{AttributeSet, FFEffectCode, MiscCode};
 
     fn key(code: KeyCode, value: i32) -> InputEvent {
         InputEvent::new(EventType::KEY.0, code.0, value)
@@ -1119,10 +1514,33 @@ mod tests {
     /// buttons.
     #[test]
     fn everything_but_the_guide_button_is_repeated() {
-        let packet = [key(KeyCode::BTN_SOUTH, 1), scancode(0x90001)];
+        let packet = [
+            key(KeyCode::BTN_SOUTH, 1),
+            InputEvent::new(EventType::ABSOLUTE.0, 0, -18000),
+        ];
         let sifted = sift(&packet);
         assert_eq!(sifted.guide, None);
         assert_eq!(codes(&sifted.events), codes(&packet));
+    }
+
+    /// And nothing that was said *to* the pad comes back out of it. A rumble
+    /// the guard played is handed back to the guard by the kernel, and repeated
+    /// onto the replacement it became a request to play it again — for ever,
+    /// once per packet. A scancode costs a slot in the queue the kernel asks
+    /// rumble questions through. See [`sift`] for both, measured.
+    #[test]
+    fn nothing_written_to_the_pad_is_repeated() {
+        let rumble = InputEvent::new(EventType::FORCEFEEDBACK.0, 0, 1);
+        let gain = InputEvent::new(EventType::FORCEFEEDBACK.0, FFEffectCode::FF_GAIN.0, 0xffff);
+        let sifted = sift(&[rumble, gain, scancode(0x90001), key(KeyCode::BTN_SOUTH, 1)]);
+        assert_eq!(sifted.guide, None);
+        assert_eq!(codes(&sifted.events), codes(&[key(KeyCode::BTN_SOUTH, 1)]));
+
+        let echo_alone = sift(&[rumble]);
+        assert!(
+            echo_alone.events.is_empty(),
+            "a packet that was only an echo must leave nothing to send"
+        );
     }
 
     /// And in the other: it never sees the guide button, either edge of it.
@@ -1147,9 +1565,9 @@ mod tests {
         assert!(sifted.events.is_empty());
     }
 
-    /// A guide press arriving in the same moment as another button costs that
-    /// button its scancode and nothing else. The press itself gets through,
-    /// because that one belongs to the application.
+    /// A guide press arriving in the same moment as another button does not
+    /// take that button with it. The press gets through, because that one
+    /// belongs to the application.
     #[test]
     fn a_button_pressed_with_the_guide_button_still_arrives() {
         let sifted = sift(&[
@@ -1179,6 +1597,54 @@ mod tests {
         let sifted = sift(&[key(GUIDE, 0), stick]);
         assert_eq!(sifted.guide, Some(false));
         assert_eq!(codes(&sifted.events), codes(&[stick]));
+    }
+
+    /// The button that closed the menu, still held when the game got the
+    /// keys: its release is not repeated, because the replacement already let
+    /// go of it, and everything else in the packet is.
+    #[test]
+    fn a_button_kept_back_is_kept_back_until_it_comes_up() {
+        let south = KeyCode::BTN_SOUTH;
+        let east = KeyCode::BTN_EAST;
+        let stick = InputEvent::new(EventType::ABSOLUTE.0, 0, 9000);
+        let mut withheld = BTreeSet::from([south.0]);
+
+        let still_held = withhold(vec![key(south, 2), key(east, 1), stick], &mut withheld);
+        assert_eq!(codes(&still_held), codes(&[key(east, 1), stick]));
+        assert!(withheld.contains(&south.0), "it has not come up yet");
+
+        let let_go = withhold(vec![key(south, 0), key(east, 0)], &mut withheld);
+        assert_eq!(codes(&let_go), codes(&[key(east, 0)]));
+        assert!(
+            withheld.is_empty(),
+            "and once it has, it is an ordinary button"
+        );
+
+        let pressed_again = withhold(vec![key(south, 1)], &mut withheld);
+        assert_eq!(codes(&pressed_again), codes(&[key(south, 1)]));
+    }
+
+    /// What a hand-back lets go of is what the replacement was last told, and
+    /// the guide button is never in it because the replacement is never told it.
+    #[test]
+    fn what_is_down_follows_what_was_repeated() {
+        let mut down = BTreeSet::new();
+        note_what_is_down(
+            &[key(KeyCode::BTN_SOUTH, 1), key(KeyCode::BTN_TR, 1)],
+            &mut down,
+        );
+        note_what_is_down(
+            &[
+                key(KeyCode::BTN_TR, 0),
+                InputEvent::new(EventType::ABSOLUTE.0, 0, 9000),
+            ],
+            &mut down,
+        );
+        assert_eq!(down, BTreeSet::from([KeyCode::BTN_SOUTH.0]));
+
+        let sifted = sift(&[key(GUIDE, 1)]);
+        note_what_is_down(&sifted.events, &mut down);
+        assert!(!down.contains(&GUIDE.0));
     }
 
     /// What the guard takes, and the one thing it must never take.
@@ -1263,6 +1729,47 @@ mod tests {
         assert!(grabbed_nodes().is_empty());
     }
 
+    /// Software is never guarded, and a pad somebody is holding always is —
+    /// including the one real pad the kernel files under `virtual`. The paths
+    /// are the shapes `/sys/class/input` links take.
+    #[test]
+    fn a_bluetooth_le_pad_is_a_pad_and_uinput_is_not() {
+        let software = [
+            // This guard's own replacement, and anything else `uinput` made.
+            "../../devices/virtual/input/input42/event20",
+            // Something a program made through `uhid` on a bus of its own.
+            "../../devices/virtual/misc/uhid/0003:28DE:11FF.0005/input/input50/event21",
+        ];
+        for target in software {
+            assert!(made_in_software(Path::new(target)), "{target}");
+        }
+        let pads = [
+            // An Xbox pad over Bluetooth LE, through BlueZ and `uhid`.
+            "../../devices/virtual/misc/uhid/0005:045E:0B13.0007/input/input43/event22",
+            // Over USB, and over classic Bluetooth, which have real parents.
+            "../../devices/pci0000:00/0000:00:14.0/usb1/1-3/1-3:1.0/0003:2DC8:6012.0001/input/input30/event19",
+            "../../devices/pci0000:00/0000:00:14.0/usb1/1-9/1-9:1.0/bluetooth/hci0/hci0:256/0005:054C:0CE6.0004/input/input44/event23",
+        ];
+        for target in pads {
+            assert!(!made_in_software(Path::new(target)), "{target}");
+        }
+
+        // And Steam Input's pad is refused by what it says it is, whatever
+        // bus it was made on.
+        assert!(is_steam_inputs_pad(evdev::InputId::new(
+            evdev::BusType::BUS_BLUETOOTH,
+            0x28de,
+            0x11ff,
+            1
+        )));
+        assert!(!is_steam_inputs_pad(evdev::InputId::new(
+            evdev::BusType::BUS_BLUETOOTH,
+            0x045e,
+            0x0b13,
+            1
+        )));
+    }
+
     /// A guard that was never started is a guard that reports nothing, rather
     /// than one that has to be asked whether it is there.
     #[test]
@@ -1313,6 +1820,13 @@ mod hardware_tests {
 
     /// A pad that does not exist, with a guide button, a stick and rumble.
     fn make_pad() -> std::io::Result<(VirtualDevice, PathBuf)> {
+        make_pad_named(TEST_NAME)
+    }
+
+    /// The same pad under a name of its own, for a test that counts what
+    /// GilRs can see: every other test here makes pads too, in parallel, and
+    /// under the shared name they would be counted as this one's.
+    fn make_pad_named(name: &str) -> std::io::Result<(VirtualDevice, PathBuf)> {
         let mut keys = AttributeSet::<KeyCode>::new();
         for key in [
             KeyCode::BTN_SOUTH,
@@ -1327,7 +1841,7 @@ mod hardware_tests {
         rumble.insert(FFEffectCode::FF_RUMBLE);
 
         let mut pad = VirtualDevice::builder()?
-            .name(TEST_NAME)
+            .name(name)
             .input_id(test_id())
             .with_keys(&keys)?
             // Two of them, because a stick is two and because the gamepad API
@@ -1563,6 +2077,103 @@ mod hardware_tests {
         );
     }
 
+    /// A pad turned off and on again is read again by the shell.
+    ///
+    /// Turning a guarded pad off takes two devices away in the same moment —
+    /// the pad, and the copy the guard lets go of as soon as the pad has gone.
+    /// GilRs used to read one hot-plug event per wake-up and leave the rest
+    /// for the next hot-plug to find, so the copy's going was left unread; when
+    /// the pad came back, GilRs opened the grabbed original, which is silent,
+    /// and never opened the new copy. The shell then answered nothing on a
+    /// controller every game could read. Reported against an 8BitDo Ultimate 2
+    /// turned on in the middle of a session, and fixed in
+    /// `third_party/lxb-gilrs-core`.
+    ///
+    /// GilRs is left unpolled across each change, on purpose. The events then
+    /// arrive together, which is the case that went wrong, rather than
+    /// whenever the scheduler happens to space them out — without that this
+    /// test would catch the fault one run in three.
+    #[test]
+    fn a_pad_turned_off_and_on_again_is_read_again() {
+        if !uinput_is_available() {
+            crate::skipped("/dev/uinput cannot be opened here");
+            return;
+        }
+        const NAME: &str = "LineXinBar Test Pad Off And On";
+        let ours = |gilrs: &gilrs::Gilrs| {
+            gilrs
+                .gamepads()
+                .filter(|(_, gamepad)| gamepad.os_name() == NAME)
+                .count()
+        };
+        let quiet = || std::thread::sleep(Duration::from_millis(300));
+
+        let (fake, node) = make_pad_named(NAME).expect("a test pad can be made");
+        let mut gilrs = match gilrs::GilrsBuilder::new()
+            .with_force_feedback(false)
+            .build()
+        {
+            Ok(gilrs) => gilrs,
+            Err(err) => {
+                crate::skipped(&format!("no gamepad API here ({err})"));
+                return;
+            }
+        };
+        let device = Device::open(&node).expect("the test pad can be opened");
+        let mut guard = take(device, &node).expect("the guard can take the test pad");
+        if !settle(&mut gilrs, |gilrs| ours(gilrs) == 2) {
+            crate::skipped("the gamepad API never saw the test pad and its copy");
+            return;
+        }
+
+        // Off: the pad goes, and the guard lets go of its copy the moment it
+        // notices — which is how a running guard does it.
+        drop(fake);
+        let mut edges = Edges::default();
+        let deadline = Instant::now() + PATIENCE;
+        while guard.pump(&mut edges).is_ok() && Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(1));
+        }
+        drop(guard);
+        quiet();
+        settle(&mut gilrs, |gilrs| ours(gilrs) == 0);
+        assert_eq!(
+            ours(&gilrs),
+            0,
+            "both halves of a pad that was turned off have gone"
+        );
+
+        // On again: a new pad, and a new copy of it.
+        let (mut fake, node) = make_pad_named(NAME).expect("the test pad can come back");
+        let device = Device::open(&node).expect("the test pad can be opened again");
+        let mut guard = take(device, &node).expect("the guard can take it again");
+        quiet();
+        settle(&mut gilrs, |gilrs| ours(gilrs) == 2);
+        assert_eq!(
+            ours(&gilrs),
+            2,
+            "a pad turned back on is seen, and so is its copy"
+        );
+
+        // And the copy is the one that is read.
+        fake.emit(&[*KeyEvent::new(KeyCode::BTN_SOUTH, 1)])
+            .expect("the test pad can report a button");
+        let deadline = Instant::now() + PATIENCE;
+        let mut pressed = false;
+        while !pressed && Instant::now() < deadline {
+            guard.pump(&mut edges).expect("the pad is still there");
+            while let Some(event) = gilrs.next_event() {
+                pressed |= matches!(event.event, gilrs::EventType::ButtonPressed(..))
+                    && gilrs.gamepad(event.id).os_name() == NAME;
+            }
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        assert!(
+            pressed,
+            "a button on the pad turned back on reaches the shell"
+        );
+    }
+
     /// Give GilRs its hot-plug events until it agrees with `settled`.
     fn settle(gilrs: &mut gilrs::Gilrs, settled: impl Fn(&gilrs::Gilrs) -> bool) -> bool {
         let deadline = Instant::now() + PATIENCE;
@@ -1666,49 +2277,75 @@ mod hardware_tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
-    /// Rumble, the one thing that travels the other way. A game that shakes a
-    /// guarded pad has to shake the real one.
-    #[test]
-    fn rumble_reaches_the_real_pad() {
-        if !uinput_is_available() {
-            crate::skipped("/dev/uinput cannot be opened here");
-            return;
-        }
+    /// A guarded pad with both of its threads running, for the tests where an
+    /// application talks to the guard.
+    ///
+    /// Three actors, because two of them block on each other: uploading an
+    /// effect waits for whoever owns the device to answer. The application is
+    /// the test's own thread, the guard is one thread, and the pad that has to
+    /// answer *the guard* is another — which, when asked to, also moves a stick
+    /// the whole time, the way a pad in somebody's hands does. Everything the
+    /// guard does to a pad in use happens once per packet, so a pad lying still
+    /// on a table would hide exactly the failures these tests are for.
+    struct Rig {
+        /// The node an application opens.
+        replacement: PathBuf,
+        stop: Arc<AtomicBool>,
+        /// Effects the guard put on the pad.
+        uploads: Arc<AtomicUsize>,
+        /// Times the guard started an effect on the pad. Stops are not
+        /// counted: erasing an effect stops it first, and that is not a play.
+        plays: Arc<AtomicUsize>,
+        guarding: std::thread::JoinHandle<Pad>,
+        padding: std::thread::JoinHandle<VirtualDevice>,
+    }
 
-        let (mut fake, node) = make_pad().expect("a test pad can be made");
-        set_nonblocking(fake.as_raw_fd()).expect("nonblocking reads on the test pad");
-        let device = Device::open(&node).expect("the test pad can be opened");
-        let mut guard = take(device, &node).expect("the guard can take the test pad");
-        let replacement = first_node(&mut guard.replacement).expect("the replacement has a node");
+    impl Rig {
+        /// Take a test pad and start both threads. `in_use` moves its stick
+        /// every four milliseconds, a pad's report rate.
+        fn start(in_use: bool) -> Self {
+            let (mut fake, node) = make_pad().expect("a test pad can be made");
+            set_nonblocking(fake.as_raw_fd()).expect("nonblocking reads on the test pad");
+            let device = Device::open(&node).expect("the test pad can be opened");
+            let mut guard = take(device, &node).expect("the guard can take the test pad");
+            let replacement =
+                first_node(&mut guard.replacement).expect("the replacement has a node");
 
-        // Three actors, because two of them block on each other: uploading an
-        // effect waits for whoever owns the device to answer. The application
-        // is this thread, the guard is one thread, and the pad that has to
-        // answer *the guard* is another.
-        let stop = Arc::new(AtomicBool::new(false));
-        let uploads = Arc::new(AtomicUsize::new(0));
-        let plays = Arc::new(AtomicUsize::new(0));
+            let stop = Arc::new(AtomicBool::new(false));
+            let uploads = Arc::new(AtomicUsize::new(0));
+            let plays = Arc::new(AtomicUsize::new(0));
 
-        let guard_stop = Arc::clone(&stop);
-        let guarding = std::thread::spawn(move || {
-            let mut edges = Edges::default();
-            while !guard_stop.load(Ordering::Relaxed) {
-                let _ = guard.pump(&mut edges);
-                std::thread::sleep(Duration::from_millis(2));
-            }
-            guard
-        });
+            let guard_stop = Arc::clone(&stop);
+            let guarding = std::thread::spawn(move || {
+                let mut edges = Edges::default();
+                while !guard_stop.load(Ordering::Relaxed) {
+                    let _ = guard.pump(&mut edges);
+                    std::thread::sleep(Duration::from_millis(1));
+                }
+                guard
+            });
 
-        let pad_stop = Arc::clone(&stop);
-        let seen_uploads = Arc::clone(&uploads);
-        let seen_plays = Arc::clone(&plays);
-        let padding = std::thread::spawn(move || {
-            while !pad_stop.load(Ordering::Relaxed) {
-                let events: Vec<InputEvent> = match fake.fetch_events() {
-                    Ok(events) => events.collect(),
-                    Err(_) => Vec::new(),
-                };
-                {
+            let pad_stop = Arc::clone(&stop);
+            let seen_uploads = Arc::clone(&uploads);
+            let seen_plays = Arc::clone(&plays);
+            let padding = std::thread::spawn(move || {
+                let mut next_report = Instant::now();
+                let mut reports = 0i32;
+                while !pad_stop.load(Ordering::Relaxed) {
+                    if in_use && Instant::now() >= next_report {
+                        reports += 1;
+                        let x = (reports % 200 - 100) * 300;
+                        let _ = fake.emit(&[InputEvent::new(
+                            EventType::ABSOLUTE.0,
+                            AbsoluteAxisCode::ABS_X.0,
+                            x,
+                        )]);
+                        next_report += Duration::from_millis(4);
+                    }
+                    let events: Vec<InputEvent> = match fake.fetch_events() {
+                        Ok(events) => events.collect(),
+                        Err(_) => Vec::new(),
+                    };
                     for event in events {
                         match event.destructure() {
                             EventSummary::UInput(event, UInputCode::UI_FF_UPLOAD, _) => {
@@ -1722,63 +2359,483 @@ mod hardware_tests {
                                     erase.set_retval(0);
                                 }
                             }
-                            EventSummary::ForceFeedback(..) => {
+                            EventSummary::ForceFeedback(_, _, value) if value > 0 => {
                                 seen_plays.fetch_add(1, Ordering::Relaxed);
                             }
                             _ => {}
                         }
                     }
+                    std::thread::sleep(Duration::from_micros(500));
                 }
-                std::thread::sleep(Duration::from_millis(2));
+                fake
+            });
+
+            Self {
+                replacement,
+                stop,
+                uploads,
+                plays,
+                guarding,
+                padding,
+            }
+        }
+
+        /// Stop both threads, and say how many uploads and plays reached the
+        /// pad.
+        ///
+        /// Whatever the application held has to be given back *before* this,
+        /// and in that order. Erasing an effect is a question asked of whoever
+        /// owns the device, and the kernel gives that question thirty seconds
+        /// to be answered: an application that let go of its rumble after the
+        /// answering thread had gone would wait out both of those timeouts.
+        fn finish(self) -> (usize, usize) {
+            std::thread::sleep(Duration::from_millis(50));
+            self.stop.store(true, Ordering::Relaxed);
+            let _ = self.guarding.join();
+            let _ = self.padding.join();
+            (
+                self.uploads.load(Ordering::Relaxed),
+                self.plays.load(Ordering::Relaxed),
+            )
+        }
+    }
+
+    /// Rumble at full strength, for as long as a pad can be told to shake.
+    fn rumble(strong: u16) -> FFEffectData {
+        FFEffectData {
+            direction: 0,
+            trigger: Default::default(),
+            replay: FFReplay {
+                length: 0xffff,
+                delay: 0,
+            },
+            kind: FFEffectKind::Rumble {
+                strong_magnitude: strong,
+                weak_magnitude: strong / 2,
+            },
+        }
+    }
+
+    /// A pad is taken the moment it appears, not at the next rescan.
+    ///
+    /// Everything else that reads controllers finds a new pad as soon as udev
+    /// says it exists, and a pad the guard had not taken yet was live to all of
+    /// them. So the guard watches the directory. Driven here through its own
+    /// thread, the way a running shell drives it, with the pad arriving well
+    /// inside a rescan's quarter second.
+    ///
+    /// What is timed is the grab, read the only way a grab can be read: a
+    /// second reader of the pad, and the moment the pad's stick stops reaching
+    /// it. Not the pad appearing in the guarded list, which waits on udev for
+    /// the replacement's node too — slow under a parallel test run, and nothing
+    /// to do with when the guard looked.
+    #[test]
+    fn a_pad_is_taken_the_moment_it_appears() {
+        if !uinput_is_available() {
+            crate::skipped("/dev/uinput cannot be opened here");
+            return;
+        }
+        let _serial = serial();
+        let _driver = crate::steam_hid::serial();
+
+        let (mut fake, node) = make_pad().expect("a test pad can be made");
+        let mut reader = Device::open(&node).expect("a second reader can open the pad");
+        reader.set_nonblocking(true).expect("nonblocking reads");
+        let dir = std::env::temp_dir().join(format!("lxb-pad-watch-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("a directory to look in");
+
+        let stop = Arc::new(AtomicBool::new(false));
+        let moving = Arc::clone(&stop);
+        let stick = std::thread::spawn(move || {
+            let mut x = 0;
+            while !moving.load(Ordering::Relaxed) {
+                x = if x == 1000 { -1000 } else { 1000 };
+                let _ = fake.emit(&[InputEvent::new(
+                    EventType::ABSOLUTE.0,
+                    AbsoluteAxisCode::ABS_X.0,
+                    x,
+                )]);
+                std::thread::sleep(Duration::from_millis(1));
             }
             fake
         });
 
-        let mut app = Device::open(&replacement).expect("an application can open the replacement");
-        let mut effect = app
-            .upload_ff_effect(FFEffectData {
-                direction: 0,
-                trigger: Default::default(),
-                replay: FFReplay {
-                    length: 500,
-                    delay: 0,
-                },
-                kind: FFEffectKind::Rumble {
-                    strong_magnitude: 0xffff,
-                    weak_magnitude: 0x8000,
-                },
+        let shared = Arc::new(Shared::default());
+        let mut worker = Worker::new(Arc::clone(&shared));
+        worker.dir = dir.clone();
+        let guarding = std::thread::spawn(move || worker.run());
+        // Past the first scan, which found nothing, and well short of the next.
+        std::thread::sleep(Duration::from_millis(60));
+
+        std::os::unix::fs::symlink(&node, dir.join("event0")).expect("the pad can be put there");
+        let appeared = Instant::now();
+        let mut last_heard = appeared;
+        while appeared.elapsed() < PATIENCE {
+            if let Ok(events) = reader.fetch_events() {
+                if events.count() > 0 {
+                    last_heard = Instant::now();
+                }
+            }
+            // Thirty stick movements unheard: the guard has it.
+            if last_heard.elapsed() > Duration::from_millis(30) {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(1));
+        }
+        let taken_after = last_heard.duration_since(appeared);
+
+        shared.stop.store(true, Ordering::Relaxed);
+        let _ = guarding.join();
+        stop.store(true, Ordering::Relaxed);
+        let _ = stick.join();
+        let _ = std::fs::remove_dir_all(&dir);
+
+        assert!(
+            taken_after < Duration::from_millis(50),
+            "a pad should be taken as it appears, not at the next rescan: {taken_after:?}"
+        );
+    }
+
+    /// Read what an application can see until something it is waiting for
+    /// arrives, or the patience runs out.
+    fn read_until(
+        app: &mut Device,
+        arrived: impl Fn(&(u16, u16, i32)) -> bool,
+    ) -> Vec<(u16, u16, i32)> {
+        let deadline = Instant::now() + PATIENCE;
+        let mut seen = Vec::new();
+        while Instant::now() < deadline {
+            match app.fetch_events() {
+                Ok(events) => seen.extend(
+                    events.map(|event| (event.event_type().0, event.code(), event.value())),
+                ),
+                Err(err) if err.kind() == ErrorKind::WouldBlock => {}
+                Err(err) => panic!("the application could not read its pad: {err}"),
+            }
+            if seen.iter().any(&arrived) {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(1));
+        }
+        seen
+    }
+
+    /// The press that closes the guide, on hardware terms: `A` goes down, the
+    /// shell hands the pad back with the thumb still on it, and the game that
+    /// has just been given the keys finds `A` up — then never hears the real
+    /// release, and hears the next press as a press.
+    ///
+    /// Through the guard's own thread, with the pad lying still once `A` is
+    /// down, because that is the pad a hand-back is about and the one the
+    /// thread would otherwise sleep through: nothing arrives from it to wake
+    /// the thread, and the next rescan is a quarter of a second away.
+    #[test]
+    fn the_button_that_handed_the_pad_back_is_not_pressed_in_the_game() {
+        if !uinput_is_available() {
+            crate::skipped("/dev/uinput cannot be opened here");
+            return;
+        }
+        let _serial = serial();
+        let _driver = crate::steam_hid::serial();
+
+        let (mut fake, node) =
+            make_pad_named("LineXinBar Handed Back Pad").expect("a test pad can be made");
+        let dir = std::env::temp_dir().join(format!("lxb-pad-hand-back-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("a directory to look in");
+        std::os::unix::fs::symlink(&node, dir.join("event0")).expect("the pad can be put there");
+
+        let shared = Arc::new(Shared::default());
+        let mut worker = Worker::new(Arc::clone(&shared));
+        worker.dir = dir.clone();
+        worker.scan();
+        let replacement = worker
+            .known
+            .values_mut()
+            .find_map(|slot| match slot {
+                Slot::Guarded(pad) => Some(first_node(&mut pad.replacement)),
+                _ => None,
             })
+            .expect("the guard took the test pad")
+            .expect("the replacement has a node");
+        let mut app = Device::open(&replacement).expect("an application can open the replacement");
+        app.set_nonblocking(true).expect("nonblocking reads");
+        let guard = PadGuard {
+            shared: Some(Arc::clone(&shared)),
+        };
+        let guarding = std::thread::spawn(move || worker.run());
+
+        let south = (EventType::KEY.0, KeyCode::BTN_SOUTH.0);
+        fake.emit(&[*KeyEvent::new(KeyCode::BTN_SOUTH, 1)])
+            .expect("the test pad can press A");
+        let seen = read_until(&mut app, |&(kind, code, value)| {
+            (kind, code) == south && value == 1
+        });
+        assert!(
+            seen.contains(&(south.0, south.1, 1)),
+            "the shell and the game both see A go down: {seen:?}"
+        );
+        // Past the thread's wake-up for that press, and well short of the next
+        // rescan: from here on only the knock can wake it.
+        std::thread::sleep(Duration::from_millis(20));
+
+        let asked = Instant::now();
+        guard.hand_back();
+        let seen = read_until(&mut app, |&(kind, code, value)| {
+            (kind, code) == south && value == 0
+        });
+        let let_go_after = asked.elapsed();
+        assert!(
+            seen.contains(&(south.0, south.1, 0)),
+            "A is let go of on the replacement while the thumb is still on it: {seen:?}"
+        );
+
+        // The thumb comes off, and the stick moves after it so that there is
+        // something to wait for which says the release has been and gone.
+        fake.emit(&[*KeyEvent::new(KeyCode::BTN_SOUTH, 0)])
+            .expect("the test pad can let A go");
+        fake.emit(&[InputEvent::new(
+            EventType::ABSOLUTE.0,
+            AbsoluteAxisCode::ABS_X.0,
+            12000,
+        )])
+        .expect("the test pad can move its stick");
+        let after = read_until(&mut app, |&(kind, code, _)| {
+            (kind, code) == (EventType::ABSOLUTE.0, AbsoluteAxisCode::ABS_X.0)
+        });
+
+        fake.emit(&[*KeyEvent::new(KeyCode::BTN_SOUTH, 1)])
+            .expect("the test pad can press A again");
+        let again = read_until(&mut app, |&(kind, code, value)| {
+            (kind, code) == south && value == 1
+        });
+
+        drop(guard);
+        let _ = guarding.join();
+        let _ = std::fs::remove_dir_all(&dir);
+
+        assert!(
+            let_go_after < Duration::from_millis(50),
+            "the hand-back wakes the guard rather than waiting for a rescan: {let_go_after:?}"
+        );
+        assert!(
+            !after.iter().any(|&(kind, code, _)| (kind, code) == south),
+            "the real release of a button already let go of never reaches the game: {after:?}"
+        );
+        assert!(
+            again.contains(&(south.0, south.1, 1)),
+            "once let go of, A is an ordinary button again: {again:?}"
+        );
+    }
+
+    /// A replacement's node is waited for without waiting on an application.
+    ///
+    /// Opening an event node takes the lock every ioctl on it holds, and an
+    /// application uploading rumble holds it until the upload is answered — by
+    /// the guard, which on a brand-new replacement is still inside
+    /// [`wait_for_node`]. An application that opened the new pad and shook it
+    /// first had the two waiting on each other until the kernel gave up on the
+    /// upload, thirty seconds later, with every other pad frozen behind the
+    /// guard. The application goes first here, on purpose.
+    #[test]
+    fn a_new_replacement_is_not_held_up_by_an_application_shaking_it() {
+        if !uinput_is_available() {
+            crate::skipped("/dev/uinput cannot be opened here");
+            return;
+        }
+        let (_fake, node) = make_pad().expect("a test pad can be made");
+        let device = Device::open(&node).expect("the test pad can be opened");
+        let mut replacement = build_replacement(&device).expect("a replacement can be built");
+        set_nonblocking(replacement.as_raw_fd()).expect("nonblocking reads on the replacement");
+        let seen = first_node(&mut replacement).expect("the replacement has a node");
+
+        let shaking = std::thread::spawn(move || {
+            let mut app = Device::open(&seen).expect("an application can open the new pad");
+            app.upload_ff_effect(rumble(0xffff)).is_ok()
+        });
+
+        // The upload is waiting on the guard: its question is in the queue.
+        let deadline = Instant::now() + PATIENCE;
+        let mut pollfd = libc::pollfd {
+            fd: replacement.as_raw_fd(),
+            events: libc::POLLIN,
+            revents: 0,
+        };
+        // SAFETY: one valid pollfd for the call's duration.
+        while unsafe { libc::poll(&mut pollfd, 1, 10) } == 0 && Instant::now() < deadline {}
+        assert!(
+            pollfd.revents & libc::POLLIN != 0,
+            "the application's upload should be waiting for an answer"
+        );
+
+        let asked = Instant::now();
+        wait_for_node(&mut replacement).expect("the replacement's node is there");
+        let waited = asked.elapsed();
+
+        // Answer everything until the application has let go, erases included.
+        while !shaking.is_finished() {
+            let events: Vec<InputEvent> = match replacement.fetch_events() {
+                Ok(events) => events.collect(),
+                Err(_) => Vec::new(),
+            };
+            for event in events {
+                match event.destructure() {
+                    EventSummary::UInput(event, UInputCode::UI_FF_UPLOAD, _) => {
+                        if let Ok(mut upload) = replacement.process_ff_upload(event) {
+                            upload.set_retval(0);
+                        }
+                    }
+                    EventSummary::UInput(event, UInputCode::UI_FF_ERASE, _) => {
+                        if let Ok(mut erase) = replacement.process_ff_erase(event) {
+                            erase.set_retval(0);
+                        }
+                    }
+                    _ => {}
+                }
+            }
+            std::thread::sleep(Duration::from_millis(2));
+        }
+        let uploaded = shaking.join().expect("the application thread finished");
+
+        assert!(
+            waited < Duration::from_secs(1),
+            "the wait for the node must not wait on the application: {waited:?}"
+        );
+        assert!(uploaded, "and the application's rumble was answered");
+    }
+
+    /// Rumble, the one thing that travels the other way. A game that shakes a
+    /// guarded pad has to shake the real one.
+    #[test]
+    fn rumble_reaches_the_real_pad() {
+        if !uinput_is_available() {
+            crate::skipped("/dev/uinput cannot be opened here");
+            return;
+        }
+
+        let rig = Rig::start(false);
+        let mut app =
+            Device::open(&rig.replacement).expect("an application can open the replacement");
+        let mut effect = app
+            .upload_ff_effect(rumble(0xffff))
             .expect("the application can upload rumble to the replacement pad");
         effect.play(1).expect("and play it");
 
         // The play travels as an event rather than an ioctl, so it takes a
         // turn of both threads to get there.
         let deadline = Instant::now() + PATIENCE;
-        while plays.load(Ordering::Relaxed) == 0 && Instant::now() < deadline {
+        while rig.plays.load(Ordering::Relaxed) == 0 && Instant::now() < deadline {
             std::thread::sleep(Duration::from_millis(5));
         }
 
-        // Given back before either thread stops, and in this order. Erasing an
-        // effect is a question asked of whoever owns the device, and the kernel
-        // gives that question thirty seconds to be answered: an application
-        // that let go of its rumble after the answering thread had gone would
-        // wait out both of those timeouts.
         drop(effect);
         drop(app);
-        std::thread::sleep(Duration::from_millis(50));
-
-        stop.store(true, Ordering::Relaxed);
-        let _ = guarding.join();
-        let _ = padding.join();
+        let (uploads, plays) = rig.finish();
 
         assert_eq!(
-            uploads.load(Ordering::Relaxed),
-            1,
+            uploads, 1,
             "the effect the application uploaded should have been put on the real pad"
         );
         assert!(
-            plays.load(Ordering::Relaxed) >= 1,
+            plays >= 1,
             "and playing it should have reached the real pad too"
+        );
+    }
+
+    /// And it travels once. The guard plays an effect on the pad, the kernel
+    /// hands the play back to the guard as if the pad had said it, and a guard
+    /// that repeated it onto the replacement was asked to play it again — once
+    /// per packet the pad sent, for as long as the pad was in use. Measured
+    /// before the fix: one play from an application, 500 plays of the pad in
+    /// two seconds. See [`sift`].
+    #[test]
+    fn a_rumble_played_once_is_played_once() {
+        if !uinput_is_available() {
+            crate::skipped("/dev/uinput cannot be opened here");
+            return;
+        }
+
+        let rig = Rig::start(true);
+        let mut app =
+            Device::open(&rig.replacement).expect("an application can open the replacement");
+        app.set_nonblocking(true).expect("nonblocking reads");
+        let mut effect = app
+            .upload_ff_effect(rumble(0xffff))
+            .expect("the application can upload rumble to the replacement pad");
+        effect.play(1).expect("and play it");
+
+        // A second's worth of packets: two hundred and fifty chances to come
+        // round again.
+        let mut echoes = 0;
+        let until = Instant::now() + Duration::from_secs(1);
+        while Instant::now() < until {
+            if let Ok(events) = app.fetch_events() {
+                echoes += events
+                    .filter(|event| event.event_type() == EventType::FORCEFEEDBACK)
+                    .count();
+            }
+            std::thread::sleep(Duration::from_millis(2));
+        }
+        let plays = rig.plays.load(Ordering::Relaxed);
+
+        drop(effect);
+        drop(app);
+        rig.finish();
+
+        assert_eq!(
+            plays, 1,
+            "one play from the application is one play of the pad"
+        );
+        assert!(
+            echoes <= 1,
+            "the application reads its own play back once, and nothing after it: {echoes}"
+        );
+    }
+
+    /// Steam's own pattern, which is what froze every controller it drove: a
+    /// game that shakes the pad changes the effect many times a second, and
+    /// each change waits for the guard's answer while the pad is in somebody's
+    /// hands. Before the fix the seventy-ninth change of a run like this waited
+    /// the kernel's full thirty seconds and failed. Every one of them has to be
+    /// answered promptly.
+    #[test]
+    fn rumble_keeps_up_with_a_pad_in_use() {
+        if !uinput_is_available() {
+            crate::skipped("/dev/uinput cannot be opened here");
+            return;
+        }
+
+        let rig = Rig::start(true);
+        let mut app =
+            Device::open(&rig.replacement).expect("an application can open the replacement");
+        let mut effect = app
+            .upload_ff_effect(rumble(0x1000))
+            .expect("the application can upload rumble to the replacement pad");
+
+        let mut slowest = Duration::ZERO;
+        let mut refused = None;
+        for change in 1..=120u16 {
+            let asked = Instant::now();
+            if let Err(err) = effect.update(rumble(change.wrapping_mul(541))) {
+                refused = Some((change, asked.elapsed(), err));
+                break;
+            }
+            slowest = slowest.max(asked.elapsed());
+            effect.play(1).expect("the application can play its rumble");
+            std::thread::sleep(Duration::from_millis(16));
+        }
+
+        drop(effect);
+        drop(app);
+        rig.finish();
+
+        if let Some((change, after, err)) = refused {
+            panic!("rumble change {change} failed after {after:?}: {err}");
+        }
+        assert!(
+            slowest < Duration::from_secs(1),
+            "every change is answered promptly; the slowest took {slowest:?}"
         );
     }
 }

@@ -124,6 +124,9 @@ pub struct StandIn {
     /// up and every axis at zero, which is what this starts as — not an
     /// assumption, but what the kernel has just been asked for.
     sent: Report,
+    /// Buttons let go of by a hand-back while still held on the pad, kept off
+    /// the stand-in until they come up. See [`StandIn::hand_back`].
+    withheld: Buttons,
     /// The node an application will find, kept for the log line that says so.
     node: PathBuf,
     /// What it is called, which is what the pad calls itself.
@@ -163,6 +166,7 @@ impl StandIn {
         Ok(Self {
             device,
             sent: Report::default(),
+            withheld: Buttons::empty(),
             node,
             name: name.to_string(),
         })
@@ -185,6 +189,7 @@ impl StandIn {
     /// repeated each one would wake every program reading it two hundred and
     /// fifty times a second to tell them nothing had happened.
     pub fn send(&mut self, report: Report) -> io::Result<()> {
+        let report = withhold(report, &mut self.withheld);
         let events = changes(&self.sent, &report);
         if events.is_empty() {
             return Ok(());
@@ -192,6 +197,28 @@ impl StandIn {
         self.sent = report;
         self.device.emit(&events)
     }
+
+    /// The shell is letting go of the pad, which is at `report`: let go of
+    /// every button held on it, and keep each off the stand-in until it comes
+    /// up. See [`crate::steam_hid::SteamPad::hand_back`].
+    ///
+    /// Given the pad's own report rather than read off [`StandIn::sent`],
+    /// which is what applications were told and so is missing whatever an
+    /// earlier hand-back is still keeping back.
+    pub fn hand_back(&mut self, report: Report) -> io::Result<()> {
+        self.withheld = self.withheld.union(report.buttons);
+        self.send(report)
+    }
+}
+
+/// The pad as applications are to be told it is: every button still kept back
+/// since a hand-back taken out, and each one that has come up no longer kept
+/// back — so its release is never said, the stand-in having let go of it
+/// already, and its next press is an ordinary press.
+fn withhold(mut report: Report, withheld: &mut Buttons) -> Report {
+    *withheld = withheld.intersection(report.buttons);
+    report.buttons = report.buttons.without(*withheld);
+    report
 }
 
 /// Every axis the stand-in has, as the kernel is told about it.
@@ -355,6 +382,42 @@ mod tests {
         // button exists.
         assert!(changes(&pressed(Buttons::STEAM), &Report::default()).is_empty());
         assert!(changes(&Report::default(), &pressed(Buttons::STEAM)).is_empty());
+    }
+
+    /// The press that closed the guide, still held when the game got the keys:
+    /// the stand-in says `A` is up for as long as the thumb stays on it, never
+    /// says the release, and says the next press. A D-pad direction held with
+    /// it goes the same way, which is its hat coming back to the middle.
+    #[test]
+    fn a_button_held_when_the_pad_is_handed_back_is_up_until_it_comes_up() {
+        let held = pressed(Buttons::A.union(Buttons::LEFT));
+        let mut withheld = held.buttons;
+
+        let shown = withhold(held, &mut withheld);
+        assert_eq!(shown.buttons, Buttons::empty());
+        let events = changes(&held, &shown);
+        let said: Vec<(u16, u16, i32)> = events
+            .iter()
+            .map(|event| (event.event_type().0, event.code(), event.value()))
+            .collect();
+        assert!(said.contains(&(evdev::EventType::KEY.0, KeyCode::BTN_SOUTH.0, 0)));
+        assert!(said.contains(&(
+            evdev::EventType::ABSOLUTE.0,
+            AbsoluteAxisCode::ABS_HAT0X.0,
+            0
+        )));
+
+        // Still held, and B pressed beside it: only B.
+        let shown = withhold(pressed(Buttons::A.union(Buttons::B)), &mut withheld);
+        assert_eq!(shown.buttons, Buttons::B);
+        assert_eq!(withheld, Buttons::A, "LEFT came up, and is ordinary again");
+
+        // A comes up, which is nothing to say; then down, which is a press.
+        let shown = withhold(Report::default(), &mut withheld);
+        assert_eq!(shown.buttons, Buttons::empty());
+        assert!(withheld.is_empty());
+        let shown = withhold(pressed(Buttons::A), &mut withheld);
+        assert_eq!(shown.buttons, Buttons::A);
     }
 
     /// Declared, though. See the module note: a stand-in missing a button

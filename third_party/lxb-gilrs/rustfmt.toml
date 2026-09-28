@@ -1,0 +1,9 @@
+# Upstream's code, kept as upstream wrote it so a diff against the released
+# version is about this fork's changes and nothing else.
+#
+# This file is here because the crate is a *path dependency* now rather than a
+# `[patch.crates-io]` entry — that is what naming the package `lxb-` cost — and
+# `cargo fmt --all` walks into local path dependencies. Without it, one habitual
+# `cargo fmt --all` would rewrite a few thousand lines nobody here has ever
+# edited.
+disable_all_formatting = true

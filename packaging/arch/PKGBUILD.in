@@ -118,6 +118,10 @@ _linexinbar_licenses() {
     # linked from a crate, under the same terms and the same obligation.
     install -Dm0644 third_party/lxb-rcheevos/LICENSE \
         "$pkgdir/usr/share/licenses/$1/rcheevos-MIT.txt"
+    # And GilRs, which the shell reads controllers through and which is in this
+    # tree for a fix of its own. Dual-licensed; MIT is the notice carried.
+    install -Dm0644 third_party/lxb-gilrs/LICENSE-MIT \
+        "$pkgdir/usr/share/licenses/$1/GilRs-MIT.txt"
 }
 
 package_lxb-compositor() {

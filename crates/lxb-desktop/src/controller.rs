@@ -225,6 +225,17 @@ impl ControllerInput {
         }
     }
 
+    /// The shell is letting go of the controller: whatever is held on it now
+    /// was the shell's, and no application is to find it down.
+    ///
+    /// Every pad an application reads is one this shell repeats — the guard's
+    /// copy of a pad the kernel drives, or the Steam Controller's stand-in —
+    /// so both are told. See [`crate::pad_guard::PadGuard::hand_back`].
+    pub fn hand_back(&self) {
+        self.guard.hand_back();
+        self.pad.hand_back();
+    }
+
     /// Drain device events and return every action due at `now`.
     ///
     /// Events must still be drained while inactive so GilRs' cached button

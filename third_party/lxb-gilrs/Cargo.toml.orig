@@ -1,0 +1,49 @@
+[package]
+name = "gilrs"
+version = "0.11.2"
+authors = ["Arvamer <arvamer@gmail.com>"]
+license = "Apache-2.0/MIT"
+exclude = ["controller.svg"]
+description = "Game Input Library for Rust"
+documentation = "https://docs.rs/gilrs/"
+repository = "https://gitlab.com/gilrs-project/gilrs"
+readme = "../README.md"
+keywords = ["gamepad", "joystick", "input"]
+categories = ["game-engines"]
+edition = "2021"
+rust-version = "1.84.0"
+
+[badges]
+gitlab = { repository = "gilrs-project/gilrs" }
+
+[dependencies]
+vec_map = "0.8"
+uuid = "1.0.0"
+log = "0.4.1"
+fnv = "1.0"
+serde = { version = "1.0", features = ["derive"], optional = true }
+gilrs-core = { path = "../gilrs-core", version = "0.6.8", default-features = false }
+
+[dev-dependencies]
+eframe = "0.30.0"
+env_logger = "0.11.5"
+console_log = "1.0.0"
+egui_plot = "0.30.0"
+web-sys = "0.3.76"
+wasm-bindgen-futures = "0.4.49"
+
+[target.'cfg(not(target_arch = "wasm32"))'.dev-dependencies]
+# fixed to avoid msrv bump to 1.81 -- can remove once we're past that
+home = "=0.5.9"
+
+[target.'cfg(target_arch = "wasm32")'.dev-dependencies]
+console_error_panic_hook = "0.1.7"
+
+[package.metadata.docs.rs]
+features = ["serde-serialize"]
+
+[features]
+default = ["wgi"]
+serde-serialize = ["serde", "gilrs-core/serde-serialize"]
+xinput = ["gilrs-core/xinput"]
+wgi = ["gilrs-core/wgi"]

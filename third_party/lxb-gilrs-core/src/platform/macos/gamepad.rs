@@ -1,0 +1,887 @@
+// Copyright 2016-2018 Mateusz Sieczko and other GilRs Developers
+//
+// Licensed under the Apache License, Version 2.0, <LICENSE-APACHE or
+// http://apache.org/licenses/LICENSE-2.0> or the MIT license <LICENSE-MIT or
+// http://opensource.org/licenses/MIT>, at your option. This file may not be
+// copied, modified, or distributed except according to those terms.
+
+use super::io_kit::*;
+use super::FfDevice;
+use crate::{AxisInfo, Event, EventType, PlatformError, PowerInfo};
+
+use objc2_core_foundation::{kCFRunLoopDefaultMode, CFRetained, CFRunLoop, Type};
+use objc2_io_kit::{
+    kHIDPage_GenericDesktop, kHIDPage_VendorDefinedStart, kHIDUsage_GD_GamePad,
+    kHIDUsage_GD_Joystick, kHIDUsage_GD_MultiAxisController, IOHIDDevice, IOHIDElement, IOHIDValue,
+    IOReturn,
+};
+use uuid::Uuid;
+use vec_map::VecMap;
+
+use std::fmt::{Display, Formatter, Result as FmtResult};
+use std::os::raw::c_void;
+use std::ptr::NonNull;
+use std::sync::mpsc::{self, Receiver, Sender};
+use std::sync::{Arc, Mutex};
+use std::thread;
+use std::time::Duration;
+
+#[derive(Debug)]
+pub struct Gilrs {
+    gamepads: Vec<Gamepad>,
+    device_infos: Arc<Mutex<Vec<DeviceInfo>>>,
+    rx: Receiver<(Event, Option<Device>)>,
+}
+
+impl Gilrs {
+    pub(crate) fn new() -> Result<Self, PlatformError> {
+        let gamepads = Vec::new();
+        let device_infos = Arc::new(Mutex::new(Vec::new()));
+
+        let (tx, rx) = mpsc::channel();
+        Self::spawn_thread(tx, device_infos.clone());
+
+        Ok(Gilrs {
+            gamepads,
+            device_infos,
+            rx,
+        })
+    }
+
+    fn spawn_thread(
+        tx: Sender<(Event, Option<Device>)>,
+        device_infos: Arc<Mutex<Vec<DeviceInfo>>>,
+    ) {
+        thread::Builder::new()
+            .name("gilrs".to_owned())
+            .spawn(move || {
+                let manager = match new_manager() {
+                    Some(manager) => manager,
+                    None => {
+                        error!("Failed to create IOHIDManager object");
+                        return;
+                    }
+                };
+
+                let rl = CFRunLoop::current().unwrap();
+
+                // SAFETY: We pass the current thread's runloop, so the
+                // callback will be run on this thread below.
+                unsafe { manager.schedule_with_run_loop(&rl, kCFRunLoopDefaultMode.unwrap()) };
+
+                // SAFETY: The contexts pointer is a valid pointer.
+                let context = &(tx.clone(), device_infos.clone()) as *const Context as *mut c_void;
+                unsafe {
+                    manager.register_device_matching_callback(Some(device_matching_cb), context)
+                };
+
+                // SAFETY: Same as above.
+                let context = &(tx.clone(), device_infos.clone()) as *const Context as *mut c_void;
+                unsafe {
+                    manager.register_device_removal_callback(Some(device_removal_cb), context)
+                };
+
+                // SAFETY: Same as above.
+                let context = &(tx, device_infos) as *const Context as *mut c_void;
+                unsafe { manager.register_input_value_callback(Some(input_value_cb), context) };
+
+                CFRunLoop::run();
+
+                // SAFETY: There are no threading requirements from this.
+                unsafe { manager.unschedule_from_run_loop(&rl, kCFRunLoopDefaultMode.unwrap()) };
+            })
+            .expect("failed to spawn thread");
+    }
+
+    pub(crate) fn next_event(&mut self) -> Option<Event> {
+        let event = self.rx.try_recv().ok();
+        self.handle_event(event)
+    }
+
+    pub(crate) fn next_event_blocking(&mut self, timeout: Option<Duration>) -> Option<Event> {
+        let event = if let Some(timeout) = timeout {
+            self.rx.recv_timeout(timeout).ok()
+        } else {
+            self.rx.recv().ok()
+        };
+
+        self.handle_event(event)
+    }
+
+    fn handle_event(&mut self, event: Option<(Event, Option<Device>)>) -> Option<Event> {
+        match event {
+            Some((event, Some(device))) => {
+                if event.event == EventType::Connected {
+                    if self.gamepads.get(event.id).is_some() {
+                        self.gamepads[event.id].is_connected = true;
+                    } else {
+                        match Gamepad::open(&device.0) {
+                            Some(gamepad) => {
+                                self.gamepads.push(gamepad);
+                            }
+                            None => {
+                                error!("Failed to open gamepad: {:?}", event.id);
+                                return None;
+                            }
+                        };
+                    }
+                }
+                Some(event)
+            }
+            Some((event, None)) => {
+                if event.event == EventType::Disconnected {
+                    match self.gamepads.get_mut(event.id) {
+                        Some(gamepad) => {
+                            match self.device_infos.lock().unwrap().get_mut(event.id) {
+                                Some(device_info) => device_info.is_connected = false,
+                                None => {
+                                    error!("Failed to find device_info: {:?}", event.id);
+                                    return None;
+                                }
+                            };
+                            gamepad.is_connected = false;
+                        }
+                        None => {
+                            error!("Failed to find gamepad: {:?}", event.id);
+                            return None;
+                        }
+                    }
+                }
+                Some(event)
+            }
+            None => None,
+        }
+    }
+
+    pub fn gamepad(&self, id: usize) -> Option<&Gamepad> {
+        self.gamepads.get(id)
+    }
+
+    /// Returns index greater than index of last connected gamepad.
+    pub fn last_gamepad_hint(&self) -> usize {
+        self.gamepads.len()
+    }
+}
+
+#[derive(Debug)]
+#[allow(dead_code)]
+pub struct Gamepad {
+    name: String,
+    vendor: Option<u16>,
+    product: Option<u16>,
+    uuid: Uuid,
+    entry_id: u64,
+    location_id: u32,
+    page: u32,
+    usage: u32,
+    axes_info: VecMap<AxisInfo>,
+    axes: Vec<EvCode>,
+    hats: Vec<EvCode>,
+    buttons: Vec<EvCode>,
+    is_connected: bool,
+}
+
+impl Gamepad {
+    fn open(device: &IOHIDDevice) -> Option<Gamepad> {
+        let io_service = match IOService::new(device.service()) {
+            Some(io_service) => io_service,
+            None => {
+                error!("Failed to get device service");
+                return None;
+            }
+        };
+
+        let entry_id = match io_service.get_registry_entry_id() {
+            Some(entry_id) => entry_id,
+            None => {
+                error!("Failed to get entry id of device");
+                return None;
+            }
+        };
+
+        let location_id = match device.get_location_id() {
+            Some(location_id) => location_id,
+            None => {
+                error!("Failed to get location id of device");
+                return None;
+            }
+        };
+
+        let page = match device.get_page() {
+            Some(page) => {
+                if page >= kHIDPage_VendorDefinedStart {
+                    error!("Device HID page is Vendor Defined. {device:?}");
+                    return None;
+                }
+
+                if page == kHIDPage_GenericDesktop {
+                    page
+                } else {
+                    error!(
+                        "Failed to get valid device. Expecting kHIDPage_GenericDesktop. Got \
+                         0x{:X?}",
+                        page
+                    );
+                    return None;
+                }
+            }
+            None => {
+                error!("Failed to get page of device");
+                return None;
+            }
+        };
+
+        let usage = match device.get_usage() {
+            Some(usage) => {
+                if usage == kHIDUsage_GD_GamePad
+                    || usage == kHIDUsage_GD_Joystick
+                    || usage == kHIDUsage_GD_MultiAxisController
+                {
+                    usage
+                } else {
+                    error!("Failed to get valid device: {:?}", usage);
+                    return None;
+                }
+            }
+            None => {
+                error!("Failed to get usage of device");
+                return None;
+            }
+        };
+
+        let name = device.get_name().unwrap_or_else(|| {
+            warn!("Failed to get name of device");
+            "Unknown".into()
+        });
+
+        let uuid = Self::create_uuid(&device).unwrap_or_default();
+
+        let mut gamepad = Gamepad {
+            name,
+            vendor: device.get_vendor_id(),
+            product: device.get_product_id(),
+            uuid,
+            entry_id,
+            location_id,
+            page,
+            usage,
+            axes_info: VecMap::with_capacity(8),
+            axes: Vec::with_capacity(8),
+            hats: Vec::with_capacity(4),
+            buttons: Vec::with_capacity(16),
+            is_connected: true,
+        };
+        gamepad.collect_axes_and_buttons(&device_elements(&device));
+
+        Some(gamepad)
+    }
+
+    fn create_uuid(device: &IOHIDDevice) -> Option<Uuid> {
+        // SDL always uses USB bus for UUID
+        let bustype = u32::to_be(0x03);
+
+        let vendor_id = match device.get_vendor_id() {
+            Some(vendor_id) => vendor_id.to_be(),
+            None => {
+                warn!("Failed to get vendor id of device");
+                0
+            }
+        };
+
+        let product_id = match device.get_product_id() {
+            Some(product_id) => product_id.to_be(),
+            None => {
+                warn!("Failed to get product id of device");
+                0
+            }
+        };
+
+        let version = match device.get_version() {
+            Some(version) => version.to_be(),
+            None => {
+                warn!("Failed to get version of device");
+                0
+            }
+        };
+
+        if vendor_id == 0 && product_id == 0 && version == 0 {
+            None
+        } else {
+            Some(Uuid::from_fields(
+                bustype,
+                vendor_id,
+                0,
+                &[
+                    (product_id >> 8) as u8,
+                    product_id as u8,
+                    0,
+                    0,
+                    (version >> 8) as u8,
+                    version as u8,
+                    0,
+                    0,
+                ],
+            ))
+        }
+    }
+
+    pub fn name(&self) -> &str {
+        &self.name
+    }
+
+    pub fn vendor_id(&self) -> Option<u16> {
+        self.vendor
+    }
+
+    pub fn product_id(&self) -> Option<u16> {
+        self.product
+    }
+
+    pub fn uuid(&self) -> Uuid {
+        self.uuid
+    }
+
+    pub fn power_info(&self) -> PowerInfo {
+        PowerInfo::Unknown
+    }
+
+    pub fn is_ff_supported(&self) -> bool {
+        false
+    }
+
+    /// Creates Ffdevice corresponding to this gamepad.
+    pub fn ff_device(&self) -> Option<FfDevice> {
+        Some(FfDevice)
+    }
+
+    pub fn buttons(&self) -> &[EvCode] {
+        &self.buttons
+    }
+
+    pub fn axes(&self) -> &[EvCode] {
+        &self.axes
+    }
+
+    pub(crate) fn axis_info(&self, nec: EvCode) -> Option<&AxisInfo> {
+        self.axes_info.get(nec.usage as usize)
+    }
+
+    pub fn is_connected(&self) -> bool {
+        self.is_connected
+    }
+
+    fn collect_axes_and_buttons(&mut self, elements: &Vec<CFRetained<IOHIDElement>>) {
+        let mut cookies = Vec::new();
+
+        self.collect_axes(elements, &mut cookies);
+        self.axes.sort_by_key(|axis| axis.usage);
+        self.hats.sort_by_key(|axis| axis.usage);
+        // Because "hat is axis" is a gilrs thing, we want to ensure that all hats are at the end of
+        // the axis vector, so the SDL mappings still work.
+        self.axes.extend(&self.hats);
+
+        self.collect_buttons(elements, &mut cookies);
+        self.buttons.sort_by_key(|button| button.usage);
+    }
+
+    fn collect_axes(&mut self, elements: &Vec<CFRetained<IOHIDElement>>, cookies: &mut Vec<u32>) {
+        for element in elements {
+            let type_ = element.r#type();
+            let cookie = element.cookie();
+            let page = element.usage_page();
+            let usage = element.usage();
+
+            if element_is_collection(type_) {
+                let children = element_children(element);
+                self.collect_axes(&children, cookies);
+            } else if element_is_axis(type_, page, usage) && !cookies.contains(&cookie) {
+                cookies.push(cookie);
+                self.axes_info.insert(
+                    usage as usize,
+                    AxisInfo {
+                        min: element.logical_min() as _,
+                        max: element.logical_max() as _,
+                        deadzone: None,
+                    },
+                );
+                self.axes.push(EvCode::new(page, usage));
+            } else if element_is_hat(type_, page, usage) && !cookies.contains(&cookie) {
+                cookies.push(cookie);
+                self.axes_info.insert(
+                    usage as usize,
+                    AxisInfo {
+                        min: -1,
+                        max: 1,
+                        deadzone: None,
+                    },
+                );
+                self.hats.push(EvCode::new(page, usage));
+                // All hat switches are translated into *two* axes
+                self.axes_info.insert(
+                    (usage + 1) as usize, // "+ 1" is assumed for usage of 2nd hat switch axis
+                    AxisInfo {
+                        min: -1,
+                        max: 1,
+                        deadzone: None,
+                    },
+                );
+                self.hats.push(EvCode::new(page, usage + 1));
+            }
+        }
+    }
+
+    fn collect_buttons(
+        &mut self,
+        elements: &Vec<CFRetained<IOHIDElement>>,
+        cookies: &mut Vec<u32>,
+    ) {
+        for element in elements {
+            let type_ = element.r#type();
+            let cookie = element.cookie();
+            let page = element.usage_page();
+            let usage = element.usage();
+
+            if element_is_collection(type_) {
+                let children = element_children(element);
+                self.collect_buttons(&children, cookies);
+            } else if element_is_button(type_, page, usage) && !cookies.contains(&cookie) {
+                cookies.push(cookie);
+                self.buttons.push(EvCode::new(page, usage));
+            }
+        }
+    }
+}
+
+#[derive(Debug)]
+struct DeviceInfo {
+    entry_id: u64,
+    location_id: u32,
+    is_connected: bool,
+}
+#[cfg(feature = "serde-serialize")]
+use serde::{Deserialize, Serialize};
+
+#[cfg_attr(feature = "serde-serialize", derive(Serialize, Deserialize))]
+#[derive(Copy, Clone, Debug, Eq, PartialEq, Ord, PartialOrd, Hash)]
+pub struct EvCode {
+    page: u32,
+    usage: u32,
+}
+
+impl EvCode {
+    fn new(page: u32, usage: u32) -> Self {
+        EvCode { page, usage }
+    }
+
+    pub fn into_u32(self) -> u32 {
+        (self.page << 16) | self.usage
+    }
+}
+
+impl From<IOHIDElement> for crate::EvCode {
+    fn from(e: IOHIDElement) -> Self {
+        crate::EvCode(EvCode {
+            page: e.usage_page(),
+            usage: e.usage(),
+        })
+    }
+}
+
+impl Display for EvCode {
+    fn fmt(&self, f: &mut Formatter) -> FmtResult {
+        match self.page {
+            PAGE_GENERIC_DESKTOP => f.write_str("GENERIC_DESKTOP")?,
+            PAGE_BUTTON => f.write_str("BUTTON")?,
+            page => f.write_fmt(format_args!("PAGE_{}", page))?,
+        }
+        f.write_fmt(format_args!("({})", self.usage))
+    }
+}
+
+pub mod native_ev_codes {
+    use super::*;
+
+    pub const AXIS_LSTICKX: EvCode = EvCode {
+        page: super::PAGE_GENERIC_DESKTOP,
+        usage: super::USAGE_AXIS_LSTICKX,
+    };
+    pub const AXIS_LSTICKY: EvCode = EvCode {
+        page: super::PAGE_GENERIC_DESKTOP,
+        usage: super::USAGE_AXIS_LSTICKY,
+    };
+    pub const AXIS_LEFTZ: EvCode = EvCode {
+        page: super::PAGE_GENERIC_DESKTOP,
+        usage: super::USAGE_AXIS_LEFTZ,
+    };
+    pub const AXIS_RSTICKX: EvCode = EvCode {
+        page: super::PAGE_GENERIC_DESKTOP,
+        usage: super::USAGE_AXIS_RSTICKX,
+    };
+    pub const AXIS_RSTICKY: EvCode = EvCode {
+        page: super::PAGE_GENERIC_DESKTOP,
+        usage: super::USAGE_AXIS_RSTICKY,
+    };
+    pub const AXIS_RIGHTZ: EvCode = EvCode {
+        page: super::PAGE_GENERIC_DESKTOP,
+        usage: super::USAGE_AXIS_RIGHTZ,
+    };
+    pub const AXIS_DPADX: EvCode = EvCode {
+        page: super::PAGE_GENERIC_DESKTOP,
+        usage: super::USAGE_AXIS_DPADX,
+    };
+    pub const AXIS_DPADY: EvCode = EvCode {
+        page: super::PAGE_GENERIC_DESKTOP,
+        usage: super::USAGE_AXIS_DPADY,
+    };
+    pub const AXIS_RT: EvCode = EvCode {
+        page: super::PAGE_GENERIC_DESKTOP,
+        usage: super::USAGE_AXIS_RT,
+    };
+    pub const AXIS_LT: EvCode = EvCode {
+        page: super::PAGE_GENERIC_DESKTOP,
+        usage: super::USAGE_AXIS_LT,
+    };
+    pub const AXIS_RT2: EvCode = EvCode {
+        page: super::PAGE_SIMULATION,
+        usage: super::USAGE_AXIS_RT2,
+    };
+    pub const AXIS_LT2: EvCode = EvCode {
+        page: super::PAGE_SIMULATION,
+        usage: super::USAGE_AXIS_LT2,
+    };
+
+    pub const BTN_SOUTH: EvCode = EvCode {
+        page: super::PAGE_BUTTON,
+        usage: super::USAGE_BTN_SOUTH,
+    };
+    pub const BTN_EAST: EvCode = EvCode {
+        page: super::PAGE_BUTTON,
+        usage: super::USAGE_BTN_EAST,
+    };
+    pub const BTN_C: EvCode = EvCode {
+        page: super::PAGE_BUTTON,
+        usage: super::USAGE_BTN_C,
+    };
+    pub const BTN_NORTH: EvCode = EvCode {
+        page: super::PAGE_BUTTON,
+        usage: super::USAGE_BTN_NORTH,
+    };
+    pub const BTN_WEST: EvCode = EvCode {
+        page: super::PAGE_BUTTON,
+        usage: super::USAGE_BTN_WEST,
+    };
+    pub const BTN_Z: EvCode = EvCode {
+        page: super::PAGE_BUTTON,
+        usage: super::USAGE_BTN_Z,
+    };
+    pub const BTN_LT: EvCode = EvCode {
+        page: super::PAGE_BUTTON,
+        usage: super::USAGE_BTN_LT,
+    };
+    pub const BTN_RT: EvCode = EvCode {
+        page: super::PAGE_BUTTON,
+        usage: super::USAGE_BTN_RT,
+    };
+    pub const BTN_LT2: EvCode = EvCode {
+        page: super::PAGE_BUTTON,
+        usage: super::USAGE_BTN_LT2,
+    };
+    pub const BTN_RT2: EvCode = EvCode {
+        page: super::PAGE_BUTTON,
+        usage: super::USAGE_BTN_RT2,
+    };
+    pub const BTN_SELECT: EvCode = EvCode {
+        page: super::PAGE_BUTTON,
+        usage: super::USAGE_BTN_SELECT,
+    };
+    pub const BTN_START: EvCode = EvCode {
+        page: super::PAGE_BUTTON,
+        usage: super::USAGE_BTN_START,
+    };
+    pub const BTN_MODE: EvCode = EvCode {
+        page: super::PAGE_BUTTON,
+        usage: super::USAGE_BTN_MODE,
+    };
+    pub const BTN_LTHUMB: EvCode = EvCode {
+        page: super::PAGE_BUTTON,
+        usage: super::USAGE_BTN_LTHUMB,
+    };
+    pub const BTN_RTHUMB: EvCode = EvCode {
+        page: super::PAGE_BUTTON,
+        usage: super::USAGE_BTN_RTHUMB,
+    };
+
+    pub const BTN_DPAD_UP: EvCode = EvCode {
+        page: super::PAGE_BUTTON,
+        usage: super::USAGE_BTN_DPAD_UP,
+    };
+    pub const BTN_DPAD_DOWN: EvCode = EvCode {
+        page: super::PAGE_BUTTON,
+        usage: super::USAGE_BTN_DPAD_DOWN,
+    };
+    pub const BTN_DPAD_LEFT: EvCode = EvCode {
+        page: super::PAGE_BUTTON,
+        usage: super::USAGE_BTN_DPAD_LEFT,
+    };
+    pub const BTN_DPAD_RIGHT: EvCode = EvCode {
+        page: super::PAGE_BUTTON,
+        usage: super::USAGE_BTN_DPAD_RIGHT,
+    };
+}
+
+type Context = (Sender<(Event, Option<Device>)>, Arc<Mutex<Vec<DeviceInfo>>>);
+
+extern "C-unwind" fn device_matching_cb(
+    context: *mut c_void,
+    _result: IOReturn,
+    _sender: *mut c_void,
+    device: NonNull<IOHIDDevice>,
+) {
+    // SAFETY: Validity of the pointer is upheld by the caller.
+    let device = unsafe { device.as_ref() };
+    // SAFETY: The context is the one we passed in `Gilrs::spawn_thread`.
+    let (tx, device_infos): &Context = unsafe { &*(context as *mut _) };
+
+    let io_service = match IOService::new(device.service()) {
+        Some(io_service) => io_service,
+        None => {
+            error!("Failed to get device service");
+            return;
+        }
+    };
+
+    let entry_id = match io_service.get_registry_entry_id() {
+        Some(entry_id) => entry_id,
+        None => {
+            error!("Failed to get entry id of device");
+            return;
+        }
+    };
+
+    // Filter devices which will not succed in open(). If devices are added to the
+    // DeviceInfo vec, it will cause a mismatch of IDs as they're derived from
+    // the length of the DeviceInfo Vec, but devices which fail to open() will not
+    // be pushed into the Gilrs inner gamepads vec, and panics will ensue.
+    //
+    // Try to open the device early, and if it fails, do not add it to device_infos
+    match Gamepad::open(&device) {
+        Some(gamepad) => drop(gamepad),
+        None => {
+            warn!("Failed to open device {device:?}. Skipping.");
+            return;
+        }
+    }
+
+    let mut device_infos = device_infos.lock().unwrap();
+    let id = match device_infos
+        .iter()
+        .position(|info| info.entry_id == entry_id && info.is_connected)
+    {
+        Some(id) => {
+            info!("Device is already registered: {:?}", entry_id);
+            id
+        }
+        None => {
+            let location_id = match device.get_location_id() {
+                Some(location_id) => location_id,
+                None => {
+                    error!("Failed to get location id of device");
+                    return;
+                }
+            };
+
+            device_infos.push(DeviceInfo {
+                entry_id,
+                location_id,
+                is_connected: true,
+            });
+
+            device_infos.len() - 1
+        }
+    };
+    let _ = tx.send((
+        Event::new(id, EventType::Connected),
+        Some(Device(device.retain())),
+    ));
+}
+
+#[allow(clippy::type_complexity)]
+unsafe extern "C-unwind" fn device_removal_cb(
+    context: *mut c_void,
+    _result: IOReturn,
+    _sender: *mut c_void,
+    device: NonNull<IOHIDDevice>,
+) {
+    // SAFETY: Validity of the pointer is upheld by the caller.
+    let device = unsafe { device.as_ref() };
+    // SAFETY: The context is the one we passed in `Gilrs::spawn_thread`.
+    let (tx, device_infos): &Context = unsafe { &*(context as *mut _) };
+
+    let location_id = match device.get_location_id() {
+        Some(location_id) => location_id,
+        None => {
+            error!("Failed to get location id of device");
+            return;
+        }
+    };
+
+    let device_infos = device_infos.lock().unwrap();
+    let id = match device_infos
+        .iter()
+        .position(|info| info.location_id == location_id && info.is_connected)
+    {
+        Some(id) => id,
+        None => {
+            warn!("Failed to find device: {:?}", location_id);
+            return;
+        }
+    };
+
+    let _ = tx.send((Event::new(id, EventType::Disconnected), None));
+}
+
+#[allow(clippy::type_complexity)]
+unsafe extern "C-unwind" fn input_value_cb(
+    context: *mut c_void,
+    _result: IOReturn,
+    sender: *mut c_void,
+    value: NonNull<IOHIDValue>,
+) {
+    // SAFETY: Validity of the pointer is upheld by the caller.
+    let value = unsafe { value.as_ref() };
+    // SAFETY: The context is the one we passed in `Gilrs::spawn_thread`.
+    let (tx, device_infos): &Context = unsafe { &*(context as *mut _) };
+
+    // SAFETY: TODO.
+    let device = match unsafe { sender.cast::<IOHIDDevice>().as_ref() } {
+        Some(device) => device,
+        None => {
+            error!("Failed to get device");
+            return;
+        }
+    };
+
+    let io_service = match device.get_service() {
+        Some(io_service) => io_service,
+        None => {
+            error!("Failed to get device service");
+            return;
+        }
+    };
+
+    let entry_id = match io_service.get_registry_entry_id() {
+        Some(entry_id) => entry_id,
+        None => {
+            error!("Failed to get entry id of device");
+            return;
+        }
+    };
+
+    let device_infos = device_infos.lock().unwrap();
+    let id = match device_infos
+        .iter()
+        .position(|info| info.entry_id == entry_id && info.is_connected)
+    {
+        Some(id) => id,
+        None => {
+            warn!("Failed to find device: {:?}", entry_id);
+            return;
+        }
+    };
+
+    let element = value.element();
+
+    let type_ = element.r#type();
+    let page = element.usage_page();
+    let usage = element.usage();
+
+    if element_is_axis(type_, page, usage) {
+        let event = Event::new(
+            id,
+            EventType::AxisValueChanged(
+                value.integer_value() as i32,
+                crate::EvCode(EvCode { page, usage }),
+            ),
+        );
+        let _ = tx.send((event, None));
+    } else if element_is_button(type_, page, usage) {
+        if value.integer_value() == 0 {
+            let event = Event::new(
+                id,
+                EventType::ButtonReleased(crate::EvCode(EvCode { page, usage })),
+            );
+            let _ = tx.send((event, None));
+        } else {
+            let event = Event::new(
+                id,
+                EventType::ButtonPressed(crate::EvCode(EvCode { page, usage })),
+            );
+            let _ = tx.send((event, None));
+        }
+    } else if element_is_hat(type_, page, usage) {
+        // Hat switch values are reported with a range of usually 8 numbers (sometimes 4). The logic
+        // below uses the reported min/max values of that range to map that onto a range of 0-7 for
+        // the directions (and any other value indicates the center position). Lucky for us, they
+        // always start with "up" as the lowest number and proceed clockwise. See similar handling
+        // here https://github.com/spurious/SDL-mirror/blob/094b2f68dd7fc9af167f905e10625e103a131459/src/joystick/darwin/SDL_sysjoystick.c#L976-L1028
+        //
+        //          up
+        //       7  0  1
+        //        \ | /
+        // left 6 - ? - 2 right       (After mapping)
+        //        / | \
+        //       5  4  3
+        //         down
+        let range = element.logical_max() - element.logical_min() + 1;
+        let shifted_value = value.integer_value() - element.logical_min();
+        let dpad_value = match range {
+            4 => shifted_value * 2, // 4-position hat switch - scale it up to 8
+            8 => shifted_value,     // 8-position hat switch - no adjustment necessary
+            _ => -1, // Neither 4 nor 8 positions, we don't know what to do - default to centered
+        };
+        // At this point, the value should be normalized to the 0-7 directional values (or center
+        // for any other value). The dpad is a hat switch on macOS, but on other platforms dpads are
+        // either buttons or a pair of axes that get converted to button events by the
+        // `axis_dpad_to_button` filter.  We will emulate axes here and let that filter do the
+        // button conversion, because it is safer and easier than making separate logic for button
+        // conversion that may diverge in subtle ways from the axis conversion logic.  The most
+        // practical outcome of this conversion is that there are extra "released" axis events for
+        // the unused axis. For example, pressing just "up" will also give you a "released" event
+        // for either the left or right button, even if it wasn't pressed before pressing "up".
+        let x_axis_value = match dpad_value {
+            5..=7 => -1, // left
+            1..=3 => 1,  // right
+            _ => 0,
+        };
+        // Since we're emulating an inverted macOS gamepad axis, down is positive and up is negative
+        let y_axis_value = match dpad_value {
+            3..=5 => 1,      // down
+            0 | 1 | 7 => -1, // up
+            _ => 0,
+        };
+
+        let x_axis_event = Event::new(
+            id,
+            EventType::AxisValueChanged(
+                x_axis_value,
+                crate::EvCode(EvCode {
+                    page,
+                    usage: USAGE_AXIS_DPADX,
+                }),
+            ),
+        );
+        let y_axis_event = Event::new(
+            id,
+            EventType::AxisValueChanged(
+                y_axis_value,
+                crate::EvCode(EvCode {
+                    page,
+                    usage: USAGE_AXIS_DPADY,
+                }),
+            ),
+        );
+
+        let _ = tx.send((x_axis_event, None));
+        let _ = tx.send((y_axis_event, None));
+    }
+}

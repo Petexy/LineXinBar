@@ -133,6 +133,16 @@ impl Buttons {
     const fn newly_down(self, before: Self) -> Self {
         Self(self.0 & !before.0)
     }
+
+    /// Every button here that is not in `other`.
+    pub const fn without(self, other: Self) -> Self {
+        Self(self.0 & !other.0)
+    }
+
+    /// Every button that is in both.
+    pub const fn intersection(self, other: Self) -> Self {
+        Self(self.0 & other.0)
+    }
 }
 
 /// Where each button lives in the report: byte, mask, and what it is.
@@ -383,6 +393,11 @@ pub struct SteamPad {
 struct Shared {
     /// Set when the shell is going away.
     stop: AtomicBool,
+    /// Set by [`SteamPad::hand_back`] and taken by the thread at its next
+    /// report, which is never more than four milliseconds away: this pad
+    /// reports whether or not anything on it moved, so the thread needs no
+    /// knock of the kind [`crate::pad_guard`] has.
+    hand_back: AtomicBool,
     state: Mutex<State>,
 }
 
@@ -444,6 +459,20 @@ impl SteamPad {
             right_stick: state.right,
             triggers: state.triggers,
         })
+    }
+
+    /// The shell is letting go of the pad: let go on the stand-in of whatever
+    /// is down on it, and keep it up there until the thumb comes off.
+    ///
+    /// The same rule, for the same reason, as
+    /// [`crate::pad_guard::PadGuard::hand_back`]. What it reaches is less: an
+    /// application reading this pad through the stand-in gets the rule, and
+    /// Valve's client does not, because it reads this pad from its own raw
+    /// node and never through anything the shell makes.
+    pub fn hand_back(&self) {
+        if let Some(shared) = &self.shared {
+            shared.hand_back.store(true, Ordering::Release);
+        }
     }
 }
 
@@ -550,6 +579,20 @@ impl Worker {
         let mut lost = Vec::new();
         let mut arrived = false;
         let mut buf = [0u8; 64];
+
+        // Before the reports are read, as the guard does it: what the shell
+        // asked about is the pad as its last report left it, which is what the
+        // stand-in has been told of it.
+        if self.shared.hand_back.swap(false, Ordering::AcqRel) {
+            for puck in &mut self.pucks {
+                let Some(stand_in) = puck.stand_in.as_mut() else {
+                    continue;
+                };
+                if let Err(err) = stand_in.hand_back(puck.report) {
+                    tracing::warn!(path = %puck.path.display(), %err, "could not let go of the buttons held when the pad was handed back");
+                }
+            }
+        }
 
         for (index, puck) in self.pucks.iter_mut().enumerate() {
             loop {

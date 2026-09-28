@@ -1455,6 +1455,7 @@ fn main() -> anyhow::Result<()> {
         focused_surface: None,
         keep_keyboard_grabbed: cli.grab_keyboard,
         controller: ControllerInput::new(!cli.no_gamepad),
+        kept_the_pad: false,
         stick: Stick::pointer(),
         scroll: Stick::scroll(),
         prefs: Prefs::load(),
@@ -3672,6 +3673,43 @@ fn is_umus_own_window(window: &WindowCard) -> bool {
     window.app_id.eq_ignore_ascii_case("zenity") && window.title.trim() == "ProtonFixes"
 }
 
+/// Whether a window that appears on a display with a loading screen on it may
+/// end that screen — which is the screen deciding the application has arrived,
+/// and handing the display to it.
+///
+/// Any window will do, with two exceptions, both of them a window that is on
+/// the screen *because* of the launch without being what was launched:
+///
+/// * **umu's own progress window**, for a game Heroic starts — see
+///   [`is_umus_own_window`];
+/// * **Valve's own client, for a Steam game**, which is rule 2 of
+///   [`may_be_the_game`] said about the hand-over as well as about the record.
+///   Reported (issue #5): while a game's shaders were being processed, Steam
+///   came up in place of the loading screen that says so. The client's windows
+///   are hidden while it works, but a window is nameless between mapping and
+///   announcing its class, and anything of the client's that reached the
+///   display was taken for the game — the loading screen gave the display to
+///   Steam in the middle of the launch. This machine's own journal has the
+///   same hand-over on 2026-09-26: Counter-Strike 2's screen, waiting on its
+///   shader cache, answered by a window titled "Steam".
+///
+///   Except where the person has asked for Valve's client (`steam_asked_for`):
+///   its windows are then meant to be on the screen, and a game's loading
+///   screen standing over them would be hiding the thing just asked for.
+///
+/// Free-standing so the rule can be checked without a compositor behind it.
+fn may_end_the_loading_screen(
+    window: &WindowCard,
+    through_heroic: bool,
+    steam_game: bool,
+    steam_asked_for: bool,
+) -> bool {
+    if through_heroic && is_umus_own_window(window) {
+        return false;
+    }
+    !(steam_game && !steam_asked_for && is_valves_client(&window.app_id))
+}
+
 fn game_a_window_is_named_after(app_id: &str) -> Option<u32> {
     let name = app_id.trim().to_lowercase();
     // Zero is not an app id, on the process route's argument (see
@@ -4790,6 +4828,13 @@ struct Shell {
     focused_surface: Option<wl_surface::WlSurface>,
     keep_keyboard_grabbed: bool,
     controller: ControllerInput,
+    /// Whether the surfaces as last synced keep the controller the shell's, so
+    /// the sync that gives it away can tell. See [`Shell::sync_surface_state`].
+    ///
+    /// Not [`controller_is_driving`] on `focused_surface`, which is the same
+    /// question asked of the compositor's answer: that arrives with the game's,
+    /// in the same breath, and by then the game has already read its pad.
+    kept_the_pad: bool,
     /// The right stick's pointer and the left one's scrolling: the curves that
     /// turn deflection into movement, the per-application answers to whether
     /// they are turned on at all, and the mouse buttons currently held down.
@@ -27472,8 +27517,18 @@ impl Shell {
                 // the game's own window arrived (measured on 2026-09-25: at
                 // 6.6 s, gone at 7.3 s, the game at 9.1 s). So for that launch
                 // it is not a window at all.
+                //
+                // And a Steam game's loading screen is not answered by Valve's
+                // own client, which is never the game it was asked to start —
+                // see [`may_end_the_loading_screen`].
+                let steam_asked_for = matches!(self.steam_sight, SteamSight::UserVisible(_));
                 let counts = |window: &WindowCard| {
-                    !(splash.is_through_heroic() && is_umus_own_window(window))
+                    may_end_the_loading_screen(
+                        window,
+                        splash.is_through_heroic(),
+                        splash.game().is_some(),
+                        steam_asked_for,
+                    )
                 };
                 let foreground = panel.foreground.clone().unwrap_or_default();
                 let umus = panel
@@ -33693,6 +33748,25 @@ impl Shell {
                 )
             })
             .collect();
+        // The controller goes with the keys, and it goes first. Giving up the
+        // keyboard is what puts the application back in front, and every pad
+        // it reads is one this shell repeats, press for press — including the
+        // press that is giving it back. A game that ignored `A` while the menu
+        // was up would otherwise be handed the keys a frame or two later with
+        // the thumb still on it, and a game that reads its pad as a state takes
+        // that for a press of its own. Asked here, before a single surface is
+        // committed, so the button is up on every copy before the compositor
+        // has the commit that hands over. See [`ControllerInput::hand_back`].
+        let keeps = states
+            .get(self.focused_panel)
+            .is_some_and(|((state, _), _)| {
+                keeps_the_pad(self.keep_keyboard_grabbed, *state, self.osk.is_open())
+            });
+        if self.kept_the_pad && !keeps {
+            self.controller.hand_back();
+        }
+        self.kept_the_pad = keeps;
+
         // Whether each display is currently visible enough for a new frame to
         // carry the change. A just-covered display may still draw one cleanup
         // frame because it was visible previously; commit its layer state now
@@ -37609,7 +37683,8 @@ fn draws_only_what_was_raised(
 ///    windows are hidden while it works in the background, but a window is
 ///    nameless between mapping and announcing its class, and there is a moment
 ///    where the client's own is neither hidden nor recognisable. See
-///    [`is_valves_client`].
+///    [`is_valves_client`], and [`may_end_the_loading_screen`], which holds
+///    the loading screen's hand-over to the same rule.
 /// 3. **An application this machine has installed** — `an_application_owns_it`
 ///    — whose windows are its own however convenient the timing. A message the
 ///    user was sent, a password prompt, a browser opening a link: none of them
@@ -37998,6 +38073,24 @@ fn controller_pressed_something(poll: &controller::Poll) -> bool {
 /// as long as the board was on screen.
 fn controller_is_driving(grabbed: bool, has_keyboard_focus: bool, board_open: bool) -> bool {
     the_shell_holds_the_keyboard(grabbed, has_keyboard_focus) || board_open
+}
+
+/// Whether the shell keeps the controller with the display being driven in
+/// `driven`: [`controller_is_driving`], asked of the state the shell is about
+/// to give its surface rather than of the focus the compositor has answered
+/// with.
+///
+/// The two agree once the compositor has caught up, and it is the moment
+/// before that this is for. Only an exclusive surface keeps the keys: an
+/// on-demand one is the bar behind a running application, which hands them to
+/// that application, and none is something drawn over an application that is
+/// still being used — a splash, a bubble, the volume, the board.
+fn keeps_the_pad(grabbed: bool, driven: (Layer, KeyboardInteractivity), board_open: bool) -> bool {
+    controller_is_driving(
+        grabbed,
+        driven.1 == KeyboardInteractivity::Exclusive,
+        board_open,
+    )
 }
 
 /// Whether the shell itself is what the seat's keys are being delivered to.
@@ -43242,6 +43335,58 @@ mod flight_tests {
         assert!(the_shell_holds_the_keyboard(!GRABBED, FOCUSED));
     }
 
+    /// The controller is handed back at the same moment as the keys, in the
+    /// guide's own states: Resume or a card chosen gives both to the game, and
+    /// nothing before that does — not the menu over the game, not the start
+    /// screen over it. A launch's splash has already let go of both.
+    #[test]
+    fn the_pad_is_handed_back_with_the_keys_and_not_before() {
+        const GRABBED: bool = true;
+        const BOARD: bool = true;
+        let driven = |guide: &Guide, app_running: bool, launching: bool| {
+            guide.surface_state(
+                true,
+                app_running,
+                false,
+                launching,
+                false,
+                false,
+                false,
+                false,
+                false,
+                Layer::Bottom,
+            )
+        };
+
+        let mut guide = Guide::default();
+        assert!(keeps_the_pad(
+            !GRABBED,
+            driven(&guide, false, false),
+            !BOARD
+        ));
+
+        guide.open();
+        assert!(keeps_the_pad(!GRABBED, driven(&guide, true, false), !BOARD));
+        // Resume, which is also where choosing the game's card ends up.
+        guide.close();
+        assert!(!keeps_the_pad(
+            !GRABBED,
+            driven(&guide, true, false),
+            !BOARD
+        ));
+
+        guide.show_start_screen_over_app();
+        assert!(keeps_the_pad(!GRABBED, driven(&guide, true, false), !BOARD));
+
+        guide.close();
+        assert!(!keeps_the_pad(!GRABBED, driven(&guide, true, true), !BOARD));
+
+        // The board drives the pad with no keys of its own, and a shell told to
+        // keep the keyboard never gives either away.
+        assert!(keeps_the_pad(!GRABBED, driven(&guide, true, false), BOARD));
+        assert!(keeps_the_pad(GRABBED, driven(&guide, true, false), !BOARD));
+    }
+
     /// Animating a background nobody can see costs a game the frames it is
     /// asking for, so a covered bar stops drawing.
     #[test]
@@ -44093,6 +44238,50 @@ mod input_tests {
         // And an application this machine has installed is its own, however
         // convenient the timing.
         assert!(!may_be_the_game(504230, None, "firefox", true));
+    }
+
+    /// What may end a loading screen, which is the same question asked at the
+    /// moment of the hand-over rather than for the record: a Steam game's
+    /// screen is never answered by Valve's own client. Issue #5 — Steam came
+    /// up in place of the screen that said the game's shaders were being
+    /// processed.
+    #[test]
+    fn a_steam_games_loading_screen_is_not_answered_by_valves_client() {
+        let storefront = window(21, "steam", "Steam");
+        let helper = window(22, "steamwebhelper", "Launching...");
+        let game = window(23, "steam_app_1778820", "TEKKEN 8");
+        let proton = window(24, "x86_64", "");
+
+        // A Steam game, with Steam in the background as a launch leaves it.
+        for valves in [&storefront, &helper] {
+            assert!(
+                !may_end_the_loading_screen(valves, false, true, false),
+                "{} is Valve's client, not the game",
+                valves.title
+            );
+        }
+        assert!(may_end_the_loading_screen(&game, false, true, false));
+        assert!(may_end_the_loading_screen(&proton, false, true, false));
+
+        // Unless the person asked to see Valve's client: its windows are then
+        // meant to be on the screen, and a game's loading screen must not
+        // stand over them.
+        assert!(may_end_the_loading_screen(&storefront, false, true, true));
+
+        // And only for a Steam game. A loading screen for Valve's client
+        // itself, or for its desktop entry started as an ordinary
+        // application, is waiting for exactly these windows.
+        assert!(may_end_the_loading_screen(&storefront, false, false, false));
+    }
+
+    /// umu's own progress window, the other thing that is on the screen
+    /// because of a launch without being what was launched.
+    #[test]
+    fn umus_progress_window_does_not_answer_a_heroic_launch() {
+        let fixes = window(31, "zenity", "ProtonFixes");
+        assert!(!may_end_the_loading_screen(&fixes, true, false, false));
+        // It is only umu's for a launch that went through umu.
+        assert!(may_end_the_loading_screen(&fixes, false, false, false));
     }
 
     /// The second source for the same fact, for the window whose process the

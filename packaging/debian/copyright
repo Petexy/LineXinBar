@@ -41,6 +41,21 @@ Comment: The upstream hashing sources, verbatim, at the revision named in
  that a local ROM can be identified the way RetroArch identifies it; none of
  the runtime or award API is built.
 
+Files: third_party/lxb-gilrs/* third_party/lxb-gilrs-core/*
+Copyright: 2016-2018 Mateusz Sieczko and other GilRs Developers
+License: Apache-2.0 or Expat
+Comment: GilRs 0.11.2 and gilrs-core 0.6.8, the second carrying one local
+ change described in third_party/lxb-gilrs-core/README.LXB.md: a hot-plug event
+ is no longer left unread behind another. They are in the source tree rather
+ than taken from crates.io so that the shell reads its controllers through the
+ copy with that fix. The Apache License version 2.0 is available in
+ /usr/share/common-licenses/Apache-2.0 on Debian systems.
+
+Files: third_party/lxb-gilrs/SDL_GameControllerDB/*
+Copyright: 1997-2025 Sam Lantinga <slouken@libsdl.org>
+License: Zlib
+Comment: SDL's controller mapping database, as GilRs 0.11.2 ships it.
+
 Files: crates/lxb-protocol/protocols/frog-color-management-v1.xml
 Copyright: 2023 Joshua Ashton for Valve Software
            2023 Xaver Hugl
@@ -64,3 +79,20 @@ License: Expat
  LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
  OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
  SOFTWARE.
+
+License: Zlib
+ This software is provided 'as-is', without any express or implied
+ warranty.  In no event will the authors be held liable for any damages
+ arising from the use of this software.
+ .
+ Permission is granted to anyone to use this software for any purpose,
+ including commercial applications, and to alter it and redistribute it
+ freely, subject to the following restrictions:
+ .
+ 1. The origin of this software must not be misrepresented; you must not
+    claim that you wrote the original software. If you use this software
+    in a product, an acknowledgment in the product documentation would be
+    appreciated but is not required.
+ 2. Altered source versions must be plainly marked as such, and must not be
+    misrepresented as being the original software.
+ 3. This notice may not be removed or altered from any source distribution.

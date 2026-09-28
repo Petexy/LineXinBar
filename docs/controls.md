@@ -148,11 +148,31 @@ one is this shell.
 The stand-in is the same pad in every respect an application can ask about:
 name, bus, vendor, product, version, every button, every axis with its range
 and resolution, and force feedback, which is passed back the other way so a
-game can still shake the real pad. The guide button is *declared* there and
+game can still shake the real pad. What travels to the stand-in is only what the
+pad itself reports — its buttons, axes, motion and switches. The rumble the
+shell plays on the pad comes straight back out of the pad's own node, and
+repeating that onto the stand-in once made a circle that froze every controller
+Steam was driving. The guide button is *declared* there and
 never sent — SDL builds its controller GUID from the identity and numbers
 buttons by walking the capability bitmap, so a stand-in that differed in any of
 that would be a pad the mapping database has never heard of, with every button
 in the wrong place.
+
+**A press the shell answered is not also the game's.** The shell reads the
+stand-in like every other program, so a button pressed in the guide reaches the
+game behind it at the same moment. Most games ignore a controller while they
+are not in front, which covers the menu, except for the press that closes it.
+Choosing Resume or the game's card gives the game its keyboard back within a
+frame or two, with the thumb still on `A`. A game that reads its controller as
+a state, as XInput and so every game under Proton does, then finds `A` down and
+takes it for a press of its own. So when the shell gives the keys away, whatever
+is held on the pad is let go of on the stand-in first, and stays up there until
+the thumb comes off. The game never sees that press, and the next one is an
+ordinary press. The Steam Controller 2's stand-in follows the same rule, but
+Valve's client reads that pad from its own raw node, so a Steam game played
+with it through Steam Input is out of the rule's reach. A game that does not
+ignore its controller while it is behind the menu sees the menu being driven;
+the shell cannot keep that from it, because it reads the same stand-in.
 
 Three rules keep this from costing more than it is worth:
 
@@ -165,7 +185,21 @@ Three rules keep this from costing more than it is worth:
   reason.
 - **Nothing that can type is ever taken**, however many gamepad codes it also
   declares, and nothing `uinput` made — which is this shell's own stand-in,
-  Steam Input's pad for a game, or another session's.
+  Steam Input's pad for a game, or another session's. A Bluetooth LE
+  controller — every Xbox pad on current firmware — is filed by the kernel
+  among those virtual devices, because BlueZ hands it over through `uhid`, and
+  it is taken like any other pad.
+
+A pad is taken the moment its node can be opened, which is about the moment
+udev tells everything else on the machine the pad exists. The price of the rule
+is that **every guarded pad is on the machine twice**: the original, grabbed and
+silent, and the stand-in that works, with the same name and ids, the original
+listed first. Nothing but root could take the original off that list. A
+program that binds the first controller it finds to player one binds the silent
+one; RetroArch is told which is which (see [RetroArch](retroarch.md)), and a
+game that listens to one controller only may need its controller chosen by
+hand. The alternative was letting every application see the guide button,
+and that was decided against.
 
 The one route this cannot cover is `hidraw`. A pad that speaks HID has a raw
 report node too, reads of it are not exclusive, and there is no kernel

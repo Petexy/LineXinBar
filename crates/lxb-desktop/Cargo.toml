@@ -70,7 +70,11 @@ raw-window-handle = "0.6"
 bytemuck = { version = "1", features = ["derive"] }
 pollster = "0.4"
 libc = "0.2"
-gilrs = "0.11.2"
+# A copy of GilRs 0.11.2 built on a fixed `gilrs-core`, whose Linux backend
+# left all but one of a burst of hot-plug events unread — and the pad guard
+# makes every pad going away a burst of two. See
+# third_party/lxb-gilrs-core/README.LXB.md.
+gilrs = { package = "lxb-gilrs", path = "../../third_party/lxb-gilrs", version = "0.11.2" }
 # The pad itself, one level below GilRs: grabbing a controller's own device
 # node and standing a `uinput` device in its place, so that the guide button
 # reaches this shell and no application. GilRs reads what is left, and cannot
