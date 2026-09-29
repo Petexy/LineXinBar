@@ -184,6 +184,13 @@ pub fn run(out: &mut impl Write, device: &Path) -> ExitCode {
             within: None,
             boxart: None,
             snap: None,
+            // A PSP's disc is a UMD, which no PC drive reads; nothing on a
+            // disc in the drive carries pictures of its own.
+            icon: None,
+            preview: None,
+            music: None,
+            backdrop: None,
+            overlay: None,
         }],
     };
     let mut system = crate::resolve(std::slice::from_mut(&mut console));

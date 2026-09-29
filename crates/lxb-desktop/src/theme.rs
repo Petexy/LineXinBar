@@ -808,9 +808,34 @@ fn lock_material() -> MutexGuard<'static, Material> {
         .unwrap_or_else(|poisoned| poisoned.into_inner())
 }
 
+/// Whether low-end hardware mode is in force, as the frame loop last said —
+/// see [`crate::settings::low_end`]. Kept here rather than asked of the
+/// settings, because the two readers below are asked per frame from inside the
+/// renderer and should not take the settings' lock to find out.
+static LOW_END: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// Say whether low-end hardware mode is in force. Once a pass, from the loop.
+pub fn set_low_end(on: bool) {
+    LOW_END.store(on, std::sync::atomic::Ordering::Relaxed);
+}
+
+fn low_end() -> bool {
+    LOW_END.load(std::sync::atomic::Ordering::Relaxed)
+}
+
 /// The material to draw this half of the frame with, preview included.
+///
+/// Low-end hardware mode draws the plain material in place of the shell's own
+/// water, whatever the Theme page says — and without writing that down, so the
+/// page still says what was chosen and turning the mode off brings it back. A
+/// picture of the user's own stays: it costs one texture read, and taking it
+/// away would be a setting overruled for no saving at all.
 pub fn style(part: Part) -> Style {
-    lock_material().part(part).shown
+    let shown = lock_material().part(part).shown;
+    if low_end() && shown == Style::Default {
+        return Style::Simple;
+    }
+    shown
 }
 
 /// The material the user has actually chosen for it, which is what gets written
@@ -924,7 +949,9 @@ impl Default for Particles {
 
 /// Whether the current carries its sparkles this frame, preview included.
 pub fn particles() -> bool {
-    lock_material().particles.shown
+    // None in low-end hardware mode: a still wallpaper has nothing to carry
+    // them, and they are the part of it that costs the most for its size.
+    lock_material().particles.shown && !low_end()
 }
 
 /// Whether the user has them on, which is what gets written down.

@@ -356,11 +356,14 @@ impl Hunt {
 /// what the shelves and the explorer are for.
 fn press_for(entry: &Entry) -> Option<Press> {
     match entry {
-        Entry::App(_) | Entry::Game(_) | Entry::EpicGame(_) | Entry::Rom(_) => Some(Press::Here),
+        Entry::App(_) | Entry::Game(_) | Entry::EpicGame(_) | Entry::Rom(_) | Entry::Ps3Game(_) => {
+            Some(Press::Here)
+        }
         Entry::Folder(_)
         | Entry::Steam(_)
         | Entry::RetroArch(_)
         | Entry::Epic(_)
+        | Entry::Ps3(_)
         | Entry::Facts(_)
         | Entry::Typed(_)
         | Entry::Partition(_) => Some(Press::There),
@@ -372,6 +375,7 @@ fn press_for(entry: &Entry) -> Option<Press> {
             crate::trophies::Key::SteamGame(_)
                 | crate::trophies::Key::RetroGame(..)
                 | crate::trophies::Key::EpicGame(_)
+                | crate::trophies::Key::Ps3Game(_)
         )
         .then_some(Press::There),
         Entry::Media(_)
@@ -449,6 +453,7 @@ fn key(column: &str, trail: &[Step], entry: &Entry) -> String {
         Entry::Game(game) => format!("steam:{}", game.app_id),
         Entry::EpicGame(game) => format!("epic:{}", game.app_name),
         Entry::Rom(rom) => format!("rom:{}", rom.path.display()),
+        Entry::Ps3Game(game) => format!("ps3:{}", game.id),
         _ => {
             let walk: Vec<&str> = trail.iter().map(|step| step.title.as_str()).collect();
             format!("{column}:{}", walk.join("/"))

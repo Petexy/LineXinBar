@@ -88,7 +88,8 @@ let
     fwupd
     polkit
   ];
-  # `lxb-retroarch` and `lxb-heroic` are deliberately not in this list: they
+  # `lxb-retroarch`, `lxb-heroic` and `lxb-rpcs3` are deliberately not in this
+  # list: they
   # link nothing that
   # needs a driver runpath or a wrapper, and they look for `flatpak` on the PATH
   # of the session that started them rather than on one baked in here — a
@@ -225,6 +226,10 @@ rustPlatform.buildRustPackage {
       "$out/share/polkit-1/actions/org.linexinbar.drives.policy"
     substituteInPlace "$out/share/polkit-1/actions/org.linexinbar.drives.policy" \
       --replace-fail '@HELPER@' "$out/bin/lxb-desktop"
+    install -Dm0644 packaging/files/org.linexinbar.power.policy.in \
+      "$out/share/polkit-1/actions/org.linexinbar.power.policy"
+    substituteInPlace "$out/share/polkit-1/actions/org.linexinbar.power.policy" \
+      --replace-fail '@HELPER@' "$out/bin/lxb-desktop"
     install -Dm0644 docs/updates.md "$out/share/doc/$pname/updates.md"
 
     # The RetroArch integration's marks. Its binary is installed by
@@ -245,6 +250,9 @@ rustPlatform.buildRustPackage {
       -t "$out/share/lxb/glyphs"
     # And the Epic Games integration's one mark, on the same terms.
     install -Dm0644 crates/lxb-heroic/glyphs/epic.svg \
+      -t "$out/share/lxb/glyphs"
+    # And the PlayStation 3 integration's.
+    install -Dm0644 crates/lxb-rpcs3/glyphs/ps3.svg \
       -t "$out/share/lxb/glyphs"
 
     patchShebangs "$out/bin/lxb-session"

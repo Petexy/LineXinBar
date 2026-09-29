@@ -1865,7 +1865,9 @@ fn cards_in(entries: &[Entry]) -> Option<Cards> {
                 if row.game().is_some()
                     || matches!(
                         row.key,
-                        crate::trophies::Key::RetroGame(..) | crate::trophies::Key::EpicGame(..)
+                        crate::trophies::Key::RetroGame(..)
+                            | crate::trophies::Key::EpicGame(..)
+                            | crate::trophies::Key::Ps3Game(..)
                     ) =>
             {
                 return Some(Cards::of(COVER_ASPECT))
@@ -1897,6 +1899,10 @@ fn cards_in(entries: &[Entry]) -> Option<Cards> {
             // so the column is its own shape — and a game whose box is not,
             // one in nine, carries its own; see the per-row shape below.
             Entry::EpicGame(_) => return Some(Cards::of(EPIC_COVER_ASPECT)),
+            // A PlayStation 3 game's icon is 320 by 176 on every game, the
+            // size the console's own menu drew them at: the column is that
+            // shape, and every icon fills its card.
+            Entry::Ps3Game(_) => return Some(Cards::of(crate::ps3::ICON_ASPECT)),
             _ => {}
         }
     }
@@ -2741,7 +2747,7 @@ pub fn build(
             let selected = distance < 0.5 && active > 0.5;
             let icon_size = lerp(ITEM_ICON, ITEM_ICON_FOCUSED, focus) * scale * near;
             let achievement = matches!(entry, Entry::Trophy(row)
-                if matches!(row.key, crate::trophies::Key::SteamAchievement(..) | crate::trophies::Key::RetroAchievement(..) | crate::trophies::Key::EpicAchievement(..)));
+                if matches!(row.key, crate::trophies::Key::SteamAchievement(..) | crate::trophies::Key::RetroAchievement(..) | crate::trophies::Key::EpicAchievement(..) | crate::trophies::Key::Ps3Trophy(..)));
             // A value set on a scale is drawn as the scale, in the room the
             // icon would have had — and the scale is a tall capsule where an
             // icon is a small square, so the light behind it and the glass
@@ -2929,6 +2935,9 @@ pub fn build(
                 // An Epic game's cover is a file the helper fetched into the
                 // shell's cache, asked for by path on the same terms.
                 Entry::EpicGame(game) => game.cover.as_deref().and_then(|at| slots.thumbnail(at)),
+                // A PlayStation 3 game's icon, read out of the game into the
+                // shell's cache — or, for one in a folder, the file itself.
+                Entry::Ps3Game(game) => game.cover.as_deref().and_then(|at| slots.thumbnail(at)),
                 _ => entry.media().and_then(|file| slots.thumbnail(&file.path)),
             };
             // And whether that cover is drawn in colour. A game that is not on
@@ -2942,6 +2951,9 @@ pub fn build(
                 // The same rule for an Epic game, without the fade: what can
                 // be played is the only part of the column in colour.
                 Entry::EpicGame(game) if !game.installed => 1.0,
+                // And a PlayStation 3 package, which is a game that is not
+                // installed yet: in colour once it can be played.
+                Entry::Ps3Game(game) if game.form == crate::ps3::Form::Package => 1.0,
                 _ => 0.0,
             };
             let picture =
@@ -16565,6 +16577,10 @@ mod tests {
             snap: None,
             own_cover: false,
             own_background: false,
+            game_background: false,
+            preview: None,
+            music: None,
+            logo: None,
             shape: None,
             glyph: "lxb:console-psp".to_string(),
             disc: None,

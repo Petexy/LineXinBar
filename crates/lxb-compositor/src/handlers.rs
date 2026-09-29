@@ -1170,6 +1170,33 @@ delegate_xdg_activation!(LxbState);
 delegate_dmabuf!(LxbState);
 crate::delegate_tearing_control!(LxbState);
 
+// ---------------------------------------------------------------------------
+// ext-idle-notify and idle-inhibit — see [`crate::idle`]
+// ---------------------------------------------------------------------------
+
+impl smithay::wayland::idle_notify::IdleNotifierHandler for LxbState {
+    fn idle_notifier_state(
+        &mut self,
+    ) -> &mut smithay::wayland::idle_notify::IdleNotifierState<Self> {
+        &mut self.lxb.idle_notifier
+    }
+}
+
+impl smithay::wayland::idle_inhibit::IdleInhibitHandler for LxbState {
+    fn inhibit(&mut self, surface: WlSurface) {
+        self.lxb.idleness.inhibit(surface);
+        self.refresh_idle_inhibition();
+    }
+
+    fn uninhibit(&mut self, surface: WlSurface) {
+        self.lxb.idleness.uninhibit(&surface);
+        self.refresh_idle_inhibition();
+    }
+}
+
+smithay::delegate_idle_notify!(LxbState);
+smithay::delegate_idle_inhibit!(LxbState);
+
 /// Carrying a client's colour into the display pipeline.
 ///
 /// The policy lives in [`LxbState::follow_surface_colour`]; this is only the

@@ -1,0 +1,839 @@
+# LineXinBar — the whole site
+
+> LineXinBar is a console-style Linux desktop with an XMB launcher, in the manner of the XrossMediaBar, for your games, apps and media: a lightweight Wayland compositor you drive with a gamepad, a keyboard or a mouse.
+
+# Overview: LineXinBar, the XMB-style console desktop for Linux
+
+Source: https://petexy.github.io/LineXinBar/overview.html
+
+LineXinBar pairs a lightweight Wayland compositor with a controller-friendly XMB launcher: browse your games, apps and media, and switch between screens, with a gamepad, a keyboard or a mouse.
+
+## A console-style desktop
+
+LineXinBar is a console-style Linux desktop for your games, apps and media. It pairs a lightweight Wayland compositor with a launcher you drive with a gamepad, a keyboard or a mouse.
+
+Browse your library, open ordinary desktop applications and switch between screens from one interface in the manner of the PlayStation 3's XrossMediaBar (XMB) — a bar of categories across the screen, a column of what is in each one, and a guide one button away over anything that is running. It is the whole session, not an app on top of another desktop: the file manager, the settings, the password prompts and the update screen are all part of it, all reachable from the sofa.
+
+![LineXinBar's start screen: a row of category tiles with Games lit, and the Games column below it with Steam and RetroArch, on a purple wallpaper with a flowing band of light](https://petexy.github.io/LineXinBar/assets/img/desktop.webp)
+
+*The start screen, on the Games column.*
+
+## Why LineXinBar
+
+- [A desktop from the couch](https://petexy.github.io/LineXinBar/controls.html): Apps, music, videos and pictures with a controller, and an on-screen keyboard when you need to type.
+- [Your games in one place](https://petexy.github.io/LineXinBar/games.html): Steam, and optionally Epic Games, your own console games through RetroArch, and PlayStation 3 through RPCS3.
+- [Several displays, independently](https://petexy.github.io/LineXinBar/displays.html): Each screen at its own resolution and refresh rate, with its own bar.
+- [A guide a button away](https://petexy.github.io/LineXinBar/guide.html): Switch apps, change the volume and brightness, or get back to the launcher — from inside anything.
+- [Make it yours](https://petexy.github.io/LineXinBar/settings.html): Twelve accents, a wallpaper of water or silk or your own film, ten languages.
+- [Desktop essentials included](https://petexy.github.io/LineXinBar/desktop.html): Files, screenshots, screen sharing, file dialogs and system updates, alongside your apps.
+
+## Screenshots
+
+Captured from a nested session of the project's own release build.
+
+![The Settings column with Updates lit, followed by Appearance, Language and Display](https://petexy.github.io/LineXinBar/assets/img/settings.webp)
+
+*Settings, the shell's own column, with Updates at its head.*
+
+![The guide open over the start screen, with the time, quick settings, a volume bar and Resume](https://petexy.github.io/LineXinBar/assets/img/guide.webp)
+
+*The guide, over whatever is running.*
+
+![The login screen on two displays side by side](https://petexy.github.io/LineXinBar/assets/img/cedm-two-screens.webp)
+
+*The [login screen](https://petexy.github.io/LineXinBar/family.html#login) made to go with it, on two displays.*
+
+## Not just Gamescope
+
+Gamescope owns one output and scales one application onto it. LineXinBar keeps the same small "one application fills the screen" model — but every connected display is a real output with its own render loop.
+
+Displays with different resolutions and refresh rates therefore run independently, rather than being locked to a shared heartbeat, and each has a start screen of its own. It is a whole desktop session rather than a game's frame: applications, files, settings and prompts all live in it.
+
+## Project status
+
+LineXinBar is in **early development**, at version 0.9.3.
+
+- Hardware testing has mainly covered one AMD graphics card with two displays; other vendors and multi-GPU setups need more people trying them.
+- Steam games need Valve's Steam client, which runs out of sight. Epic Games, RetroArch and PlayStation 3 are optional packages.
+- Sharing a single window (rather than a whole display), gesture navigation and variable refresh rate are not there yet.
+
+Read the known limitations before relying on it as your everyday desktop — and if you try it on your hardware, say how it went.
+
+## Source code
+
+LineXinBar is free software under the GPL-3.0, developed in the open on GitHub.
+
+Bug reports, hardware testing, translations and code are all welcome — see [Develop](https://petexy.github.io/LineXinBar/develop.html) for how.
+
+---
+
+# Get started with LineXinBar: Arch, Debian, Ubuntu, Fedora, NixOS
+
+Source: https://petexy.github.io/LineXinBar/install.html
+
+Try LineXinBar in a window inside your current desktop, or build and install packages for Arch Linux, Debian and Ubuntu, Fedora and NixOS, then choose LineXinBar at your login screen.
+
+## Try it in a window
+
+You do not have to leave your desktop to see it. With Rust **1.89 or newer** and the build dependencies installed, one script builds LineXinBar and opens it as a window inside the session you already have.
+
+```
+git clone https://github.com/Petexy/LineXinBar.git
+cd LineXinBar
+./scripts/run-nested.sh
+```
+
+The nested desktop gets its own session bus, so the applications you open inside it stay inside it. Closing the window ends it. `./scripts/run-nested.sh 3` opens three virtual displays instead of one, to try the multi-display side.
+
+Build dependencies, for each distribution:
+
+**Arch:**
+
+```
+sudo pacman -S --needed rust pkgconf clang wayland libinput seatd systemd-libs libdrm \
+    mesa libxkbcommon libglvnd libx11 libxcb libxcursor libxi libxkbcommon-x11 \
+    alsa-lib ffmpeg libpipewire
+```
+
+**Debian / Ubuntu:**
+
+```
+sudo apt install build-essential pkg-config cargo clang libwayland-dev libinput-dev \
+    libseat-dev libudev-dev libdrm-dev libgbm-dev libxkbcommon-dev \
+    libegl1-mesa-dev libx11-dev libxcb1-dev libxcursor-dev libxi-dev \
+    libxkbcommon-x11-dev libasound2-dev libavcodec-dev libavformat-dev \
+    libavutil-dev libswscale-dev libpipewire-0.3-dev
+```
+
+On Debian 13, take Rust from `rustup`: the distribution's own is older than the build needs.
+
+**Fedora:**
+
+```
+sudo dnf install cargo pkgconf-pkg-config clang wayland-devel libinput-devel \
+    libseat-devel systemd-devel libdrm-devel mesa-libgbm-devel \
+    libxkbcommon-devel mesa-libEGL-devel libX11-devel libxcb-devel \
+    libXcursor-devel libXi-devel libxkbcommon-x11-devel alsa-lib-devel \
+    ffmpeg-free-devel pipewire-devel
+```
+
+## Install a package
+
+Ready-made packages for Arch, Debian and Ubuntu, and Fedora are attached to each [release on GitHub](https://github.com/Petexy/LineXinBar/releases). Or build them yourself from the checkout — the recipes are in the repository.
+
+**Arch:**
+
+```
+./packaging/build.sh arch -- --syncdeps
+```
+
+Renders a PKGBUILD for the checkout and runs `makepkg`; the packages land in `packaging/out/arch/`.
+
+**Debian / Ubuntu:**
+
+```
+sudo apt install dpkg-dev build-essential pkg-config clang rustup \
+    libasound2-dev libgbm-dev libavcodec-dev libavformat-dev libavutil-dev \
+    libswscale-dev libinput-dev libpipewire-0.3-dev libseat-dev libudev-dev \
+    libxkbcommon-dev
+./packaging/build.sh debian
+```
+
+The builder checks for everything first and, if something is missing, names it in one `apt install` line.
+
+**Fedora:**
+
+```
+sudo dnf install rpm-build dnf5-plugins git-core
+sudo dnf builddep packaging/fedora/lxb-desktop.spec
+./packaging/build.sh fedora
+```
+
+Binary and source RPMs are copied to `packaging/out/fedora/`. A `fedora-toolbox` container is enough to build in.
+
+**Nix / NixOS:**
+
+```
+nix build path:.#linexinbar          # the whole desktop, as one derivation
+nix build path:.#lxb-compositor      # the compositor alone
+```
+
+The repository is a pinned flake, and `nix-build packaging/nix` works without flakes.
+
+Install **lxb-compositor** and **lxb-desktop**: the compositor, and the shell with its portal, its update coordinator and the session entry.
+
+## Start the session
+
+Once the packages are installed, choose **LineXinBar** from the session list on your login screen, like any other desktop.
+
+From a text console, `lxb --shell` starts the whole thing; quitting the shell logs you out rather than leaving an empty screen behind. The [Console Experience login screen](https://petexy.github.io/LineXinBar/family.html#login) is made to go with it, and hands over to the shell as one continuous picture.
+
+Settings live in `~/.config/lxb/` — mostly written by the shell's own Settings column, all readable and editable by hand.
+
+## Optional packages
+
+Three integrations are packages of their own, so a machine that never emulates a console carries none of it. Install one while the session runs and its row appears within seconds.
+
+- [lxb-retroarch](https://petexy.github.io/LineXinBar/games.html#retroarch): Your own console games through RetroArch, with cores and covers fetched for you.
+- [lxb-heroic](https://petexy.github.io/LineXinBar/games.html#epic): Your Epic Games library through Heroic Games Launcher's Flatpak.
+- [lxb-rpcs3](https://petexy.github.io/LineXinBar/games.html#ps3): PlayStation 3 games through RPCS3, with their films, music and trophies.
+
+Each is version-locked to the shell it was built with. Steam needs no package of its own — only Valve's Steam client.
+
+## What it needs
+
+- **Linux**, with a graphics driver that can drive the displays (DRM/KMS) and a working OpenGL ES driver; a Vulkan driver is used where there is one.
+- **systemd-logind or seatd**, which hands the session its displays and input devices.
+- **udev**, to hear about screens and controllers being plugged in.
+- Optional: **Xwayland** for X11 programs, **PipeWire** for sound and screen sharing, **Flatpak** for the integrations, **ddcutil** for the brightness of external monitors.
+
+Everything about the hardware is discovered as it runs — every display, mode and GPU — so nothing has to be configured for your machine first.
+
+## Hardware
+
+LineXinBar is in **early development**. Testing so far has been mainly on one AMD graphics card driving two displays, plus nested sessions.
+
+Nothing is tied to that hardware — the multi-GPU path exists — but other graphics vendors, handhelds and multi-GPU machines need more people trying them. If you run it on something new, a report of what worked and what did not is one of the most useful things you can send.
+
+---
+
+# Games on LineXinBar: Steam, Epic Games, RetroArch and PS3
+
+Source: https://petexy.github.io/LineXinBar/games.html
+
+Steam, Epic Games, RetroArch and PlayStation 3 libraries in one console-style column, with covers, friends, chat, trophies and game discs — all driven by a controller.
+
+## Steam
+
+The Games column opens with one row of the shell's own: **Steam**. Sign in once and a Steam column appears right after Games, holding your whole library.
+
+Signing in is a panel with the two ways Steam offers: **scan a code with your phone** in the Steam app, so nothing has to be typed with a thumbstick, or type your account name and password and answer Steam Guard. Your password is never stored — the machine keeps only the sign-in token Steam hands back, and shows up in your account's Steam Guard settings as *LineXinBar*, where you can sign it out.
+
+- **Installed games first**, with how much room each takes and how long you have played it; everything else underneath.
+- **Covers, not icons.** Each row is the game's own cover, and the game under the cursor puts its artwork behind the whole screen, dimmed so the words stay readable.
+- **Search, sort and letters** to narrow a big library, and a menu on every game to install, update, uninstall or move it between drives.
+- **Offline too.** With no connection the library still comes up from what the machine remembers, and installed games still play.
+
+![The Games column with the Steam row lit, RetroArch below it, on the purple wallpaper](https://petexy.github.io/LineXinBar/assets/img/desktop.webp)
+
+*The Games column: Steam at its head, RetroArch under it.*
+
+## Playing a game
+
+Press an installed game and it plays. A loading screen grows out of the tile you pressed and holds the display until the game's window is there.
+
+Valve's client is still what runs the game — it has to be, for your saves, Proton, anti-cheat and everything else Steam does — but it is kept out of sight. You never have to look at Steam's own windows to start something from the bar.
+
+When Steam stops to ask something on the way — a cloud save that disagrees with the one on the disk, an agreement, a launch option — the question comes to **the shell's own panel**, with Steam's answers as rows you can reach with the stick. Choose one and the game carries on starting.
+
+Big Picture and the ordinary Steam window are still one press away, on the Steam row's menu, for the parts of Steam the bar does not cover.
+
+## Friends and chat
+
+`X` on a pad, or `Shift` on a keyboard, brings in your friends list down the right of the screen — who is in a game, who is around, who is away.
+
+Press somebody to open your conversation with them. Messages you wrote sit on the right in the accent colour, theirs on the left in glass, and walking back up through what was said shows when each message was sent. You can set your own status — online, away, invisible — from the head of the list.
+
+When a friend invites you to their game, the invitation arrives in the conversation as a card with the game's name. **One press** takes it up: the game starts and joins them.
+
+## Epic Games
+
+Install the optional `lxb-heroic` package and an **Epic Games** row joins Steam at the head of Games, with a column of its own for your library.
+
+It is built on [Heroic Games Launcher](https://heroicgameslauncher.com/), so your account, your games and your settings are Heroic's — open Heroic and it shows the same things. The row does whatever is left to do, one step at a time: download Heroic, fetch something to run games with, sign in, then step into your library.
+
+- **Sign in with your phone**, from a code on screen, or on the screen itself — there is never a password field to fill in with a pad.
+- The same column as Steam's: covers, search, letters, the same eight ways to sort, and installing, updating and uninstalling from a game's menu.
+- Cloud saves, playing without a connection, and achievements in Trophies. Epic purchases that play through the EA app or Ubisoft Connect install too, and say so on their row.
+
+## RetroArch
+
+With the optional `lxb-retroarch` package, your own console games are on the bar — as covers, in a column per console, the way a Steam library is.
+
+Press the **RetroArch** row and it does whatever is left: installs RetroArch into your own Flatpak installation if it is missing (no password needed), then asks where your games are. Keep one folder per console — `ROMs/psx`, `ROMs/snes`, `ROMs/megadrive` — and that is all the setup there is.
+
+- **Emulators are fetched for you.** Choosing the folder downloads the right core for every console in it, and a console added later asks "Get it and play?" the first time.
+- **Covers are fetched for you** too, from libretro's thumbnail collection, each shelf drawn at the shape of its own console's boxes, with a screenshot of the game behind the display.
+- Achievements from [RetroAchievements](https://retroachievements.org/) appear in the Trophies column.
+
+## Game discs
+
+Put a game disc in the drive and it is on the bar — at the head of the RetroArch column, with the cursor already on it, so the next press starts it.
+
+The row is the game rather than the drive: its proper name, which console it is for, and its cover on a card of its own. A disc that is music, a film or somebody's files is not a game and stays off the bar; taking the disc out takes the row with it. Nothing jumps while you are in a game, in the guide or typing a search.
+
+## PlayStation 3
+
+The optional `lxb-rpcs3` package puts PlayStation 3 games on the bar through [RPCS3](https://rpcs3.net), in a column of their own.
+
+The row sets itself up with one press — RPCS3 into your own Flatpak installation and the console's system software from Sony's update server — and then finds the folder your games are in. Disc copies, games in folders and packages from the store are all listed.
+
+- **The film and the music.** Rest the cursor on a game and its short film plays on its card and its music loops underneath, as it did on the console.
+- Install a package or clear a game's cache from its menu, and read encrypted discs with keys the helper fetches.
+- Each game's trophies, in your language where the game has it, in the Trophies column.
+
+## Trophies
+
+One column for every achievement you have — Steam's, Epic's, RetroAchievements' and your PlayStation 3 trophies — side by side.
+
+Step into a game to see its achievements in three sections, **Unlocked**, **Locked** and **Hidden**, each with its count. A hidden one keeps its secret until you press it. A locked one is drawn in grey, as it is on Steam.
+
+It only ever reads: nothing in the column unlocks, resets or changes anything.
+
+---
+
+# Apps and media on LineXinBar: music, videos, pictures and files
+
+Source: https://petexy.github.io/LineXinBar/media.html
+
+Every installed application in familiar categories, a search across the whole bar, your music, videos and pictures gathered from your home folder, and a file manager you can drive with a controller.
+
+## Every application
+
+Everything you have installed is on the bar, grouped the way Plasma's launcher groups it: System, Multimedia, Graphics, Internet, Office, Games, Software, Development, Education & Science, Utilities and Other.
+
+A category with nothing in it is not shown. **Software** gathers the stores and software hubs, and **Settings** — the shell's own column — is always there. You choose which column the bar opens on under *Settings › System › Startup category*; it is Games unless you say otherwise.
+
+An application can even ask for its icon to be drawn in the shell's own material, as a bead of water like the shell's marks, by naming `lxb` among its keywords — which is how the sibling applications sit on the bar as if they had always been part of it.
+
+## Search everything
+
+Start typing on the start screen and the bar looks everywhere at once. The category row closes up into a single button called **Search**, and the column under it narrows with every letter.
+
+It finds applications — even by what they do, so "browser" finds a browser that is not called one — every game in every library, every console game on your shelves, the games in Trophies, and every page of Settings however deep it is. The line under each result says where it lives.
+
+Pressing a result does what it would in its own column: a game or a program starts, and a place — a page of Settings, a shelf — puts the search away and takes you there. `Esc` or `B` gives the search up and the bar spreads back out exactly where you were.
+
+## Music
+
+Every song anywhere in your home folder, listed on one shelf under Multimedia, with the folder it came from written under its name.
+
+The shelves keep themselves up to date — a file you copy in turns up, a file you delete goes away — and stepping into one never waits for the disk. With [SongOnSole](https://petexy.github.io/LineXinBar/family.html#music) installed, the Music shelf opens a music library and player built in the shell's own style.
+
+## Videos
+
+Every film under your home folder, each on a card showing a frame of it, fitted to its own shape so nothing is cropped.
+
+A film opens in the player you have already chosen for it — or pick another from the menu, and that choice holds everywhere, in your file manager and browser too. [Videonsole](https://petexy.github.io/LineXinBar/family.html#videos) is a film player made for the bar, and a video a browser pops out into [picture-in-picture](https://petexy.github.io/LineXinBar/guide.html#pip) floats over whatever you open next.
+
+## Pictures
+
+Your photographs as a column of thumbnails — portrait pictures stay portrait — under Graphics.
+
+A screenshot you take while standing in Pictures appears in the column a moment later. [Imagonsole](https://petexy.github.io/LineXinBar/family.html#pictures) opens them in a viewer you can drive with a pad, zoom and all, and any picture can become [your wallpaper](https://petexy.github.io/LineXinBar/settings.html#wallpaper).
+
+## Files
+
+The disk itself, as the same tree of columns the rest of the bar is made of: a folder is a column you step into, a file is a row, and the trail behind the cursor is the path.
+
+It opens on your **Home** folder, the whole disk from **Root**, and a row for every drive. `Y` on a file raises its menu:
+
+- **Open** and **Open with** — and choosing an application there makes it the default, everywhere.
+- **Copy** and **Move** carry the file through a mirrored bar to where it should go, with **Paste** at the head of every folder.
+- **Rename**, **Compress** into the kind of archive you pick, and **Trash** — the same trash your other file managers use.
+- Pressing an archive offers **Extract here** or **Choose a folder**, and never overwrites anything already there.
+
+## Drives
+
+A drive nothing has mounted is on the list anyway, reading *Not mounted · 932 GiB*. Press it and it is mounted and opened.
+
+USB sticks and cards mount the moment they are plugged in, the way GNOME and KDE behave. A disk inside the machine asks for an administrator's password first, on the shell's own panel. **Safely remove** on a stick's menu unmounts everything on it and tells you when it can be pulled out.
+
+Whether a disk is mounted every time the machine starts is a switch under *Settings › Storage* — the shell writes the system's own setting for it, so it holds whichever desktop you use.
+
+## Android apps
+
+If you use [Waydroid](https://waydro.id), the Android applications it can run have a column of their own, with Waydroid's own launcher at its head.
+
+Waydroid's entries declare no category the other columns understand, so without this they would all fall into Other. Entries Waydroid marks as hidden stay hidden here too.
+
+---
+
+# The guide: LineXinBar's overlay over any game or app
+
+Source: https://petexy.github.io/LineXinBar/guide.html
+
+LineXinBar's guide opens over anything with the controller's guide button: switch apps, change the volume and brightness, mix sounds per application, turn the stick into a mouse and keep a video floating over a game.
+
+## One button away
+
+A game fills the screen and takes the keyboard, so there has to be a way out it cannot swallow. Press the controller's **guide button** — or the `Super` key — and the guide opens over whatever is running.
+
+It is a column down the left of the screen: the time and what is running at the top, four quick tiles, the volume and brightness, then **Resume**, **Close** the application, the **Start screen** and the **Power** button for sleep, turning off or logging out. Everything behind it is softened and dimmed.
+
+No application can take that button: the guide is reachable from absolutely everywhere, which is also why nothing but the power button ends the session — `Esc` opens the guide rather than quitting.
+
+This website has a guide too — press `G`, the guide button on a pad, or the button at the top left. Try the accents and the particles from there.
+
+![The guide open on the left of the screen, with the time, quick tiles, a volume bar and a Resume button, beside a card of the start screen](https://petexy.github.io/LineXinBar/assets/img/guide.webp)
+
+*The guide: its column on the left, the start screen as a card beside it.*
+
+## Switching apps
+
+Beside the guide's column stands a deck of cards — one per window on this display, with the start screen as the last card of all.
+
+They are the live windows, not pictures of them: each flies into its place when the guide opens and back when it closes. Step right into the deck, up and down through it, and press a card to go back to that window. `Alt`+`Tab` walks the same deck from a keyboard, and letting go of `Alt` takes whatever it landed on.
+
+## Quick settings
+
+The four tiles at the head of the guide, and the two bars under them, are the things worth reaching without leaving a game.
+
+- **Stick pointer** — the controller as a mouse, inside the application in front.
+- **Volume mixer** — every application making a sound, each with its own slider.
+- **Do not disturb** — no bubbles and no chimes; everything still arrives, quietly. It stays on until you turn it off, even across a restart.
+- **Notifications** — everything announced, with a bead on the bell when there is something you have not seen.
+- **Volume** and **Brightness** — for the whole session and for this display. The volume keys on a keyboard move the same bar from anywhere.
+
+## Volume mixer
+
+One row per application that is making a sound, under the name and icon the bar knows it by. Left and Right slide it; `A` silences it and brings it back.
+
+A browser with three tabs playing is one row, not three — it is one thing anybody wants to turn down. The shell's own sounds and the start screen's music have a row of their own at the foot, called System.
+
+## Notifications
+
+Applications announce things the standard way, and a bubble rises in the corner with a chime. Everything that arrived is kept in a list behind the bell, newest first.
+
+The bell wears a small bead while something is waiting that nobody has looked at — no number, because what matters from across the room is that something arrived. Opening the list is what counts as looking.
+
+## Stick pointer
+
+Plenty of what runs on a couch machine was made for a mouse — a browser, an emulator's menu, a settings page. One tile turns the controller into one, inside the application in front.
+
+| Control | What it does |
+| --- | --- |
+| Right stick | Moves the pointer |
+| Right trigger | Left click |
+| Left trigger | Right click |
+| Left stick, or the D-pad | Scrolls what is under it |
+
+The triggers click because that is where a handheld's desktop mode puts the click. The pointer stays inside the application's window, and it can be switched on for one application permanently.
+
+## Picture-in-picture
+
+Pop a video out of your browser into picture-in-picture and it floats in a corner, in front of everything — over a game, over the start screen, even over the guide.
+
+It never takes the keyboard from what you are doing, and it is not a window to switch to; it is simply still there. Its size and corner are set under *Settings › System › Picture-in-Picture*, and a pad can move or resize it from its own menu.
+
+## Context menus
+
+`A` does the one thing a row is for. Everything else lives behind the top face button — `Y` on an Xbox pad, `△` on a PlayStation one, the right mouse button, or `F10`.
+
+The menu grows out of the thing it is about and folds back into it when you answer. Games, applications and files all have one; a value in Settings does not, and the button hint only offers *Options* where a press would actually raise something.
+
+Applications and games carry a [Resolution](https://petexy.github.io/LineXinBar/displays.html#app-resolution) row here, to let something heavy draw at fewer pixels.
+
+---
+
+# Displays in LineXinBar: several screens, HDR and OLED protection
+
+Source: https://petexy.github.io/LineXinBar/displays.html
+
+Every display runs independently in LineXinBar: its own bar, resolution and refresh rate, HDR, night light, OLED protection, scaling and orientation — and a resolution per application.
+
+## Several displays
+
+Every screen gets a bar of its own — not a copy of one. Each browses independently and remembers where it was, so a television can sit on Videos while the monitor on the desk is on Games.
+
+One display takes input at a time, and it is obvious which: the others dim. `L1` and `R1` on a pad, or `Tab` and `Shift`+`Tab`, hand the controls to the next screen, and a click on a display takes them there. A mouse merely crossing onto another screen does not — passing through is not a decision about which screen you are using.
+
+Whatever you open, opens on the screen you pressed it on, even when two screens are loading two things at once. `Super`+`Shift`+`→` moves a window to the next one.
+
+## Resolution and refresh
+
+Unlike Gamescope, which owns one output and scales one application onto it, every display here is a real output with its own render loop, driven by its own refresh.
+
+A 144 Hz monitor beside a 60 Hz television runs at 144 and 60, not at one shared heartbeat. *Settings › Display* asks the two questions separately: pick a size, and the next page lists every rate that size really offers — never a mode the display has not listed.
+
+## HDR
+
+Turn on high dynamic range for any display that supports it, and set how bright ordinary content should be on it.
+
+Every HDR-capable screen is listed with what it is doing and the peak brightness it reports; a new one shows up the moment it is plugged in. HDR here is a setting of the display: the desktop is shown correctly on an HDR signal, and games that hand over HDR through Proton's native Wayland path are passed through to the screen.
+
+## Night light
+
+Everything on a screen tinted towards a warmer colour in the evening, so a display looked at late is not a daylight-white one.
+
+On a schedule — from sunset to sunrise where you are, or between hours of your choosing — or on until you turn it off, at the warmth you set on a bar. It works together with HDR rather than against it.
+
+## OLED protection
+
+An OLED panel keeps what it is shown, and a start screen left up on a second display through an evening's play is a bar burnt into it. One switch rests that screen behind black while another one is in use.
+
+Moving the pointer onto it brings it back in a quarter of a second. Once it is fully black the screen sleeps: the shell stops drawing it and everything on it is paused, costing nothing at all until you come back.
+
+## Scale and orientation
+
+**Application scaling** makes the programs on one screen draw their interfaces larger — anything from 100% to 300%, set on a bar that reads *150% · Half again as large*.
+
+**Orientation** turns a screen standing on its side or hung upside down: 0°, 90°, 180° or 270°. Both are per display, like everything on this page.
+
+## A resolution per app
+
+An application's, a Steam game's or a console game's menu carries a **Resolution** row: Native, or any smaller size that fits the screen.
+
+Choose 1280 × 720 for a heavy game on a 4K television and it really draws at 1280 × 720, stretched over the whole screen — a cheap way to buy back frame rate on modest hardware. The choice is remembered for that game from then on; choose Native again to take it back.
+
+---
+
+# Settings in LineXinBar: accents, wallpaper, languages, updates
+
+Source: https://petexy.github.io/LineXinBar/settings.html
+
+Twelve accent palettes, a wallpaper of water or silk, your own picture or film, ten languages, networks, Bluetooth, sound, power, one-press updates and a low-end mode for handhelds — all changed with a controller.
+
+## Accent colour
+
+An accent is a whole palette, not one colour. Choosing one changes the light on the chosen row, the glass, the glow — and the wallpaper with them, since its ribbons, veils and sparkles are drawn in the accent.
+
+Nothing is reloaded: everything travels to the new palette together, on every display at once. Try it — this page is drawn from the same twelve palettes, and the one you choose stays with you on every page of this site.
+
+In the shell it is *Settings › Appearance › Accent colour*, saved as one line you can also edit by hand: `accent = "Blue"` in `~/.config/lxb/shell.toml`.
+
+## Theme
+
+What the shell is made of — the drawings never change, only their material. Three rows, each on its own because each is its own expense and its own taste.
+
+- **Wallpaper.** *Default* is a band of water, three sheets thick, lit as bodies. *Simple* is the three fine glass-silk ribbons the shell drew before it, and costs about half as much to draw.
+- **Icons.** *Default* stands every mark up as a bead of water, shaded out of its own shape. *Simple* draws the flat shape of it.
+- **Particles.** The glitter the current sheds — it appears in the middle of the ribbon, is pushed out of it and fades the further it goes, the way the PlayStation 3's wave carried it.
+
+The login screen, the start of the session and the sibling applications follow the same choice.
+
+## Your own wallpaper
+
+The third answer under Wallpaper is a picture or a film of your own, standing where the shell's scene would be.
+
+It is chosen in the shell's own file browser, which lists only what could stand behind a screen — pictures and films — each showing itself on its row. It is cropped to fill the screen rather than stretched, dimmed behind the guide, and kept by the shell, so moving or deleting the original does not take your wallpaper away.
+
+## Language
+
+Ten languages: Deutsch, English (UK), English (US), Español, Français, Polski, Português (Brasil), Русский, हिन्दी and 简体中文.
+
+A choice here is the language of the **machine**, not a private setting of the shell: the shell changes its words on the spot, on every display, and then makes the system speak the same language — so the applications you open next agree with it. A restart may be needed for everything to follow. The login screen speaks the same ten.
+
+## Network and Bluetooth
+
+Join a Wi-Fi network from a list of what is in the air, strongest first, and type its password on the on-screen keyboard.
+
+A wired connection has its own page, with automatic or manual addresses and name servers, and *Connection information* answers "what is my IP address" without a terminal. The start screen's corner shows the wireless mark while you are connected.
+
+**Bluetooth** pairs headphones, controllers and keyboards from the same kind of list, asks for a PIN where a device needs one, and remembers whether the radio should be on when the session starts.
+
+## Sound
+
+Choose what the whole machine plays through and records from — every application, not just the shell.
+
+Then the shell's own voice: a sound for every move and press, a different voice for the guide so you can hear which screen you are driving, a chime for an announcement, and **music** on the start screen while nothing is open. This site uses the same sounds and plays the same music — turn either off, or set how loud they are, from its guide.
+
+## Power
+
+What a console does when it is put down: a little later the screen dims, then goes dark, and left long enough the machine sleeps.
+
+Pick it up — any key, the mouse, a finger, **or a button on a controller** — and it is where it was. You choose the four waits, what the power button does, and on a machine that has them, the power mode and battery saver. These belong to the device, not the account, so the login screen follows them too.
+
+## Users and storage
+
+**Users** adds accounts, sets who is an administrator, changes passwords and pictures, and removes an account — with the system asking for a password where it has to.
+
+**Storage** lists every partition on every drive with how full it is, and lets you choose which ones are mounted whenever the machine starts. *System information* says what the machine is, in plain words.
+
+## Updates
+
+Press **Update everything** and see a bar. That is the whole of it for most people.
+
+Under each row is what a press would do — *4 updates*, *Up to date*, *Could not check* — and the panel says how many updates there are and whether a restart may be needed afterwards. **Update now** is the only question; the system, Flatpaks, firmware and the AUR are brought up to date with one password, with a bar that counts them off and *Restart now* at the end when one is owed.
+
+The shell and its sibling projects update themselves too, from their own releases on GitHub, where no repository carries them.
+
+## Low-end hardware mode
+
+For a handheld or an older machine the shell is too much for. On, the shell draws itself the cheap way, and nothing about how it works changes.
+
+- The wallpaper stands still and is drawn once, instead of for every pixel of every frame.
+- The Simple materials and no sparkles, whatever the Theme page says.
+- The bar still glides at the display's own refresh while something moves, and drops to ten frames a second while nothing does.
+
+On the machine it was written on, the start screen went from 44 ms of graphics time a second to 2. Nobody has to find the switch on a machine that needs it: it turns itself on where there is no graphics chip, and says so.
+
+Anything you cannot see is not drawn at all, mode or no mode — a covered shell and a covered application both drop to nothing, so a game in front gets the whole GPU.
+
+---
+
+# Controls in LineXinBar: gamepad, keyboard, mouse and touch
+
+Source: https://petexy.github.io/LineXinBar/controls.html
+
+Drive LineXinBar with a controller, a keyboard, a mouse or a touchscreen: the guide button that is always the way out, button hints drawn for your pad, an on-screen keyboard and every keybinding.
+
+## Controllers
+
+Plug in a pad — Xbox, PlayStation, Nintendo, 8BitDo, the Steam Controller — and the whole desktop is yours from the sofa. Nothing needs setting up first.
+
+| Act | Controller | Keyboard |
+| --- | --- | --- |
+| Browse | D-pad or left stick | Arrow keys |
+| Select | Bottom face button | `Enter` |
+| Back | Right face button | `Esc` |
+| Options for a row | Top face button | `F10`, or the right mouse button |
+| Friends | Left face button | `Shift` |
+| The guide | Guide button | `Super` |
+| Next display | Shoulder buttons | `Tab` / `Shift`+`Tab` |
+| Screenshot | Guide + right bumper | `Print Screen` |
+
+Buttons are named by where they are, not by their letter, so the bottom face button selects on every layout — even Nintendo's, where A sits on the other side. A pad that goes to sleep and comes back, or is plugged in half-way through, simply works.
+
+Handhelds are a first-class target: the shell is meant to run well on a Steam Deck-class machine, with its power use kept down and a [low-end mode](https://petexy.github.io/LineXinBar/settings.html#low-end) for when that is not enough.
+
+## The guide button
+
+The guide button belongs to the shell, and no application can take it — it is the way out of anything that is holding everything else.
+
+Games normally read a controller directly, so a pad cannot be held back the way a keyboard can. LineXinBar takes each pad and gives the rest of the machine back an identical one with a single button missing: same name, same buttons, same rumble, just no guide. Games see the pad they expected, and the guide opens every time.
+
+And a press you made in the guide is not also the game's: whatever your thumb is still holding when you go back is let go of first, so closing the guide with `A` does not fire the game's `A` too.
+
+## Button hints
+
+The corner opposite the clock says what the buttons do on the screen in front of you — *Select*, *Options*, *Guide*.
+
+Each is **drawn** rather than lettered: a picture of the button cluster with the one in question filled in, which is true on every make of pad. And it is named for **whichever control is in your hand** — pick up the keyboard and it says `Enter`; touch the pad again and it goes back to the pad. *Options* only appears where a press would really open something. Once you know them, *Settings › System › Button hints* turns them off everywhere at once.
+
+This website does the same: look at the bottom right while you switch between a controller and the keyboard.
+
+## Keyboard
+
+The arrows browse, `Enter` selects, `Esc` goes back, and `Super` on its own opens the guide.
+
+On the start screen any letter you type begins a [search of the whole bar](https://petexy.github.io/LineXinBar/media.html#search). `Super` is watched for as a key pressed and released on its own, so every `Super` chord still works; and `Alt`+`Tab` walks the guide's deck of windows the way every desktop does. Keyboard layouts are chosen under Settings, from the full list the system knows.
+
+## On-screen keyboard
+
+A console has no keyboard, so the shell is one. It comes up by itself when an application puts the cursor in a text field, and can be called up by hand at any time.
+
+| Control | What it does |
+| --- | --- |
+| D-pad or stick | Move between keys |
+| `A` | Press the key under the cursor |
+| `B` | Put the keyboard away |
+| Select + the left face button | Show or hide it, anywhere |
+| Any key on a real keyboard | Puts the board away, and is typed |
+
+It follows your keyboard layout, and a small chip in the corner offers it whenever a field could use it.
+
+## Mouse and touch
+
+A click does exactly what moving there and pressing `A` would. One rule shapes the rest of it.
+
+Things that **stand still** — the guide, a menu, a panel's buttons, the on-screen keyboard — light up under the pointer and answer the first click. Things that **move when selected** — the bar's rows — take one click to select and another to act, because a hover that selected would slide the row away and leave the cursor walking the bar on its own. The wheel scrolls, and a tap on a touchscreen is a click.
+
+This site's start screen follows the same rule: a click on a row lights it and slides it to the middle of the bar, and a click on the lit row opens it. The guide and its menu, which stand still, answer the first click.
+
+## Keybindings
+
+The defaults, all of which except the guide can be changed in the `[keybindings]` table of the configuration file.
+
+| Binding | Action |
+| --- | --- |
+| `Super` on its own, `Super`+`Home`, a mouse side button | Show the guide |
+| `Super`+`Q` | Close the focused window |
+| `Super`+`K` | Show the on-screen keyboard |
+| `Print`, `Ctrl`+`Shift`+`3` | Photograph this display |
+| `Super`+`Tab` | Cycle windows on this display |
+| `Alt`+`Tab` | Walk the guide's deck of windows |
+| `Super`+`←` / `→` | Focus the previous or next display |
+| `Super`+`Shift`+`→` | Move the window to the next display |
+| `Ctrl`+`Alt`+`Backspace` | Quit the session |
+
+---
+
+# Desktop essentials in LineXinBar: screenshots, sharing, dialogs
+
+Source: https://petexy.github.io/LineXinBar/desktop.html
+
+The desktop essentials in LineXinBar: screenshots from a pad, screen sharing in OBS and Discord, open and save dialogs you can drive with a controller, password prompts, and games that keep the screen awake.
+
+## Screenshots
+
+Hold the **guide button and the right bumper** together — the same chord a Steam Deck takes a picture with — or press `Print` on a keyboard.
+
+The screen flashes white, the shutter sounds, and the picture of the display you are driving lands in the Screenshots folder inside your pictures, where it is on the Images shelf a moment later. `Print` works whatever you hold with it, so a hand trained on any other desktop's variant gets it right; a keyboard with no Print key can use `Ctrl`+`Shift`+`3`.
+
+## Screen sharing
+
+OBS records the session and Discord shares it, the same way they do on any other Linux desktop — through the screen-sharing portal.
+
+When an application asks, the shell asks **you** which display to share, on its own panel. Nothing can record the screen without that answer: programs cannot grab it behind your back.
+
+## Choosing a file
+
+A browser wanting a photo to upload, an editor wanting somewhere to save, a game wanting a folder for its mods — they all get the shell's own chooser.
+
+Other desktops' file dialogs are a tree, a list and a text field, and none of them can be reached with a controller. Here the question is answered in the Files column you already know, on a large pane of glass; a save opens on **Save here** with the name already under it. **Show in folder** in a browser walks the bar into that folder in Files too, instead of starting some other file manager over the shell.
+
+## Password prompts
+
+Mounting a disk, installing an update, changing a system setting — when the system needs an administrator to agree, the shell asks, on its own panel, with a sound so you notice.
+
+The password is checked by the system itself, never by the shell, and is wiped from memory as soon as it has been handed over. Without an agent like this, a desktop simply refuses those requests with nothing on screen to allow them.
+
+## Keeping it awake
+
+A film playing or a game running keeps the screen lit and the machine awake, the way you would expect — including games from a Flatpak, like everything Heroic or RPCS3 from Flathub starts.
+
+When nothing is holding it, the screen dims, goes dark and sleeps on the waits you set under [Power](https://petexy.github.io/LineXinBar/settings.html#power).
+
+## Works with your apps
+
+Ordinary Linux applications run here as they are: native Wayland programs, X11 programs through Xwayland, and Flatpaks.
+
+A launched application fills its screen — the console model — and the guide is how you move between them. Games running natively on Wayland through Proton get what they ask for: explicit sync, tearing for the lowest latency, and HDR passed through to the display.
+
+---
+
+# The LineXinBar family: login screen, app store and media apps
+
+Source: https://petexy.github.io/LineXinBar/family.html
+
+The projects made alongside LineXinBar: a controller-first login screen, a Flatpak store, music, film and photo applications, and lxb-toolkit for building apps in the shell's own material.
+
+## Login screen
+
+**Console Experience Desktop Manager** is a controller-first login screen for LineXinBar and for ordinary Linux desktop sessions.
+
+It draws LineXinBar's own wallpaper, palette and glass, and is driven by a controller, a keyboard or a pointer without any of them being a mode. It starts any Wayland session on the machine — LineXinBar, Plasma, anything else — and hands LineXinBar a record that lets the wallpaper carry on at the same moment, so logging in looks like one continuous picture rather than two programs taking turns. It speaks the shell's ten languages and follows your accent and particles.
+
+![The login screen: a glass panel greeting the user with a Sign in field, beside a large clock drawn in the shell's water material](https://petexy.github.io/LineXinBar/assets/img/cedm.webp)
+
+*The login screen, with its clock drawn in the same water as the shell's marks.*
+
+Not yet ready to be a machine's only display manager — try it from a spare VT, or in its preview mode, which never starts a session.
+
+## Software Hub
+
+**DistriBumpy**, shown as *Software Hub*, is a Flatpak store you drive with a controller.
+
+- Opens on a Home page of what Flathub itself says is worth a look — most asked for, rising fastest, newly published and just rebuilt — and still comes up with no network.
+- Shelves that match the shell's own columns, so what you find lands where you will look for it.
+- Says what an install would really cost before you press it — the download and the disk, counting every runtime it would pull in.
+- Installs, updates and removes with progress you can stop, and clears out runtimes nothing needs any more.
+
+![Software Hub's Home page with a featured application and popular apps from Flathub](https://petexy.github.io/LineXinBar/assets/img/software-hub.webp)
+
+## Music
+
+**SongOnSole**, shown as *Music*, is the music library and player the bar's Music shelf opens.
+
+The row along the bottom is both what is playing and how to play it, on every page. A song opens out of the row it was pressed on, its sleeve growing into the Now Playing page. Six sort orders, a queue that plays in the order you built it, and it works on a handheld's small screen as well as a television.
+
+![SongOnSole's library of songs with the now-playing row along the bottom](https://petexy.github.io/LineXinBar/assets/img/music.webp)
+
+## Videos
+
+**Videonsole**, shown as *Videos*, is a film browser and player made for a controller.
+
+A film opens out of the card it was pressed on and goes back into it. A playing film has the whole screen; press anything and the controls rise, four seconds later they sink again. It remembers where you left off, finds subtitles inside the film or beside it, and decodes on the graphics card where the machine can.
+
+![Videonsole's folder of films shown as cards with a frame from each](https://petexy.github.io/LineXinBar/assets/img/videos.webp)
+
+## Pictures
+
+**Imagonsole**, shown as *Pictures*, is a photo viewer driven by a controller.
+
+A photograph opens out of its card at its own full resolution, with the pictures either side already read so stepping through a folder never waits. `A` walks a ladder of zoom stops; a trigger or the wheel zooms smoothly. A direction pans where the picture is bigger than the screen and steps to the next one where it is not.
+
+![Imagonsole's folder of photographs as a grid of thumbnails](https://petexy.github.io/LineXinBar/assets/img/pictures.webp)
+
+## lxb-toolkit
+
+The shell's own interface — its colours, its glass, its motion, its type, its marks and its sounds — packaged as a library, so an application can be built out of the same material and sit beside it.
+
+The four applications above are built on it. `lxb-new my-player` gives you a buildable Wayland application in Rust, C or Python: one function saying what is on the page, driven by a keyboard, a pointer and every controller on the machine, and not one line naming a colour, a radius or a duration. Toolkit applications are ordinary Wayland programs, so they run under GNOME or Plasma as readily as under LineXinBar.
+
+```
+lxb_app::App::new("com.example.hello", "Hello World").run(|page| {
+    page.head("launch", "Hello, world");
+    if page.button("Hello World!") {
+        println!("clicked");
+    }
+})
+```
+
+![The toolkit's tour: the colour roles and a grid of the shell's marks](https://petexy.github.io/LineXinBar/assets/img/toolkit.webp)
+
+## One version
+
+LineXinBar and its six siblings are released together, under one version number — **0.9.3** today — so what you have installed reads off one number instead of seven that drift apart.
+
+Where no distribution repository carries them, [Settings › Updates](https://petexy.github.io/LineXinBar/settings.html#updates) brings all seven up to date from their own releases on GitHub.
+
+---
+
+# Develop LineXinBar: documentation, source code, translations
+
+Source: https://petexy.github.io/LineXinBar/develop.html
+
+LineXinBar's documentation, how the compositor and shell are built in Rust, how to translate it, how to report a bug and how to contribute. Free software under the GPL-3.0.
+
+## Documentation
+
+The full user and developer reference lives beside the code, in `docs/`. Every guide:
+
+- [Getting started](https://github.com/Petexy/LineXinBar/blob/master/docs/getting-started.md): Requirements, permissions, building, nested and native sessions
+- [Packaging](https://github.com/Petexy/LineXinBar/blob/master/docs/packaging.md): Arch, Debian and Ubuntu, Fedora and Nix packages
+- [Configuration](https://github.com/Petexy/LineXinBar/blob/master/docs/configuration.md): Every setting, and per-application settings
+- [Project overview](https://github.com/Petexy/LineXinBar/blob/master/docs/overview.md): Design goals, Gamescope, known limitations
+- [Applications, media and files](https://github.com/Petexy/LineXinBar/blob/master/docs/shell.md): The bar, search, shelves and Files
+- [Steam](https://github.com/Petexy/LineXinBar/blob/master/docs/steam.md): Sign-in, library, launching, friends and invitations
+- [Epic Games](https://github.com/Petexy/LineXinBar/blob/master/docs/epic.md): Through Heroic: sign-in, installs, cloud saves
+- [RetroArch](https://github.com/Petexy/LineXinBar/blob/master/docs/retroarch.md): ROM folders, cores, BIOS files and game discs
+- [PlayStation 3](https://github.com/Petexy/LineXinBar/blob/master/docs/ps3.md): RPCS3, packages, disc keys and trophies
+- [Desktop settings](https://github.com/Petexy/LineXinBar/blob/master/docs/settings.md): Appearance, displays, power, sound, network, system
+- [Controls](https://github.com/Petexy/LineXinBar/blob/master/docs/controls.md): Pads, keyboard, mouse, touch, on-screen keyboard
+- [Guide and menus](https://github.com/Petexy/LineXinBar/blob/master/docs/guide.md): App switching, quick settings, mixer, stick pointer
+- [Desktop integration](https://github.com/Petexy/LineXinBar/blob/master/docs/desktop-integration.md): Screenshots, sharing, file dialogs, prompts
+- [Updates](https://github.com/Petexy/LineXinBar/blob/master/docs/updates.md): Sources, recovery and custom update providers
+- [Architecture](https://github.com/Petexy/LineXinBar/blob/master/docs/architecture.md): Source layout, the shell protocol, audio, glass
+- [Localization](https://github.com/Petexy/LineXinBar/blob/master/docs/localization.md): Languages, catalogs and adding translations
+
+## How it is built
+
+Two programs, both in Rust: `lxb`, a small Wayland compositor built on Smithay, and `lxb-desktop`, the shell, drawn on the GPU with wgpu.
+
+- **The compositor** drives the displays through DRM/KMS itself — every connector a real output with its own swapchain and its own vblank-driven loop — or runs nested in a window for development. It runs X11 programs through a private Xwayland.
+- **The shell** is a layer-shell client, so it also runs on other compositors that implement layer-shell. It talks to the compositor over one private protocol, `lxb_shell_v1`, which only the session's own programs may use.
+- **The look is computed, not painted.** The wallpaper is one analytic function of where you look, evaluated per pixel; every mark is a white silhouette measured into a distance field and stood up as a bead of water by the shader. This website runs ports of the same two shaders.
+- Around them: `lxb-portal` for screen sharing, file dialogs and the rest of the desktop portal; `lxb-updates`, the update coordinator; and the optional helpers for RetroArch, Heroic and RPCS3.
+
+## Translations
+
+Every word the shell shows comes from a [Fluent](https://projectfluent.org/) catalog, in ten languages: German, British and American English, Spanish, French, Hindi, Polish, Brazilian Portuguese, Russian and Simplified Chinese.
+
+The catalogs are plain text files in `crates/lxb-desktop/locales/`. Correcting a translation is editing a line; a new language is a new catalog, and the tests check that every catalog carries the same messages with the same arguments. The login screen and the sibling applications have catalogs of their own in the same form.
+
+## Report a bug
+
+Open an issue on GitHub, and include the four things that make a problem reproducible:
+
+- your **distribution** and its version;
+- your **graphics card** and driver;
+- **how you started LineXinBar** — from the login screen, `lxb --shell` on a console, or nested;
+- the **logs** around the moment it went wrong — `journalctl --user -b` for a session, or the terminal output of a nested run.
+
+A controller problem is easier to chase with the pad's make and model, and whether it is plugged in or over Bluetooth.
+
+## Contribute
+
+Bug reports, hardware testing, translations and code are all welcome.
+
+- **Hardware testing** matters most right now: other graphics vendors, handhelds, several GPUs, unusual displays and controllers.
+- **Translations**: correct what reads wrong in your language, or add one.
+- **Code**: the build is `cargo build --release --locked`, the tests are `cargo test`, and the nested session is the way to see a change working.
+
+## Licence
+
+LineXinBar is free software, licensed under the **GNU General Public License, version 3 only**.
+
+The bundled Roboto and Roboto Mono fonts are under their own open licences, as are the Noto faces the shell carries for Hindi and Chinese and the Bibata cursor theme. This website is part of the repository and under the same licence.

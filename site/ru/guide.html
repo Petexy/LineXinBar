@@ -1,0 +1,137 @@
+<!DOCTYPE html>
+
+<html lang="ru">
+<head>
+<meta charset="utf-8"/>
+<meta content="width=device-width, initial-scale=1, viewport-fit=cover" name="viewport"/>
+<title>Гид: оверлей LineXinBar поверх любой игры или приложения</title>
+<meta content="Гид LineXinBar открывается поверх чего угодно кнопкой гида на контроллере: переключайте приложения, меняйте громкость и яркость, сводите звук каждого приложения, превращайте стик в мышь и держите видео поверх игры." name="description"/>
+<!-- search and sharing: written by tools/translate.py build -->
+<link rel="canonical" href="https://petexy.github.io/LineXinBar/ru/guide.html">
+<link rel="alternate" hreflang="x-default" href="https://petexy.github.io/LineXinBar/guide.html">
+<link rel="alternate" hreflang="en" href="https://petexy.github.io/LineXinBar/guide.html">
+<link rel="alternate" hreflang="de" href="https://petexy.github.io/LineXinBar/de/guide.html">
+<link rel="alternate" hreflang="en-GB" href="https://petexy.github.io/LineXinBar/guide.html">
+<link rel="alternate" hreflang="en-US" href="https://petexy.github.io/LineXinBar/en-us/guide.html">
+<link rel="alternate" hreflang="es" href="https://petexy.github.io/LineXinBar/es/guide.html">
+<link rel="alternate" hreflang="fr" href="https://petexy.github.io/LineXinBar/fr/guide.html">
+<link rel="alternate" hreflang="pl" href="https://petexy.github.io/LineXinBar/pl/guide.html">
+<link rel="alternate" hreflang="pt-BR" href="https://petexy.github.io/LineXinBar/pt-br/guide.html">
+<link rel="alternate" hreflang="ru" href="https://petexy.github.io/LineXinBar/ru/guide.html">
+<link rel="alternate" hreflang="hi" href="https://petexy.github.io/LineXinBar/hi/guide.html">
+<link rel="alternate" hreflang="zh-CN" href="https://petexy.github.io/LineXinBar/zh-cn/guide.html">
+<meta property="og:type" content="website">
+<meta property="og:site_name" content="LineXinBar">
+<meta property="og:title" content="Гид: оверлей LineXinBar поверх любой игры или приложения">
+<meta property="og:description" content="Гид LineXinBar открывается поверх чего угодно кнопкой гида на контроллере: переключайте приложения, меняйте громкость и яркость, сводите звук каждого приложения, превращайте стик в мышь и держите видео поверх игры.">
+<meta property="og:url" content="https://petexy.github.io/LineXinBar/ru/guide.html">
+<meta property="og:locale" content="ru_RU">
+<meta property="og:image" content="https://petexy.github.io/LineXinBar/assets/img/desktop.png">
+<meta property="og:image:width" content="1600">
+<meta property="og:image:height" content="900">
+<meta name="twitter:card" content="summary_large_image">
+<script type="application/ld+json">{"@context":"https://schema.org","@type":"WebPage","@id":"https://petexy.github.io/LineXinBar/ru/guide.html","url":"https://petexy.github.io/LineXinBar/ru/guide.html","name":"Гид: оверлей LineXinBar поверх любой игры или приложения","description":"Гид LineXinBar открывается поверх чего угодно кнопкой гида на контроллере: переключайте приложения, меняйте громкость и яркость, сводите звук каждого приложения, превращайте стик в мышь и держите видео поверх игры.","inLanguage":"ru","isPartOf":{"@id":"https://petexy.github.io/LineXinBar/#website"},"about":{"@id":"https://petexy.github.io/LineXinBar/#software"},"breadcrumb":{"@type":"BreadcrumbList","itemListElement":[{"@type":"ListItem","position":1,"name":"Стартовый экран","item":"https://petexy.github.io/LineXinBar/ru/"},{"@type":"ListItem","position":2,"name":"Гид","item":"https://petexy.github.io/LineXinBar/ru/guide.html"}]}}</script>
+<!-- /search and sharing -->
+<meta content="#060314" name="theme-color"/>
+<link href="../assets/glyphs/sm/logo.webp" rel="icon" type="image/webp"/>
+<link as="font" crossorigin="" href="../assets/fonts/Roboto-Regular-latin.woff2" rel="preload" type="font/woff2"/>
+<link href="../assets/css/lxb.css" rel="stylesheet"/>
+</head>
+<body data-page="guide" data-screen="page">
+<a class="skip" href="#content">Перейти к содержимому</a>
+<canvas aria-hidden="true" id="wallpaper"></canvas>
+<header class="page-head">
+<a class="trail" data-back="" href="index.html#guide">
+<span class="trail-tile"><img alt="" class="glyph" src="../assets/glyphs/lg/pad-guide.webp"/></span>
+<span class="trail-text"><span class="trail-back">‹ Стартовый экран</span><span class="trail-name">Гид</span></span>
+</a>
+</header>
+<main class="column-page" id="content">
+<h1 class="visually-hidden">Гид: оверлей LineXinBar поверх любой игры или приложения</h1>
+<nav aria-label="На этой странице" class="rows-nav">
+<ol class="rows">
+<li><a class="row" data-lxb-row="" href="#overlay"><span class="row-icon"><img alt="" class="glyph" src="../assets/glyphs/lg/pad-guide.webp"/></span><span class="row-text"><span class="row-title">На расстоянии одной кнопки</span><span class="row-comment">Гид открывается поверх всего, что запущено</span></span></a></li>
+<li><a class="row" data-lxb-row="" href="#cards"><span class="row-icon"><img alt="" class="glyph" src="../assets/glyphs/lg/select-multiple.webp"/></span><span class="row-text"><span class="row-title">Переключение приложений</span><span class="row-comment">Каждое окно — карточка</span></span></a></li>
+<li><a class="row" data-lxb-row="" href="#quick"><span class="row-icon"><img alt="" class="glyph" src="../assets/glyphs/lg/volume.webp"/></span><span class="row-text"><span class="row-title">Быстрые настройки</span><span class="row-comment">Громкость, яркость и «не беспокоить»</span></span></a></li>
+<li><a class="row" data-lxb-row="" href="#mixer"><span class="row-icon"><img alt="" class="glyph" src="../assets/glyphs/lg/volume-mixer.webp"/></span><span class="row-text"><span class="row-title">Микшер громкости</span><span class="row-comment">Ползунок для всего, что звучит</span></span></a></li>
+<li><a class="row" data-lxb-row="" href="#notifications"><span class="row-icon"><img alt="" class="glyph" src="../assets/glyphs/lg/notifications.webp"/></span><span class="row-text"><span class="row-title">Уведомления</span><span class="row-comment">Всё, о чём сообщалось, сначала новое</span></span></a></li>
+<li><a class="row" data-lxb-row="" href="#stick"><span class="row-icon"><img alt="" class="glyph" src="../assets/glyphs/lg/pointer-stick.webp"/></span><span class="row-text"><span class="row-title">Указатель на стике</span><span class="row-comment">Правый стик становится мышью</span></span></a></li>
+<li><a class="row" data-lxb-row="" href="#pip"><span class="row-icon"><img alt="" class="glyph" src="../assets/glyphs/lg/setting-pip.webp"/></span><span class="row-text"><span class="row-title">Картинка в картинке</span><span class="row-comment">Видео, парящее над игрой</span></span></a></li>
+<li><a class="row" data-lxb-row="" href="#menu"><span class="row-icon"><img alt="" class="glyph" src="../assets/glyphs/lg/mouse-right.webp"/></span><span class="row-text"><span class="row-title">Контекстные меню</span><span class="row-comment">Параметры чего угодно, с любого устройства</span></span></a></li>
+</ol>
+</nav>
+<div class="panes">
+<section aria-labelledby="overlay-t" class="pane glass" id="overlay">
+<h2 id="overlay-t"><img alt="" class="glyph" src="../assets/glyphs/lg/pad-guide.webp"/>На расстоянии одной кнопки</h2>
+<p class="lede">Игра занимает экран и забирает клавиатуру, поэтому нужен выход, который она не сможет проглотить. Нажмите <strong>кнопку гида</strong> на контроллере — или клавишу <kbd>Super</kbd>, — и Гид откроется поверх всего, что запущено.</p>
+<p>Это колонка у левого края экрана: вверху время и то, что запущено, четыре быстрые плитки, громкость и яркость, затем <strong>Продолжить</strong>, <strong>Закрыть</strong> приложение, <strong>Стартовый экран</strong> и кнопка <strong>питания</strong> для сна, выключения или выхода из сеанса. Всё позади смягчается и затемняется.</p>
+<p>Ни одно приложение не может забрать эту кнопку: Гид доступен откуда угодно, и поэтому сеанс завершает только кнопка питания — <kbd>Esc</kbd> открывает Гид, а не выходит.</p>
+<p class="note"><img alt="" class="glyph" src="../assets/glyphs/sm/key-g.webp"/>У этого сайта тоже есть Гид — нажмите <kbd>G</kbd>, кнопку гида на геймпаде или кнопку в левом верхнем углу. Попробуйте там акцентные цвета и частицы.</p>
+<figure>
+<img alt="Гид, открытый у левого края экрана, с временем, быстрыми плитками, полосой громкости и кнопкой «Продолжить», рядом с карточкой стартового экрана" class="shot" height="900" loading="lazy" src="../assets/img/guide.webp" width="1600"/>
+<figcaption>Гид: его колонка слева, стартовый экран карточкой рядом.</figcaption>
+</figure>
+<div class="more"><a class="control lit" data-select="Полное руководство" href="https://github.com/Petexy/LineXinBar/blob/master/docs/guide.md" rel="noopener" target="_blank">Прочитать о Гиде</a></div>
+</section>
+<section aria-labelledby="cards-t" class="pane glass" id="cards">
+<h2 id="cards-t"><img alt="" class="glyph" src="../assets/glyphs/lg/select-multiple.webp"/>Переключение приложений</h2>
+<p class="lede">Рядом с колонкой Гида стоит колода карточек — по одной на каждое окно этого экрана, а стартовый экран — самая последняя карточка.</p>
+<p>Это живые окна, а не их картинки: каждое прилетает на своё место, когда Гид открывается, и возвращается, когда он закрывается. Войдите вправо в колоду, пройдитесь по ней вверх и вниз и нажмите карточку, чтобы вернуться к этому окну. <kbd>Alt</kbd>+<kbd>Tab</kbd> проходит ту же колоду с клавиатуры, а отпущенная <kbd>Alt</kbd> выбирает карточку, на которой вы остановились.</p>
+</section>
+<section aria-labelledby="quick-t" class="pane glass" id="quick">
+<h2 id="quick-t"><img alt="" class="glyph" src="../assets/glyphs/lg/volume.webp"/>Быстрые настройки</h2>
+<p class="lede">Четыре плитки во главе Гида и две полосы под ними — то, до чего стоит дотягиваться, не выходя из игры.</p>
+<ul>
+<li><strong>Указатель на стике</strong> — контроллер как мышь внутри приложения на переднем плане.</li>
+<li><strong>Микшер громкости</strong> — каждое звучащее приложение со своим ползунком.</li>
+<li><strong>Не беспокоить</strong> — ни всплывающих сообщений, ни звуков; всё по-прежнему приходит, но тихо. Остаётся включённым, пока вы не выключите, даже после перезагрузки.</li>
+<li><strong>Уведомления</strong> — всё, о чём сообщалось, с капелькой на колокольчике, когда есть что-то, чего вы ещё не видели.</li>
+<li><strong>Громкость</strong> и <strong>Яркость</strong> — для всего сеанса и для этого экрана. Клавиши громкости на клавиатуре двигают ту же полосу откуда угодно.</li>
+</ul>
+</section>
+<section aria-labelledby="mixer-t" class="pane glass" id="mixer">
+<h2 id="mixer-t"><img alt="" class="glyph" src="../assets/glyphs/lg/volume-mixer.webp"/>Микшер громкости</h2>
+<p class="lede">По строке на каждое приложение, которое сейчас звучит, под тем названием и значком, под которыми его знает панель. Влево и вправо двигают ползунок; <kbd>A</kbd> выключает звук и возвращает его.</p>
+<p>Браузер с тремя звучащими вкладками — это одна строка, а не три: это одна вещь, которую хочется сделать тише. Собственные звуки оболочки и музыка стартового экрана имеют отдельную строку внизу под названием «Система».</p>
+</section>
+<section aria-labelledby="notifications-t" class="pane glass" id="notifications">
+<h2 id="notifications-t"><img alt="" class="glyph" src="../assets/glyphs/lg/notifications.webp"/>Уведомления</h2>
+<p class="lede">Приложения сообщают о событиях стандартным способом, и в углу всплывает сообщение со звуком. Всё пришедшее хранится в списке за колокольчиком, сначала новое.</p>
+<p>На колокольчике висит маленькая капелька, пока ждёт что-то, на что никто не смотрел, — без числа, потому что с другого конца комнаты важно лишь, что что-то пришло. Открыть список — это и значит посмотреть.</p>
+</section>
+<section aria-labelledby="stick-t" class="pane glass" id="stick">
+<h2 id="stick-t"><img alt="" class="glyph" src="../assets/glyphs/lg/pointer-stick.webp"/>Указатель на стике</h2>
+<p class="lede">Многое из того, что работает на домашнем игровом компьютере, сделано для мыши — браузер, меню эмулятора, страница настроек. Одна плитка превращает контроллер в мышь внутри приложения на переднем плане.</p>
+<div class="table-wrap"><table>
+<thead><tr><th>Элемент</th><th>Что делает</th></tr></thead>
+<tbody>
+<tr><td>Правый стик</td><td>Двигает указатель</td></tr>
+<tr><td>Правый триггер</td><td>Левый щелчок</td></tr>
+<tr><td>Левый триггер</td><td>Правый щелчок</td></tr>
+<tr><td>Левый стик или крестовина</td><td>Прокручивает то, что под ним</td></tr>
+</tbody>
+</table></div>
+<p>Триггеры щёлкают, потому что именно туда щелчок кладёт режим рабочего стола портативных приставок. Указатель не выходит за окно приложения, и его можно включить для приложения насовсем.</p>
+</section>
+<section aria-labelledby="pip-t" class="pane glass" id="pip">
+<h2 id="pip-t"><img alt="" class="glyph" src="../assets/glyphs/lg/setting-pip.webp"/>Картинка в картинке</h2>
+<p class="lede">Вынесите видео из браузера в картинку в картинке, и оно будет парить в углу поверх всего — над игрой, над стартовым экраном, даже над Гидом.</p>
+<p>Оно никогда не забирает клавиатуру у того, чем вы заняты, и это не окно, на которое переключаются; оно просто остаётся на месте. Его размер и угол задаются в <em>Настройки › Система › Картинка в картинке</em>, а геймпад может передвинуть его или изменить размер из его собственного меню.</p>
+</section>
+<section aria-labelledby="menu-t" class="pane glass" id="menu">
+<h2 id="menu-t"><img alt="" class="glyph" src="../assets/glyphs/lg/mouse-right.webp"/>Контекстные меню</h2>
+<p class="lede"><kbd>A</kbd> делает то единственное, для чего строка существует. Всё остальное — за верхней кнопкой: <kbd>Y</kbd> на геймпаде Xbox, <kbd>△</kbd> на геймпаде PlayStation, правая кнопка мыши или <kbd>F10</kbd>.</p>
+<p>Меню вырастает из того, чего оно касается, и складывается обратно, когда вы ответите. У игр, приложений и файлов оно есть; у значения в Настройках — нет, и подсказка кнопки предлагает <em>Параметры</em> только там, где нажатие действительно что-то откроет.</p>
+<p>У приложений и игр здесь есть строка <a href="displays.html#app-resolution">Разрешение</a>, чтобы тяжёлое рисовало меньше пикселей.</p>
+</section>
+</div>
+</main>
+<footer class="site-foot">
+<p>Далее: <a href="displays.html">Экраны ›</a> · Назад: <a href="media.html">‹ Приложения и медиа</a> · <a href="index.html#guide">Стартовый экран</a> · LineXinBar — свободное ПО под лицензией <a href="https://github.com/Petexy/LineXinBar/blob/master/LICENSE">GPL-3.0</a>.</p>
+</footer>
+<script defer="" src="../assets/js/wallpaper.js"></script>
+<script defer="" src="../assets/js/i18n.js"></script>
+<script defer="" src="../assets/js/shell.js"></script>
+<script defer="" src="../assets/js/page.js"></script>
+</body>
+</html>

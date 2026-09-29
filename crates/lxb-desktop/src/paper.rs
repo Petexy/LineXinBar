@@ -57,6 +57,13 @@
 //! application has the screen or the display is resting, the shell stops saying
 //! it wants frames and the decoder parks on a condition variable within
 //! [`PATIENCE`]. A film behind a full-screen game costs one sleeping thread.
+//!
+//! ## And what it costs on the disk
+//!
+//! The copy under [`kept_in`] is the one file this module writes, and it can be
+//! a film of several gigabytes. So that directory holds the file the setting
+//! names and nothing else — and nothing at all once the wallpaper is one of the
+//! shell's own materials again. See [`Paper::keep_only`].
 
 use ffmpeg_next as ffmpeg;
 use std::path::{Path, PathBuf};
@@ -107,22 +114,41 @@ pub struct Paper {
     /// own copy of it from the moment that copy exists — see [`Paper::kept`].
     showing: Option<PathBuf>,
     reel: Option<Arc<Reel>>,
-    /// A copy being made on a thread, and where it landed.
+    /// The thread that copies into the shell's own directory and takes things
+    /// out of it, from the first time there is anything for it to do. See
+    /// [`Keeper`].
+    keeper: Option<Keeper>,
+    /// Where the copy is kept: [`kept_in`], and a scratch directory in a test.
+    keep_in: Option<PathBuf>,
+    /// The copy being waited for, by the number [`Paper::keep_later`] gave it.
     ///
-    /// On a thread because a wallpaper can be a four-gigabyte film, and copying
-    /// one on the thread that draws would be a shell that stopped for a minute
-    /// because somebody chose a wallpaper. Nothing waits for it: the picture is
-    /// on screen from the file the user pressed within a frame or two, and the
-    /// copy quietly becomes the file being read when it is ready.
-    keeping: Option<std::sync::mpsc::Receiver<std::io::Result<PathBuf>>>,
+    /// Only that one is taken when it lands. Any other is a copy of a file
+    /// somebody has chosen something else over since, and the setting must
+    /// never be pointed at it: the clearing-out queued behind it is about to
+    /// take it away.
+    keeping: Option<u64>,
+    /// How many copies have been asked for, which is what numbers them.
+    asked: u64,
+    /// What the directory was last cleared around: the file the setting named,
+    /// or `Some(None)` for nothing at all. `None` until the first time, which is
+    /// the session's first frame.
+    kept_only: Option<Option<PathBuf>>,
 }
 
 impl Paper {
     pub fn new() -> Paper {
+        Paper::keeping_in(kept_in())
+    }
+
+    fn keeping_in(directory: Option<PathBuf>) -> Paper {
         Paper {
             showing: None,
             reel: None,
+            keeper: None,
+            keep_in: directory,
             keeping: None,
+            asked: 0,
+            kept_only: None,
         }
     }
 
@@ -133,11 +159,12 @@ impl Paper {
     /// "show me this" is the picture, not wherever a film happened to have got
     /// to. Cheap either way — a still delivers one frame and parks.
     pub fn show(&mut self, path: &Path) {
-        // The reel and not the copy: this is called the moment the setting
-        // changes, which on a press is a fraction of a second after the copy of
-        // that very file was started. Giving up the copy here would mean the
-        // setting went on naming somebody's Downloads folder for good, which is
-        // the one thing keeping a copy is for.
+        // And the copy being waited for is let go. It is always a copy of the
+        // file that was on screen, because it is started from that file's first
+        // frame — so a different file on screen means somebody chose again, and
+        // a copy of what they chose before landing afterwards must not become
+        // the setting.
+        self.keeping = None;
         self.end_reel();
         let reel = Arc::new(Reel::new());
         let worker = Arc::clone(&reel);
@@ -159,8 +186,9 @@ impl Paper {
         self.showing = None;
         // A copy still being made is abandoned rather than waited for: the
         // thread finishes it and nothing reads the answer. What it leaves behind
-        // is a whole file in the shell's own directory, which is exactly what
-        // the next choice overwrites.
+        // is a whole file in the shell's own directory, and the clearing-out the
+        // same change asks for — see [`Paper::keep_only`] — is queued behind it
+        // and takes it away.
         self.keeping = None;
     }
 
@@ -182,15 +210,54 @@ impl Paper {
     /// after it: what the user is waiting to see is the picture, and the copy is
     /// insurance against a folder they tidy next month.
     pub fn keep_later(&mut self, source: &Path) {
-        let (send, done) = std::sync::mpsc::channel();
-        let source = source.to_path_buf();
-        std::thread::Builder::new()
-            .name("lxb-wallpaper-copy".to_string())
-            .spawn(move || {
-                let _ = send.send(keep(&source));
-            })
-            .ok();
-        self.keeping = Some(done);
+        self.asked += 1;
+        self.keeping = Some(self.asked);
+        self.chore(Chore::Keep(self.asked, source.to_path_buf()));
+    }
+
+    /// Leave nothing in the shell's own directory but `wanted`, the file the
+    /// setting names while the wallpaper is the user's own, or nothing at all
+    /// while it is not.
+    ///
+    /// The copy exists so the wallpaper outlives the file it was made from, and
+    /// it can be a film of several gigabytes. A wallpaper stood down to Default
+    /// or Simple, or replaced by another file, is one nothing will draw again:
+    /// choosing the user's own picture again is a walk to a file, and it makes
+    /// a fresh copy. Keeping the old one would be keeping a film nobody can see
+    /// on somebody's disk for good.
+    ///
+    /// Asked once a frame, and acted on only when the answer changes: on the
+    /// session's first frame, on every press that chooses a wallpaper or a
+    /// material, and when a copy lands and becomes the file the setting names.
+    /// The first frame is what clears up after a session that ended half way
+    /// through a copy, and after shells that kept every copy.
+    ///
+    /// A file named outside the directory, one just pressed whose copy has not
+    /// landed yet, keeps nothing in it: whatever is in there is an earlier
+    /// wallpaper's.
+    pub fn keep_only(&mut self, wanted: Option<&Path>) {
+        if self
+            .kept_only
+            .as_ref()
+            .is_some_and(|kept| kept.as_deref() == wanted)
+        {
+            return;
+        }
+        let wanted = wanted.map(Path::to_path_buf);
+        self.kept_only = Some(wanted.clone());
+        self.chore(Chore::KeepOnly(wanted));
+    }
+
+    /// Give the thread that looks after the directory something to do, starting
+    /// it the first time.
+    fn chore(&mut self, chore: Chore) {
+        let keeper = self
+            .keeper
+            .get_or_insert_with(|| Keeper::start(self.keep_in.clone()));
+        // A thread that could not be started takes nothing. The copy is then
+        // one that could not be made — see [`Paper::kept`] — and the picture
+        // goes on being drawn from where it is.
+        let _ = keeper.chores.send(chore);
     }
 
     /// Where the copy landed, once it has, and only once.
@@ -205,28 +272,39 @@ impl Paper {
     /// pressed is still on the disk and still being drawn; what is lost is only
     /// the promise that it will still be there if they move it, and that is said
     /// in the log rather than to their face.
+    ///
+    /// A copy that lands when it is no longer the one being waited for is
+    /// passed over without a word: the setting has moved on from the file it was
+    /// made of, and the clearing-out that moved it is queued behind the copy.
     pub fn kept(&mut self) -> Option<PathBuf> {
         use std::sync::mpsc::TryRecvError;
-        let keeping = self.keeping.as_ref()?;
-        match keeping.try_recv() {
-            Ok(Ok(kept)) => {
-                self.keeping = None;
-                self.showing = Some(kept.clone());
-                Some(kept)
+        let keeper = self.keeper.as_ref()?;
+        loop {
+            let landed = match keeper.landed.try_recv() {
+                Ok(landed) => landed,
+                Err(TryRecvError::Empty) => return None,
+                Err(TryRecvError::Disconnected) => {
+                    self.keeping = None;
+                    return None;
+                }
+            };
+            if self.keeping != Some(landed.ticket) {
+                continue;
             }
-            Ok(Err(error)) => {
-                tracing::warn!(
-                    %error,
-                    "the wallpaper could not be copied, so it is drawn from where it is"
-                );
-                self.keeping = None;
-                None
-            }
-            Err(TryRecvError::Empty) => None,
-            Err(TryRecvError::Disconnected) => {
-                self.keeping = None;
-                None
-            }
+            self.keeping = None;
+            return match landed.copy {
+                Ok(kept) => {
+                    self.showing = Some(kept.clone());
+                    Some(kept)
+                }
+                Err(error) => {
+                    tracing::warn!(
+                        %error,
+                        "the wallpaper could not be copied, so it is drawn from where it is"
+                    );
+                    None
+                }
+            };
         }
     }
 
@@ -268,6 +346,68 @@ impl Paper {
         self.reel
             .as_ref()
             .is_some_and(|reel| reel.trouble.load(Ordering::Relaxed))
+    }
+}
+
+/// The one thread that writes into the shell's own directory, and the one that
+/// takes things out of it.
+///
+/// On a thread because a wallpaper can be a four-gigabyte film, and copying one
+/// on the thread that draws would be a shell that stopped for a minute because
+/// somebody chose a wallpaper. Nothing waits for it: the picture is on screen
+/// from the file the user pressed within a frame or two, and the copy quietly
+/// becomes the file being read when it is ready.
+///
+/// **One** thread, taking its chores in the order they were given, because a
+/// copy and a clearing-out are only right in that order. Somebody who sets the
+/// wallpaper back to Default while their film is still being copied abandons the
+/// copy, and it lands a whole file all the same; the clearing-out that press
+/// asked for is queued behind it, so the film lands first and is taken away
+/// second. A thread each would race, and whichever lost would leave a film on
+/// the disk that no setting names.
+struct Keeper {
+    chores: std::sync::mpsc::Sender<Chore>,
+    landed: std::sync::mpsc::Receiver<Landed>,
+}
+
+enum Chore {
+    /// Copy this file in, under the number it is waited for by.
+    Keep(u64, PathBuf),
+    /// Take away every file but this one, or every file.
+    KeepOnly(Option<PathBuf>),
+}
+
+/// A copy that has been made, or could not be.
+struct Landed {
+    ticket: u64,
+    copy: std::io::Result<PathBuf>,
+}
+
+impl Keeper {
+    fn start(directory: Option<PathBuf>) -> Keeper {
+        let (chores, taken) = std::sync::mpsc::channel();
+        let (answer, landed) = std::sync::mpsc::channel();
+        std::thread::Builder::new()
+            .name("lxb-wallpaper-keeper".to_string())
+            .spawn(move || {
+                for chore in taken {
+                    match chore {
+                        Chore::Keep(ticket, source) => {
+                            let copy = keep(directory.as_deref(), &source);
+                            // Nobody to tell is a shell on its way out, and a
+                            // clearing-out queued behind this still matters.
+                            let _ = answer.send(Landed { ticket, copy });
+                        }
+                        Chore::KeepOnly(wanted) => {
+                            if let Some(directory) = &directory {
+                                forget_copies(directory, wanted.as_deref());
+                            }
+                        }
+                    }
+                }
+            })
+            .ok();
+        Keeper { chores, landed }
     }
 }
 
@@ -718,14 +858,17 @@ fn kept_name(source: &Path) -> std::ffi::OsString {
 /// the directory holds one wallpaper, two copies have different names whenever
 /// the two files do, and the one thing this must not do is leave the shell
 /// pointing at a file it has just deleted.
-pub fn keep(source: &Path) -> std::io::Result<PathBuf> {
-    let directory = kept_in().ok_or_else(|| {
+///
+/// `directory` is [`kept_in`], taken as an argument so that a test copies into
+/// a scratch directory rather than the developer's own.
+pub fn keep(directory: Option<&Path>, source: &Path) -> std::io::Result<PathBuf> {
+    let directory = directory.ok_or_else(|| {
         std::io::Error::new(
             std::io::ErrorKind::NotFound,
             crate::i18n::text("label-there-is-no-home-directory-to-keep-a-wallpaper-in"),
         )
     })?;
-    std::fs::create_dir_all(&directory)?;
+    std::fs::create_dir_all(directory)?;
     let destination = directory.join(kept_name(source));
     // Choosing the kept copy itself — which is a folder the picker can walk
     // into like any other. Copying a file on to itself truncates it.
@@ -740,7 +883,7 @@ pub fn keep(source: &Path) -> std::io::Result<PathBuf> {
     std::fs::rename(&partial, &destination).inspect_err(|_| {
         let _ = std::fs::remove_file(&partial);
     })?;
-    forget_other_copies(&directory, &destination);
+    forget_copies(directory, Some(&destination));
     Ok(destination)
 }
 
@@ -754,27 +897,49 @@ fn same_file(one: &Path, other: &Path) -> bool {
     one.dev() == other.dev() && one.ino() == other.ino()
 }
 
-/// Take away the copies left by earlier choices.
+/// Take away the copies nothing names any more: everything in the directory but
+/// `keeping`, or everything when there is nothing to keep.
 ///
-/// Everything in the directory but the file just written, and it is safe to be
-/// that broad *because* of what the directory is: `lxb/wallpaper` holds one
-/// wallpaper and nothing else has any business writing there. That is the
-/// whole reason it is a directory of its own rather than a file beside whatever
-/// else this shell keeps — a sweep of `lxb` itself would be a routine that
-/// could delete the Steam session.
+/// It is safe to be that broad *because* of what the directory is:
+/// `lxb/wallpaper` holds one wallpaper and nothing else has any business writing
+/// there. That is the whole reason it is a directory of its own rather than a
+/// file beside whatever else this shell keeps — a sweep of `lxb` itself would be
+/// a routine that could delete the Steam session. It takes a half-written copy
+/// left by a session that ended during one, too.
+///
+/// `keeping` is spared by what it is on the disk as well as by its name, so a
+/// setting that spells the path another way cannot have the wallpaper it names
+/// taken out from under it.
 ///
 /// Files only. Anything else in there was not put there by this, and is left
-/// where it is rather than removed recursively.
-fn forget_other_copies(directory: &Path, keeping: &Path) {
+/// where it is rather than removed recursively. And nothing at all where the
+/// directory is a link: somebody has pointed it at a folder of their own, and
+/// every other picture in that folder is theirs.
+fn forget_copies(directory: &Path, keeping: Option<&Path>) {
+    if std::fs::symlink_metadata(directory).is_ok_and(|at| at.file_type().is_symlink()) {
+        return;
+    }
     let Ok(listing) = std::fs::read_dir(directory) else {
         return;
     };
     for entry in listing.flatten() {
         let path = entry.path();
-        if path == keeping || !path.is_file() {
+        if !path.is_file()
+            || keeping.is_some_and(|keeping| path == keeping || same_file(&path, keeping))
+        {
             continue;
         }
-        let _ = std::fs::remove_file(&path);
+        match std::fs::remove_file(&path) {
+            Ok(()) => tracing::info!(
+                file = %path.display(),
+                "took away a wallpaper copy nothing names any more"
+            ),
+            Err(error) => tracing::warn!(
+                %error,
+                file = %path.display(),
+                "could not take away a wallpaper copy nothing names any more"
+            ),
+        }
     }
 }
 
@@ -886,9 +1051,10 @@ mod tests {
         let scratch = Scratch::new("keep");
         let source = scratch.0.join("holiday.png");
         std::fs::write(&source, b"not really a png").expect("a source file");
-        std::env::set_var("XDG_DATA_HOME", scratch.0.join("data"));
+        let data = scratch.0.join("data");
+        let data = Some(data.as_path());
 
-        let kept = keep(&source).expect("a copy");
+        let kept = keep(data, &source).expect("a copy");
         assert_eq!(kept.file_name().unwrap(), "holiday.png");
         std::fs::remove_file(&source).expect("the original goes");
         assert_eq!(
@@ -900,17 +1066,185 @@ mod tests {
         // whatever it is called and whatever kind of file it is.
         let film = scratch.0.join("reel.mkv");
         std::fs::write(&film, b"not really a film").expect("a second source");
-        let second = keep(&film).expect("a second copy");
+        let second = keep(data, &film).expect("a second copy");
         assert_eq!(second.file_name().unwrap(), "reel.mkv");
         assert!(!kept.exists(), "the first copy was left behind");
 
         // And choosing the copy itself does not truncate it, which is what
         // copying a file on to itself would do.
-        let again = keep(&second).expect("the copy itself");
+        let again = keep(data, &second).expect("the copy itself");
         assert_eq!(again, second);
         assert_eq!(
             std::fs::read(&again).expect("still there"),
             b"not really a film"
         );
+    }
+
+    /// The files in a directory, by name.
+    fn files_in(directory: &Path) -> Vec<String> {
+        let mut names: Vec<String> = std::fs::read_dir(directory)
+            .map(|listing| {
+                listing
+                    .flatten()
+                    .filter(|entry| entry.path().is_file())
+                    .map(|entry| entry.file_name().to_string_lossy().into_owned())
+                    .collect()
+            })
+            .unwrap_or_default();
+        names.sort();
+        names
+    }
+
+    /// A wallpaper nobody is using is taken off the disk — the film somebody
+    /// stood down to Default, and the half a session left when it ended during
+    /// a copy — and the one the setting names never is, however it is spelled.
+    #[test]
+    fn only_the_wallpaper_the_setting_names_stays_on_the_disk() {
+        let scratch = Scratch::new("forget");
+        let directory = scratch.0.join("wallpaper");
+        std::fs::create_dir_all(directory.join("somebody's folder")).expect("a directory");
+        for name in ["old film.webm", "sunset.jpg", ".part"] {
+            std::fs::write(directory.join(name), name).expect("a file");
+        }
+
+        // Named by a path that is not the one the listing gives.
+        let spelled_otherwise = directory.join(".").join("sunset.jpg");
+        forget_copies(&directory, Some(&spelled_otherwise));
+        assert_eq!(files_in(&directory), ["sunset.jpg"]);
+
+        // The wallpaper is one of the shell's own materials again: nothing.
+        forget_copies(&directory, None);
+        assert!(
+            files_in(&directory).is_empty(),
+            "{:?}",
+            files_in(&directory)
+        );
+        assert!(
+            directory.join("somebody's folder").is_dir(),
+            "a folder nothing here made is left where it is"
+        );
+    }
+
+    /// A directory somebody has pointed at a folder of their own is not
+    /// cleared: every other picture in it is theirs.
+    #[test]
+    fn a_directory_that_is_a_link_is_left_alone() {
+        let scratch = Scratch::new("link");
+        let pictures = scratch.0.join("Pictures");
+        std::fs::create_dir_all(&pictures).expect("a folder of their own");
+        std::fs::write(pictures.join("holiday.jpg"), b"x").expect("a picture of their own");
+        let directory = scratch.0.join("wallpaper");
+        std::os::unix::fs::symlink(&pictures, &directory).expect("a link");
+
+        forget_copies(&directory, None);
+        assert_eq!(files_in(&pictures), ["holiday.jpg"]);
+    }
+
+    /// The race the one thread is for: a film still being copied when the
+    /// wallpaper is set back to Default lands a whole file all the same, and
+    /// the clearing-out asked for after it is done after it.
+    #[test]
+    fn a_copy_abandoned_half_way_is_taken_away_behind_it() {
+        let scratch = Scratch::new("abandoned");
+        let source = scratch.0.join("reel.webm");
+        std::fs::write(&source, vec![0u8; 1 << 20]).expect("a film");
+        let directory = scratch.0.join("wallpaper");
+
+        let Keeper { chores, landed } = Keeper::start(Some(directory.clone()));
+        chores
+            .send(Chore::Keep(1, source.clone()))
+            .expect("the keeper");
+        chores.send(Chore::KeepOnly(None)).expect("the keeper");
+        // Hanging up and reading to the end is waiting for both chores.
+        drop(chores);
+        let answers: Vec<Landed> = landed.iter().collect();
+        assert_eq!(answers.len(), 1);
+        assert_eq!(
+            answers[0].copy.as_ref().expect("the copy was made"),
+            &directory.join("reel.webm")
+        );
+        assert!(
+            files_in(&directory).is_empty(),
+            "{:?}",
+            files_in(&directory)
+        );
+        assert!(source.exists(), "the user's own file is never touched");
+    }
+
+    /// A copy that lands after somebody has chosen something else is not the
+    /// setting's, even when it lands first; only the one being waited for is.
+    #[test]
+    fn a_copy_of_a_file_chosen_over_never_becomes_the_setting() {
+        let (chores, _taken) = std::sync::mpsc::channel();
+        let (answer, landed) = std::sync::mpsc::channel();
+        let mut paper = Paper::keeping_in(None);
+        paper.keeper = Some(Keeper { chores, landed });
+
+        // Beach was chosen and its copy started; then Sunset was chosen, and its
+        // copy started from its first frame.
+        paper.showing = Some(PathBuf::from("/x/beach.webm"));
+        paper.keep_later(Path::new("/x/beach.webm"));
+        paper.showing = Some(PathBuf::from("/x/sunset.jpg"));
+        paper.keep_later(Path::new("/x/sunset.jpg"));
+
+        answer
+            .send(Landed {
+                ticket: 1,
+                copy: Ok(PathBuf::from("/kept/beach.webm")),
+            })
+            .expect("the paper");
+        assert_eq!(paper.kept(), None);
+        assert_eq!(paper.showing(), Some(Path::new("/x/sunset.jpg")));
+
+        answer
+            .send(Landed {
+                ticket: 2,
+                copy: Ok(PathBuf::from("/kept/sunset.jpg")),
+            })
+            .expect("the paper");
+        assert_eq!(paper.kept(), Some(PathBuf::from("/kept/sunset.jpg")));
+        assert_eq!(paper.showing(), Some(Path::new("/kept/sunset.jpg")));
+
+        // And a copy started before the wallpaper was stood down is not taken
+        // if it lands afterwards.
+        paper.keep_later(Path::new("/kept/sunset.jpg"));
+        paper.stop();
+        answer
+            .send(Landed {
+                ticket: 3,
+                copy: Ok(PathBuf::from("/kept/sunset.jpg")),
+            })
+            .expect("the paper");
+        assert_eq!(paper.kept(), None);
+    }
+
+    /// The directory is cleared on the first frame whatever the setting says,
+    /// and after that only when the setting changes: this is asked once a
+    /// frame.
+    #[test]
+    fn the_directory_is_cleared_when_the_setting_changes_and_not_every_frame() {
+        let (chores, taken) = std::sync::mpsc::channel();
+        let (_answer, landed) = std::sync::mpsc::channel();
+        let mut paper = Paper::keeping_in(None);
+        paper.keeper = Some(Keeper { chores, landed });
+        let asked = |taken: &std::sync::mpsc::Receiver<Chore>| -> Vec<Option<PathBuf>> {
+            taken
+                .try_iter()
+                .map(|chore| match chore {
+                    Chore::KeepOnly(wanted) => wanted,
+                    Chore::Keep(..) => panic!("nothing was asked to be copied"),
+                })
+                .collect()
+        };
+
+        paper.keep_only(None);
+        paper.keep_only(None);
+        assert_eq!(asked(&taken), [None], "the first frame, and only once");
+
+        let kept = Path::new("/kept/sunset.jpg");
+        paper.keep_only(Some(kept));
+        paper.keep_only(Some(kept));
+        paper.keep_only(None);
+        assert_eq!(asked(&taken), [Some(kept.to_path_buf()), None]);
     }
 }

@@ -55,6 +55,7 @@ mod fuse;
 mod identify;
 mod install;
 mod options;
+mod psp;
 mod rdb;
 mod report;
 mod scan;
@@ -464,6 +465,9 @@ fn main() -> ExitCode {
             // folder changes, and a scan that reached the network would be the
             // bar waiting on somebody's line to draw a row.
             pictures(&mut library);
+            // And what a PSP game carries of its own, read off the disk — once
+            // per game, and a look at a stamp every time after.
+            own_pictures(&mut library);
             say(&mut out, &library)
         }
         Asked::Disc { device } => {
@@ -473,6 +477,7 @@ fn main() -> ExitCode {
         Asked::Art { roms, only, again } => {
             let mut library = scan::library(&roms);
             pictures(&mut library);
+            own_pictures(&mut library);
             if art::run(&mut out, &library.consoles, &only, again) {
                 ExitCode::SUCCESS
             } else {
@@ -572,6 +577,39 @@ fn pictures(library: &mut report::Library) {
             rom.boxart = held.boxart.map(|at| at.to_string_lossy().into_owned());
             rom.snap = held.snap.map(|at| at.to_string_lossy().into_owned());
         }
+    }
+}
+
+/// Say what each game carries of its own — a PlayStation Portable game's icon,
+/// film, music and backdrop, read out of the game and kept — see [`psp`].
+///
+/// Only for the consoles whose games carry any. After a scan that could read
+/// the folder, the copies of every game no longer in it are taken away; a
+/// folder that could not be read this time takes nothing away, so a drive not
+/// plugged in this morning does not cost its games their pictures.
+fn own_pictures(library: &mut report::Library) {
+    let Some(root) = psp::root() else {
+        return;
+    };
+    let mut keep = std::collections::HashSet::new();
+    for console in &mut library.consoles {
+        if !psp::carries_its_own(consoles::machine(&console.key)) {
+            continue;
+        }
+        for rom in &mut console.roms {
+            let path = std::path::Path::new(&rom.path);
+            keep.insert(psp::folder(&root, path));
+            let own = psp::of(&root, path);
+            let text = |at: Option<PathBuf>| at.map(|at| at.to_string_lossy().into_owned());
+            rom.icon = text(own.icon);
+            rom.preview = text(own.preview);
+            rom.music = text(own.music);
+            rom.backdrop = text(own.backdrop);
+            rom.overlay = text(own.overlay);
+        }
+    }
+    if library.unreadable.is_none() {
+        psp::sweep(&root, &keep);
     }
 }
 

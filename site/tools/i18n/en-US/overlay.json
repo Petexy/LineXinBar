@@ -1,0 +1,16 @@
+{
+ "1a4877bbe9": "The bundled Roboto and Roboto Mono fonts are under their own open licenses, as are the Noto faces the shell carries for Hindi and Chinese and the Bibata cursor theme. This website is part of the repository and under the same license.",
+ "700c7459f8": "Read the license",
+ "57179a63b0": "Everything on a screen tinted toward a warmer color in the evening, so a display looked at late is not a daylight-white one.",
+ "c120a7098f": "The shell's own interface — its colors, its glass, its motion, its type, its marks and its sounds — packaged as a library, so an application can be built out of the same material and sit beside it.",
+ "8bdc6bffb4": "The four applications above are built on it. <code>lxb-new my-player</code> gives you a buildable Wayland application in Rust, C or Python: one function saying what is on the page, driven by a keyboard, a pointer and every controller on the machine, and not one line naming a color, a radius or a duration. Toolkit applications are ordinary Wayland programs, so they run under GNOME or Plasma as readily as under LineXinBar.",
+ "8ef5e198fa": "The toolkit's tour: the color roles and a grid of the shell's marks",
+ "3b9fc7979a": "Press somebody to open your conversation with them. Messages you wrote sit on the right in the accent color, theirs on the left in glass, and walking back up through what was said shows when each message was sent. You can set your own status — online, away, invisible — from the head of the list.",
+ "966155e5a6": "Step into a game to see its achievements in three sections, <strong>Unlocked</strong>, <strong>Locked</strong> and <strong>Hidden</strong>, each with its count. A hidden one keeps its secret until you press it. A locked one is drawn in gray, as it is on Steam.",
+ "7cad737a10": "Warmer colors in the evening",
+ "8ba7c3fbd3": "Accent color",
+ "fef8e889dc": "License",
+ "26b8463fcf": "An accent is a whole palette, not one color. Choosing one changes the light on the chosen row, the glass, the glow — and the wallpaper with them, since its ribbons, veils and sparkles are drawn in the accent.",
+ "2bd93458b3": "In the shell it is <em>Settings › Appearance › Accent color</em>, saved as one line you can also edit by hand: <code>accent = \"Blue\"</code> in <code>~/.config/lxb/shell.toml</code>.",
+ "5d7341cd53": "Under each row is what a press would do — <em>4 updates</em>, <em>Up to date</em>, <em>Could not check</em> — and the panel says how many updates there are and whether a restart may be needed afterward. <strong>Update now</strong> is the only question; the system, Flatpaks, firmware and the AUR are brought up to date with one password, with a bar that counts them off and <em>Restart now</em> at the end when one is owed."
+}

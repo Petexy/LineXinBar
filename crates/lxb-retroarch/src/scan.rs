@@ -197,6 +197,13 @@ fn walk(
             // hundred reads of the same few thousand names.
             boxart: None,
             snap: None,
+            // And what the game carries of its own, which `main` reads for the
+            // consoles whose games carry any — see `crate::psp`.
+            icon: None,
+            preview: None,
+            music: None,
+            backdrop: None,
+            overlay: None,
         });
     }
 

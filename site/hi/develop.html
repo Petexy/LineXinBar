@@ -1,0 +1,140 @@
+<!DOCTYPE html>
+
+<html lang="hi">
+<head>
+<meta charset="utf-8"/>
+<meta content="width=device-width, initial-scale=1, viewport-fit=cover" name="viewport"/>
+<title>LineXinBar का विकास: दस्तावेज़, सोर्स कोड, अनुवाद</title>
+<meta content="LineXinBar के दस्तावेज़, कंपोज़िटर और शेल Rust में कैसे बने हैं, इसका अनुवाद कैसे करें, बग कैसे रिपोर्ट करें और योगदान कैसे दें। GPL-3.0 के तहत मुफ़्त सॉफ़्टवेयर।" name="description"/>
+<!-- search and sharing: written by tools/translate.py build -->
+<link rel="canonical" href="https://petexy.github.io/LineXinBar/hi/develop.html">
+<link rel="alternate" hreflang="x-default" href="https://petexy.github.io/LineXinBar/develop.html">
+<link rel="alternate" hreflang="en" href="https://petexy.github.io/LineXinBar/develop.html">
+<link rel="alternate" hreflang="de" href="https://petexy.github.io/LineXinBar/de/develop.html">
+<link rel="alternate" hreflang="en-GB" href="https://petexy.github.io/LineXinBar/develop.html">
+<link rel="alternate" hreflang="en-US" href="https://petexy.github.io/LineXinBar/en-us/develop.html">
+<link rel="alternate" hreflang="es" href="https://petexy.github.io/LineXinBar/es/develop.html">
+<link rel="alternate" hreflang="fr" href="https://petexy.github.io/LineXinBar/fr/develop.html">
+<link rel="alternate" hreflang="pl" href="https://petexy.github.io/LineXinBar/pl/develop.html">
+<link rel="alternate" hreflang="pt-BR" href="https://petexy.github.io/LineXinBar/pt-br/develop.html">
+<link rel="alternate" hreflang="ru" href="https://petexy.github.io/LineXinBar/ru/develop.html">
+<link rel="alternate" hreflang="hi" href="https://petexy.github.io/LineXinBar/hi/develop.html">
+<link rel="alternate" hreflang="zh-CN" href="https://petexy.github.io/LineXinBar/zh-cn/develop.html">
+<meta property="og:type" content="website">
+<meta property="og:site_name" content="LineXinBar">
+<meta property="og:title" content="LineXinBar का विकास: दस्तावेज़, सोर्स कोड, अनुवाद">
+<meta property="og:description" content="LineXinBar के दस्तावेज़, कंपोज़िटर और शेल Rust में कैसे बने हैं, इसका अनुवाद कैसे करें, बग कैसे रिपोर्ट करें और योगदान कैसे दें। GPL-3.0 के तहत मुफ़्त सॉफ़्टवेयर।">
+<meta property="og:url" content="https://petexy.github.io/LineXinBar/hi/develop.html">
+<meta property="og:locale" content="hi_IN">
+<meta property="og:image" content="https://petexy.github.io/LineXinBar/assets/img/desktop.png">
+<meta property="og:image:width" content="1600">
+<meta property="og:image:height" content="900">
+<meta name="twitter:card" content="summary_large_image">
+<script type="application/ld+json">{"@context":"https://schema.org","@type":"WebPage","@id":"https://petexy.github.io/LineXinBar/hi/develop.html","url":"https://petexy.github.io/LineXinBar/hi/develop.html","name":"LineXinBar का विकास: दस्तावेज़, सोर्स कोड, अनुवाद","description":"LineXinBar के दस्तावेज़, कंपोज़िटर और शेल Rust में कैसे बने हैं, इसका अनुवाद कैसे करें, बग कैसे रिपोर्ट करें और योगदान कैसे दें। GPL-3.0 के तहत मुफ़्त सॉफ़्टवेयर।","inLanguage":"hi","isPartOf":{"@id":"https://petexy.github.io/LineXinBar/#website"},"about":{"@id":"https://petexy.github.io/LineXinBar/#software"},"breadcrumb":{"@type":"BreadcrumbList","itemListElement":[{"@type":"ListItem","position":1,"name":"शुरुआती स्क्रीन","item":"https://petexy.github.io/LineXinBar/hi/"},{"@type":"ListItem","position":2,"name":"डेवलपमेंट","item":"https://petexy.github.io/LineXinBar/hi/develop.html"}]}}</script>
+<!-- /search and sharing -->
+<meta content="#060314" name="theme-color"/>
+<link href="../assets/glyphs/sm/logo.webp" rel="icon" type="image/webp"/>
+<link as="font" crossorigin="" href="../assets/fonts/Roboto-Regular-latin.woff2" rel="preload" type="font/woff2"/>
+<link href="../assets/css/lxb.css" rel="stylesheet"/>
+</head>
+<body data-page="develop" data-screen="page">
+<a class="skip" href="#content">सामग्री पर जाएँ</a>
+<canvas aria-hidden="true" id="wallpaper"></canvas>
+<header class="page-head">
+<a class="trail" data-back="" href="index.html#develop">
+<span class="trail-tile"><img alt="" class="glyph" src="../assets/glyphs/lg/category-development.webp"/></span>
+<span class="trail-text"><span class="trail-back">‹ शुरुआती स्क्रीन</span><span class="trail-name">डेवलपमेंट</span></span>
+</a>
+</header>
+<main class="column-page" id="content">
+<h1 class="visually-hidden">LineXinBar का विकास: दस्तावेज़, सोर्स कोड, अनुवाद</h1>
+<nav aria-label="इस पेज पर" class="rows-nav">
+<ol class="rows">
+<li><a class="row" data-lxb-row="" href="#docs"><span class="row-icon"><img alt="" class="glyph" src="../assets/glyphs/lg/category-office.webp"/></span><span class="row-text"><span class="row-title">दस्तावेज़</span><span class="row-comment">हर गाइड, सेटअप से लेकर रेंडरिंग तक</span></span></a></li>
+<li><a class="row" data-lxb-row="" href="#architecture"><span class="row-icon"><img alt="" class="glyph" src="../assets/glyphs/lg/category-development.webp"/></span><span class="row-text"><span class="row-title">यह कैसे बना है</span><span class="row-comment">एक कंपोज़िटर और एक शेल, Rust में</span></span></a></li>
+<li><a class="row" data-lxb-row="" href="#translate"><span class="row-icon"><img alt="" class="glyph" src="../assets/glyphs/lg/setting-language.webp"/></span><span class="row-text"><span class="row-title">अनुवाद</span><span class="row-comment">दस भाषाएँ, और आपकी भाषा के लिए जगह</span></span></a></li>
+<li><a class="row" data-lxb-row="" href="#bugs"><span class="row-icon"><img alt="" class="glyph" src="../assets/glyphs/lg/notifications.webp"/></span><span class="row-text"><span class="row-title">बग रिपोर्ट करें</span><span class="row-comment">क्या-क्या शामिल करें ताकि इसे ठीक किया जा सके</span></span></a></li>
+<li><a class="row" data-lxb-row="" href="#contribute"><span class="row-icon"><img alt="" class="glyph" src="../assets/glyphs/lg/add.webp"/></span><span class="row-text"><span class="row-title">योगदान दें</span><span class="row-comment">कोड, हार्डवेयर टेस्टिंग और अनुवाद</span></span></a></li>
+<li><a class="row" data-lxb-row="" href="#licence"><span class="row-icon"><img alt="" class="glyph" src="../assets/glyphs/lg/file-page.webp"/></span><span class="row-text"><span class="row-title">लाइसेंस</span><span class="row-comment">GPL-3.0 के तहत मुफ़्त सॉफ़्टवेयर</span></span></a></li>
+</ol>
+</nav>
+<div class="panes">
+<section aria-labelledby="docs-t" class="pane glass" id="docs">
+<h2 id="docs-t"><img alt="" class="glyph" src="../assets/glyphs/lg/category-office.webp"/>दस्तावेज़</h2>
+<p class="lede">उपयोगकर्ताओं और डेवलपरों का पूरा संदर्भ कोड के बगल में, <code>docs/</code> में रहता है। हर गाइड:</p>
+<div class="cards">
+<a class="card" href="https://github.com/Petexy/LineXinBar/blob/master/docs/getting-started.md" rel="noopener" target="_blank"><b>शुरुआत करें</b><span>ज़रूरतें, अनुमतियाँ, बिल्ड करना, नेस्टेड और मूल सत्र</span></a>
+<a class="card" href="https://github.com/Petexy/LineXinBar/blob/master/docs/packaging.md" rel="noopener" target="_blank"><b>पैकेजिंग</b><span>Arch, Debian और Ubuntu, Fedora और Nix पैकेज</span></a>
+<a class="card" href="https://github.com/Petexy/LineXinBar/blob/master/docs/configuration.md" rel="noopener" target="_blank"><b>कॉन्फ़िगरेशन</b><span>हर सेटिंग, और हर ऐप्लिकेशन की सेटिंग</span></a>
+<a class="card" href="https://github.com/Petexy/LineXinBar/blob/master/docs/overview.md" rel="noopener" target="_blank"><b>प्रोजेक्ट का अवलोकन</b><span>डिज़ाइन के लक्ष्य, Gamescope, जानी-पहचानी सीमाएँ</span></a>
+<a class="card" href="https://github.com/Petexy/LineXinBar/blob/master/docs/shell.md" rel="noopener" target="_blank"><b>ऐप्लिकेशन, मीडिया और फ़ाइलें</b><span>बार, खोज, शेल्फ़ और फ़ाइलें</span></a>
+<a class="card" href="https://github.com/Petexy/LineXinBar/blob/master/docs/steam.md" rel="noopener" target="_blank"><b>Steam</b><span>साइन इन, लाइब्रेरी, लॉन्च करना, मित्र और निमंत्रण</span></a>
+<a class="card" href="https://github.com/Petexy/LineXinBar/blob/master/docs/epic.md" rel="noopener" target="_blank"><b>Epic Games</b><span>Heroic के ज़रिए: साइन इन, इंस्टॉल, क्लाउड सेव</span></a>
+<a class="card" href="https://github.com/Petexy/LineXinBar/blob/master/docs/retroarch.md" rel="noopener" target="_blank"><b>RetroArch</b><span>ROM फ़ोल्डर, कोर, BIOS फ़ाइलें और गेम डिस्क</span></a>
+<a class="card" href="https://github.com/Petexy/LineXinBar/blob/master/docs/ps3.md" rel="noopener" target="_blank"><b>PlayStation 3</b><span>RPCS3, पैकेज, डिस्क कुंजियाँ और ट्रॉफ़ियाँ</span></a>
+<a class="card" href="https://github.com/Petexy/LineXinBar/blob/master/docs/settings.md" rel="noopener" target="_blank"><b>डेस्कटॉप सेटिंग</b><span>रूप-रंग, डिस्प्ले, पावर, ध्वनि, नेटवर्क, सिस्टम</span></a>
+<a class="card" href="https://github.com/Petexy/LineXinBar/blob/master/docs/controls.md" rel="noopener" target="_blank"><b>कंट्रोल</b><span>पैड, कीबोर्ड, माउस, टच, ऑन-स्क्रीन कीबोर्ड</span></a>
+<a class="card" href="https://github.com/Petexy/LineXinBar/blob/master/docs/guide.md" rel="noopener" target="_blank"><b>गाइड और मेनू</b><span>ऐप बदलना, त्वरित सेटिंग, मिक्सर, स्टिक पॉइंटर</span></a>
+<a class="card" href="https://github.com/Petexy/LineXinBar/blob/master/docs/desktop-integration.md" rel="noopener" target="_blank"><b>डेस्कटॉप इंटीग्रेशन</b><span>स्क्रीनशॉट, शेयर करना, फ़ाइल डायलॉग, अनुरोध</span></a>
+<a class="card" href="https://github.com/Petexy/LineXinBar/blob/master/docs/updates.md" rel="noopener" target="_blank"><b>अपडेट</b><span>स्रोत, रिकवरी और अपने अपडेट प्रदाता</span></a>
+<a class="card" href="https://github.com/Petexy/LineXinBar/blob/master/docs/architecture.md" rel="noopener" target="_blank"><b>आर्किटेक्चर</b><span>सोर्स की बनावट, शेल प्रोटोकॉल, ऑडियो, कांच</span></a>
+<a class="card" href="https://github.com/Petexy/LineXinBar/blob/master/docs/localization.md" rel="noopener" target="_blank"><b>स्थानीयकरण</b><span>भाषाएँ, कैटलॉग और अनुवाद जोड़ना</span></a>
+</div>
+<div class="more"><a class="control lit" data-select="दस्तावेज़" href="https://github.com/Petexy/LineXinBar/blob/master/docs/index.md" rel="noopener" target="_blank">दस्तावेज़ों की सूची</a></div>
+</section>
+<section aria-labelledby="architecture-t" class="pane glass" id="architecture">
+<h2 id="architecture-t"><img alt="" class="glyph" src="../assets/glyphs/lg/category-development.webp"/>यह कैसे बना है</h2>
+<p class="lede">दो प्रोग्राम, दोनों Rust में: <code>lxb</code>, Smithay पर बना एक छोटा Wayland कंपोज़िटर, और <code>lxb-desktop</code>, शेल, जो wgpu के साथ GPU पर बनता है।</p>
+<ul>
+<li><strong>कंपोज़िटर</strong> डिस्प्ले को खुद DRM/KMS के ज़रिए चलाता है — हर कनेक्टर अपनी स्वैपचेन और अपने vblank से चलने वाले लूप के साथ एक असली आउटपुट — या डेवलपमेंट के लिए किसी विंडो में नेस्टेड चलता है। यह X11 प्रोग्राम एक निजी Xwayland के ज़रिए चलाता है।</li>
+<li><strong>शेल</strong> एक layer-shell क्लाइंट है, इसलिए यह layer-shell लागू करने वाले दूसरे कंपोज़िटरों पर भी चलता है। यह कंपोज़िटर से एक निजी प्रोटोकॉल, <code>lxb_shell_v1</code>, के ज़रिए बात करता है, जिसे सिर्फ़ सत्र के अपने प्रोग्राम इस्तेमाल कर सकते हैं।</li>
+<li><strong>रूप की गणना होती है, उसे पेंट नहीं किया जाता।</strong> वॉलपेपर इस बात का एक विश्लेषणात्मक फ़ंक्शन है कि आप कहाँ देख रहे हैं, जिसकी हर पिक्सेल पर गणना होती है; हर चिह्न एक सफ़ेद आकृति है जिसे डिस्टेंस फ़ील्ड में मापकर शेडर पानी की बूँद की तरह खड़ा करता है। यह वेबसाइट उन्हीं दोनों शेडरों के पोर्ट चलाती है।</li>
+<li>इनके आसपास: स्क्रीन शेयर करने, फ़ाइल डायलॉग और बाकी डेस्कटॉप पोर्टल के लिए <code>lxb-portal</code>; अपडेट कोऑर्डिनेटर <code>lxb-updates</code>; और RetroArch, Heroic और RPCS3 के लिए वैकल्पिक हेल्पर।</li>
+</ul>
+<div class="more"><a class="control lit" data-select="आर्किटेक्चर" href="https://github.com/Petexy/LineXinBar/blob/master/docs/architecture.md" rel="noopener" target="_blank">आर्किटेक्चर और रेंडरिंग</a></div>
+</section>
+<section aria-labelledby="translate-t" class="pane glass" id="translate">
+<h2 id="translate-t"><img alt="" class="glyph" src="../assets/glyphs/lg/setting-language.webp"/>अनुवाद</h2>
+<p class="lede">शेल जो भी शब्द दिखाता है, वह एक <a href="https://projectfluent.org/">Fluent</a> कैटलॉग से आता है, दस भाषाओं में: जर्मन, ब्रिटिश और अमेरिकी अंग्रेज़ी, स्पेनिश, फ़्रेंच, हिन्दी, पोलिश, ब्राज़ीली पुर्तगाली, रूसी और सरलीकृत चीनी।</p>
+<p>कैटलॉग <code>crates/lxb-desktop/locales/</code> में सादी टेक्स्ट फ़ाइलें हैं। अनुवाद ठीक करना एक पंक्ति बदलना है; नई भाषा एक नया कैटलॉग है, और टेस्ट जाँचते हैं कि हर कैटलॉग में वही संदेश, वही आर्ग्युमेंट के साथ हों। लॉगिन स्क्रीन और सहयोगी ऐप्लिकेशनों के अपने कैटलॉग इसी रूप में हैं।</p>
+<div class="more"><a class="control lit" data-select="पूरी गाइड" href="https://github.com/Petexy/LineXinBar/blob/master/docs/localization.md#adding-or-editing-translations" rel="noopener" target="_blank">अनुवाद जोड़ना या बदलना</a></div>
+</section>
+<section aria-labelledby="bugs-t" class="pane glass" id="bugs">
+<h2 id="bugs-t"><img alt="" class="glyph" src="../assets/glyphs/lg/notifications.webp"/>बग रिपोर्ट करें</h2>
+<p class="lede">GitHub पर एक issue खोलें, और वे चार चीज़ें शामिल करें जिनसे समस्या दोहराई जा सके:</p>
+<ul>
+<li>आपका <strong>डिस्ट्रीब्यूशन</strong> और उसका वर्ज़न;</li>
+<li>आपका <strong>ग्राफ़िक्स कार्ड</strong> और ड्राइवर;</li>
+<li><strong>आपने LineXinBar कैसे शुरू किया</strong> — लॉगिन स्क्रीन से, कंसोल पर <code>lxb --shell</code> से, या नेस्टेड;</li>
+<li>गड़बड़ी वाले पल के आसपास के <strong>लॉग</strong> — सत्र के लिए <code>journalctl --user -b</code>, या नेस्टेड रन का टर्मिनल आउटपुट।</li>
+</ul>
+<p>कंट्रोलर की समस्या पैड की कंपनी और मॉडल से, और यह जानकर कि वह केबल से लगा है या ब्लूटूथ से, आसानी से पकड़ में आती है।</p>
+<div class="more"><a class="control lit" data-select="एक issue खोलें" href="https://github.com/Petexy/LineXinBar/issues" rel="noopener" target="_blank">एक issue खोलें</a></div>
+</section>
+<section aria-labelledby="contribute-t" class="pane glass" id="contribute">
+<h2 id="contribute-t"><img alt="" class="glyph" src="../assets/glyphs/lg/add.webp"/>योगदान दें</h2>
+<p class="lede">बग रिपोर्ट, हार्डवेयर टेस्टिंग, अनुवाद और कोड — सबका स्वागत है।</p>
+<ul>
+<li>अभी सबसे ज़्यादा <strong>हार्डवेयर टेस्टिंग</strong> मायने रखती है: दूसरे ग्राफ़िक्स निर्माता, हैंडहेल्ड, कई GPU, असामान्य डिस्प्ले और कंट्रोलर।</li>
+<li><strong>अनुवाद</strong>: आपकी भाषा में जो ग़लत लगे उसे ठीक करें, या एक नई भाषा जोड़ें।</li>
+<li><strong>कोड</strong>: बिल्ड है <code>cargo build --release --locked</code>, टेस्ट हैं <code>cargo test</code>, और किसी बदलाव को काम करते देखने का तरीका नेस्टेड सत्र है।</li>
+</ul>
+<div class="more"><a class="control lit" data-select="GitHub" href="https://github.com/Petexy/LineXinBar" rel="noopener" target="_blank">GitHub पर LineXinBar</a></div>
+</section>
+<section aria-labelledby="licence-t" class="pane glass" id="licence">
+<h2 id="licence-t"><img alt="" class="glyph" src="../assets/glyphs/lg/file-page.webp"/>लाइसेंस</h2>
+<p class="lede">LineXinBar मुफ़्त सॉफ़्टवेयर है, <strong>GNU General Public License, सिर्फ़ वर्ज़न 3</strong> के तहत लाइसेंस किया गया।</p>
+<p>साथ आने वाले Roboto और Roboto Mono फ़ॉन्ट अपने खुले लाइसेंस के तहत हैं, वैसे ही जैसे वे Noto फ़ॉन्ट जो शेल हिन्दी और चीनी के लिए साथ रखता है, और Bibata कर्सर थीम। यह वेबसाइट रिपॉज़िटरी का हिस्सा है और उसी लाइसेंस के तहत है।</p>
+<div class="more"><a class="control lit" data-select="लाइसेंस" href="https://github.com/Petexy/LineXinBar/blob/master/LICENSE" rel="noopener" target="_blank">लाइसेंस पढ़ें</a></div>
+</section>
+</div>
+</main>
+<footer class="site-foot">
+<p>पीछे: <a href="family.html">‹ परिवार</a> · <a href="index.html#develop">शुरुआती स्क्रीन</a> · LineXinBar <a href="https://github.com/Petexy/LineXinBar/blob/master/LICENSE">GPL-3.0</a> के तहत मुफ़्त सॉफ़्टवेयर है।</p>
+</footer>
+<script defer="" src="../assets/js/wallpaper.js"></script>
+<script defer="" src="../assets/js/i18n.js"></script>
+<script defer="" src="../assets/js/shell.js"></script>
+<script defer="" src="../assets/js/page.js"></script>
+</body>
+</html>

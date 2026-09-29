@@ -1,0 +1,18 @@
+{
+ "861e0264fe": "Desktop essentials in LineXinBar: screenshots, sharing, dialogs",
+ "d10328d515": "The desktop essentials in LineXinBar: screenshots from a pad, screen sharing in OBS and Discord, open and save dialogs you can drive with a controller, password prompts, and games that keep the screen awake.",
+ "b15b062e99": "Hold the <strong>guide button and the right bumper</strong> together — the same chord a Steam Deck takes a picture with — or press <kbd>Print</kbd> on a keyboard.",
+ "7e560d5ba5": "The screen flashes white, the shutter sounds, and the picture of the display you are driving lands in the Screenshots folder inside your pictures, where it is on the Images shelf a moment later. <kbd>Print</kbd> works whatever you hold with it, so a hand trained on any other desktop's variant gets it right; a keyboard with no Print key can use <kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>3</kbd>.",
+ "c5f61ff780": "OBS records the session and Discord shares it, the same way they do on any other Linux desktop — through the screen-sharing portal.",
+ "42c33b530b": "When an application asks, the shell asks <strong>you</strong> which display to share, on its own panel. Nothing can record the screen without that answer: programs cannot grab it behind your back.",
+ "22a47a58d7": "A browser wanting a photo to upload, an editor wanting somewhere to save, a game wanting a folder for its mods — they all get the shell's own chooser.",
+ "9e9a471cdd": "Other desktops' file dialogs are a tree, a list and a text field, and none of them can be reached with a controller. Here the question is answered in the Files column you already know, on a large pane of glass; a save opens on <strong>Save here</strong> with the name already under it. <strong>Show in folder</strong> in a browser walks the bar into that folder in Files too, instead of starting some other file manager over the shell.",
+ "11863d282a": "Mounting a disk, installing an update, changing a system setting — when the system needs an administrator to agree, the shell asks, on its own panel, with a sound so you notice.",
+ "16b9df3ed7": "The password is checked by the system itself, never by the shell, and is wiped from memory as soon as it has been handed over. Without an agent like this, a desktop simply refuses those requests with nothing on screen to allow them.",
+ "d5e2b58a97": "A film playing or a game running keeps the screen lit and the machine awake, the way you would expect — including games from a Flatpak, like everything Heroic or RPCS3 from Flathub starts.",
+ "6b77714d02": "When nothing is holding it, the screen dims, goes dark and sleeps on the waits you set under <a href=\"settings.html#power\">Power</a>.",
+ "edfee3fa7b": "Ordinary Linux applications run here as they are: native Wayland programs, X11 programs through Xwayland, and Flatpaks.",
+ "875dc3b8e4": "A launched application fills its screen — the console model — and the guide is how you move between them. Games running natively on Wayland through Proton get what they ask for: explicit sync, tearing for the lowest latency, and HDR passed through to the display.",
+ "0b45fec407": "Desktop integration, in full",
+ "86c5120abf": "Next: <a href=\"family.html\">Family ›</a> · Previous: <a href=\"controls.html\">‹ Controls</a> · <a href=\"index.html#desktop\">Start screen</a> · LineXinBar is free software under the <a href=\"https://github.com/Petexy/LineXinBar/blob/master/LICENSE\">GPL-3.0</a>."
+}

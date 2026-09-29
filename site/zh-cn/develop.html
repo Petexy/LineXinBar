@@ -1,0 +1,140 @@
+<!DOCTYPE html>
+
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8"/>
+<meta content="width=device-width, initial-scale=1, viewport-fit=cover" name="viewport"/>
+<title>开发 LineXinBar：文档、源代码、翻译</title>
+<meta content="LineXinBar 的文档，合成器和 Shell 如何用 Rust 构建，如何翻译，如何报告问题以及如何参与贡献。以 GPL-3.0 发布的自由软件。" name="description"/>
+<!-- search and sharing: written by tools/translate.py build -->
+<link rel="canonical" href="https://petexy.github.io/LineXinBar/zh-cn/develop.html">
+<link rel="alternate" hreflang="x-default" href="https://petexy.github.io/LineXinBar/develop.html">
+<link rel="alternate" hreflang="en" href="https://petexy.github.io/LineXinBar/develop.html">
+<link rel="alternate" hreflang="de" href="https://petexy.github.io/LineXinBar/de/develop.html">
+<link rel="alternate" hreflang="en-GB" href="https://petexy.github.io/LineXinBar/develop.html">
+<link rel="alternate" hreflang="en-US" href="https://petexy.github.io/LineXinBar/en-us/develop.html">
+<link rel="alternate" hreflang="es" href="https://petexy.github.io/LineXinBar/es/develop.html">
+<link rel="alternate" hreflang="fr" href="https://petexy.github.io/LineXinBar/fr/develop.html">
+<link rel="alternate" hreflang="pl" href="https://petexy.github.io/LineXinBar/pl/develop.html">
+<link rel="alternate" hreflang="pt-BR" href="https://petexy.github.io/LineXinBar/pt-br/develop.html">
+<link rel="alternate" hreflang="ru" href="https://petexy.github.io/LineXinBar/ru/develop.html">
+<link rel="alternate" hreflang="hi" href="https://petexy.github.io/LineXinBar/hi/develop.html">
+<link rel="alternate" hreflang="zh-CN" href="https://petexy.github.io/LineXinBar/zh-cn/develop.html">
+<meta property="og:type" content="website">
+<meta property="og:site_name" content="LineXinBar">
+<meta property="og:title" content="开发 LineXinBar：文档、源代码、翻译">
+<meta property="og:description" content="LineXinBar 的文档，合成器和 Shell 如何用 Rust 构建，如何翻译，如何报告问题以及如何参与贡献。以 GPL-3.0 发布的自由软件。">
+<meta property="og:url" content="https://petexy.github.io/LineXinBar/zh-cn/develop.html">
+<meta property="og:locale" content="zh_CN">
+<meta property="og:image" content="https://petexy.github.io/LineXinBar/assets/img/desktop.png">
+<meta property="og:image:width" content="1600">
+<meta property="og:image:height" content="900">
+<meta name="twitter:card" content="summary_large_image">
+<script type="application/ld+json">{"@context":"https://schema.org","@type":"WebPage","@id":"https://petexy.github.io/LineXinBar/zh-cn/develop.html","url":"https://petexy.github.io/LineXinBar/zh-cn/develop.html","name":"开发 LineXinBar：文档、源代码、翻译","description":"LineXinBar 的文档，合成器和 Shell 如何用 Rust 构建，如何翻译，如何报告问题以及如何参与贡献。以 GPL-3.0 发布的自由软件。","inLanguage":"zh-CN","isPartOf":{"@id":"https://petexy.github.io/LineXinBar/#website"},"about":{"@id":"https://petexy.github.io/LineXinBar/#software"},"breadcrumb":{"@type":"BreadcrumbList","itemListElement":[{"@type":"ListItem","position":1,"name":"主屏幕","item":"https://petexy.github.io/LineXinBar/zh-cn/"},{"@type":"ListItem","position":2,"name":"开发","item":"https://petexy.github.io/LineXinBar/zh-cn/develop.html"}]}}</script>
+<!-- /search and sharing -->
+<meta content="#060314" name="theme-color"/>
+<link href="../assets/glyphs/sm/logo.webp" rel="icon" type="image/webp"/>
+<link as="font" crossorigin="" href="../assets/fonts/Roboto-Regular-latin.woff2" rel="preload" type="font/woff2"/>
+<link href="../assets/css/lxb.css" rel="stylesheet"/>
+</head>
+<body data-page="develop" data-screen="page">
+<a class="skip" href="#content">跳到正文</a>
+<canvas aria-hidden="true" id="wallpaper"></canvas>
+<header class="page-head">
+<a class="trail" data-back="" href="index.html#develop">
+<span class="trail-tile"><img alt="" class="glyph" src="../assets/glyphs/lg/category-development.webp"/></span>
+<span class="trail-text"><span class="trail-back">‹ 主屏幕</span><span class="trail-name">开发</span></span>
+</a>
+</header>
+<main class="column-page" id="content">
+<h1 class="visually-hidden">开发 LineXinBar：文档、源代码、翻译</h1>
+<nav aria-label="本页内容" class="rows-nav">
+<ol class="rows">
+<li><a class="row" data-lxb-row="" href="#docs"><span class="row-icon"><img alt="" class="glyph" src="../assets/glyphs/lg/category-office.webp"/></span><span class="row-text"><span class="row-title">文档</span><span class="row-comment">所有指南，从安装到渲染</span></span></a></li>
+<li><a class="row" data-lxb-row="" href="#architecture"><span class="row-icon"><img alt="" class="glyph" src="../assets/glyphs/lg/category-development.webp"/></span><span class="row-text"><span class="row-title">它是怎样构建的</span><span class="row-comment">一个合成器和一个 Shell，用 Rust 编写</span></span></a></li>
+<li><a class="row" data-lxb-row="" href="#translate"><span class="row-icon"><img alt="" class="glyph" src="../assets/glyphs/lg/setting-language.webp"/></span><span class="row-text"><span class="row-title">翻译</span><span class="row-comment">十种语言，也为您的语言留有位置</span></span></a></li>
+<li><a class="row" data-lxb-row="" href="#bugs"><span class="row-icon"><img alt="" class="glyph" src="../assets/glyphs/lg/notifications.webp"/></span><span class="row-text"><span class="row-title">报告问题</span><span class="row-comment">附上哪些信息才能修复它</span></span></a></li>
+<li><a class="row" data-lxb-row="" href="#contribute"><span class="row-icon"><img alt="" class="glyph" src="../assets/glyphs/lg/add.webp"/></span><span class="row-text"><span class="row-title">参与贡献</span><span class="row-comment">代码、硬件测试和翻译</span></span></a></li>
+<li><a class="row" data-lxb-row="" href="#licence"><span class="row-icon"><img alt="" class="glyph" src="../assets/glyphs/lg/file-page.webp"/></span><span class="row-text"><span class="row-title">许可证</span><span class="row-comment">以 GPL-3.0 发布的自由软件</span></span></a></li>
+</ol>
+</nav>
+<div class="panes">
+<section aria-labelledby="docs-t" class="pane glass" id="docs">
+<h2 id="docs-t"><img alt="" class="glyph" src="../assets/glyphs/lg/category-office.webp"/>文档</h2>
+<p class="lede">完整的用户和开发者参考资料就在代码旁边的 <code>docs/</code> 中。所有指南：</p>
+<div class="cards">
+<a class="card" href="https://github.com/Petexy/LineXinBar/blob/master/docs/getting-started.md" rel="noopener" target="_blank"><b>开始使用</b><span>系统要求、权限、构建、嵌套和原生会话</span></a>
+<a class="card" href="https://github.com/Petexy/LineXinBar/blob/master/docs/packaging.md" rel="noopener" target="_blank"><b>打包</b><span>Arch、Debian 和 Ubuntu、Fedora 以及 Nix 软件包</span></a>
+<a class="card" href="https://github.com/Petexy/LineXinBar/blob/master/docs/configuration.md" rel="noopener" target="_blank"><b>配置</b><span>所有设置，以及按应用程序的设置</span></a>
+<a class="card" href="https://github.com/Petexy/LineXinBar/blob/master/docs/overview.md" rel="noopener" target="_blank"><b>项目概览</b><span>设计目标、Gamescope、已知限制</span></a>
+<a class="card" href="https://github.com/Petexy/LineXinBar/blob/master/docs/shell.md" rel="noopener" target="_blank"><b>应用程序、媒体和文件</b><span>主栏、搜索、货架和文件</span></a>
+<a class="card" href="https://github.com/Petexy/LineXinBar/blob/master/docs/steam.md" rel="noopener" target="_blank"><b>Steam</b><span>登录、游戏库、启动、好友和邀请</span></a>
+<a class="card" href="https://github.com/Petexy/LineXinBar/blob/master/docs/epic.md" rel="noopener" target="_blank"><b>Epic Games</b><span>通过 Heroic：登录、安装、云存档</span></a>
+<a class="card" href="https://github.com/Petexy/LineXinBar/blob/master/docs/retroarch.md" rel="noopener" target="_blank"><b>RetroArch</b><span>ROM 文件夹、核心、BIOS 文件和游戏光盘</span></a>
+<a class="card" href="https://github.com/Petexy/LineXinBar/blob/master/docs/ps3.md" rel="noopener" target="_blank"><b>PlayStation 3</b><span>RPCS3、软件包、光盘密钥和奖杯</span></a>
+<a class="card" href="https://github.com/Petexy/LineXinBar/blob/master/docs/settings.md" rel="noopener" target="_blank"><b>桌面设置</b><span>外观、显示器、电源、声音、网络、系统</span></a>
+<a class="card" href="https://github.com/Petexy/LineXinBar/blob/master/docs/controls.md" rel="noopener" target="_blank"><b>操控</b><span>手柄、键盘、鼠标、触控、屏幕键盘</span></a>
+<a class="card" href="https://github.com/Petexy/LineXinBar/blob/master/docs/guide.md" rel="noopener" target="_blank"><b>指南和菜单</b><span>应用切换、快捷设置、混合器、摇杆指针</span></a>
+<a class="card" href="https://github.com/Petexy/LineXinBar/blob/master/docs/desktop-integration.md" rel="noopener" target="_blank"><b>桌面集成</b><span>截图、共享、文件对话框、各种请求</span></a>
+<a class="card" href="https://github.com/Petexy/LineXinBar/blob/master/docs/updates.md" rel="noopener" target="_blank"><b>更新</b><span>来源、恢复和自定义更新提供者</span></a>
+<a class="card" href="https://github.com/Petexy/LineXinBar/blob/master/docs/architecture.md" rel="noopener" target="_blank"><b>架构</b><span>源代码结构、Shell 协议、音频、玻璃</span></a>
+<a class="card" href="https://github.com/Petexy/LineXinBar/blob/master/docs/localization.md" rel="noopener" target="_blank"><b>本地化</b><span>语言、翻译目录和添加翻译</span></a>
+</div>
+<div class="more"><a class="control lit" data-select="文档" href="https://github.com/Petexy/LineXinBar/blob/master/docs/index.md" rel="noopener" target="_blank">文档索引</a></div>
+</section>
+<section aria-labelledby="architecture-t" class="pane glass" id="architecture">
+<h2 id="architecture-t"><img alt="" class="glyph" src="../assets/glyphs/lg/category-development.webp"/>它是怎样构建的</h2>
+<p class="lede">两个程序，都用 Rust 编写：<code>lxb</code> 是基于 Smithay 构建的小型 Wayland 合成器，<code>lxb-desktop</code> 是 Shell，通过 wgpu 在 GPU 上绘制。</p>
+<ul>
+<li><strong>合成器</strong>通过 DRM/KMS 直接驱动显示器 — 每个接口都是一个真正的输出，拥有自己的交换链和由垂直同步驱动的循环 — 开发时也可以嵌套在窗口中运行。它通过一个私有的 Xwayland 运行 X11 程序。</li>
+<li><strong>Shell</strong> 是一个 layer-shell 客户端，所以它也能在其他实现了 layer-shell 的合成器上运行。它通过一个私有协议 <code>lxb_shell_v1</code> 与合成器通信，只有会话自己的程序才能使用该协议。</li>
+<li><strong>外观是计算出来的，而不是画出来的。</strong>壁纸是关于观察位置的一个解析函数，逐像素计算；每个标记都是一个白色剪影，先测量成距离场，再由着色器立成一颗水珠。本网站运行的正是这两个着色器的移植版本。</li>
+<li>围绕它们的还有：负责屏幕共享、文件对话框和其余桌面门户功能的 <code>lxb-portal</code>；更新协调器 <code>lxb-updates</code>；以及 RetroArch、Heroic 和 RPCS3 的可选辅助程序。</li>
+</ul>
+<div class="more"><a class="control lit" data-select="架构" href="https://github.com/Petexy/LineXinBar/blob/master/docs/architecture.md" rel="noopener" target="_blank">架构和渲染</a></div>
+</section>
+<section aria-labelledby="translate-t" class="pane glass" id="translate">
+<h2 id="translate-t"><img alt="" class="glyph" src="../assets/glyphs/lg/setting-language.webp"/>翻译</h2>
+<p class="lede">Shell 显示的每一个词都来自 <a href="https://projectfluent.org/">Fluent</a> 翻译目录，共十种语言：德语、英式和美式英语、西班牙语、法语、印地语、波兰语、巴西葡萄牙语、俄语和简体中文。</p>
+<p>翻译目录是 <code>crates/lxb-desktop/locales/</code> 中的纯文本文件。修正一处翻译就是编辑一行；新增一种语言就是新增一个目录，测试会检查每个目录都包含相同的消息和相同的参数。登录界面和兄弟应用也有各自同样格式的翻译目录。</p>
+<div class="more"><a class="control lit" data-select="完整指南" href="https://github.com/Petexy/LineXinBar/blob/master/docs/localization.md#adding-or-editing-translations" rel="noopener" target="_blank">添加或编辑翻译</a></div>
+</section>
+<section aria-labelledby="bugs-t" class="pane glass" id="bugs">
+<h2 id="bugs-t"><img alt="" class="glyph" src="../assets/glyphs/lg/notifications.webp"/>报告问题</h2>
+<p class="lede">在 GitHub 上提交 issue，并附上能让问题复现的四项信息：</p>
+<ul>
+<li>您的<strong>发行版</strong>及其版本；</li>
+<li>您的<strong>显卡</strong>和驱动；</li>
+<li><strong>您是如何启动 LineXinBar 的</strong> — 从登录界面、在控制台运行 <code>lxb --shell</code>，还是嵌套运行；</li>
+<li>出错时刻前后的<strong>日志</strong> — 会话使用 <code>journalctl --user -b</code>，嵌套运行则使用终端输出。</li>
+</ul>
+<p>如果是手柄问题，提供手柄的品牌和型号，并说明是有线连接还是蓝牙连接，会更容易排查。</p>
+<div class="more"><a class="control lit" data-select="提交 issue" href="https://github.com/Petexy/LineXinBar/issues" rel="noopener" target="_blank">提交 issue</a></div>
+</section>
+<section aria-labelledby="contribute-t" class="pane glass" id="contribute">
+<h2 id="contribute-t"><img alt="" class="glyph" src="../assets/glyphs/lg/add.webp"/>参与贡献</h2>
+<p class="lede">欢迎提交问题报告、进行硬件测试、参与翻译和贡献代码。</p>
+<ul>
+<li>眼下最重要的是<strong>硬件测试</strong>：其他显卡厂商、掌机、多 GPU，以及不常见的显示器和手柄。</li>
+<li><strong>翻译</strong>：修正您的语言中读起来不对的地方，或者添加一种新语言。</li>
+<li><strong>代码</strong>：构建命令是 <code>cargo build --release --locked</code>，测试命令是 <code>cargo test</code>，而嵌套会话是查看改动效果的方式。</li>
+</ul>
+<div class="more"><a class="control lit" data-select="GitHub" href="https://github.com/Petexy/LineXinBar" rel="noopener" target="_blank">GitHub 上的 LineXinBar</a></div>
+</section>
+<section aria-labelledby="licence-t" class="pane glass" id="licence">
+<h2 id="licence-t"><img alt="" class="glyph" src="../assets/glyphs/lg/file-page.webp"/>许可证</h2>
+<p class="lede">LineXinBar 是自由软件，以 <strong>GNU 通用公共许可证第 3 版（仅限该版本）</strong>授权。</p>
+<p>随附的 Roboto 和 Roboto Mono 字体使用它们各自的开放许可证，Shell 为印地语和中文携带的 Noto 字体以及 Bibata 光标主题也是如此。本网站是代码仓库的一部分，采用相同的许可证。</p>
+<div class="more"><a class="control lit" data-select="许可证" href="https://github.com/Petexy/LineXinBar/blob/master/LICENSE" rel="noopener" target="_blank">阅读许可证</a></div>
+</section>
+</div>
+</main>
+<footer class="site-foot">
+<p>上一页：<a href="family.html">‹ 家族</a> · <a href="index.html#develop">主屏幕</a> · LineXinBar 是以 <a href="https://github.com/Petexy/LineXinBar/blob/master/LICENSE">GPL-3.0</a> 发布的自由软件。</p>
+</footer>
+<script defer="" src="../assets/js/wallpaper.js"></script>
+<script defer="" src="../assets/js/i18n.js"></script>
+<script defer="" src="../assets/js/shell.js"></script>
+<script defer="" src="../assets/js/page.js"></script>
+</body>
+</html>

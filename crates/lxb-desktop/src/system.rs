@@ -2269,6 +2269,42 @@ fn is_internal(display: &str) -> bool {
         .any(|kind| name.starts_with(kind))
 }
 
+/// The backlight of the panel called `display`, if the kernel can dim it and
+/// this session may — the idle policy's way of dimming a built-in screen, which
+/// saves the power a sheet drawn over it cannot. See [`crate::idle`].
+///
+/// The same rule the brightness bar uses for which screen is built in, so the
+/// two can never disagree about which panel a backlight belongs to.
+pub fn panel_backlight(display: &str) -> Option<PanelLight> {
+    let light = find_backlight()?;
+    (light.forced || is_internal(display)).then_some(PanelLight {
+        dir: light.dir,
+        max: light.max,
+    })
+}
+
+/// A built-in panel's backlight, read and written in the kernel's own steps.
+#[derive(Debug, Clone)]
+pub struct PanelLight {
+    dir: PathBuf,
+    max: u32,
+}
+
+impl PanelLight {
+    /// Where it is now, in the kernel's steps.
+    pub fn read(&self) -> Option<u32> {
+        read_number(&self.dir.join("brightness"))
+    }
+
+    /// Set it, in the kernel's steps, clamped to the scale.
+    pub fn write(&self, raw: u32) {
+        let file = self.dir.join("brightness");
+        if let Err(err) = std::fs::write(&file, raw.min(self.max).to_string()) {
+            tracing::warn!(path = %file.display(), ?err, "could not dim the panel");
+        }
+    }
+}
+
 /// The panel backlight to use, if there is one that can actually be moved.
 fn find_backlight() -> Option<Backlight> {
     if let Some(forced) = std::env::var_os(BACKLIGHT_OVERRIDE) {

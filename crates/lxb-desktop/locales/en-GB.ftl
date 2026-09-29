@@ -1650,6 +1650,7 @@ achievement-summary = { $description } · { $points ->
     } · { $state }
 achievements-unlocked-count = Unlocked ({ $count })
 achievements-locked-count = Locked ({ $count })
+achievements-hidden-count = Hidden ({ $count })
 achievements-unlocked-of = { $unlocked } / { $total } unlocked
 achievement-unlocked-at = Unlocked { $date } { $time }
 trophies-error-retry = { $error } Go back and reopen to retry.
@@ -2079,3 +2080,149 @@ epic-cloud-saves-off = Saves stay on this machine
 epic-cloud-saves-not-changed = Cloud saves were not changed.
 epic-achievement-summary = { $description } · { $xp } XP · { $state }
 epic-players-who-have-it = Players who have it
+
+## PlayStation 3, through RPCS3
+ps3-looking = Looking for PlayStation 3 games
+ps3-press-to-set-up = Press to set it up
+ps3-set-up = Set it up
+ps3-set-up-explanation = PlayStation 3 games need two free downloads before they can be played: the program that plays them, and the console's own system software. Nothing else on this machine is changed.
+ps3-getting-rpcs3 = Downloading what plays the games
+ps3-getting-the-system-software = Downloading the PlayStation 3 system software
+ps3-installing-the-game = Installing the game
+ps3-ready = Ready
+ps3-not-done = Not finished
+ps3-set-up-failed = PlayStation 3 games could not be set up.
+ps3-choose-the-folder-your-games-are-in = Choose the folder your games are in
+ps3-the-folder-cannot-be-read = The games folder cannot be opened
+ps3-press-to-install = Press to install
+ps3-press-to-get-it-ready = Press to get it ready
+ps3-installed = Installed
+ps3-ready-to-play = Ready to play
+ps3-install-failed = The game could not be installed.
+ps3-uninstall-keeps = Its saved games and trophies stay.
+ps3-uninstalling = Uninstalling…
+ps3-uninstall-failed = The game could not be uninstalled.
+ps3-clear-cache = Clear cache
+ps3-clear-cache-explanation = The next start will take longer while it is prepared again.
+ps3-clearing-cache = Clearing the cache…
+ps3-clear-cache-failed = The cache could not be cleared.
+ps3-frame-limit = Frame rate limit
+ps3-frame-limit-auto = As fast as the game is meant to run
+ps3-performance-overlay = Performance overlay
+ps3-trophy-notices = Trophy notices
+ps3-console-language = Console language
+ps3-controller-buttons = Controller buttons
+ps3-buttons-unchanged = Every button in its place
+ps3-buttons-moved = { $count ->
+    [one] One button moved
+   *[other] { $count } buttons moved
+    }
+ps3-buttons-back = Put every button back
+ps3-buttons-back-explanation = Each one goes back to where a PlayStation 3 controller has it.
+ps3-button-cross = Cross
+ps3-button-circle = Circle
+ps3-button-square = Square
+ps3-button-triangle = Triangle
+ps3-button-l1 = L1
+ps3-button-r1 = R1
+ps3-button-l2 = L2
+ps3-button-r2 = R2
+ps3-button-l3 = L3
+ps3-button-r3 = R3
+ps3-button-start = Start
+ps3-button-select = Select
+pad-button-south = Bottom button
+pad-button-east = Right button
+pad-button-west = Left button
+pad-button-north = Top button
+pad-button-left-bumper = Left bumper
+pad-button-right-bumper = Right bumper
+pad-button-left-trigger = Left trigger
+pad-button-right-trigger = Right trigger
+pad-button-left-stick = Left stick press
+pad-button-right-stick = Right stick press
+pad-button-start = Start button
+pad-button-back = Back button
+ps3-disc-not-ready = The game could not be made ready to play.
+ps3-getting-the-disc-ready = Getting the game ready
+ps3-look-again = Look for games again
+ps3-open-rpcs3 = Open RPCS3
+ps3-play = Play
+ps3-trouble-no-rpcs3 = Set PlayStation 3 games up from their row first.
+ps3-trouble-offline = The internet cannot be reached. Try again once it can.
+ps3-trouble-no-space = There is not enough free space on the disk.
+ps3-trouble-refused = The download did not go through. Try again later.
+ps3-trouble-firmware = The system software could not be installed. Try again later.
+ps3-trouble-not-a-package = This file is not a PlayStation 3 game that can be installed.
+ps3-trouble-package = The file may be damaged, or be an update for a game that is not installed.
+ps3-trouble-other = Try again later.
+ps3-where-your-games-are = Where your PlayStation 3 games are
+ps3-install-question = Install this PlayStation 3 game? It is copied into the console, and this file stays where it is.
+ps3-installed-find-it = It is installed, and ready to play in the PlayStation 3 column.
+ps3-trophy-platinum = Platinum
+ps3-trophy-gold = Gold
+ps3-trophy-silver = Silver
+ps3-trophy-bronze = Bronze
+ps3-trophy-grade = Trophy
+ps3-trophy-summary = { $description } · { $grade } · { $state }
+
+# Settings > Power, and what the battery says when it runs low.
+power-title = Power
+power-description = Sleep, the screen and the power button
+power-session-only = These apply to this session only: they could not be saved for the whole device.
+power-dim-screen = Dim screen
+power-turn-off-screen = Turn off screen
+power-sleep = Sleep
+power-sleep-on-battery = Sleep on battery
+power-sleep-plugged-in = Sleep when plugged in
+power-never = Never
+power-after-seconds = { $count ->
+    [one] After { $count } second
+   *[other] After { $count } seconds
+    }
+power-after-minutes = { $count ->
+    [one] After { $count } minute
+   *[other] After { $count } minutes
+    }
+power-after-hours = { $count ->
+    [one] After { $count } hour
+   *[other] After { $count } hours
+    }
+power-button = Power button
+power-button-sleep = Sleep
+power-button-menu = Power menu
+power-button-sleep-note = A press puts the device to sleep. Hold it for the power menu.
+power-button-menu-note = A press opens the power menu.
+power-button-hibernate = Hibernate
+power-button-hibernate-note = A press saves what is open and turns the device off. Hold it for the power menu.
+power-button-power-off = Turn off
+power-button-power-off-note = A press turns the device off. Hold it for the power menu.
+power-button-nothing = Do nothing
+power-button-nothing-note = A press does nothing. Hold it for the power menu.
+power-mode = Power mode
+power-mode-unknown = Unknown
+power-mode-power-saver = Power saver
+power-mode-balanced = Balanced
+power-mode-performance = Performance
+power-mode-power-saver-note = Longer battery life, less speed
+power-mode-balanced-note = Speed and battery life in balance
+power-mode-performance-note = Full speed, more power used
+power-battery-saver = Battery saver
+power-battery-saver-description = Power saver when the battery is low
+power-battery-saver-on-note = Switches to Power saver at 20% and back when charging
+power-battery-low = Battery low
+power-battery-low-body = { $percent }% left. Connect the charger soon.
+power-battery-very-low-body = { $percent }% left. Connect the charger now.
+power-battery-empty = Battery almost empty
+power-battery-empty-body = The device is going to sleep. Connect the charger to carry on.
+power-sleep-held = The device can't sleep yet
+power-sleep-held-body = The system is busy with something that needs it awake. Try again once it has finished.
+
+# Settings > System > Low-end hardware mode.
+low-end-title = Low-end hardware mode
+low-end-description = Uses less of the graphics chip and the processor
+low-end-on-for-this-device = On, to suit this device
+low-end-off-note = Every effect, as smooth as the device allows
+low-end-on-note = A still wallpaper, simpler effects and fewer frames
+low-end-slow = The shell is running slowly on this device
+low-end-slow-body = Low-end hardware mode in Settings > System can make it smoother.

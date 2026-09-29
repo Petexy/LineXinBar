@@ -1629,6 +1629,7 @@ achievement-summary = { $description } · { $points ->
     } · { $state }
 achievements-unlocked-count = अनलॉक ({ $count })
 achievements-locked-count = लॉक ({ $count })
+achievements-hidden-count = छिपे हुए ({ $count })
 achievements-unlocked-of = { $unlocked } / { $total } अनलॉक
 achievement-unlocked-at = अनलॉक हुआ { $date } { $time }
 trophies-error-retry = { $error } फिर कोशिश करने के लिए वापस जाकर दोबारा खोलें।
@@ -2055,3 +2056,149 @@ epic-cloud-saves-off = सेव इसी मशीन पर रहते ह�
 epic-cloud-saves-not-changed = क्लाउड सेव नहीं बदले गए।
 epic-achievement-summary = { $description } · { $xp } XP · { $state }
 epic-players-who-have-it = जिन खिलाड़ियों के पास यह है
+
+## PlayStation 3, RPCS3 के ज़रिए
+ps3-looking = PlayStation 3 गेम ढूँढे जा रहे हैं
+ps3-press-to-set-up = तैयार करने के लिए दबाएँ
+ps3-set-up = तैयार करें
+ps3-set-up-explanation = PlayStation 3 गेम खेलने से पहले दो मुफ़्त डाउनलोड चाहिए: वह प्रोग्राम जो उन्हें चलाता है, और कंसोल का अपना सिस्टम सॉफ़्टवेयर। इस मशीन पर और कुछ नहीं बदला जाता।
+ps3-getting-rpcs3 = गेम चलाने वाला प्रोग्राम डाउनलोड हो रहा है
+ps3-getting-the-system-software = PlayStation 3 सिस्टम सॉफ़्टवेयर डाउनलोड हो रहा है
+ps3-installing-the-game = गेम इंस्टॉल हो रहा है
+ps3-ready = तैयार
+ps3-not-done = पूरा नहीं हुआ
+ps3-set-up-failed = PlayStation 3 गेम तैयार नहीं किए जा सके।
+ps3-choose-the-folder-your-games-are-in = वह फ़ोल्डर चुनें जिसमें आपके गेम हैं
+ps3-the-folder-cannot-be-read = गेम फ़ोल्डर खोला नहीं जा सकता
+ps3-press-to-install = इंस्टॉल करने के लिए दबाएँ
+ps3-press-to-get-it-ready = तैयार करने के लिए दबाएँ
+ps3-installed = इंस्टॉल है
+ps3-ready-to-play = खेलने के लिए तैयार
+ps3-install-failed = गेम इंस्टॉल नहीं किया जा सका।
+ps3-uninstall-keeps = इसके सहेजे गए गेम और ट्रॉफ़ियाँ बनी रहेंगी।
+ps3-uninstalling = अनइंस्टॉल किया जा रहा है…
+ps3-uninstall-failed = गेम अनइंस्टॉल नहीं किया जा सका।
+ps3-clear-cache = कैश साफ़ करें
+ps3-clear-cache-explanation = अगली बार शुरू होने में ज़्यादा समय लगेगा, क्योंकि इसे फिर से तैयार किया जाएगा।
+ps3-clearing-cache = कैश साफ़ किया जा रहा है…
+ps3-clear-cache-failed = कैश साफ़ नहीं किया जा सका।
+ps3-frame-limit = फ़्रेम दर की सीमा
+ps3-frame-limit-auto = जितनी तेज़ी से गेम को चलना है
+ps3-performance-overlay = परफ़ॉर्मेंस ओवरले
+ps3-trophy-notices = ट्रॉफ़ी की सूचनाएँ
+ps3-console-language = कंसोल की भाषा
+ps3-controller-buttons = कंट्रोलर के बटन
+ps3-buttons-unchanged = हर बटन अपनी जगह पर
+ps3-buttons-moved = { $count ->
+    [one] एक बटन बदला गया
+   *[other] { $count } बटन बदले गए
+    }
+ps3-buttons-back = सभी बटन वापस रखें
+ps3-buttons-back-explanation = हर बटन वहीं लौट जाता है जहाँ वह PlayStation 3 कंट्रोलर पर होता है।
+ps3-button-cross = क्रॉस
+ps3-button-circle = सर्कल
+ps3-button-square = स्क्वेयर
+ps3-button-triangle = ट्रायंगल
+ps3-button-l1 = L1
+ps3-button-r1 = R1
+ps3-button-l2 = L2
+ps3-button-r2 = R2
+ps3-button-l3 = L3
+ps3-button-r3 = R3
+ps3-button-start = Start
+ps3-button-select = Select
+pad-button-south = नीचे का बटन
+pad-button-east = दाईं ओर का बटन
+pad-button-west = बाईं ओर का बटन
+pad-button-north = ऊपर का बटन
+pad-button-left-bumper = बायाँ बंपर
+pad-button-right-bumper = दायाँ बंपर
+pad-button-left-trigger = बायाँ ट्रिगर
+pad-button-right-trigger = दायाँ ट्रिगर
+pad-button-left-stick = बायाँ स्टिक दबाना
+pad-button-right-stick = दायाँ स्टिक दबाना
+pad-button-start = स्टार्ट बटन
+pad-button-back = बैक बटन
+ps3-disc-not-ready = गेम को खेलने के लिए तैयार नहीं किया जा सका।
+ps3-getting-the-disc-ready = गेम तैयार किया जा रहा है
+ps3-look-again = गेम फिर से ढूँढें
+ps3-open-rpcs3 = RPCS3 खोलें
+ps3-play = खेलें
+ps3-trouble-no-rpcs3 = पहले PlayStation 3 गेम उनकी पंक्ति से तैयार करें।
+ps3-trouble-offline = इंटरनेट से जुड़ा नहीं जा सकता। जुड़ने पर फिर से कोशिश करें।
+ps3-trouble-no-space = डिस्क पर पर्याप्त खाली जगह नहीं है।
+ps3-trouble-refused = डाउनलोड पूरा नहीं हुआ। बाद में फिर से कोशिश करें।
+ps3-trouble-firmware = सिस्टम सॉफ़्टवेयर इंस्टॉल नहीं किया जा सका। बाद में फिर से कोशिश करें।
+ps3-trouble-not-a-package = यह फ़ाइल ऐसा PlayStation 3 गेम नहीं है जिसे इंस्टॉल किया जा सके।
+ps3-trouble-package = फ़ाइल खराब हो सकती है, या किसी ऐसे गेम का अपडेट हो सकती है जो इंस्टॉल नहीं है।
+ps3-trouble-other = बाद में फिर से कोशिश करें।
+ps3-where-your-games-are = आपके PlayStation 3 गेम कहाँ हैं
+ps3-install-question = यह PlayStation 3 गेम इंस्टॉल करें? इसे कंसोल में कॉपी किया जाता है, और यह फ़ाइल जहाँ है वहीं रहती है।
+ps3-installed-find-it = यह इंस्टॉल हो गया है, और PlayStation 3 कॉलम में खेलने के लिए तैयार है।
+ps3-trophy-platinum = प्लैटिनम
+ps3-trophy-gold = गोल्ड
+ps3-trophy-silver = सिल्वर
+ps3-trophy-bronze = ब्रॉन्ज़
+ps3-trophy-grade = ट्रॉफ़ी
+ps3-trophy-summary = { $description } · { $grade } · { $state }
+
+# सेटिंग्स > पावर, और बैटरी कम होने पर क्या बताया जाता है।
+power-title = पावर
+power-description = स्लीप, स्क्रीन और पावर बटन
+power-session-only = ये केवल इस सत्र पर लागू हैं: इन्हें पूरे डिवाइस के लिए सहेजा नहीं जा सका।
+power-dim-screen = स्क्रीन मंद करें
+power-turn-off-screen = स्क्रीन बंद करें
+power-sleep = स्लीप
+power-sleep-on-battery = बैटरी पर स्लीप
+power-sleep-plugged-in = चार्जर लगे होने पर स्लीप
+power-never = कभी नहीं
+power-after-seconds = { $count ->
+    [one] { $count } सेकंड बाद
+   *[other] { $count } सेकंड बाद
+    }
+power-after-minutes = { $count ->
+    [one] { $count } मिनट बाद
+   *[other] { $count } मिनट बाद
+    }
+power-after-hours = { $count ->
+    [one] { $count } घंटे बाद
+   *[other] { $count } घंटे बाद
+    }
+power-button = पावर बटन
+power-button-sleep = स्लीप
+power-button-menu = पावर मेनू
+power-button-sleep-note = दबाने पर डिवाइस स्लीप में चला जाता है। पावर मेनू के लिए इसे दबाए रखें।
+power-button-menu-note = दबाने पर पावर मेनू खुलता है।
+power-button-hibernate = हाइबरनेट
+power-button-hibernate-note = दबाने पर जो खुला है वह सहेजा जाता है और डिवाइस बंद हो जाता है। पावर मेनू के लिए इसे दबाए रखें।
+power-button-power-off = बंद करें
+power-button-power-off-note = दबाने पर डिवाइस बंद हो जाता है। पावर मेनू के लिए इसे दबाए रखें।
+power-button-nothing = कुछ न करें
+power-button-nothing-note = दबाने पर कुछ नहीं होता। पावर मेनू के लिए इसे दबाए रखें।
+power-mode = पावर मोड
+power-mode-unknown = अज्ञात
+power-mode-power-saver = पावर सेवर
+power-mode-balanced = संतुलित
+power-mode-performance = परफ़ॉर्मेंस
+power-mode-power-saver-note = बैटरी ज़्यादा चले, गति कम
+power-mode-balanced-note = गति और बैटरी में संतुलन
+power-mode-performance-note = पूरी गति, ज़्यादा बिजली खर्च
+power-battery-saver = बैटरी सेवर
+power-battery-saver-description = बैटरी कम होने पर पावर सेवर
+power-battery-saver-on-note = 20% पर पावर सेवर चालू करता है और चार्ज होने पर वापस लौटता है
+power-battery-low = बैटरी कम है
+power-battery-low-body = { $percent }% बची है। जल्द ही चार्जर लगाएँ।
+power-battery-very-low-body = { $percent }% बची है। अभी चार्जर लगाएँ।
+power-battery-empty = बैटरी लगभग ख़त्म
+power-battery-empty-body = डिवाइस स्लीप में जा रहा है। जारी रखने के लिए चार्जर लगाएँ।
+power-sleep-held = डिवाइस अभी स्लीप में नहीं जा सकता
+power-sleep-held-body = सिस्टम कुछ ऐसा पूरा कर रहा है जिसके लिए इसे जागे रहना है। पूरा होने के बाद फिर से कोशिश करें।
+
+# सेटिंग > सिस्टम > कमज़ोर हार्डवेयर मोड।
+low-end-title = कमज़ोर हार्डवेयर मोड
+low-end-description = ग्राफ़िक्स चिप और प्रोसेसर पर कम भार डालता है
+low-end-on-for-this-device = चालू, इस डिवाइस के अनुसार
+low-end-off-note = सभी इफ़ेक्ट, जितने सुचारु यह डिवाइस चला सके
+low-end-on-note = स्थिर वॉलपेपर, सरल इफ़ेक्ट और कम फ़्रेम
+low-end-slow = इस डिवाइस पर शेल धीमा चल रहा है
+low-end-slow-body = सेटिंग > सिस्टम में कमज़ोर हार्डवेयर मोड इसे सुचारु बना सकता है।

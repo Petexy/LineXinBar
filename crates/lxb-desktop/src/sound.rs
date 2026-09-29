@@ -311,6 +311,16 @@ const RESTED: Duration = Duration::from_millis(60);
 /// not be paid for on every press of the D-pad.
 const RETRY_AFTER: Duration = Duration::from_secs(5);
 
+/// How long the shell may make no sound at all before it lets go of the output.
+///
+/// An output held open plays silence, and a stream playing silence is a stream
+/// the sound server cannot suspend — so the machine's audio hardware stayed
+/// powered for as long as the session lasted, whether anything had been heard
+/// in the last hour or not. Twenty seconds is past any pause in somebody
+/// walking the bar, and what it costs is that the first click after one is
+/// opened for, a moment later than the press.
+const QUIET_FOR: Duration = Duration::from_secs(20);
+
 struct MusicPlayback {
     player: Player,
     started_at: Instant,
@@ -358,6 +368,9 @@ pub struct Sounds {
     /// display. Unlike the effects it is decoded as it plays, because it is
     /// minutes rather than milliseconds long.
     music: Option<MusicPlayback>,
+    /// A PlayStation 3 game's music, while its row is chosen: the music, and
+    /// the player it is looping on. See [`Sounds::sync_game_music`].
+    game_music: Option<(Arc<crate::preview::Music>, MusicPlayback)>,
     /// The last focus decision. A rising edge is what makes a *new* decoder;
     /// it must not be inferred from whether a fade still has a player alive.
     music_wanted: bool,
@@ -377,6 +390,7 @@ impl Sounds {
             effects: Effect::ALL.map(|effect| decode(effect.name(), effect.recording())),
             played_at: [None; Effect::ALL.len()],
             music: None,
+            game_music: None,
             music_wanted: false,
             music_broken: false,
             retry_at: Instant::now(),
@@ -578,6 +592,72 @@ impl Sounds {
         }
     }
 
+    /// Play a PlayStation 3 or PSP game's music while its row is chosen, or
+    /// let it go — the way each console's menu played a game's `SND0.AT3`
+    /// behind it.
+    ///
+    /// Looped, faded in as the start music is, and let go at once rather than
+    /// faded: the cursor moving on is a press, and the next row's own sound
+    /// answers it. At the shell's own level, and not at all where the shell is
+    /// muted. Settings > Sounds > Start music is not asked: that is the start
+    /// screen's own music, and a game's is part of the game, as its film is —
+    /// the PS3 and the PSP played it whatever else was on. Returns whether it is playing,
+    /// which is what keeps the start music out of its way.
+    pub fn sync_game_music(
+        &mut self,
+        music: Option<Arc<crate::preview::Music>>,
+        now: Instant,
+    ) -> bool {
+        self.refresh_failed_output(now);
+        let level = settings::sound();
+        let music = music.filter(|_| music_allowed(level, true));
+        let same = match (&music, &self.game_music) {
+            (Some(wanted), Some((held, _))) => Arc::ptr_eq(wanted, held),
+            (None, None) => true,
+            _ => false,
+        };
+        if !same {
+            if let Some((_, playback)) = self.game_music.take() {
+                playback.player.stop();
+            }
+            if let Some(music) = music {
+                if self.device.is_none() {
+                    self.open();
+                }
+                let (Some(device), Some(channels), Some(rate)) = (
+                    self.device.as_ref(),
+                    std::num::NonZero::new(music.channels),
+                    std::num::NonZero::new(music.rate),
+                ) else {
+                    return false;
+                };
+                tracing::debug!(channels, rate, "a game's music begins");
+                let buffer = SamplesBuffer::new(channels, rate, music.samples.clone());
+                let player = Player::connect_new(device.mixer());
+                player.set_volume(0.0);
+                player.append(buffer.repeat_infinite());
+                self.game_music = Some((
+                    music,
+                    MusicPlayback {
+                        player,
+                        started_at: now,
+                        fade_out: None,
+                    },
+                ));
+            }
+        }
+        match self.game_music.as_mut() {
+            Some((_, playback)) => {
+                let envelope = fade_in_gain(now.saturating_duration_since(playback.started_at));
+                playback
+                    .player
+                    .set_volume(normalized_volume(level.value) * envelope);
+                true
+            }
+            None => false,
+        }
+    }
+
     /// Put one clip on the machine's output.
     ///
     /// Every call is its own sound rather than one restarted, so a D-pad held
@@ -663,6 +743,28 @@ impl Sounds {
         }
     }
 
+    /// Let go of the output once nothing has played on it for [`QUIET_FOR`]
+    /// and nothing is looping on it, so the sound server can put the machine's
+    /// audio hardware to sleep. The next sound opens it again. Asked once a
+    /// pass of the loop.
+    pub fn rest(&mut self, now: Instant) {
+        if self.device.is_none() || self.music.is_some() || self.game_music.is_some() {
+            return;
+        }
+        let quiet = self
+            .played_at
+            .iter()
+            .flatten()
+            .max()
+            .is_none_or(|last| now.saturating_duration_since(*last) >= QUIET_FOR);
+        if quiet {
+            self.device = None;
+            tracing::debug!(
+                "the shell has been quiet; its audio output is closed until the next sound"
+            );
+        }
+    }
+
     /// Consume the audio thread's signal before using its mixer again.
     fn refresh_failed_output(&mut self, now: Instant) {
         if self.device_failed.swap(false, Ordering::AcqRel) {
@@ -672,6 +774,11 @@ impl Sounds {
             // `sync_music` will build a new decoder on the replacement output
             // at sample zero.
             self.stop_music();
+            // And a game's music, which is on the same dead mixer; the chosen
+            // row asks for it again on the next frame.
+            if let Some((_, playback)) = self.game_music.take() {
+                playback.player.stop();
+            }
             self.device = None;
             self.retry_at = now;
         }

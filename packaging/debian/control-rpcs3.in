@@ -1,0 +1,22 @@
+Package: lxb-rpcs3
+Version: @VERSION@-1
+Architecture: @ARCH@
+Maintainer: Piotr Lewandowski <piotr.petexiness@gmail.com>
+Section: x11
+Priority: optional
+Depends: @SHLIB_DEPENDS@, lxb-desktop (= @VERSION@-1)
+Recommends: flatpak
+Installed-Size: @INSTALLED_SIZE@
+Homepage: https://github.com/Petexy/LineXinBar
+Description: PlayStation 3 integration for the LineXinBar shell, through RPCS3
+ Adds the PlayStation 3 to the LineXinBar shell, through RPCS3: a row under
+ RetroArch in the Games column, and a column of the user's PlayStation 3 games
+ — disc images, unpacked games, packages to install and the games RPCS3 has
+ installed — each on its own icon and backdrop, with its animated preview and
+ music while it is chosen, and their trophies in the Trophies column.
+ .
+ The shell looks for this package on PATH and mentions the PlayStation 3 only
+ when it is installed. Where RPCS3 itself is missing, the shell offers to
+ install the Flathub build into the user's own flatpak installation, which
+ needs no administrative rights, and the console's system software from
+ Sony's own update server.

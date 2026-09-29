@@ -1,0 +1,1184 @@
+/*
+ * LineXinBar's look, for the web.
+ *
+ * The numbers here are the shell's: the category row and the chosen row are
+ * laid out on a 1080-line reference display (`--u` is one reference pixel), the
+ * glass is tinted, frosted and lit from the upper left as `fs_quad` lights it,
+ * and a lit thing is a brighter fill with a glow behind it — never an outline
+ * in the accent, which is the wallpaper's own hue and would vanish into it.
+ * Colours are set by shell.js from the same twelve palettes the shell has.
+ */
+
+/*
+ * The shell's faces, cut by alphabet (site/tools/subset-fonts.py): a page
+ * fetches only the pieces its own text uses. Roboto in Latin, the rest of
+ * Latin and Cyrillic; the Noto faces the shell carries for Hindi and Chinese,
+ * the Han one cut down to the characters the Chinese pages use; and the two
+ * language names the menu writes on every page, on their own.
+ */
+@font-face { font-family: "Roboto"; src: url("../fonts/Roboto-Regular-latin.woff2") format("woff2"); font-weight: 400; font-display: swap;
+  unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+0304, U+0308, U+0329, U+2000-206F, U+20AC, U+2122, U+2190-2199, U+2212, U+2215, U+25B3, U+FEFF, U+FFFD; }
+@font-face { font-family: "Roboto"; src: url("../fonts/Roboto-Medium-latin.woff2") format("woff2"); font-weight: 500; font-display: swap;
+  unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+0304, U+0308, U+0329, U+2000-206F, U+20AC, U+2122, U+2190-2199, U+2212, U+2215, U+25B3, U+FEFF, U+FFFD; }
+@font-face { font-family: "Roboto"; src: url("../fonts/Roboto-Bold-latin.woff2") format("woff2"); font-weight: 700; font-display: swap;
+  unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+0304, U+0308, U+0329, U+2000-206F, U+20AC, U+2122, U+2190-2199, U+2212, U+2215, U+25B3, U+FEFF, U+FFFD; }
+@font-face { font-family: "Roboto"; src: url("../fonts/Roboto-Regular-latin-ext.woff2") format("woff2"); font-weight: 400; font-display: swap;
+  unicode-range: U+0100-02BA, U+02BD-02C5, U+02C7-02CC, U+02CE-02D7, U+02DD-02FF, U+1D00-1DBF, U+1E00-1E9F, U+1EF2-1EFF, U+2020, U+20A0-20AB, U+20AD-20C0, U+2113, U+2C60-2C7F, U+A720-A7FF; }
+@font-face { font-family: "Roboto"; src: url("../fonts/Roboto-Medium-latin-ext.woff2") format("woff2"); font-weight: 500; font-display: swap;
+  unicode-range: U+0100-02BA, U+02BD-02C5, U+02C7-02CC, U+02CE-02D7, U+02DD-02FF, U+1D00-1DBF, U+1E00-1E9F, U+1EF2-1EFF, U+2020, U+20A0-20AB, U+20AD-20C0, U+2113, U+2C60-2C7F, U+A720-A7FF; }
+@font-face { font-family: "Roboto"; src: url("../fonts/Roboto-Bold-latin-ext.woff2") format("woff2"); font-weight: 700; font-display: swap;
+  unicode-range: U+0100-02BA, U+02BD-02C5, U+02C7-02CC, U+02CE-02D7, U+02DD-02FF, U+1D00-1DBF, U+1E00-1E9F, U+1EF2-1EFF, U+2020, U+20A0-20AB, U+20AD-20C0, U+2113, U+2C60-2C7F, U+A720-A7FF; }
+@font-face { font-family: "Roboto"; src: url("../fonts/Roboto-Regular-cyrillic.woff2") format("woff2"); font-weight: 400; font-display: swap;
+  unicode-range: U+0301, U+0400-045F, U+0490-0491, U+04B0-04B1, U+2116; }
+@font-face { font-family: "Roboto"; src: url("../fonts/Roboto-Medium-cyrillic.woff2") format("woff2"); font-weight: 500; font-display: swap;
+  unicode-range: U+0301, U+0400-045F, U+0490-0491, U+04B0-04B1, U+2116; }
+@font-face { font-family: "Roboto"; src: url("../fonts/Roboto-Bold-cyrillic.woff2") format("woff2"); font-weight: 700; font-display: swap;
+  unicode-range: U+0301, U+0400-045F, U+0490-0491, U+04B0-04B1, U+2116; }
+@font-face { font-family: "Roboto Mono"; src: url("../fonts/RobotoMono-Regular.woff2") format("woff2"); font-weight: 400; font-display: swap; }
+@font-face { font-family: "LXB Devanagari"; src: url("../fonts/NotoSansDevanagariUI-Regular.woff2") format("woff2"); font-weight: 400; font-display: swap;
+  unicode-range: U+0900-097F, U+1CD0-1CF9, U+200C-200D, U+20A8, U+20B9, U+25CC, U+A830-A839, U+A8E0-A8FF; }
+@font-face { font-family: "LXB Devanagari"; src: url("../fonts/NotoSansDevanagariUI-Bold.woff2") format("woff2"); font-weight: 700; font-display: swap;
+  unicode-range: U+0900-097F, U+1CD0-1CF9, U+200C-200D, U+20A8, U+20B9, U+25CC, U+A830-A839, U+A8E0-A8FF; }
+@font-face { font-family: "LXB Han"; src: url("../fonts/NotoSansCJKsc-Regular.woff2") format("woff2"); font-weight: 400; font-display: swap;
+  unicode-range: U+2E80-2FFF, U+3000-303F, U+3400-4DBF, U+4E00-9FFF, U+F900-FAFF, U+FF00-FFEF; }
+@font-face { font-family: "LXB Han"; src: url("../fonts/NotoSansCJKsc-Bold.woff2") format("woff2"); font-weight: 700; font-display: swap;
+  unicode-range: U+2E80-2FFF, U+3000-303F, U+3400-4DBF, U+4E00-9FFF, U+F900-FAFF, U+FF00-FFEF; }
+@font-face { font-family: "LXB Names"; src: url("../fonts/LanguageNames-Devanagari.woff2") format("woff2"); font-display: swap;
+  unicode-range: U+0900-097F; }
+@font-face { font-family: "LXB Names"; src: url("../fonts/LanguageNames-Han.woff2") format("woff2"); font-display: swap;
+  unicode-range: U+4E00-9FFF; }
+
+:root {
+  color-scheme: dark;
+  /* Purple, the shell's default; shell.js rewrites these for the chosen accent. */
+  --accent: #8b5cf6;
+  --accent-rgb: 139 92 246;
+  --accent-soft: #c4b5fd;
+  --accent-soft-rgb: 196 181 253;
+  --accent-deep: #4c1d95;
+  --accent-deep-rgb: 76 29 149;
+  --glass-rgb: 20 11 38;
+  --glass-raised-rgb: 185 167 232;
+  --text: #ffffff;
+  --text-soft: #d6cbef;
+  --text-soft-rgb: 214 203 239;
+  --sky-top: #1b1140;
+  --sky-bottom: #060314;
+  --glow: #5b21b6;
+  --danger: #e0533a;
+
+  /* One pixel of the shell's 1080-line reference display. */
+  --u: clamp(0.6px, calc(100svh / 1080), 2.5px);
+  --ease: cubic-bezier(0.65, 0, 0.35, 1);
+  --ease-out: cubic-bezier(0.22, 1, 0.36, 1);
+  --radius-pane: 28px;
+  --radius-control: 18px;
+  --gutter: clamp(16px, 4vw, 48px);
+  --font: "Roboto", "LXB Names", system-ui, -apple-system, "Segoe UI", sans-serif;
+  --mono: "Roboto Mono", ui-monospace, "SFMono-Regular", Menlo, monospace;
+}
+/* A page in Hindi or Chinese is written in the face the shell writes it in.
+   Devanagari stands taller than Latin and wants the lines further apart. */
+:root:lang(hi) { --font: "Roboto", "LXB Devanagari", "LXB Names", system-ui, sans-serif; }
+:root:lang(hi) body { line-height: 1.75; }
+:root:lang(zh-CN) { --font: "Roboto", "LXB Han", "LXB Names", system-ui, sans-serif; }
+:root:lang(zh-CN) body { line-height: 1.7; }
+
+*, *::before, *::after { box-sizing: border-box; }
+
+html {
+  background: var(--sky-bottom);
+  -webkit-text-size-adjust: 100%;
+  text-size-adjust: 100%;
+  scroll-behavior: smooth;
+  scroll-padding-top: 96px;
+}
+@media (prefers-reduced-motion: reduce) {
+  html { scroll-behavior: auto; }
+  *, *::before, *::after { transition-duration: 0.01ms !important; animation-duration: 0.01ms !important; animation-iteration-count: 1 !important; }
+}
+
+body {
+  margin: 0;
+  min-height: 100svh;
+  font-family: var(--font);
+  font-size: 17px;
+  line-height: 1.6;
+  color: var(--text);
+  /* What shows before the first frame, and on a machine with no WebGL: the
+     theme's own gradient with the glow behind the cross point. */
+  background:
+    radial-gradient(60% 70% at 24% 34%, color-mix(in srgb, var(--glow) 55%, transparent), transparent 70%),
+    radial-gradient(70% 60% at 80% 85%, color-mix(in srgb, var(--accent-deep) 40%, transparent), transparent 70%),
+    linear-gradient(180deg, var(--sky-top), var(--sky-bottom));
+  background-attachment: fixed;
+  overflow-x: hidden;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+::selection { background: rgb(var(--accent-rgb) / 0.55); color: #fff; }
+
+a { color: var(--accent-soft); text-decoration-color: rgb(var(--accent-soft-rgb) / 0.4); text-underline-offset: 3px; }
+a:hover { text-decoration-color: currentColor; }
+:focus-visible { outline: 2px solid var(--accent-soft); outline-offset: 3px; border-radius: 6px; }
+
+img { max-width: 100%; height: auto; }
+
+.skip {
+  position: fixed; left: 12px; top: -60px; z-index: 100;
+  padding: 10px 16px; border-radius: 12px; background: var(--accent); color: #fff; text-decoration: none;
+}
+.skip:focus { top: 12px; }
+
+.visually-hidden {
+  position: absolute !important; width: 1px; height: 1px; overflow: hidden;
+  clip: rect(0 0 0 0); white-space: nowrap;
+}
+
+/* --- the wallpaper ------------------------------------------------------ */
+
+#wallpaper {
+  position: fixed;
+  inset: 0;
+  width: 100vw;
+  height: 100vh;
+  height: 100lvh;
+  display: block;
+  z-index: 0;
+  pointer-events: none;
+  opacity: 0;
+  transition: opacity 0.6s var(--ease);
+}
+#wallpaper.ready { opacity: 1; }
+
+/* --- a glyph ------------------------------------------------------------ */
+
+.glyph {
+  display: inline-block;
+  width: 1em;
+  height: 1em;
+  flex: none;
+  object-fit: contain;
+  user-select: none;
+  -webkit-user-drag: none;
+  pointer-events: none;
+}
+
+/* --- the corner: the wireless mark and the clock ----------------------- */
+
+.corner {
+  position: fixed;
+  top: calc(36 * var(--u));
+  right: calc(48 * var(--u));
+  z-index: 30;
+  display: flex;
+  align-items: center;
+  gap: calc(12 * var(--u));
+  font-size: calc(24 * var(--u));
+  line-height: 1;
+  color: rgb(255 255 255 / 0.85);
+  font-variant-numeric: tabular-nums;
+  pointer-events: none;
+  text-shadow: 0 1px 2px rgb(0 0 0 / 0.35);
+}
+.corner .glyph { width: calc(32 * var(--u)); height: calc(32 * var(--u)); opacity: 0.85; }
+
+/* --- the button legend -------------------------------------------------- */
+
+.legend {
+  position: fixed;
+  right: calc(42 * var(--u));
+  bottom: calc(28 * var(--u));
+  z-index: 30;
+  display: flex;
+  align-items: center;
+  gap: calc(34 * var(--u));
+  font-size: max(13px, calc(19 * var(--u)));
+  color: rgb(var(--accent-soft-rgb) / 0.95);
+  transition: opacity 0.25s var(--ease);
+}
+.legend button, .legend a {
+  all: unset;
+  display: inline-flex;
+  align-items: center;
+  gap: calc(10 * var(--u));
+  cursor: pointer;
+  border-radius: 10px;
+  padding: 4px 6px;
+}
+.legend button:hover, .legend a:hover { color: #fff; }
+.legend button:focus-visible, .legend a:focus-visible { outline: 2px solid var(--accent-soft); }
+.legend .glyph { width: max(20px, calc(30 * var(--u))); height: max(20px, calc(30 * var(--u))); }
+.legend [hidden] { display: none; }
+/* Over a page that scrolls under it, the legend stands on a pane of its own. */
+body[data-screen="page"] .legend {
+  padding: 6px 12px;
+  border-radius: 999px;
+  background: rgb(var(--glass-rgb) / 0.55);
+  -webkit-backdrop-filter: blur(16px) saturate(1.3);
+  backdrop-filter: blur(16px) saturate(1.3);
+  box-shadow: inset 1px 1px 0 rgb(255 255 255 / 0.14), 0 10px 30px -12px rgb(0 0 0 / 0.6);
+  gap: calc(22 * var(--u));
+}
+
+/* --- glass -------------------------------------------------------------- */
+
+/*
+ * A pane: tinted with the palette's glass, frosted, its rim lit from the upper
+ * left where the shell's one lamp stands, a pale haze in that corner of its
+ * face, and a shadow under it. The shell traces a ray through a slab for this;
+ * a page can only paint the impression, so the layers below are the ones that
+ * carry it: the frost, the lit rim, the haze and the dark lower lip.
+ */
+.glass {
+  position: relative;
+  background:
+    radial-gradient(120% 90% at 12% 0%, rgb(var(--glass-raised-rgb) / 0.16), transparent 55%),
+    linear-gradient(165deg, rgb(var(--glass-raised-rgb) / 0.12), rgb(var(--glass-raised-rgb) / 0.05) 45%, rgb(var(--accent-deep-rgb) / 0.16));
+  background-color: rgb(var(--glass-rgb) / 0.42);
+  -webkit-backdrop-filter: blur(22px) saturate(1.35);
+  backdrop-filter: blur(22px) saturate(1.35);
+  border-radius: var(--radius-pane);
+  box-shadow:
+    inset 1.5px 1.5px 0 rgb(255 255 255 / 0.22),
+    inset -1px -1px 0 rgb(255 255 255 / 0.05),
+    inset 0 0 0 1px rgb(255 255 255 / 0.06),
+    inset 0 -18px 30px -24px rgb(0 0 0 / 0.45),
+    0 24px 60px -20px rgb(0 0 0 / 0.55);
+}
+.glass::before {
+  /* The rim, brighter where it faces the lamp: a hairline that fades from the
+     top-left corner round to nothing at the bottom right. */
+  content: "";
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+  padding: 1.5px;
+  background: linear-gradient(140deg, rgb(255 255 255 / 0.45), rgb(255 255 255 / 0.08) 35%, transparent 60%, rgb(var(--accent-soft-rgb) / 0.12));
+  -webkit-mask: linear-gradient(#000 0 0) content-box, linear-gradient(#000 0 0);
+  -webkit-mask-composite: xor;
+  mask: linear-gradient(#000 0 0) content-box exclude, linear-gradient(#000 0 0);
+  pointer-events: none;
+}
+@supports not ((backdrop-filter: blur(1px)) or (-webkit-backdrop-filter: blur(1px))) {
+  .glass { background-color: rgb(var(--glass-rgb) / 0.86); }
+}
+
+/* A control on a pane: glass over glass reads frostier, not darker. */
+.control {
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+  padding: 12px 22px;
+  border-radius: 999px;
+  font: 500 16px/1.2 var(--font);
+  color: #fff;
+  text-decoration: none;
+  cursor: pointer;
+  border: 0;
+  background:
+    linear-gradient(180deg, rgb(var(--glass-raised-rgb) / 0.2), rgb(var(--glass-raised-rgb) / 0.08));
+  box-shadow:
+    inset 1.5px 1.5px 0 rgb(255 255 255 / 0.28),
+    inset -1px -1px 0 rgb(255 255 255 / 0.06),
+    0 6px 18px -8px rgb(0 0 0 / 0.5);
+  transition: background 0.2s var(--ease), box-shadow 0.2s var(--ease), transform 0.2s var(--ease);
+}
+.control:hover { background: linear-gradient(180deg, rgb(var(--glass-raised-rgb) / 0.3), rgb(var(--glass-raised-rgb) / 0.12)); }
+.control .glyph { width: 26px; height: 26px; }
+/* The lit one: the accent, filled, with its glow. */
+.control.lit {
+  background: linear-gradient(180deg, color-mix(in srgb, var(--accent) 88%, white), var(--accent) 60%, color-mix(in srgb, var(--accent) 80%, black));
+  box-shadow:
+    inset 1.5px 1.5px 0 rgb(255 255 255 / 0.45),
+    inset -1px -1px 0 rgb(0 0 0 / 0.15),
+    0 0 34px -4px rgb(var(--accent-rgb) / 0.55),
+    0 8px 22px -10px rgb(0 0 0 / 0.6);
+  font-weight: 700;
+}
+.control.lit:hover { filter: brightness(1.08); }
+
+/* --- the launch splash ------------------------------------------------- */
+
+/*
+ * What a press that opens something puts up at once: the thing's own mark on
+ * its glass disc, a ring of twelve beads turning round it, and its name under
+ * it — the shell's launch splash, which holds the display until what was asked
+ * for arrives. Here that is the next page.
+ */
+.splash {
+  position: fixed;
+  inset: 0;
+  z-index: 90;
+  display: grid;
+  place-items: center;
+  pointer-events: none;
+  opacity: 0;
+  background: radial-gradient(60% 60% at 50% 45%, rgb(var(--glass-rgb) / 0.35), rgb(var(--glass-rgb) / 0.75));
+  -webkit-backdrop-filter: blur(10px);
+  backdrop-filter: blur(10px);
+  transition: opacity 0.22s var(--ease);
+}
+.splash.up { opacity: 1; pointer-events: auto; }
+.splash-body { display: grid; justify-items: center; gap: 26px; transform: scale(0.84); transition: transform 0.36s var(--ease-out); }
+.splash.up .splash-body { transform: none; }
+.splash-disc {
+  position: relative;
+  width: 168px;
+  height: 168px;
+  display: grid;
+  place-items: center;
+  border-radius: 50%;
+  background: radial-gradient(circle at 35% 30%, rgb(var(--accent-soft-rgb) / 0.35), rgb(var(--accent-rgb) / 0.22) 60%, rgb(var(--accent-deep-rgb) / 0.3));
+  box-shadow: inset 2px 2px 0 rgb(255 255 255 / 0.3), inset -1px -2px 0 rgb(0 0 0 / 0.2), 0 0 90px 10px rgb(var(--accent-rgb) / 0.35);
+}
+.splash-disc .glyph { width: 104px; height: 104px; }
+.splash-ring { position: absolute; inset: -30px; animation: splash-turn 1.4s linear infinite; }
+.splash-ring i {
+  position: absolute; left: 50%; top: 50%;
+  width: 9px; height: 9px; margin: -4.5px;
+  border-radius: 50%;
+  background: radial-gradient(circle at 35% 30%, #fff, var(--accent-soft) 60%);
+  box-shadow: 0 0 10px rgb(var(--accent-soft-rgb) / 0.8);
+}
+@keyframes splash-turn { to { transform: rotate(1turn); } }
+.splash-name { font-size: clamp(32px, 4.6vw, 62px); font-weight: 700; letter-spacing: -0.01em; text-shadow: 0 0 40px rgb(var(--accent-rgb) / 0.6); }
+
+/* --- the screen, and the guide over it --------------------------------------- */
+
+/*
+ * Everything a page shows but the wallpaper and the shell's own furniture is
+ * one element, which the guide flies into its card: scaled about the top of
+ * what the display was showing and cut to the card's corners (shell.js), over
+ * the wallpaper's own miniature of itself.
+ */
+.screen.flying { position: relative; z-index: 1; will-change: transform; }
+/* Fixed to the display is fixed to the flying screen, whose top is the top of
+   the page rather than of what was showing. */
+.screen.flying .corner { translate: 0 var(--screen-y, 0px); }
+/* A browser draws nothing behind a clipped element's frosted glass, so in the
+   card the page's panes are tinted rather than frosted. */
+.screen.flying .glass { -webkit-backdrop-filter: none; backdrop-filter: none; background-color: rgb(var(--glass-rgb) / 0.66); }
+.no-wallpaper .screen.flying { background: linear-gradient(180deg, var(--sky-top), var(--sky-bottom)); }
+
+/*
+ * `build_guide`, in the shell's reference pixels: `--gs` is one of them, set by
+ * shell.js from the display's height. The column's glass is the wallpaper's to
+ * draw; what is here is its hairline and everything standing on it. The shell
+ * blends in linear light and a browser in sRGB, so a colour laid over the dark
+ * glass here takes about the square root of the shell's alpha to come out the
+ * same.
+ */
+.guide-scrim { position: fixed; inset: 0; z-index: 70; display: none; touch-action: none; }
+.guide-open .guide-scrim { display: block; }
+
+.guide {
+  --gs: 1px;
+  position: fixed;
+  z-index: 80;
+  left: 14px;
+  top: 14px;
+  width: 252px;
+  height: calc(100% - 28px);
+  display: flex;
+  flex-direction: column;
+  border-radius: calc(30 * var(--gs));
+  border: 1px solid rgb(var(--accent-soft-rgb) / 0.32);
+  color: #fff;
+  visibility: hidden;
+  opacity: 0;
+  outline: none;
+}
+.no-wallpaper .guide { background: rgb(var(--glass-rgb) / 0.92); }
+.guide-head {
+  flex: none;
+  display: grid;
+  grid-template-columns: 1fr auto;
+  align-items: baseline;
+  align-content: start;
+  height: calc(164 * var(--gs));
+  padding: calc(38 * var(--gs) - 1px) calc(35.2 * var(--gs) - 1px) 0;
+  line-height: 1.17;
+}
+.guide-time { font-size: calc(34 * var(--gs)); font-weight: 700; font-variant-numeric: tabular-nums; }
+.guide-date { font-size: calc(18 * var(--gs)); color: rgb(var(--text-soft-rgb) / 0.85); text-align: right; white-space: nowrap; }
+.guide-where {
+  grid-column: 1 / -1;
+  margin-top: calc(6 * var(--gs));
+  font-size: calc(18 * var(--gs));
+  color: rgb(var(--text-soft-rgb) / 0.93);
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+
+/* The entries. A column longer than the display scrolls, and the row cut off
+   at its foot is the sign that it does. */
+.guide-entries {
+  position: relative;
+  flex: 1;
+  min-height: 0;
+  overflow: hidden auto;
+  overscroll-behavior: contain;
+  scrollbar-width: none;
+  padding: 0 calc(24 * var(--gs) - 1px) calc(24 * var(--gs));
+  border-radius: 0 0 calc(30 * var(--gs)) calc(30 * var(--gs));
+  -webkit-mask-image: linear-gradient(180deg, #000 calc(100% - 22px), transparent);
+  mask-image: linear-gradient(180deg, #000 calc(100% - 22px), transparent);
+}
+.guide-entries::-webkit-scrollbar { display: none; }
+.guide-entries > :not(.guide-light) { position: relative; z-index: 1; }
+
+/* They arrive one after another, each sliding the last of its own distance. */
+.guide.in .entry { animation: guide-entry 0.26s var(--ease) both; animation-delay: calc(0.12s + var(--i, 0) * 0.045s); }
+@keyframes guide-entry { from { opacity: 0; transform: translateX(calc(26 * var(--gs))); } }
+
+/* A chip: raised glass resting on the column, which gives itself up to the
+   light once the light has arrived over it (`--over`). */
+.chip {
+  background: rgb(var(--glass-raised-rgb) / calc(0.2 * (1 - var(--over, 0))));
+  box-shadow:
+    inset 1.5px 1.5px 0 rgb(255 255 255 / calc(0.2 * (1 - var(--over, 0)))),
+    inset -1px -1px 0 rgb(255 255 255 / calc(0.05 * (1 - var(--over, 0))));
+}
+
+/* The light: lit glass on the chosen entry, with the accent blooming behind it. */
+.guide-light {
+  position: absolute;
+  left: 0;
+  top: 0;
+  z-index: 0;
+  pointer-events: none;
+  opacity: 0;
+  border-radius: 999px;
+}
+.guide-light::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+  background: linear-gradient(180deg, color-mix(in srgb, var(--accent) 78%, white), var(--accent) 55%, color-mix(in srgb, var(--accent) 84%, black));
+  box-shadow: inset 1.5px 1.5px 0 rgb(255 255 255 / 0.5), inset -1px -1px 0 rgb(0 0 0 / 0.16);
+  transition: transform 0.2s var(--ease-out);
+}
+.guide-light::after {
+  content: "";
+  position: absolute;
+  z-index: -1;
+  left: 50%;
+  top: 50%;
+  width: 118%;
+  height: 260%;
+  transform: translate(-50%, -50%);
+  background: radial-gradient(closest-side, rgb(var(--accent-rgb) / 0.5), rgb(var(--accent-rgb) / 0.16) 55%, transparent);
+  animation: guide-breathe 0.9s ease-in-out infinite alternate;
+}
+/* On an accent swatch the light is a halo round it, not a fill over it. */
+.guide-light.disc::before { transform: scale(1.5); }
+@keyframes guide-breathe { from { opacity: 0.72; } to { opacity: 1; } }
+
+.guide-tiles {
+  display: flex;
+  justify-content: center;
+  gap: calc(14 * var(--gs));
+  padding: calc(9 * var(--gs)) 0;
+}
+.guide-tile {
+  flex: 0 1 calc(68 * var(--gs));
+  min-width: 0;
+  aspect-ratio: 1;
+  display: grid;
+  place-items: center;
+  padding: 0;
+  border: 0;
+  border-radius: 30%;
+  color: inherit;
+  cursor: pointer;
+}
+.guide-tile .glyph { width: 62%; height: 62%; opacity: 0.82; }
+.guide-tile.on .glyph { opacity: 0.95; }
+/* A switch that is on is filled with the accent, the brightest thing in the
+   column; the light is only a place. */
+.guide-tile[aria-pressed="true"] {
+  background: rgb(var(--accent-rgb) / 0.68);
+  box-shadow: inset 1.5px 1.5px 0 rgb(255 255 255 / 0.4), inset -1px -1px 0 rgb(0 0 0 / 0.15);
+}
+.guide-tile[aria-pressed="true"] .glyph { opacity: 1; }
+
+.guide-bar {
+  display: flex;
+  align-items: center;
+  gap: calc(16 * var(--gs));
+  height: calc(52 * var(--gs));
+  margin: calc(5 * var(--gs)) 0;
+  padding: 0 calc(24 * var(--gs)) 0 calc(20 * var(--gs));
+  border-radius: 999px;
+  cursor: pointer;
+}
+.guide-bar .glyph { flex: none; width: calc(28 * var(--gs)); height: calc(28 * var(--gs)); }
+.guide-bar input[type="range"] {
+  --level: 50%;
+  flex: 1;
+  min-width: 0;
+  height: calc(18 * var(--gs));
+  margin: 0;
+  background: transparent;
+  cursor: pointer;
+  -webkit-appearance: none;
+  appearance: none;
+}
+.guide-bar input[type="range"]:focus { outline: none; }
+.guide-bar input[type="range"]::-webkit-slider-runnable-track {
+  height: calc(7 * var(--gs));
+  border-radius: 999px;
+  background: linear-gradient(90deg, #fff var(--level), rgb(255 255 255 / 0.3) var(--level));
+}
+.guide-bar input[type="range"]::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  width: calc(15 * var(--gs));
+  height: calc(15 * var(--gs));
+  margin-top: calc(-4 * var(--gs));
+  border-radius: 50%;
+  background: #fff;
+  box-shadow: 0 1px 4px rgb(0 0 0 / 0.35);
+}
+.guide-bar input[type="range"]::-moz-range-track { height: calc(7 * var(--gs)); border-radius: 999px; background: rgb(255 255 255 / 0.3); }
+.guide-bar input[type="range"]::-moz-range-progress { height: calc(7 * var(--gs)); border-radius: 999px; background: #fff; }
+.guide-bar input[type="range"]::-moz-range-thumb { width: calc(15 * var(--gs)); height: calc(15 * var(--gs)); border: 0; border-radius: 50%; background: #fff; box-shadow: 0 1px 4px rgb(0 0 0 / 0.35); }
+
+.guide-swatches {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  gap: calc(12 * var(--gs));
+  padding: calc(14 * var(--gs)) calc(8 * var(--gs));
+}
+.guide-swatches button {
+  width: calc(30 * var(--gs));
+  height: calc(30 * var(--gs));
+  padding: 0;
+  border: 0;
+  border-radius: 50%;
+  background: var(--swatch);
+  box-shadow: inset 1.5px 1.5px 0 rgb(255 255 255 / 0.5), inset -1px -1px 0 rgb(0 0 0 / 0.25), 0 2px 6px rgb(0 0 0 / 0.4);
+  cursor: pointer;
+}
+.guide-swatches button[aria-pressed="true"] { outline: 2px solid #fff; outline-offset: 3px; }
+
+/* A rule between the bands of the column: barely there, a grouping and not a
+   border, and as wide as the header rather than the chips. */
+.guide-rule {
+  height: 1px;
+  margin: calc(14.5 * var(--gs)) calc(11.2 * var(--gs));
+  border: 0;
+  background: rgb(var(--accent-soft-rgb) / 0.3);
+}
+
+.guide-rows { display: block; }
+.guide-row {
+  display: flex;
+  align-items: center;
+  width: 100%;
+  height: calc(66 * var(--gs));
+  margin: calc(5 * var(--gs)) 0;
+  padding: 0 calc(24 * var(--gs));
+  border: 0;
+  border-radius: 999px;
+  font: inherit;
+  font-size: calc(24 * var(--gs));
+  line-height: 1.2;
+  color: rgb(255 255 255 / 0.9);
+  text-align: left;
+  text-decoration: none;
+  cursor: pointer;
+}
+.guide-row span { overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+.guide-row.on { color: #fff; font-weight: 700; }
+.guide-row.here::after { content: ""; flex: none; margin-left: auto; width: calc(8 * var(--gs)); height: calc(8 * var(--gs)); border-radius: 50%; background: var(--accent-soft); box-shadow: 0 0 10px var(--accent-soft); }
+.guide-foot { padding: calc(18 * var(--gs)) calc(11.2 * var(--gs)) 0; font-size: max(12px, calc(14 * var(--gs))); color: rgb(var(--text-soft-rgb) / 0.8); }
+.guide-foot a { color: inherit; }
+
+/* The card the screen flies into: its rim, the frame the light puts round it,
+   which breathes, and its name under it. They hold back until it has landed. */
+.guide-card {
+  --gs: 1px;
+  position: fixed;
+  z-index: 75;
+  border-radius: calc(18 * var(--gs));
+  box-shadow: inset 0 0 0 calc(1.5 * var(--gs)) rgb(255 255 255 / 0.4);
+  cursor: pointer;
+  visibility: hidden;
+  opacity: 0;
+}
+.guide-card-frame {
+  position: absolute;
+  inset: calc(-5 * var(--gs));
+  border-radius: calc(23 * var(--gs));
+  border: calc(3.5 * var(--gs)) solid rgb(var(--accent-rgb) / 0.55);
+  box-shadow: 0 0 calc(16 * var(--gs)) calc(2 * var(--gs)) rgb(var(--accent-soft-rgb) / 0.2), inset 0 0 0 1px rgb(255 255 255 / 0.12);
+  animation: guide-breathe 0.9s ease-in-out infinite alternate;
+  transition: border-color 0.2s var(--ease), box-shadow 0.2s var(--ease);
+}
+.guide-card.lit .guide-card-frame {
+  border-color: rgb(var(--accent-rgb) / 0.96);
+  box-shadow: 0 0 calc(18 * var(--gs)) calc(4 * var(--gs)) rgb(var(--accent-soft-rgb) / 0.42), inset 0 0 0 1px rgb(255 255 255 / 0.4);
+}
+.guide-card-title {
+  position: absolute;
+  left: var(--under, 0px);
+  top: calc(100% + 10 * var(--gs));
+  max-width: calc(100% - var(--under, 0px));
+  font-size: calc(18 * var(--gs));
+  line-height: 1.2;
+  color: rgb(255 255 255 / 0.76);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.guide-card.lit .guide-card-title { color: #fff; font-weight: 700; }
+
+/* While the guide is up its legend is the one in the corner, and the button
+   that opened it has nothing left to do. */
+.guide-open .legend { z-index: 85; }
+.guide-open .guide-button, .guide-open .language-button { opacity: 0; pointer-events: none; }
+
+/* The guide's own button, for a page driven by a pointer. */
+.guide-button {
+  position: fixed; top: calc(28 * var(--u)); left: calc(28 * var(--u)); z-index: 31;
+  width: 48px; height: 48px; border-radius: 16px; border: 0; padding: 0;
+  display: grid; place-items: center; cursor: pointer;
+  background: linear-gradient(180deg, rgb(var(--glass-raised-rgb) / 0.18), rgb(var(--glass-raised-rgb) / 0.06));
+  box-shadow: inset 1.5px 1.5px 0 rgb(255 255 255 / 0.24), inset -1px -1px 0 rgb(255 255 255 / 0.05), 0 8px 20px -10px rgb(0 0 0 / 0.6);
+  -webkit-backdrop-filter: blur(12px); backdrop-filter: blur(12px);
+}
+.guide-button .glyph { width: 32px; height: 32px; }
+.guide-button:hover { background: linear-gradient(180deg, rgb(var(--glass-raised-rgb) / 0.3), rgb(var(--glass-raised-rgb) / 0.12)); }
+
+/* --- the language --------------------------------------------------------- */
+
+/* Its button stands beside the guide's, made of the same glass. */
+.language-button {
+  position: fixed; top: calc(28 * var(--u)); left: calc(28 * var(--u) + 58px); z-index: 31;
+  width: 48px; height: 48px; border-radius: 16px; border: 0; padding: 0;
+  display: grid; place-items: center; cursor: pointer;
+  background: linear-gradient(180deg, rgb(var(--glass-raised-rgb) / 0.18), rgb(var(--glass-raised-rgb) / 0.06));
+  box-shadow: inset 1.5px 1.5px 0 rgb(255 255 255 / 0.24), inset -1px -1px 0 rgb(255 255 255 / 0.05), 0 8px 20px -10px rgb(0 0 0 / 0.6);
+  -webkit-backdrop-filter: blur(12px); backdrop-filter: blur(12px);
+}
+.language-button .glyph { width: 32px; height: 32px; }
+.language-button:hover, .language-open .language-button { background: linear-gradient(180deg, rgb(var(--glass-raised-rgb) / 0.3), rgb(var(--glass-raised-rgb) / 0.12)); }
+
+/* The menu: a panel of the shell's modal glass, its rows the guide's chips,
+   and one light gliding between them. */
+.language-scrim { position: fixed; inset: 0; z-index: 88; display: none; }
+.language-open .language-scrim { display: block; }
+.language-menu {
+  position: fixed; z-index: 90; left: 0; top: 0;
+  display: none; flex-direction: column;
+  width: min(300px, calc(100vw - 24px));
+  padding: 14px 14px 16px;
+  border-radius: 26px;
+  outline: none;
+}
+.language-open .language-menu { display: flex; animation: language-in 0.2s var(--ease-out) both; }
+@keyframes language-in { from { opacity: 0; transform: scale(0.94); } }
+.language-title {
+  display: flex; align-items: center; gap: 10px;
+  padding: 4px 10px 10px;
+  font-size: 15px; color: rgb(var(--text-soft-rgb) / 0.9);
+}
+.language-title .glyph { width: 26px; height: 26px; }
+.language-list { position: relative; overflow: auto; overscroll-behavior: contain; scrollbar-width: none; min-height: 0; }
+.language-list::-webkit-scrollbar { display: none; }
+.language-row {
+  position: relative; z-index: 1;
+  display: flex; align-items: center; width: 100%;
+  height: 48px; margin: 3px 0; padding: 0 18px;
+  border: 0; border-radius: 999px;
+  font: inherit; font-size: 17px; color: rgb(255 255 255 / 0.9); text-align: left;
+  background: rgb(var(--glass-raised-rgb) / 0.12);
+  cursor: pointer;
+}
+.language-row.on { color: #fff; font-weight: 700; background: transparent; }
+.language-row.here::after { content: ""; margin-left: auto; width: 8px; height: 8px; border-radius: 50%; background: var(--accent-soft); box-shadow: 0 0 10px var(--accent-soft); }
+.language-light {
+  position: absolute; left: 0; top: 0; z-index: 0; pointer-events: none;
+  border-radius: 999px;
+  background: linear-gradient(180deg, color-mix(in srgb, var(--accent) 78%, white), var(--accent) 55%, color-mix(in srgb, var(--accent) 84%, black));
+  box-shadow: inset 1.5px 1.5px 0 rgb(255 255 255 / 0.5), inset -1px -1px 0 rgb(0 0 0 / 0.16), 0 0 26px -4px rgb(var(--accent-rgb) / 0.7);
+  transition: transform 0.2s var(--ease-out), width 0.2s var(--ease-out), height 0.2s var(--ease-out);
+}
+.language-light.snap { transition: none; }
+
+/* --- a column page ------------------------------------------------------ */
+
+/*
+ * A page is a column of the bar stepped into: the category it hangs off stands
+ * receded at the top left, the column's rows run down the left at the cross,
+ * the chosen row lit on its glass disc, and what that row is about stands on a
+ * pane of glass beside it.
+ */
+.page-head {
+  position: relative;
+  z-index: 10;
+  display: flex;
+  align-items: center;
+  gap: 18px;
+  padding: calc(28 * var(--u)) var(--gutter) 0 calc(154px + 12 * var(--u));
+  min-height: 108px;
+}
+.trail {
+  display: flex; align-items: center; gap: 16px;
+  color: #fff; text-decoration: none;
+  border-radius: 20px; padding: 6px 12px 6px 6px;
+}
+.trail-tile {
+  width: 64px; height: 64px; border-radius: 22px; flex: none;
+  display: grid; place-items: center;
+  background: linear-gradient(180deg, rgb(var(--glass-raised-rgb) / 0.16), rgb(var(--glass-raised-rgb) / 0.05));
+  box-shadow: inset 1.5px 1.5px 0 rgb(255 255 255 / 0.22), inset -1px -1px 0 rgb(255 255 255 / 0.05);
+}
+.trail-tile .glyph { width: 46px; height: 46px; }
+.trail-text { display: grid; line-height: 1.2; }
+.trail-back { font-size: 13px; color: var(--text-soft); letter-spacing: 0.02em; }
+.trail-name { font-size: 26px; font-weight: 700; }
+.trail:hover .trail-back { color: #fff; }
+
+.column-page {
+  position: relative;
+  z-index: 10;
+  display: grid;
+  grid-template-columns: minmax(300px, 30%) minmax(0, 1fr);
+  gap: clamp(24px, 3vw, 56px);
+  padding: 8px var(--gutter) 140px max(var(--gutter), calc(22vw - 120px));
+  max-width: 1760px;
+}
+
+.rows-nav { display: contents; }
+.rows {
+  position: sticky;
+  top: 24px;
+  align-self: start;
+  display: grid;
+  gap: 2px;
+  padding-top: 20px;
+  margin: 0;
+  list-style: none;
+}
+.row {
+  --icon: 50px;
+  position: relative;
+  display: grid;
+  grid-template-columns: 96px 1fr;
+  align-items: center;
+  min-height: 66px;
+  padding: 4px 0;
+  color: rgb(255 255 255 / 0.9);
+  text-decoration: none;
+  border-radius: 20px;
+  transition: min-height 0.32s var(--ease);
+}
+.row-icon { position: relative; width: 96px; height: 96px; display: grid; place-items: center; }
+.row-icon::before {
+  /* The chosen row's glass disc, and the glow under it. */
+  content: "";
+  position: absolute;
+  width: 94px; height: 94px; border-radius: 50%;
+  background:
+    radial-gradient(circle at 34% 28%, rgb(255 255 255 / 0.2), transparent 45%),
+    radial-gradient(circle at 50% 55%, rgb(var(--accent-rgb) / 0.3), rgb(var(--accent-rgb) / 0.14));
+  box-shadow:
+    inset 2px 2px 0 rgb(255 255 255 / 0.32),
+    inset -1px -2px 1px rgb(0 0 0 / 0.18),
+    0 0 0 1px rgb(var(--accent-soft-rgb) / 0.1),
+    0 0 46px 8px rgb(var(--accent-rgb) / calc(0.3 + 0.18 * var(--pulse, 0.5)));
+  opacity: 0;
+  transform: scale(0.7);
+  transition: opacity 0.3s var(--ease), transform 0.36s var(--ease-out);
+}
+.row .glyph { position: relative; width: var(--icon); height: var(--icon); transition: width 0.32s var(--ease), height 0.32s var(--ease); }
+.row-text { display: grid; min-width: 0; padding-left: 6px; }
+.row-title { font-size: 20px; font-weight: 400; line-height: 1.25; transition: font-size 0.25s var(--ease); }
+.row-comment {
+  font-size: 15px; line-height: 1.35; color: rgb(var(--text-soft-rgb) / 0.85);
+  max-height: 0; opacity: 0; overflow: hidden;
+  transition: max-height 0.3s var(--ease), opacity 0.25s var(--ease);
+}
+.row.lit { --icon: 76px; min-height: 108px; color: #fff; }
+@media (min-width: 981px) and (max-height: 820px) {
+  .row { min-height: 56px; --icon: 42px; }
+  .row.lit { min-height: 96px; --icon: 66px; }
+  .row-icon { height: 84px; }
+  .row-icon::before { width: 84px; height: 84px; }
+}
+@media (min-width: 981px) {
+  .rows { max-height: calc(100vh - 48px); overflow-y: auto; scrollbar-width: none; overscroll-behavior: contain; }
+  .rows::-webkit-scrollbar { display: none; }
+}
+.row.lit .row-icon::before { opacity: 1; transform: none; animation: lit-pulse 1.8s ease-in-out infinite alternate; }
+@keyframes lit-pulse {
+  from { box-shadow: inset 2px 2px 0 rgb(255 255 255 / 0.32), inset -1px -2px 1px rgb(0 0 0 / 0.18), 0 0 0 1px rgb(var(--accent-soft-rgb) / 0.1), 0 0 40px 6px rgb(var(--accent-rgb) / 0.28); }
+  to { box-shadow: inset 2px 2px 0 rgb(255 255 255 / 0.32), inset -1px -2px 1px rgb(0 0 0 / 0.18), 0 0 0 1px rgb(var(--accent-soft-rgb) / 0.1), 0 0 52px 10px rgb(var(--accent-rgb) / 0.5); }
+}
+.row.lit .row-title { font-size: 26px; font-weight: 700; }
+.row.lit .row-comment { max-height: 3em; opacity: 1; }
+.row:hover:not(.lit) .row-title { color: #fff; }
+
+.panes { display: grid; gap: 28px; min-width: 0; padding-top: 18px; }
+.pane {
+  padding: clamp(22px, 3vw, 40px);
+  scroll-margin-top: 28px;
+  opacity: 0.8;
+  transition: opacity 0.35s var(--ease), box-shadow 0.35s var(--ease);
+}
+.pane.lit { opacity: 1; box-shadow:
+    inset 1.5px 1.5px 0 rgb(255 255 255 / 0.28),
+    inset -1px -1px 0 rgb(255 255 255 / 0.06),
+    inset 0 0 0 1px rgb(255 255 255 / 0.07),
+    0 0 70px -30px rgb(var(--accent-rgb) / 0.6),
+    0 24px 60px -20px rgb(0 0 0 / 0.55); }
+.pane h2 { display: flex; align-items: center; gap: 14px; margin: 0 0 14px; font-size: clamp(24px, 2.4vw, 32px); line-height: 1.2; letter-spacing: -0.005em; }
+.pane h2 .glyph { width: 44px; height: 44px; }
+.pane h3 { margin: 26px 0 8px; font-size: 19px; }
+.pane p, .pane li { color: rgb(var(--text-soft-rgb) / 0.95); }
+.pane p { margin: 0 0 14px; max-width: 72ch; }
+.pane strong { color: #fff; font-weight: 700; }
+.pane ul { margin: 0 0 14px; padding-left: 1.2em; max-width: 72ch; }
+.pane li { margin: 4px 0; }
+.pane li::marker { color: var(--accent-soft); }
+.pane .lede { font-size: 19px; color: #fff; }
+.pane .more { display: flex; flex-wrap: wrap; gap: 12px; margin-top: 18px; }
+.pane figure { margin: 22px 0 8px; }
+.pane figure img, .shot {
+  display: block; width: 100%; border-radius: 18px;
+  box-shadow: 0 0 0 1px rgb(255 255 255 / 0.1), 0 18px 50px -18px rgb(0 0 0 / 0.7);
+}
+.pane figcaption { margin-top: 10px; font-size: 14px; color: rgb(var(--text-soft-rgb) / 0.75); }
+
+.pane code, .pane kbd {
+  font-family: var(--mono); font-size: 0.88em;
+  padding: 1px 6px; border-radius: 7px;
+  background: rgb(var(--glass-raised-rgb) / 0.14);
+  color: #fff;
+}
+.pane kbd { box-shadow: inset 0 -1px 0 rgb(255 255 255 / 0.2), inset 0 0 0 1px rgb(255 255 255 / 0.12); }
+.pane pre {
+  position: relative;
+  margin: 12px 0 16px;
+  padding: 16px 18px;
+  border-radius: 16px;
+  overflow-x: auto;
+  background: rgb(0 0 0 / 0.32);
+  box-shadow: inset 0 0 0 1px rgb(255 255 255 / 0.08), inset 0 10px 20px -16px rgb(0 0 0 / 0.8);
+  font: 14.5px/1.6 var(--mono);
+  color: #f2edff;
+  /* Room for the Copy button, so a long line never runs under it. */
+  padding-right: 76px;
+}
+.pane pre code { padding: 0; background: none; font-size: inherit; }
+.copy {
+  position: absolute; top: 8px; right: 8px;
+  font: 500 12px/1 var(--font); color: var(--text-soft);
+  padding: 7px 10px; border-radius: 10px; border: 0; cursor: pointer;
+  background: rgb(var(--glass-raised-rgb) / 0.16);
+}
+.copy:hover { color: #fff; background: rgb(var(--glass-raised-rgb) / 0.28); }
+
+.table-wrap { overflow-x: auto; margin: 10px 0 16px; border-radius: 16px; box-shadow: inset 0 0 0 1px rgb(255 255 255 / 0.08); }
+.pane table { width: 100%; border-collapse: collapse; font-size: 15.5px; }
+.pane th, .pane td { text-align: left; padding: 11px 16px; vertical-align: top; }
+.pane th { font-weight: 700; color: #fff; background: rgb(var(--glass-raised-rgb) / 0.1); }
+.pane td { color: rgb(var(--text-soft-rgb) / 0.95); border-top: 1px solid rgb(255 255 255 / 0.07); }
+
+.cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(230px, 1fr)); gap: 14px; margin: 16px 0 6px; }
+.card {
+  display: grid; gap: 6px; align-content: start;
+  padding: 18px 18px 16px;
+  border-radius: 20px;
+  background: linear-gradient(170deg, rgb(var(--glass-raised-rgb) / 0.13), rgb(var(--glass-raised-rgb) / 0.04));
+  box-shadow: inset 1.5px 1.5px 0 rgb(255 255 255 / 0.16), inset -1px -1px 0 rgb(255 255 255 / 0.04);
+  color: inherit; text-decoration: none;
+}
+a.card { transition: background 0.2s var(--ease), transform 0.2s var(--ease), box-shadow 0.2s var(--ease); }
+a.card:hover {
+  background: linear-gradient(170deg, rgb(var(--accent-rgb) / 0.28), rgb(var(--accent-rgb) / 0.1));
+  box-shadow: inset 1.5px 1.5px 0 rgb(255 255 255 / 0.3), 0 0 40px -12px rgb(var(--accent-rgb) / 0.6);
+}
+.card .glyph { width: 48px; height: 48px; }
+.card b { color: #fff; font-size: 17px; }
+.card span { font-size: 14.5px; color: rgb(var(--text-soft-rgb) / 0.9); line-height: 1.45; }
+
+.note {
+  display: flex; gap: 14px; align-items: flex-start;
+  margin: 14px 0; padding: 14px 18px; border-radius: 16px;
+  background: rgb(var(--accent-rgb) / 0.14);
+  box-shadow: inset 1.5px 1.5px 0 rgb(255 255 255 / 0.14);
+  color: rgb(var(--text-soft-rgb) / 0.98);
+  font-size: 15.5px;
+}
+.note .glyph { width: 30px; height: 30px; margin-top: 1px; }
+
+.tabs { display: flex; flex-wrap: wrap; gap: 8px; margin: 14px 0 4px; }
+.tabs button {
+  font: 500 15px/1 var(--font); color: var(--text-soft);
+  padding: 10px 16px; border-radius: 999px; border: 0; cursor: pointer;
+  background: rgb(var(--glass-raised-rgb) / 0.1);
+  box-shadow: inset 1px 1px 0 rgb(255 255 255 / 0.12);
+}
+.tabs button[aria-selected="true"] {
+  color: #fff; font-weight: 700;
+  background: linear-gradient(180deg, color-mix(in srgb, var(--accent) 88%, white), var(--accent) 60%, color-mix(in srgb, var(--accent) 80%, black));
+  box-shadow: inset 1.5px 1.5px 0 rgb(255 255 255 / 0.4), 0 0 24px -6px rgb(var(--accent-rgb) / 0.7);
+}
+.tab-panel[hidden] { display: none; }
+
+.site-foot {
+  position: relative; z-index: 10;
+  padding: 0 var(--gutter) 110px max(var(--gutter), calc(22vw - 120px));
+  color: rgb(var(--text-soft-rgb) / 0.7);
+  font-size: 14px;
+}
+.site-foot a { color: inherit; }
+
+/* Arrival: the rows and the panes come in one after another, as the shell's
+   entries do — a short lead, then a stagger, each sliding a little way up. */
+.arrive { opacity: 0; transform: translateY(14px); }
+.arrived .arrive { opacity: 1; transform: none; transition: opacity 0.42s var(--ease-out), transform 0.5s var(--ease-out); transition-delay: calc(0.12s + var(--i, 0) * 0.045s); }
+.arrived .pane.arrive:not(.lit) { opacity: 0.8; }
+
+/* --- narrow displays ---------------------------------------------------- */
+
+@media (max-width: 980px) {
+  .column-page { display: block; padding: 0 var(--gutter) 120px; }
+  .rows {
+    top: 0;
+    z-index: 20;
+    display: flex;
+    gap: 6px;
+    overflow-x: auto;
+    scrollbar-width: none;
+    padding: 10px 2px 12px;
+    margin: 0 calc(-1 * var(--gutter));
+    padding-inline: var(--gutter);
+    background: linear-gradient(180deg, rgb(var(--glass-rgb) / 0.82), rgb(var(--glass-rgb) / 0.55) 70%, transparent);
+    -webkit-backdrop-filter: blur(14px);
+    backdrop-filter: blur(14px);
+    -webkit-mask: linear-gradient(90deg, transparent, #000 var(--gutter), #000 calc(100% - var(--gutter)), transparent);
+    mask: linear-gradient(90deg, transparent, #000 var(--gutter), #000 calc(100% - var(--gutter)), transparent);
+  }
+  .rows::-webkit-scrollbar { display: none; }
+  .row, .row.lit { --icon: 26px; grid-template-columns: auto auto; gap: 8px; min-height: 0; padding: 7px 14px 7px 10px; border-radius: 999px; background: rgb(var(--glass-raised-rgb) / 0.1); }
+  .row-icon { width: auto; height: auto; }
+  .row-icon::before { display: none; }
+  .row-text { padding: 0; }
+  .row-title, .row.lit .row-title { font-size: 15px; white-space: nowrap; }
+  .row-comment { display: none; }
+  .row.lit {
+    background: linear-gradient(180deg, color-mix(in srgb, var(--accent) 88%, white), var(--accent) 60%, color-mix(in srgb, var(--accent) 80%, black));
+    box-shadow: inset 1.5px 1.5px 0 rgb(255 255 255 / 0.4), 0 0 20px -6px rgb(var(--accent-rgb) / 0.7);
+  }
+  .page-head { padding: 18px var(--gutter) 6px; min-height: 84px; }
+  .trail-tile { width: 52px; height: 52px; border-radius: 18px; }
+  .trail-tile .glyph { width: 38px; height: 38px; }
+  .trail-name { font-size: 22px; }
+  .panes { gap: 18px; padding-top: 12px; }
+  .rows > li { flex: none; }
+  .pane { opacity: 1; }
+  .site-foot { padding: 0 var(--gutter) 100px; }
+  /* Where a thumb is, and clear of the strip of rows stuck to the top. */
+  .guide-button { top: auto; left: auto; bottom: 18px; right: var(--gutter); width: 52px; height: 52px; border-radius: 18px; background: rgb(var(--glass-rgb) / 0.6); }
+  .language-button { top: auto; left: auto; bottom: 18px; right: calc(var(--gutter) + 62px); width: 52px; height: 52px; border-radius: 18px; background: rgb(var(--glass-rgb) / 0.6); }
+  .corner { top: 30px; right: var(--gutter); font-size: 17px; }
+  .corner .glyph { width: 22px; height: 22px; }
+  html { scroll-padding-top: 76px; }
+}
+@media (max-width: 560px) {
+  body { font-size: 16px; }
+  .corner { display: none; }
+  .legend { display: none; }
+  .pane { border-radius: 22px; }
+  .pane h2 .glyph { width: 36px; height: 36px; }
+  .pane table { font-size: 14px; }
+  .pane th, .pane td { padding: 9px 12px; }
+}
+@media (hover: none) {
+  .legend { display: none; }
+}
+
+/* --- the Settings page's own controls ---------------------------------------- */
+
+.swatches { display: grid; grid-template-columns: repeat(auto-fill, minmax(124px, 1fr)); gap: 10px; margin: 18px 0; }
+.swatch {
+  display: flex; align-items: center; gap: 10px;
+  padding: 10px 12px; border-radius: 16px; border: 0; cursor: pointer;
+  font: 500 15px/1.2 var(--font); color: var(--text-soft); text-align: left;
+  background: rgb(var(--glass-raised-rgb) / 0.08);
+  box-shadow: inset 1px 1px 0 rgb(255 255 255 / 0.12);
+  transition: background 0.2s var(--ease), box-shadow 0.2s var(--ease), color 0.2s var(--ease);
+}
+.swatch:hover { background: rgb(var(--glass-raised-rgb) / 0.16); color: #fff; }
+.swatch-dot {
+  width: 30px; height: 30px; border-radius: 50%; flex: none;
+  background: radial-gradient(circle at 35% 30%, color-mix(in srgb, var(--swatch) 50%, white), var(--swatch) 55%, color-mix(in srgb, var(--swatch) 70%, black));
+  box-shadow: inset 1.5px 1.5px 0 rgb(255 255 255 / 0.5), inset -1px -1px 0 rgb(0 0 0 / 0.25), 0 3px 8px rgb(0 0 0 / 0.45);
+  display: grid; place-items: center;
+}
+.swatch[aria-pressed="true"] {
+  color: #fff; font-weight: 700;
+  background: linear-gradient(180deg, rgb(var(--accent-rgb) / 0.42), rgb(var(--accent-rgb) / 0.22));
+  box-shadow: inset 1.5px 1.5px 0 rgb(255 255 255 / 0.3), 0 0 28px -8px rgb(var(--accent-rgb) / 0.8);
+}
+/* The one in force carries a tick, as the shell's value rows do. */
+.swatch[aria-pressed="true"] .swatch-dot::after {
+  content: ""; width: 12px; height: 7px; margin-top: -3px;
+  border: solid #fff; border-width: 0 0 2.5px 2.5px; transform: rotate(-45deg);
+  filter: drop-shadow(0 1px 1px rgb(0 0 0 / 0.5));
+}
+.toggles { display: flex; flex-wrap: wrap; gap: 10px; margin: 6px 0 16px; }
+.toggles .control b { font-weight: 700; color: #fff; }
+.toggles .control[aria-pressed="true"] { background: linear-gradient(180deg, rgb(var(--glass-raised-rgb) / 0.36), rgb(var(--glass-raised-rgb) / 0.18)); }
+
+/* --- leaving a page ---------------------------------------------------------- */
+
+body.leaving main, body.leaving .page-head, body.leaving .site-foot { opacity: 0; transform: translateX(24px); transition: opacity 0.18s var(--ease), transform 0.18s var(--ease); }
+
+/* --- a toast: a word said once, in the corner ------------------------------- */
+
+.toast {
+  position: fixed; left: calc(28 * var(--u)); bottom: calc(28 * var(--u)); z-index: 40;
+  display: flex; align-items: center; gap: 12px;
+  max-width: min(520px, calc(100vw - 32px));
+  padding: 12px 18px 12px 12px; border-radius: 20px;
+  font-size: 15px; color: rgb(var(--text-soft-rgb) / 0.98);
+  opacity: 0; transform: translateY(12px);
+  transition: opacity 0.4s var(--ease), transform 0.4s var(--ease-out);
+}
+.toast.up { opacity: 1; transform: none; }
+.toast .glyph { width: 34px; height: 34px; }
+
+/* --- the start screen ----------------------------------------------------------- */
+
+body.bar-page { height: 100svh; overflow: hidden; overscroll-behavior: none; touch-action: none; }
+.bar { position: fixed; inset: 0; z-index: 10; overflow: hidden; }
+.bar-layer { position: absolute; inset: 0; pointer-events: none; }
+.bar-layer > * { pointer-events: auto; }
+
+/* What the bar is without its script: a plain map of the site. */
+body:not(.bar-live) .bar { position: relative; overflow: visible; padding: 110px var(--gutter) 80px; }
+body:not(.bar-live).bar-page { height: auto; overflow: auto; touch-action: auto; }
+body:not(.bar-live) .bar-categories { list-style: none; margin: 0 auto; padding: 0; max-width: 1100px; display: grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap: 18px; }
+body:not(.bar-live) .bar-categories > li { padding: 20px 22px; border-radius: 24px; background: rgb(var(--glass-raised-rgb) / 0.08); }
+body:not(.bar-live) .cat-name { font-weight: 700; font-size: 20px; }
+body:not(.bar-live) .cat-rows { margin: 8px 0 0; padding-left: 1.1em; }
+body:not(.bar-live) .cat-rows a { display: block; padding: 3px 0; }
+body:not(.bar-live) .row-note { display: block; font-size: 14px; color: var(--text-soft); }
+
+.bar-live .bar-categories, .bar-live .cat-rows { list-style: none; margin: 0; padding: 0; }
+.bar-live .cat-name { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); }
+.bar-mark {
+  position: absolute; left: 0; top: 0;
+  width: 84px; height: 84px;
+  will-change: transform, opacity;
+  visibility: hidden;
+}
+.bar-hit {
+  position: absolute; left: 0; top: 0;
+  border: 0; padding: 0; margin: 0;
+  background: transparent;
+  border-radius: 32%;
+  cursor: pointer;
+  will-change: transform;
+}
+.bar-hit:focus-visible { outline: 2px solid var(--accent-soft); outline-offset: 4px; }
+.bar-label {
+  position: absolute; left: 0; top: 0;
+  text-align: center; font-weight: 700; line-height: 1.2;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  text-shadow: 0 1px 12px rgb(0 0 0 / 0.35);
+  pointer-events: none;
+  will-change: transform, opacity;
+}
+.bar-live .cat-rows a {
+  position: absolute; left: 0; top: 0;
+  display: block;
+  color: #fff; text-decoration: none;
+  opacity: 0;
+  will-change: transform, opacity;
+  border-radius: 16px;
+}
+.bar-live .cat-rows a .bar-mark { top: var(--mark-y, 0); width: var(--mark, 64px); height: var(--mark, 64px); pointer-events: auto; visibility: inherit; }
+.bar-live .cat-rows a:focus-visible { outline: none; }
+.bar-live .cat-rows a:focus-visible .row-name { text-decoration: underline; text-decoration-color: var(--accent-soft); }
+.bar-text {
+  position: absolute;
+  left: var(--text-x, 90px);
+  top: var(--text-y, 0);
+  right: 0;
+  display: grid;
+  min-width: 0;
+}
+.bar-live .row-name {
+  font-size: var(--name, 22px); line-height: 1.25; font-weight: 400;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  text-shadow: 0 1px 10px rgb(0 0 0 / 0.3);
+}
+.bar-live .row-note {
+  font-size: var(--note, 19px); line-height: 1.3;
+  margin-top: calc(var(--name, 30px) * 0.2);
+  color: rgb(var(--text-soft-rgb) / 0.85);
+  overflow: hidden; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical;
+  visibility: hidden; height: 0;
+}
+.bar-live a.lit .row-name { font-weight: 700; }
+.bar-live a.lit .row-note { visibility: visible; height: auto; }
+.bar-live .row-ext::after { content: " ↗"; font-weight: 400; opacity: 0.7; }
+
+/* A category's mark is a picture on its button, not a target of its own: a
+   click on the icon is a click on the tile. */
+.bar-layer > .bar-mark { pointer-events: none; }
+
+/* Under a mouse, a row lights where it stands and shows its line — it does not
+   move, so the click that follows lands on it. The tile under the pointer
+   brightens its mark. */
+@media (hover: hover) {
+  .bar-live .cat-rows a:not(.lit):hover .row-name { color: #fff; text-shadow: 0 0 18px rgb(var(--accent-soft-rgb) / 0.55), 0 1px 10px rgb(0 0 0 / 0.3); }
+  .bar-live .cat-rows a:not(.lit):hover .bar-mark { filter: brightness(1.18) drop-shadow(0 0 14px rgb(var(--accent-soft-rgb) / 0.45)); }
+  .bar-hit:hover + .bar-mark { filter: brightness(1.15) drop-shadow(0 0 16px rgb(var(--accent-soft-rgb) / 0.5)); }
+}
+.bar-live .cat-rows a { cursor: pointer; }
+
+/* The search: what is typed, written large beside the button it gathered into. */
+.bar-query {
+  position: absolute; left: 0; top: 0;
+  white-space: nowrap; overflow: hidden; text-overflow: clip;
+  direction: ltr; line-height: 1.25; font-weight: 400;
+  text-shadow: 0 1px 14px rgb(0 0 0 / 0.35);
+  pointer-events: none;
+  visibility: hidden;
+}
+/* It does not blink: a caret that stays put is no harder to find. */
+.bar-searching .bar-query::after { content: "|"; margin-left: 2px; font-weight: 400; color: var(--accent-soft); }
+.bar-nothing {
+  position: absolute; left: 0; top: 0;
+  color: rgb(var(--text-soft-rgb) / 0.75);
+  pointer-events: none;
+  visibility: hidden;
+}
+
+/* Without WebGL, the tiles and the disc are the page's own. */
+.bar-plain .bar-hit {
+  background: linear-gradient(180deg, rgb(var(--glass-raised-rgb) / 0.14), rgb(var(--glass-raised-rgb) / 0.05));
+  box-shadow: inset 1.5px 1.5px 0 rgb(255 255 255 / 0.2), inset -1px -1px 0 rgb(255 255 255 / 0.05);
+}
+.bar-plain .cat-rows a.lit .bar-mark {
+  border-radius: 50%;
+  background: radial-gradient(circle at 40% 35%, rgb(var(--accent-soft-rgb) / 0.4), rgb(var(--accent-rgb) / 0.3));
+  box-shadow: 0 0 0 calc(var(--mark, 105px) * 0.235) rgb(var(--accent-rgb) / 0.22), 0 0 60px 18px rgb(var(--accent-rgb) / 0.35);
+}
+.bar-plain .bar-hit.lit {
+  background: radial-gradient(circle at 40% 35%, rgb(var(--accent-soft-rgb) / 0.5), rgb(var(--accent-rgb) / 0.35));
+  box-shadow: inset 2px 2px 0 rgb(255 255 255 / 0.35), 0 0 60px 10px rgb(var(--accent-rgb) / 0.4);
+}
+
+@media (max-width: 560px) {
+  .toast { left: 12px; right: 12px; bottom: 16px; font-size: 14px; }
+}

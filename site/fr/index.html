@@ -1,0 +1,223 @@
+<!DOCTYPE html>
+
+<html lang="fr">
+<head>
+<meta charset="utf-8"/>
+<meta content="width=device-width, initial-scale=1, viewport-fit=cover" name="viewport"/>
+<script>
+  // The first time a visit reaches the start screen, it opens in the
+  // visitor's language: the one they chose on this site before, or else the
+  // first their browser asks for that the site speaks. Only here and only
+  // then, so a page linked to in one language stays in it, and a choice made
+  // from the menu is never overruled.
+  (function () {
+    if (document.documentElement.lang !== "en-GB") return;
+    // A search engine's or a language model's crawler reads the page it
+    // asked for: every language has its own address, named in the head.
+    if (/bot|crawl|spider|slurp|preview/i.test(navigator.userAgent)) return;
+    try {
+      // A page opened off the disk arrives with what the page before it kept
+      // in its address, and is no first arrival either.
+      var came = sessionStorage.getItem("lxb-arrived") || /[?&]lxb=/.test(location.search);
+      sessionStorage.setItem("lxb-arrived", "1");
+      if (came) return;
+      var dirs = { "de": "de", "en-US": "en-us", "es": "es", "fr": "fr", "pl": "pl", "pt-BR": "pt-br", "ru": "ru", "hi": "hi", "zh-CN": "zh-cn" };
+      var want = JSON.parse(localStorage.getItem("lxb-language") || "null");
+      var asked = want ? [] : navigator.languages || [navigator.language || ""];
+      for (var i = 0; i < asked.length && !want; i++) {
+        var tag = String(asked[i]).toLowerCase(), first = tag.split("-")[0];
+        if (tag === "en-us") want = "en-US";
+        else if (first === "en") want = "en-GB";
+        else if (first === "pt") want = "pt-BR";
+        else if (first === "zh") want = /hant|tw|hk|mo/.test(tag) ? null : "zh-CN";
+        else if (dirs[first]) want = first;
+      }
+      if (want && dirs[want]) location.replace(dirs[want] + "/index.html" + location.hash);
+    } catch (e) { /* storage refused: stay in English */ }
+  })();
+</script>
+<title>LineXinBar — un bureau façon console pour Linux, dans le style XMB</title>
+<meta content="LineXinBar est un bureau Linux façon console, avec un lanceur XMB à la manière de la XrossMediaBar, pour vos jeux, vos applications et vos médias : un compositeur Wayland léger que vous pilotez avec une manette, un clavier ou une souris." name="description"/>
+<!-- search and sharing: written by tools/translate.py build -->
+<link rel="canonical" href="https://petexy.github.io/LineXinBar/fr/">
+<link rel="alternate" hreflang="x-default" href="https://petexy.github.io/LineXinBar/">
+<link rel="alternate" hreflang="en" href="https://petexy.github.io/LineXinBar/">
+<link rel="alternate" hreflang="de" href="https://petexy.github.io/LineXinBar/de/">
+<link rel="alternate" hreflang="en-GB" href="https://petexy.github.io/LineXinBar/">
+<link rel="alternate" hreflang="en-US" href="https://petexy.github.io/LineXinBar/en-us/">
+<link rel="alternate" hreflang="es" href="https://petexy.github.io/LineXinBar/es/">
+<link rel="alternate" hreflang="fr" href="https://petexy.github.io/LineXinBar/fr/">
+<link rel="alternate" hreflang="pl" href="https://petexy.github.io/LineXinBar/pl/">
+<link rel="alternate" hreflang="pt-BR" href="https://petexy.github.io/LineXinBar/pt-br/">
+<link rel="alternate" hreflang="ru" href="https://petexy.github.io/LineXinBar/ru/">
+<link rel="alternate" hreflang="hi" href="https://petexy.github.io/LineXinBar/hi/">
+<link rel="alternate" hreflang="zh-CN" href="https://petexy.github.io/LineXinBar/zh-cn/">
+<meta property="og:type" content="website">
+<meta property="og:site_name" content="LineXinBar">
+<meta property="og:title" content="LineXinBar — un bureau façon console pour Linux, dans le style XMB">
+<meta property="og:description" content="LineXinBar est un bureau Linux façon console, avec un lanceur XMB à la manière de la XrossMediaBar, pour vos jeux, vos applications et vos médias : un compositeur Wayland léger que vous pilotez avec une manette, un clavier ou une souris.">
+<meta property="og:url" content="https://petexy.github.io/LineXinBar/fr/">
+<meta property="og:locale" content="fr_FR">
+<meta property="og:image" content="https://petexy.github.io/LineXinBar/assets/img/desktop.png">
+<meta property="og:image:width" content="1600">
+<meta property="og:image:height" content="900">
+<meta name="twitter:card" content="summary_large_image">
+<script type="application/ld+json">{"@context":"https://schema.org","@graph":[{"@type":"WebSite","@id":"https://petexy.github.io/LineXinBar/#website","url":"https://petexy.github.io/LineXinBar/fr/","name":"LineXinBar","description":"LineXinBar est un bureau Linux façon console, avec un lanceur XMB à la manière de la XrossMediaBar, pour vos jeux, vos applications et vos médias : un compositeur Wayland léger que vous pilotez avec une manette, un clavier ou une souris.","inLanguage":"fr"},{"@type":"SoftwareApplication","@id":"https://petexy.github.io/LineXinBar/#software","name":"LineXinBar","alternateName":["LXB","LineXinBar XMB"],"description":"LineXinBar est un bureau Linux façon console, avec un lanceur XMB à la manière de la XrossMediaBar, pour vos jeux, vos applications et vos médias : un compositeur Wayland léger que vous pilotez avec une manette, un clavier ou une souris.","url":"https://petexy.github.io/LineXinBar/fr/","applicationCategory":"DesktopEnhancementApplication","applicationSubCategory":"Desktop environment","operatingSystem":"Linux","softwareVersion":"0.9.3","license":"https://www.gnu.org/licenses/gpl-3.0.html","isAccessibleForFree":true,"offers":{"@type":"Offer","price":"0","priceCurrency":"USD"},"downloadUrl":"https://github.com/Petexy/LineXinBar/releases","installUrl":"https://petexy.github.io/LineXinBar/fr/install.html","screenshot":{"@type":"ImageObject","url":"https://petexy.github.io/LineXinBar/assets/img/desktop.png","width":1600,"height":900},"inLanguage":["de","en-GB","en-US","es","fr","pl","pt-BR","ru","hi","zh-CN"],"keywords":"LineXinBar, XMB, XrossMediaBar, cross-media bar, console-style desktop, Linux desktop, Wayland compositor, gamepad, controller, couch gaming, HTPC, Steam, Epic Games, RetroArch, RPCS3, PlayStation 3","author":{"@type":"Person","name":"Petexy","url":"https://github.com/Petexy"},"sameAs":["https://github.com/Petexy/LineXinBar"]}]}</script>
+<!-- /search and sharing -->
+<meta content="#060314" name="theme-color"/>
+<link href="../assets/glyphs/sm/logo.webp" rel="icon" type="image/webp"/>
+<link as="font" crossorigin="" href="../assets/fonts/Roboto-Regular-latin.woff2" rel="preload" type="font/woff2"/>
+<link as="font" crossorigin="" href="../assets/fonts/Roboto-Bold-latin.woff2" rel="preload" type="font/woff2"/>
+<link href="../assets/css/lxb.css" rel="stylesheet"/>
+</head>
+<body class="bar-page" data-page="start" data-screen="bar">
+<canvas aria-hidden="true" id="wallpaper"></canvas>
+<main class="bar" id="content">
+<h1 class="visually-hidden">LineXinBar — un bureau façon console pour Linux, dans le style XMB, pour vos jeux, vos applications et vos médias</h1>
+<p class="visually-hidden">Utilisez les flèches, une manette, la molette de la souris ou un glissement pour vous déplacer sur la barre, et Entrée, le bouton inférieur de la manette ou un clic pour ouvrir ce qui est allumé.</p>
+<nav aria-label="LineXinBar">
+<ul class="bar-categories">
+<li data-glyph="logo" data-id="overview">
+<span class="cat-name">LineXinBar</span>
+<ul class="cat-rows">
+<li><a data-glyph="logo" href="overview.html#what"><span class="row-name">Un bureau façon console</span><span class="row-note">Pour vos jeux, vos applications et vos médias — piloté à la manette, au clavier ou à la souris</span></a></li>
+<li><a data-glyph="chosen" href="overview.html#why"><span class="row-name">Pourquoi LineXinBar</span><span class="row-note">Un bureau qui s'utilise depuis le canapé</span></a></li>
+<li><a data-glyph="category-images" href="overview.html#screenshots"><span class="row-name">Captures d'écran</span><span class="row-note">L'écran d'accueil, les Paramètres et le guide</span></a></li>
+<li><a data-glyph="setting-info" href="overview.html#status"><span class="row-name">État du projet</span><span class="row-note">Premiers développements — ce qu'il faut savoir d'abord</span></a></li>
+<li><a data-glyph="category-development" href="https://github.com/Petexy/LineXinBar" rel="noopener" target="_blank"><span class="row-name">Code source</span><span class="row-note">LineXinBar sur GitHub</span></a></li>
+</ul>
+</li>
+<li data-glyph="setting-install-to" data-id="install">
+<span class="cat-name">Premiers pas</span>
+<ul class="cat-rows">
+<li><a data-glyph="launch" href="install.html#try"><span class="row-name">L'essayer dans une fenêtre</span><span class="row-note">Un seul script, depuis le dépôt</span></a></li>
+<li><a data-glyph="setting-install-to" href="install.html#packages"><span class="row-name">Installer un paquet</span><span class="row-note">Arch, Debian et Ubuntu, Fedora, NixOS</span></a></li>
+<li><a data-glyph="sign-out" href="install.html#session"><span class="row-name">Lancer la session</span><span class="row-note">Choisissez LineXinBar sur votre écran de connexion</span></a></li>
+<li><a data-glyph="add" href="install.html#optional"><span class="row-name">Paquets facultatifs</span><span class="row-note">RetroArch, Epic Games et PlayStation 3</span></a></li>
+<li><a data-glyph="setting-info" href="install.html#requirements"><span class="row-name">Ce qu'il lui faut</span><span class="row-note">Linux, un pilote de GPU fonctionnel, logind ou seatd</span></a></li>
+<li><a data-glyph="setting-system" href="install.html#hardware"><span class="row-name">Matériel</span><span class="row-note">Sur quoi il a tourné jusqu'ici</span></a></li>
+</ul>
+</li>
+<li data-glyph="category-games" data-id="games">
+<span class="cat-name">Jeux</span>
+<ul class="cat-rows">
+<li><a data-glyph="steam" href="games.html#steam"><span class="row-name">Steam</span><span class="row-note">Toute votre bibliothèque, connectée avec votre téléphone</span></a></li>
+<li><a data-glyph="launch" href="games.html#playing"><span class="row-name">Lancer un jeu</span><span class="row-note">Appuyez, et c'est le jeu qui apparaît</span></a></li>
+<li><a data-glyph="setting-users" href="games.html#friends"><span class="row-name">Amis et discussion</span><span class="row-note">Qui joue, messages et invitations</span></a></li>
+<li><a data-glyph="epic" href="games.html#epic"><span class="row-name">Epic Games</span><span class="row-note">Votre bibliothèque Epic, grâce à Heroic</span></a></li>
+<li><a data-glyph="retroarch" href="games.html#retroarch"><span class="row-name">RetroArch</span><span class="row-note">Vos propres jeux de console, en jaquettes</span></a></li>
+<li><a data-glyph="console-psx" href="games.html#discs"><span class="row-name">Disques de jeu</span><span class="row-note">Insérez un disque et il est sur la barre</span></a></li>
+<li><a data-glyph="ps3" href="games.html#ps3"><span class="row-name">PlayStation 3</span><span class="row-note">Grâce à RPCS3, avec la vidéo et la musique de chaque jeu</span></a></li>
+<li><a data-glyph="category-trophies" href="games.html#trophies"><span class="row-name">Trophées</span><span class="row-note">Les succès de toutes les bibliothèques, dans une seule colonne</span></a></li>
+</ul>
+</li>
+<li data-glyph="category-multimedia" data-id="media">
+<span class="cat-name">Applications et médias</span>
+<ul class="cat-rows">
+<li><a data-glyph="category-other" href="media.html#applications"><span class="row-name">Toutes les applications</span><span class="row-note">Rangées dans les catégories que vous connaissez déjà</span></a></li>
+<li><a data-glyph="search" href="media.html#search"><span class="row-name">Tout rechercher</span><span class="row-note">Commencez à taper sur l'écran d'accueil</span></a></li>
+<li><a data-glyph="category-music" href="media.html#music"><span class="row-name">Musique</span><span class="row-note">Vos chansons, rassemblées depuis votre dossier personnel</span></a></li>
+<li><a data-glyph="category-video" href="media.html#video"><span class="row-name">Vidéos</span><span class="row-note">Vos films, chacun avec une image</span></a></li>
+<li><a data-glyph="category-images" href="media.html#images"><span class="row-name">Images</span><span class="row-note">Vos photos, en colonne de vignettes</span></a></li>
+<li><a data-glyph="category-files" href="media.html#files"><span class="row-name">Fichiers</span><span class="row-note">Copier, déplacer, renommer, compresser et extraire à la manette</span></a></li>
+<li><a data-glyph="file-drive" href="media.html#drives"><span class="row-name">Disques</span><span class="row-note">Monter un disque, et le garder monté si vous voulez</span></a></li>
+<li><a data-glyph="category-waydroid" href="media.html#android"><span class="row-name">Applications Android</span><span class="row-note">Grâce à Waydroid, dans une colonne à part</span></a></li>
+</ul>
+</li>
+<li data-glyph="pad-guide" data-id="guide">
+<span class="cat-name">Le guide</span>
+<ul class="cat-rows">
+<li><a data-glyph="pad-guide" href="guide.html#overlay"><span class="row-name">À un bouton près</span><span class="row-note">Le guide s'ouvre par-dessus tout ce qui tourne</span></a></li>
+<li><a data-glyph="select-multiple" href="guide.html#cards"><span class="row-name">Changer d'application</span><span class="row-note">Chaque fenêtre en carte</span></a></li>
+<li><a data-glyph="volume" href="guide.html#quick"><span class="row-name">Réglages rapides</span><span class="row-note">Volume, luminosité et ne pas déranger</span></a></li>
+<li><a data-glyph="volume-mixer" href="guide.html#mixer"><span class="row-name">Mélangeur de volume</span><span class="row-note">Un curseur pour tout ce qui fait du bruit</span></a></li>
+<li><a data-glyph="notifications" href="guide.html#notifications"><span class="row-name">Notifications</span><span class="row-note">Tout ce qui a été annoncé, du plus récent au plus ancien</span></a></li>
+<li><a data-glyph="pointer-stick" href="guide.html#stick"><span class="row-name">Pointeur au stick</span><span class="row-note">Le stick droit devient une souris</span></a></li>
+<li><a data-glyph="setting-pip" href="guide.html#pip"><span class="row-name">Image dans l'image</span><span class="row-note">Une vidéo qui flotte au-dessus d'un jeu</span></a></li>
+<li><a data-glyph="mouse-right" href="guide.html#menu"><span class="row-name">Menus contextuels</span><span class="row-note">Des options sur tout, depuis n'importe quelle commande</span></a></li>
+</ul>
+</li>
+<li data-glyph="setting-display" data-id="displays">
+<span class="cat-name">Écrans</span>
+<ul class="cat-rows">
+<li><a data-glyph="setting-display" href="displays.html#multi"><span class="row-name">Plusieurs écrans</span><span class="row-note">Chaque écran navigue de son côté</span></a></li>
+<li><a data-glyph="setting-refresh" href="displays.html#modes"><span class="row-name">Définition et fréquence</span><span class="row-note">Chaque écran à son propre rythme</span></a></li>
+<li><a data-glyph="setting-hdr" href="displays.html#hdr"><span class="row-name">HDR</span><span class="row-note">Grande plage dynamique, écran par écran</span></a></li>
+<li><a data-glyph="setting-night-light" href="displays.html#night"><span class="row-name">Lumière nocturne</span><span class="row-note">Des couleurs plus chaudes le soir</span></a></li>
+<li><a data-glyph="setting-screen-rest" href="displays.html#oled"><span class="row-name">Protection OLED</span><span class="row-note">Met au repos un écran que personne ne regarde</span></a></li>
+<li><a data-glyph="setting-scale" href="displays.html#scaling"><span class="row-name">Échelle et orientation</span><span class="row-note">Plus grand ou plus petit, couché ou debout</span></a></li>
+<li><a data-glyph="setting-resolution" href="displays.html#app-resolution"><span class="row-name">Une définition par application</span><span class="row-note">Faire dessiner un jeu gourmand avec moins de pixels</span></a></li>
+</ul>
+</li>
+<li data-glyph="category-settings" data-id="settings">
+<span class="cat-name">Paramètres</span>
+<ul class="cat-rows">
+<li><a data-glyph="setting-accent" href="settings.html#accent"><span class="row-name">Couleur d'accentuation</span><span class="row-note">Douze palettes — essayez-les ici</span></a></li>
+<li><a data-glyph="setting-theme" href="settings.html#theme"><span class="row-name">Thème</span><span class="row-note">Eau ou soie, gouttes ou plat, étincelles ou rien</span></a></li>
+<li><a data-glyph="setting-wallpaper" href="settings.html#wallpaper"><span class="row-name">Votre propre fond d'écran</span><span class="row-note">Une image ou une vidéo à vous</span></a></li>
+<li><a data-glyph="setting-language" href="settings.html#language"><span class="row-name">Langue</span><span class="row-note">Dix langues, et tout le système suit</span></a></li>
+<li><a data-glyph="setting-wifi" href="settings.html#network"><span class="row-name">Réseau et Bluetooth</span><span class="row-note">Wi-Fi, câble et appairage, à la manette</span></a></li>
+<li><a data-glyph="volume" href="settings.html#sound"><span class="row-name">Son</span><span class="row-note">Sorties, entrées et la voix propre du shell</span></a></li>
+<li><a data-glyph="shutdown" href="settings.html#power"><span class="row-name">Alimentation</span><span class="row-note">La veille, le bouton d'alimentation et l'économiseur de batterie</span></a></li>
+<li><a data-glyph="setting-updates" href="settings.html#updates"><span class="row-name">Mises à jour</span><span class="row-note">Un appui pour mettre la machine à jour</span></a></li>
+<li><a data-glyph="setting-system" href="settings.html#low-end"><span class="row-name">Mode matériel modeste</span><span class="row-note">Pour les consoles portables et les machines plus anciennes</span></a></li>
+</ul>
+</li>
+<li data-glyph="setting-input" data-id="controls">
+<span class="cat-name">Commandes</span>
+<ul class="cat-rows">
+<li><a data-glyph="pad-stick" href="controls.html#pads"><span class="row-name">Manettes</span><span class="row-note">Branchez-en une et pilotez tout</span></a></li>
+<li><a data-glyph="pad-guide" href="controls.html#guide-button"><span class="row-name">Le bouton guide</span><span class="row-note">Toujours la sortie, quoi qu'il tourne</span></a></li>
+<li><a data-glyph="pad-north" href="controls.html#hints"><span class="row-name">Indications des boutons</span><span class="row-note">Dessinées pour la commande que vous avez en main</span></a></li>
+<li><a data-glyph="setting-keyboard" href="controls.html#keyboard"><span class="row-name">Clavier</span><span class="row-note">Les flèches, Entrée et la touche Super</span></a></li>
+<li><a data-glyph="setting-typed" href="controls.html#osk"><span class="row-name">Clavier à l'écran</span><span class="row-note">Tapez n'importe quoi sans quitter le canapé</span></a></li>
+<li><a data-glyph="setting-mouse" href="controls.html#pointer"><span class="row-name">Souris et tactile</span><span class="row-note">Clics, touchers et molette</span></a></li>
+<li><a data-glyph="setting-keys" href="controls.html#bindings"><span class="row-name">Raccourcis clavier</span><span class="row-note">Tous les raccourcis, et comment les changer</span></a></li>
+</ul>
+</li>
+<li data-glyph="category-utilities" data-id="desktop">
+<span class="cat-name">Bureau</span>
+<ul class="cat-rows">
+<li><a data-glyph="screenshot" href="desktop.html#screenshots"><span class="row-name">Captures d'écran</span><span class="row-note">Guide et la gâchette haute droite</span></a></li>
+<li><a data-glyph="setting-connect" href="desktop.html#sharing"><span class="row-name">Partage d'écran</span><span class="row-note">Partagez un écran dans un appel ou un stream</span></a></li>
+<li><a data-glyph="file-folder" href="desktop.html#choosing"><span class="row-name">Choisir un fichier</span><span class="row-note">Des boîtes de dialogue d'ouverture et d'enregistrement pilotables à la manette</span></a></li>
+<li><a data-glyph="authenticate" href="desktop.html#prompts"><span class="row-name">Demandes de mot de passe</span><span class="row-note">Quand le système demande qui vous êtes</span></a></li>
+<li><a data-glyph="setting-schedule" href="desktop.html#awake"><span class="row-name">Rester éveillé</span><span class="row-note">Un film ou un jeu garde l'écran allumé</span></a></li>
+<li><a data-glyph="category-software" href="desktop.html#apps"><span class="row-name">Fonctionne avec vos applications</span><span class="row-note">Wayland, X11 et Flatpak</span></a></li>
+</ul>
+</li>
+<li data-glyph="file-home" data-id="family">
+<span class="cat-name">Famille</span>
+<ul class="cat-rows">
+<li><a data-glyph="setting-person" href="family.html#login"><span class="row-name">Écran de connexion</span><span class="row-note">Console Experience Desktop Manager</span></a></li>
+<li><a data-glyph="category-software" href="family.html#software"><span class="row-name">Software Hub</span><span class="row-note">Une boutique Flatpak pilotée à la manette</span></a></li>
+<li><a data-glyph="category-music" href="family.html#music"><span class="row-name">Musique</span><span class="row-note">SongOnSole, la bibliothèque et le lecteur de musique</span></a></li>
+<li><a data-glyph="category-video" href="family.html#videos"><span class="row-name">Vidéos</span><span class="row-note">Videonsole, le navigateur et lecteur de films</span></a></li>
+<li><a data-glyph="category-images" href="family.html#pictures"><span class="row-name">Images</span><span class="row-note">Imagonsole, la visionneuse de photos</span></a></li>
+<li><a data-glyph="setting-appearance" href="family.html#toolkit"><span class="row-name">lxb-toolkit</span><span class="row-note">Construisez des applications dans la matière même du shell</span></a></li>
+<li><a data-glyph="refresh" href="family.html#one-version"><span class="row-name">Une seule version</span><span class="row-note">Sept projets, publiés ensemble</span></a></li>
+</ul>
+</li>
+<li data-glyph="category-development" data-id="develop">
+<span class="cat-name">Développement</span>
+<ul class="cat-rows">
+<li><a data-glyph="category-office" href="develop.html#docs"><span class="row-name">Documentation</span><span class="row-note">Tous les guides, de l'installation au rendu</span></a></li>
+<li><a data-glyph="category-development" href="develop.html#architecture"><span class="row-name">Comment il est construit</span><span class="row-note">Un compositeur et un shell, en Rust</span></a></li>
+<li><a data-glyph="setting-language" href="develop.html#translate"><span class="row-name">Traductions</span><span class="row-note">Dix langues, et de la place pour la vôtre</span></a></li>
+<li><a data-glyph="notifications" href="develop.html#bugs"><span class="row-name">Signaler un bogue</span><span class="row-note">Ce qu'il faut joindre pour qu'il soit corrigé</span></a></li>
+<li><a data-glyph="add" href="develop.html#contribute"><span class="row-name">Contribuer</span><span class="row-note">Code, tests matériels et traductions</span></a></li>
+<li><a data-glyph="file-page" href="develop.html#licence"><span class="row-name">Licence</span><span class="row-note">Logiciel libre sous GPL-3.0</span></a></li>
+</ul>
+</li>
+</ul>
+</nav>
+<p aria-live="polite" class="bar-live-region visually-hidden"></p>
+<div aria-hidden="false" class="bar-layer"></div>
+</main>
+<noscript><style>.guide-button{display:none}</style></noscript>
+<script defer="" src="../assets/js/wallpaper.js"></script>
+<script defer="" src="../assets/js/i18n.js"></script>
+<script defer="" src="../assets/js/shell.js"></script>
+<script defer="" src="../assets/js/xmb.js"></script>
+</body>
+</html>

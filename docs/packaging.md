@@ -28,12 +28,17 @@ These definitions build three early-development packages from one source tree:
   the `lxb-desktop` beside it for the same reason. It depends on `flatpak`,
   which it cannot do without — see [Epic Games](epic.md) and
   `crates/lxb-heroic`.
+* **`lxb-rpcs3`** — the optional PlayStation 3 integration, through RPCS3: one
+  helper program and the mark the shell draws its rows with. Optional and
+  version-locked on the same terms. It recommends `flatpak`, which is how the
+  shell installs RPCS3 where there is none — see [PlayStation 3](ps3.md) and
+  `crates/lxb-rpcs3`.
 
 The split is a partition, and `packaging/build.sh check` enforces that — a file
 installed by no package is one that has quietly stopped shipping, and a file
 installed by two is one two packages will fight over at install time.
 
-Between them the four packages install the compositor and shell, a complete
+Between them the five packages install the compositor and shell, a complete
 bundled cursor theme, a native Wayland session, and the optional integrations:
 
 ```text
@@ -56,6 +61,9 @@ lxb-retroarch    bin/lxb-retroarch
 
 lxb-heroic       bin/lxb-heroic
                  share/lxb/glyphs/epic.svg
+
+lxb-rpcs3        bin/lxb-rpcs3
+                 share/lxb/glyphs/ps3.svg
 ```
 
 The udev rule grants two device nodes to whoever holds the active session on
@@ -87,6 +95,22 @@ display manager one foreground process whose lifetime is tied to the desktop
 shell. The original application sources and `share/wayland-sessions/lxb.desktop`
 are not modified; packages stage the production session files from
 `packaging/files/`.
+
+## The machine's power settings
+
+Settings > Power is the device's, not an account's: it writes
+`/etc/lxb/power.toml` (read by every session and by the CEDM login screen) and
+`/etc/systemd/logind.conf.d/60-lxb-power.conf` (the power button's
+`HandlePowerKey=`), then reloads logind. Both files are written by
+`lxb-desktop --apply-power` through the polkit action
+`org.linexinbar.power.settings`, and a sleep asked for past the account's own
+programs' locks by `lxb-desktop --sleep-now` through
+`org.linexinbar.power.sleep`. Both actions are in
+`share/polkit-1/actions/org.linexinbar.power.policy` and allow **an active
+local session without a password** — the same terms logind gives sleeping and
+switching off. Neither file is shipped by the package; a machine with neither
+has the defaults. A port that keeps `/etc` read-only loses nothing but the
+saving: the session still uses what was chosen, and says so.
 
 ## Update dependencies
 
@@ -129,13 +153,13 @@ Settings commands.
 ## One version, in one file
 
 The version this project releases under is the single line in `VERSION` at the
-root of the checkout — **0.9.2** — and what a package claims and what
+root of the checkout — **0.9.3** — and what a package claims and what
 `lxb --version` reports are the same number because both come from there.
 
 Almost everything reads that file where it stands: the Arch, Debian and Nix
 definitions, the source archive's name, and the build scripts in
-`crates/lxb-compositor`, `crates/lxb-desktop`, `crates/lxb-retroarch` and
-`crates/lxb-heroic`, which
+`crates/lxb-compositor`, `crates/lxb-desktop`, `crates/lxb-retroarch`,
+`crates/lxb-heroic` and `crates/lxb-rpcs3`, which
 refuse to build a binary whose manifest has drifted away from it. The last of
 those needs the check most: it is the one binary here that can be installed
 without the other two, so it is the one that can most easily be a version out of
@@ -325,6 +349,12 @@ adds it to `services.displayManager.sessionPackages`:
 }
 ```
 
+Settings > Power writes `/etc/lxb/power.toml` and
+`/etc/systemd/logind.conf.d/60-lxb-power.conf` at run time, which NixOS
+generates from its configuration rather than leaving to a program. Where those
+cannot be written the page says its settings are for the session only, and the
+power button at the login screen is whatever `services.logind` says.
+
 ## Runtime integrations
 
 A hardware session needs systemd-logind or seatd and a working EGL/GLES GPU
@@ -341,7 +371,13 @@ where there is none. It reaches the network through that flatpak, through
 Heroic's bundled legendary (Epic's own servers, on Heroic's session), and for
 three things of its own: Epic's device sign-in, Heroic's default Proton from
 GitHub (checked against its published checksum), and the covers, backdrops,
-logos and achievement icons from Epic's image servers. Package scripts do not create users, change group
+logos and achievement icons from Epic's image servers. `lxb-rpcs3` wants
+`flatpak` to install RPCS3 and uses any RPCS3 already there; it reaches the
+network for three things, each only when asked: Flathub (installing RPCS3),
+Sony's own update server for the PlayStation 3 system software (plain HTTP,
+the only way Sony serves it; RPCS3 checks the file's digests before installing
+it), and GitHub for Redump's disc-key collection, only for a disc image that
+needs a key. Package scripts do not create users, change group
 membership, install a system-wide configuration, or alter device permissions.
 
 These recipes are intended for local and CI packages during early development.

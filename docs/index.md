@@ -23,6 +23,7 @@ in the project README.
 | [Steam](steam.md) | Sign-in, library, installation, launching games, friends and invitations |
 | [RetroArch](retroarch.md) | Optional integration, ROM folders, cores and console games |
 | [Epic Games](epic.md) | Optional integration through Heroic: sign-in, library, installs, updates, cloud saves and achievements |
+| [PlayStation 3](ps3.md) | Optional integration through RPCS3: setup, disc images and packages, animated previews, disc keys and trophies |
 | [Desktop settings](settings.md) | Appearance, displays, HDR, night light, sound, networking and system settings |
 | [Controls and multiple displays](controls.md) | Gamepads, keyboard shortcuts, mouse, touch and on-screen keyboard |
 | [Guide overlay and context menus](guide.md) | App switching, quick settings, volume mixer and stick pointer |
@@ -39,6 +40,8 @@ in the project README.
   distribution’s own updater.
 - [Packaging and validation](packaging.md#validate-the-shared-payload):
   release checks and hardware test reporting.
+- [The website](website.md): the GitHub Pages site in `site/`, how it is
+  published, and how its wallpaper and glyphs are made from the shell's own.
 
 Keep detailed behavior and implementation notes in the relevant guide. The root
 README is the project introduction and quick start.

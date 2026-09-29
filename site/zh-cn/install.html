@@ -1,0 +1,175 @@
+<!DOCTYPE html>
+
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8"/>
+<meta content="width=device-width, initial-scale=1, viewport-fit=cover" name="viewport"/>
+<title>开始使用 LineXinBar：Arch、Debian、Ubuntu、Fedora、NixOS</title>
+<meta content="在当前桌面的窗口中试用 LineXinBar，或为 Arch Linux、Debian 和 Ubuntu、Fedora 以及 NixOS 构建并安装软件包，然后在登录界面选择 LineXinBar。" name="description"/>
+<!-- search and sharing: written by tools/translate.py build -->
+<link rel="canonical" href="https://petexy.github.io/LineXinBar/zh-cn/install.html">
+<link rel="alternate" hreflang="x-default" href="https://petexy.github.io/LineXinBar/install.html">
+<link rel="alternate" hreflang="en" href="https://petexy.github.io/LineXinBar/install.html">
+<link rel="alternate" hreflang="de" href="https://petexy.github.io/LineXinBar/de/install.html">
+<link rel="alternate" hreflang="en-GB" href="https://petexy.github.io/LineXinBar/install.html">
+<link rel="alternate" hreflang="en-US" href="https://petexy.github.io/LineXinBar/en-us/install.html">
+<link rel="alternate" hreflang="es" href="https://petexy.github.io/LineXinBar/es/install.html">
+<link rel="alternate" hreflang="fr" href="https://petexy.github.io/LineXinBar/fr/install.html">
+<link rel="alternate" hreflang="pl" href="https://petexy.github.io/LineXinBar/pl/install.html">
+<link rel="alternate" hreflang="pt-BR" href="https://petexy.github.io/LineXinBar/pt-br/install.html">
+<link rel="alternate" hreflang="ru" href="https://petexy.github.io/LineXinBar/ru/install.html">
+<link rel="alternate" hreflang="hi" href="https://petexy.github.io/LineXinBar/hi/install.html">
+<link rel="alternate" hreflang="zh-CN" href="https://petexy.github.io/LineXinBar/zh-cn/install.html">
+<meta property="og:type" content="website">
+<meta property="og:site_name" content="LineXinBar">
+<meta property="og:title" content="开始使用 LineXinBar：Arch、Debian、Ubuntu、Fedora、NixOS">
+<meta property="og:description" content="在当前桌面的窗口中试用 LineXinBar，或为 Arch Linux、Debian 和 Ubuntu、Fedora 以及 NixOS 构建并安装软件包，然后在登录界面选择 LineXinBar。">
+<meta property="og:url" content="https://petexy.github.io/LineXinBar/zh-cn/install.html">
+<meta property="og:locale" content="zh_CN">
+<meta property="og:image" content="https://petexy.github.io/LineXinBar/assets/img/desktop.png">
+<meta property="og:image:width" content="1600">
+<meta property="og:image:height" content="900">
+<meta name="twitter:card" content="summary_large_image">
+<script type="application/ld+json">{"@context":"https://schema.org","@type":"WebPage","@id":"https://petexy.github.io/LineXinBar/zh-cn/install.html","url":"https://petexy.github.io/LineXinBar/zh-cn/install.html","name":"开始使用 LineXinBar：Arch、Debian、Ubuntu、Fedora、NixOS","description":"在当前桌面的窗口中试用 LineXinBar，或为 Arch Linux、Debian 和 Ubuntu、Fedora 以及 NixOS 构建并安装软件包，然后在登录界面选择 LineXinBar。","inLanguage":"zh-CN","isPartOf":{"@id":"https://petexy.github.io/LineXinBar/#website"},"about":{"@id":"https://petexy.github.io/LineXinBar/#software"},"breadcrumb":{"@type":"BreadcrumbList","itemListElement":[{"@type":"ListItem","position":1,"name":"主屏幕","item":"https://petexy.github.io/LineXinBar/zh-cn/"},{"@type":"ListItem","position":2,"name":"开始使用","item":"https://petexy.github.io/LineXinBar/zh-cn/install.html"}]}}</script>
+<!-- /search and sharing -->
+<meta content="#060314" name="theme-color"/>
+<link href="../assets/glyphs/sm/logo.webp" rel="icon" type="image/webp"/>
+<link as="font" crossorigin="" href="../assets/fonts/Roboto-Regular-latin.woff2" rel="preload" type="font/woff2"/>
+<link href="../assets/css/lxb.css" rel="stylesheet"/>
+</head>
+<body data-page="install" data-screen="page">
+<a class="skip" href="#content">跳到正文</a>
+<canvas aria-hidden="true" id="wallpaper"></canvas>
+<header class="page-head">
+<a class="trail" data-back="" href="index.html#install">
+<span class="trail-tile"><img alt="" class="glyph" src="../assets/glyphs/lg/setting-install-to.webp"/></span>
+<span class="trail-text"><span class="trail-back">‹ 主屏幕</span><span class="trail-name">开始使用</span></span>
+</a>
+</header>
+<main class="column-page" id="content">
+<h1 class="visually-hidden">开始使用 LineXinBar：Arch、Debian、Ubuntu、Fedora、NixOS</h1>
+<nav aria-label="本页内容" class="rows-nav">
+<ol class="rows">
+<li><a class="row" data-lxb-row="" href="#try"><span class="row-icon"><img alt="" class="glyph" src="../assets/glyphs/lg/launch.webp"/></span><span class="row-text"><span class="row-title">在窗口中试用</span><span class="row-comment">一个脚本，直接从代码仓库运行</span></span></a></li>
+<li><a class="row" data-lxb-row="" href="#packages"><span class="row-icon"><img alt="" class="glyph" src="../assets/glyphs/lg/setting-install-to.webp"/></span><span class="row-text"><span class="row-title">安装软件包</span><span class="row-comment">Arch、Debian 和 Ubuntu、Fedora、NixOS</span></span></a></li>
+<li><a class="row" data-lxb-row="" href="#session"><span class="row-icon"><img alt="" class="glyph" src="../assets/glyphs/lg/sign-out.webp"/></span><span class="row-text"><span class="row-title">启动会话</span><span class="row-comment">在登录界面选择 LineXinBar</span></span></a></li>
+<li><a class="row" data-lxb-row="" href="#optional"><span class="row-icon"><img alt="" class="glyph" src="../assets/glyphs/lg/add.webp"/></span><span class="row-text"><span class="row-title">可选软件包</span><span class="row-comment">RetroArch、Epic Games 和 PlayStation 3</span></span></a></li>
+<li><a class="row" data-lxb-row="" href="#requirements"><span class="row-icon"><img alt="" class="glyph" src="../assets/glyphs/lg/setting-info.webp"/></span><span class="row-text"><span class="row-title">运行需要什么</span><span class="row-comment">Linux、能正常工作的显卡驱动、logind 或 seatd</span></span></a></li>
+<li><a class="row" data-lxb-row="" href="#hardware"><span class="row-icon"><img alt="" class="glyph" src="../assets/glyphs/lg/setting-system.webp"/></span><span class="row-text"><span class="row-title">硬件</span><span class="row-comment">目前已在哪些硬件上运行过</span></span></a></li>
+</ol>
+</nav>
+<div class="panes">
+<section aria-labelledby="try-t" class="pane glass" id="try">
+<h2 id="try-t"><img alt="" class="glyph" src="../assets/glyphs/lg/launch.webp"/>在窗口中试用</h2>
+<p class="lede">无需离开您现在的桌面就能看到它。只要安装了 Rust <strong>1.89 或更高版本</strong>以及构建依赖，一个脚本就能构建 LineXinBar，并把它作为窗口在您当前的会话中打开。</p>
+<pre><code>git clone https://github.com/Petexy/LineXinBar.git
+cd LineXinBar
+./scripts/run-nested.sh</code></pre>
+<p>嵌套桌面拥有自己的会话总线，因此在其中打开的应用程序会留在其中。关闭窗口即结束它。<code>./scripts/run-nested.sh 3</code> 会打开三台虚拟显示器而不是一台，方便体验多显示器功能。</p>
+<p>各发行版的构建依赖：</p>
+<div aria-label="构建依赖" class="tabs" role="tablist">
+<button aria-controls="deps-arch" aria-selected="true" id="deps-arch-tab" role="tab" type="button">Arch</button>
+<button aria-controls="deps-debian" aria-selected="false" id="deps-debian-tab" role="tab" type="button">Debian / Ubuntu</button>
+<button aria-controls="deps-fedora" aria-selected="false" id="deps-fedora-tab" role="tab" type="button">Fedora</button>
+</div>
+<div aria-labelledby="deps-arch-tab" class="tab-panel" id="deps-arch" role="tabpanel">
+<pre><code>sudo pacman -S --needed rust pkgconf clang wayland libinput seatd systemd-libs libdrm \
+    mesa libxkbcommon libglvnd libx11 libxcb libxcursor libxi libxkbcommon-x11 \
+    alsa-lib ffmpeg libpipewire</code></pre>
+</div>
+<div aria-labelledby="deps-debian-tab" class="tab-panel" hidden="" id="deps-debian" role="tabpanel">
+<pre><code>sudo apt install build-essential pkg-config cargo clang libwayland-dev libinput-dev \
+    libseat-dev libudev-dev libdrm-dev libgbm-dev libxkbcommon-dev \
+    libegl1-mesa-dev libx11-dev libxcb1-dev libxcursor-dev libxi-dev \
+    libxkbcommon-x11-dev libasound2-dev libavcodec-dev libavformat-dev \
+    libavutil-dev libswscale-dev libpipewire-0.3-dev</code></pre>
+<p>在 Debian 13 上，请通过 <code>rustup</code> 安装 Rust：发行版自带的版本比构建所需的旧。</p>
+</div>
+<div aria-labelledby="deps-fedora-tab" class="tab-panel" hidden="" id="deps-fedora" role="tabpanel">
+<pre><code>sudo dnf install cargo pkgconf-pkg-config clang wayland-devel libinput-devel \
+    libseat-devel systemd-devel libdrm-devel mesa-libgbm-devel \
+    libxkbcommon-devel mesa-libEGL-devel libX11-devel libxcb-devel \
+    libXcursor-devel libXi-devel libxkbcommon-x11-devel alsa-lib-devel \
+    ffmpeg-free-devel pipewire-devel</code></pre>
+</div>
+<div class="more"><a class="control lit" data-select="完整指南" href="https://github.com/Petexy/LineXinBar/blob/master/docs/getting-started.md" rel="noopener" target="_blank">开始使用（完整版）</a></div>
+</section>
+<section aria-labelledby="packages-t" class="pane glass" id="packages">
+<h2 id="packages-t"><img alt="" class="glyph" src="../assets/glyphs/lg/setting-install-to.webp"/>安装软件包</h2>
+<p class="lede">每个 <a href="https://github.com/Petexy/LineXinBar/releases">GitHub 发布版本</a>都附有适用于 Arch、Debian 和 Ubuntu 以及 Fedora 的现成软件包。您也可以从代码仓库自行构建 — 构建方法都在仓库里。</p>
+<div aria-label="发行版" class="tabs" role="tablist">
+<button aria-controls="pkg-arch" aria-selected="true" id="pkg-arch-tab" role="tab" type="button">Arch</button>
+<button aria-controls="pkg-debian" aria-selected="false" id="pkg-debian-tab" role="tab" type="button">Debian / Ubuntu</button>
+<button aria-controls="pkg-fedora" aria-selected="false" id="pkg-fedora-tab" role="tab" type="button">Fedora</button>
+<button aria-controls="pkg-nix" aria-selected="false" id="pkg-nix-tab" role="tab" type="button">Nix / NixOS</button>
+</div>
+<div aria-labelledby="pkg-arch-tab" class="tab-panel" id="pkg-arch" role="tabpanel">
+<pre><code>./packaging/build.sh arch -- --syncdeps</code></pre>
+<p>为当前代码生成 PKGBUILD 并运行 <code>makepkg</code>；软件包会输出到 <code>packaging/out/arch/</code>。</p>
+</div>
+<div aria-labelledby="pkg-debian-tab" class="tab-panel" hidden="" id="pkg-debian" role="tabpanel">
+<pre><code>sudo apt install dpkg-dev build-essential pkg-config clang rustup \
+    libasound2-dev libgbm-dev libavcodec-dev libavformat-dev libavutil-dev \
+    libswscale-dev libinput-dev libpipewire-0.3-dev libseat-dev libudev-dev \
+    libxkbcommon-dev
+./packaging/build.sh debian</code></pre>
+<p>构建脚本会先检查所有依赖，如果缺少什么，会在一行 <code>apt install</code> 中列出。</p>
+</div>
+<div aria-labelledby="pkg-fedora-tab" class="tab-panel" hidden="" id="pkg-fedora" role="tabpanel">
+<pre><code>sudo dnf install rpm-build dnf5-plugins git-core
+sudo dnf builddep packaging/fedora/lxb-desktop.spec
+./packaging/build.sh fedora</code></pre>
+<p>二进制和源码 RPM 会被复制到 <code>packaging/out/fedora/</code>。在 <code>fedora-toolbox</code> 容器中构建就足够了。</p>
+</div>
+<div aria-labelledby="pkg-nix-tab" class="tab-panel" hidden="" id="pkg-nix" role="tabpanel">
+<pre><code>nix build path:.#linexinbar          # the whole desktop, as one derivation
+nix build path:.#lxb-compositor      # the compositor alone</code></pre>
+<p>代码仓库是一个锁定版本的 flake，而 <code>nix-build packaging/nix</code> 不依赖 flakes 也能使用。</p>
+</div>
+<p>安装 <strong>lxb-compositor</strong> 和 <strong>lxb-desktop</strong>：前者是合成器，后者是 Shell，附带其门户、更新协调器和会话条目。</p>
+<div class="more"><a class="control lit" data-select="发布版本" href="https://github.com/Petexy/LineXinBar/releases" rel="noopener" target="_blank">GitHub 上的发布版本</a><a class="control" href="https://github.com/Petexy/LineXinBar/blob/master/docs/packaging.md" rel="noopener" target="_blank">打包指南</a></div>
+</section>
+<section aria-labelledby="session-t" class="pane glass" id="session">
+<h2 id="session-t"><img alt="" class="glyph" src="../assets/glyphs/lg/sign-out.webp"/>启动会话</h2>
+<p class="lede">安装好软件包后，像选择其他桌面一样，在登录界面的会话列表中选择 <strong>LineXinBar</strong>。</p>
+<p>在文本控制台中，<code>lxb --shell</code> 会启动整个环境；退出 Shell 会注销会话，而不是留下一个空屏幕。<a href="family.html#login">Console Experience 登录界面</a>正是为它而做，并以一幅连续的画面把控制权交给 Shell。</p>
+<p>设置保存在 <code>~/.config/lxb/</code> 中 — 大部分由 Shell 自己的设置列写入，全部都可以直接阅读和手动编辑。</p>
+<div class="more"><a class="control lit" data-select="配置" href="https://github.com/Petexy/LineXinBar/blob/master/docs/configuration.md" rel="noopener" target="_blank">配置参考</a></div>
+</section>
+<section aria-labelledby="optional-t" class="pane glass" id="optional">
+<h2 id="optional-t"><img alt="" class="glyph" src="../assets/glyphs/lg/add.webp"/>可选软件包</h2>
+<p class="lede">三项集成各自是独立的软件包，这样从不模拟主机的机器就不必携带任何相关内容。在会话运行时安装其中之一，几秒钟后它的那一行就会出现。</p>
+<div class="cards">
+<a class="card" href="games.html#retroarch"><img alt="" class="glyph" src="../assets/glyphs/lg/retroarch.webp"/><b>lxb-retroarch</b><span>通过 RetroArch 运行您自己的主机游戏，核心和封面会自动为您下载。</span></a>
+<a class="card" href="games.html#epic"><img alt="" class="glyph" src="../assets/glyphs/lg/epic.webp"/><b>lxb-heroic</b><span>通过 Heroic Games Launcher 的 Flatpak 使用您的 Epic Games 游戏库。</span></a>
+<a class="card" href="games.html#ps3"><img alt="" class="glyph" src="../assets/glyphs/lg/ps3.webp"/><b>lxb-rpcs3</b><span>通过 RPCS3 运行 PlayStation 3 游戏，附带其影片、音乐和奖杯。</span></a>
+</div>
+<p>每个软件包都锁定在构建时所用的 Shell 版本上。Steam 不需要单独的软件包，只需要 Valve 的 Steam 客户端。</p>
+</section>
+<section aria-labelledby="requirements-t" class="pane glass" id="requirements">
+<h2 id="requirements-t"><img alt="" class="glyph" src="../assets/glyphs/lg/setting-info.webp"/>运行需要什么</h2>
+<ul>
+<li><strong>Linux</strong>，并配有能驱动显示器的显卡驱动（DRM/KMS）和可用的 OpenGL ES 驱动；如果有 Vulkan 驱动，则会使用它。</li>
+<li><strong>systemd-logind 或 seatd</strong>，负责把显示器和输入设备交给会话。</li>
+<li><strong>udev</strong>，用于得知屏幕和手柄何时接入。</li>
+<li>可选：用于 X11 程序的 <strong>Xwayland</strong>、用于声音和屏幕共享的 <strong>PipeWire</strong>、用于各项集成的 <strong>Flatpak</strong>，以及用于调节外接显示器亮度的 <strong>ddcutil</strong>。</li>
+</ul>
+<p>所有硬件都会在运行时自动发现 — 每台显示器、每种模式和每块 GPU — 因此无需事先为您的机器做任何配置。</p>
+</section>
+<section aria-labelledby="hardware-t" class="pane glass" id="hardware">
+<h2 id="hardware-t"><img alt="" class="glyph" src="../assets/glyphs/lg/setting-system.webp"/>硬件</h2>
+<p class="lede">LineXinBar 仍处于<strong>早期开发</strong>阶段。目前的测试主要在一块驱动两台显示器的 AMD 显卡上进行，另外还有嵌套会话。</p>
+<p>没有任何部分与这套硬件绑定 — 多 GPU 路径是存在的 — 但其他显卡厂商、掌机和多 GPU 机器还需要更多人来试用。如果您在新的硬件上运行它，一份说明哪些正常、哪些不正常的报告，是您能提供的最有用的东西之一。</p>
+<div class="more"><a class="control lit" data-select="报告" href="https://github.com/Petexy/LineXinBar/issues" rel="noopener" target="_blank">告诉我们效果如何</a><a class="control" href="develop.html#bugs">需要附上什么</a></div>
+</section>
+</div>
+</main>
+<footer class="site-foot">
+<p>下一页：<a href="games.html">游戏 ›</a> · 上一页：<a href="overview.html">‹ LineXinBar</a> · <a href="index.html#install">主屏幕</a> · LineXinBar 是以 <a href="https://github.com/Petexy/LineXinBar/blob/master/LICENSE">GPL-3.0</a> 发布的自由软件。</p>
+</footer>
+<script defer="" src="../assets/js/wallpaper.js"></script>
+<script defer="" src="../assets/js/i18n.js"></script>
+<script defer="" src="../assets/js/shell.js"></script>
+<script defer="" src="../assets/js/page.js"></script>
+</body>
+</html>

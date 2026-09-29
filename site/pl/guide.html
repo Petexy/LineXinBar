@@ -1,0 +1,137 @@
+<!DOCTYPE html>
+
+<html lang="pl">
+<head>
+<meta charset="utf-8"/>
+<meta content="width=device-width, initial-scale=1, viewport-fit=cover" name="viewport"/>
+<title>Panel: nakładka LineXinBar nad każdą grą i aplikacją</title>
+<meta content="Panel LineXinBar otwiera się nad wszystkim przyciskiem Home kontrolera: przełączaj aplikacje, zmieniaj głośność i jasność, miksuj dźwięk każdej aplikacji, zamień drążek w mysz i trzymaj film nad grą." name="description"/>
+<!-- search and sharing: written by tools/translate.py build -->
+<link rel="canonical" href="https://petexy.github.io/LineXinBar/pl/guide.html">
+<link rel="alternate" hreflang="x-default" href="https://petexy.github.io/LineXinBar/guide.html">
+<link rel="alternate" hreflang="en" href="https://petexy.github.io/LineXinBar/guide.html">
+<link rel="alternate" hreflang="de" href="https://petexy.github.io/LineXinBar/de/guide.html">
+<link rel="alternate" hreflang="en-GB" href="https://petexy.github.io/LineXinBar/guide.html">
+<link rel="alternate" hreflang="en-US" href="https://petexy.github.io/LineXinBar/en-us/guide.html">
+<link rel="alternate" hreflang="es" href="https://petexy.github.io/LineXinBar/es/guide.html">
+<link rel="alternate" hreflang="fr" href="https://petexy.github.io/LineXinBar/fr/guide.html">
+<link rel="alternate" hreflang="pl" href="https://petexy.github.io/LineXinBar/pl/guide.html">
+<link rel="alternate" hreflang="pt-BR" href="https://petexy.github.io/LineXinBar/pt-br/guide.html">
+<link rel="alternate" hreflang="ru" href="https://petexy.github.io/LineXinBar/ru/guide.html">
+<link rel="alternate" hreflang="hi" href="https://petexy.github.io/LineXinBar/hi/guide.html">
+<link rel="alternate" hreflang="zh-CN" href="https://petexy.github.io/LineXinBar/zh-cn/guide.html">
+<meta property="og:type" content="website">
+<meta property="og:site_name" content="LineXinBar">
+<meta property="og:title" content="Panel: nakładka LineXinBar nad każdą grą i aplikacją">
+<meta property="og:description" content="Panel LineXinBar otwiera się nad wszystkim przyciskiem Home kontrolera: przełączaj aplikacje, zmieniaj głośność i jasność, miksuj dźwięk każdej aplikacji, zamień drążek w mysz i trzymaj film nad grą.">
+<meta property="og:url" content="https://petexy.github.io/LineXinBar/pl/guide.html">
+<meta property="og:locale" content="pl_PL">
+<meta property="og:image" content="https://petexy.github.io/LineXinBar/assets/img/desktop.png">
+<meta property="og:image:width" content="1600">
+<meta property="og:image:height" content="900">
+<meta name="twitter:card" content="summary_large_image">
+<script type="application/ld+json">{"@context":"https://schema.org","@type":"WebPage","@id":"https://petexy.github.io/LineXinBar/pl/guide.html","url":"https://petexy.github.io/LineXinBar/pl/guide.html","name":"Panel: nakładka LineXinBar nad każdą grą i aplikacją","description":"Panel LineXinBar otwiera się nad wszystkim przyciskiem Home kontrolera: przełączaj aplikacje, zmieniaj głośność i jasność, miksuj dźwięk każdej aplikacji, zamień drążek w mysz i trzymaj film nad grą.","inLanguage":"pl","isPartOf":{"@id":"https://petexy.github.io/LineXinBar/#website"},"about":{"@id":"https://petexy.github.io/LineXinBar/#software"},"breadcrumb":{"@type":"BreadcrumbList","itemListElement":[{"@type":"ListItem","position":1,"name":"Ekran startowy","item":"https://petexy.github.io/LineXinBar/pl/"},{"@type":"ListItem","position":2,"name":"Panel","item":"https://petexy.github.io/LineXinBar/pl/guide.html"}]}}</script>
+<!-- /search and sharing -->
+<meta content="#060314" name="theme-color"/>
+<link href="../assets/glyphs/sm/logo.webp" rel="icon" type="image/webp"/>
+<link as="font" crossorigin="" href="../assets/fonts/Roboto-Regular-latin.woff2" rel="preload" type="font/woff2"/>
+<link href="../assets/css/lxb.css" rel="stylesheet"/>
+</head>
+<body data-page="guide" data-screen="page">
+<a class="skip" href="#content">Przejdź do treści</a>
+<canvas aria-hidden="true" id="wallpaper"></canvas>
+<header class="page-head">
+<a class="trail" data-back="" href="index.html#guide">
+<span class="trail-tile"><img alt="" class="glyph" src="../assets/glyphs/lg/pad-guide.webp"/></span>
+<span class="trail-text"><span class="trail-back">‹ Ekran startowy</span><span class="trail-name">Panel</span></span>
+</a>
+</header>
+<main class="column-page" id="content">
+<h1 class="visually-hidden">Panel: nakładka LineXinBar nad każdą grą i aplikacją</h1>
+<nav aria-label="Na tej stronie" class="rows-nav">
+<ol class="rows">
+<li><a class="row" data-lxb-row="" href="#overlay"><span class="row-icon"><img alt="" class="glyph" src="../assets/glyphs/lg/pad-guide.webp"/></span><span class="row-text"><span class="row-title">Jeden przycisk dalej</span><span class="row-comment">Panel otwiera się nad wszystkim, co jest uruchomione</span></span></a></li>
+<li><a class="row" data-lxb-row="" href="#cards"><span class="row-icon"><img alt="" class="glyph" src="../assets/glyphs/lg/select-multiple.webp"/></span><span class="row-text"><span class="row-title">Przełączanie aplikacji</span><span class="row-comment">Każde okno jako karta</span></span></a></li>
+<li><a class="row" data-lxb-row="" href="#quick"><span class="row-icon"><img alt="" class="glyph" src="../assets/glyphs/lg/volume.webp"/></span><span class="row-text"><span class="row-title">Szybkie ustawienia</span><span class="row-comment">Głośność, jasność i tryb „nie przeszkadzać”</span></span></a></li>
+<li><a class="row" data-lxb-row="" href="#mixer"><span class="row-icon"><img alt="" class="glyph" src="../assets/glyphs/lg/volume-mixer.webp"/></span><span class="row-text"><span class="row-title">Mikser głośności</span><span class="row-comment">Suwak dla wszystkiego, co gra</span></span></a></li>
+<li><a class="row" data-lxb-row="" href="#notifications"><span class="row-icon"><img alt="" class="glyph" src="../assets/glyphs/lg/notifications.webp"/></span><span class="row-text"><span class="row-title">Powiadomienia</span><span class="row-comment">Wszystkie komunikaty, od najnowszych</span></span></a></li>
+<li><a class="row" data-lxb-row="" href="#stick"><span class="row-icon"><img alt="" class="glyph" src="../assets/glyphs/lg/pointer-stick.webp"/></span><span class="row-text"><span class="row-title">Wskaźnik na drążku</span><span class="row-comment">Prawy drążek staje się myszą</span></span></a></li>
+<li><a class="row" data-lxb-row="" href="#pip"><span class="row-icon"><img alt="" class="glyph" src="../assets/glyphs/lg/setting-pip.webp"/></span><span class="row-text"><span class="row-title">Obraz w obrazie</span><span class="row-comment">Film unoszący się nad grą</span></span></a></li>
+<li><a class="row" data-lxb-row="" href="#menu"><span class="row-icon"><img alt="" class="glyph" src="../assets/glyphs/lg/mouse-right.webp"/></span><span class="row-text"><span class="row-title">Menu kontekstowe</span><span class="row-comment">Opcje wszystkiego, z każdego urządzenia</span></span></a></li>
+</ol>
+</nav>
+<div class="panes">
+<section aria-labelledby="overlay-t" class="pane glass" id="overlay">
+<h2 id="overlay-t"><img alt="" class="glyph" src="../assets/glyphs/lg/pad-guide.webp"/>Jeden przycisk dalej</h2>
+<p class="lede">Gra wypełnia ekran i zabiera klawiaturę, więc potrzebne jest wyjście, którego nie może połknąć. Naciśnij <strong>przycisk Home</strong> kontrolera — albo klawisz <kbd>Super</kbd> — a Panel otworzy się nad tym, co jest uruchomione.</p>
+<p>To kolumna po lewej stronie ekranu: na górze godzina i to, co działa, cztery szybkie kafelki, głośność i jasność, a potem <strong>Wznów</strong>, <strong>Zamknij</strong> aplikację, <strong>Ekran startowy</strong> i przycisk <strong>zasilania</strong> do uśpienia, wyłączenia albo wylogowania. Wszystko za nim jest rozmyte i przyciemnione.</p>
+<p>Żadna aplikacja nie może zabrać tego przycisku: Panel jest dostępny absolutnie zewsząd i dlatego sesję kończy tylko przycisk zasilania — <kbd>Esc</kbd> otwiera Panel, a nie zamyka.</p>
+<p class="note"><img alt="" class="glyph" src="../assets/glyphs/sm/key-g.webp"/>Ta strona też ma Panel — naciśnij <kbd>G</kbd>, przycisk Home na padzie albo przycisk w lewym górnym rogu. Wypróbuj tam kolory akcentu i cząsteczki.</p>
+<figure>
+<img alt="Panel otwarty po lewej stronie ekranu, z godziną, szybkimi kafelkami, paskiem głośności i przyciskiem Wznów, obok karty ekranu startowego" class="shot" height="900" loading="lazy" src="../assets/img/guide.webp" width="1600"/>
+<figcaption>Panel: jego kolumna po lewej, ekran startowy jako karta obok.</figcaption>
+</figure>
+<div class="more"><a class="control lit" data-select="Pełny przewodnik" href="https://github.com/Petexy/LineXinBar/blob/master/docs/guide.md" rel="noopener" target="_blank">Przeczytaj o Panelu</a></div>
+</section>
+<section aria-labelledby="cards-t" class="pane glass" id="cards">
+<h2 id="cards-t"><img alt="" class="glyph" src="../assets/glyphs/lg/select-multiple.webp"/>Przełączanie aplikacji</h2>
+<p class="lede">Obok kolumny Panelu stoi talia kart — po jednej na każde okno na tym ekranie, z ekranem startowym jako ostatnią kartą.</p>
+<p>To żywe okna, a nie ich obrazki: każde wlatuje na swoje miejsce, gdy Panel się otwiera, i wraca, gdy się zamyka. Wejdź w prawo do talii, przechodź po niej w górę i w dół i naciśnij kartę, żeby wrócić do tego okna. <kbd>Alt</kbd>+<kbd>Tab</kbd> przechodzi po tej samej talii z klawiatury, a puszczenie <kbd>Alt</kbd> wybiera kartę, na której się zatrzymano.</p>
+</section>
+<section aria-labelledby="quick-t" class="pane glass" id="quick">
+<h2 id="quick-t"><img alt="" class="glyph" src="../assets/glyphs/lg/volume.webp"/>Szybkie ustawienia</h2>
+<p class="lede">Cztery kafelki na czele Panelu i dwa paski pod nimi to rzeczy warte zasięgu bez wychodzenia z gry.</p>
+<ul>
+<li><strong>Wskaźnik na drążku</strong> — kontroler jako mysz, w aplikacji na pierwszym planie.</li>
+<li><strong>Mikser głośności</strong> — każda aplikacja, która gra, z własnym suwakiem.</li>
+<li><strong>Nie przeszkadzać</strong> — żadnych dymków ani dźwięków; wszystko nadal przychodzi, po cichu. Pozostaje włączone, dopóki go nie wyłączysz, nawet po ponownym uruchomieniu.</li>
+<li><strong>Powiadomienia</strong> — wszystko, co ogłoszono, z kropelką na dzwonku, gdy jest coś, czego jeszcze nie widziano.</li>
+<li><strong>Głośność</strong> i <strong>Jasność</strong> — dla całej sesji i dla tego ekranu. Klawisze głośności na klawiaturze przesuwają ten sam pasek z dowolnego miejsca.</li>
+</ul>
+</section>
+<section aria-labelledby="mixer-t" class="pane glass" id="mixer">
+<h2 id="mixer-t"><img alt="" class="glyph" src="../assets/glyphs/lg/volume-mixer.webp"/>Mikser głośności</h2>
+<p class="lede">Jeden wiersz na każdą aplikację, która gra, pod nazwą i ikoną, pod którymi zna ją pasek. Lewo i prawo przesuwają suwak; <kbd>A</kbd> wycisza aplikację i przywraca dźwięk.</p>
+<p>Przeglądarka z trzema grającymi kartami to jeden wiersz, a nie trzy — to jedna rzecz, którą chce się ściszyć. Własne dźwięki powłoki i muzyka ekranu startowego mają na dole własny wiersz o nazwie System.</p>
+</section>
+<section aria-labelledby="notifications-t" class="pane glass" id="notifications">
+<h2 id="notifications-t"><img alt="" class="glyph" src="../assets/glyphs/lg/notifications.webp"/>Powiadomienia</h2>
+<p class="lede">Aplikacje ogłaszają rzeczy w standardowy sposób, a w rogu wypływa dymek z dźwiękiem. Wszystko, co przyszło, trafia na listę za dzwonkiem, od najnowszych.</p>
+<p>Dzwonek nosi małą kropelkę, dopóki czeka coś, na co nikt nie spojrzał — bez liczby, bo z drugiego końca pokoju liczy się to, że coś przyszło. Otwarcie listy liczy się jako spojrzenie.</p>
+</section>
+<section aria-labelledby="stick-t" class="pane glass" id="stick">
+<h2 id="stick-t"><img alt="" class="glyph" src="../assets/glyphs/lg/pointer-stick.webp"/>Wskaźnik na drążku</h2>
+<p class="lede">Wiele z tego, co działa na kanapowym komputerze, powstało z myślą o myszy — przeglądarka, menu emulatora, strona ustawień. Jeden kafelek zamienia kontroler w mysz, w aplikacji na pierwszym planie.</p>
+<div class="table-wrap"><table>
+<thead><tr><th>Element</th><th>Co robi</th></tr></thead>
+<tbody>
+<tr><td>Prawy drążek</td><td>Przesuwa wskaźnik</td></tr>
+<tr><td>Prawy spust</td><td>Lewy przycisk myszy</td></tr>
+<tr><td>Lewy spust</td><td>Prawy przycisk myszy</td></tr>
+<tr><td>Lewy drążek albo krzyżak</td><td>Przewija to, co pod nim</td></tr>
+</tbody>
+</table></div>
+<p>Spusty klikają, bo tam kliknięcie umieszcza tryb pulpitu konsol przenośnych. Wskaźnik nie wychodzi poza okno aplikacji i można go włączyć na stałe dla jednej aplikacji.</p>
+</section>
+<section aria-labelledby="pip-t" class="pane glass" id="pip">
+<h2 id="pip-t"><img alt="" class="glyph" src="../assets/glyphs/lg/setting-pip.webp"/>Obraz w obrazie</h2>
+<p class="lede">Wysuń film z przeglądarki do obrazu w obrazie, a będzie się unosił w rogu, przed wszystkim — nad grą, nad ekranem startowym, nawet nad Panelem.</p>
+<p>Nigdy nie zabiera klawiatury temu, co robisz, i nie jest oknem, na które się przełącza; po prostu cały czas tam jest. Jego rozmiar i róg ustawia się w <em>Ustawienia › System › Obraz w obrazie</em>, a pad może go przesunąć lub zmienić jego rozmiar z jego własnego menu.</p>
+</section>
+<section aria-labelledby="menu-t" class="pane glass" id="menu">
+<h2 id="menu-t"><img alt="" class="glyph" src="../assets/glyphs/lg/mouse-right.webp"/>Menu kontekstowe</h2>
+<p class="lede"><kbd>A</kbd> robi to jedno, do czego służy wiersz. Wszystko inne jest za górnym przyciskiem akcji — <kbd>Y</kbd> na padzie Xbox, <kbd>△</kbd> na padzie PlayStation, prawy przycisk myszy albo <kbd>F10</kbd>.</p>
+<p>Menu wyrasta z rzeczy, której dotyczy, i chowa się w nią z powrotem po odpowiedzi. Gry, aplikacje i pliki mają menu; wartość w Ustawieniach nie, a podpowiedź przycisku proponuje <em>Opcje</em> tylko tam, gdzie naciśnięcie naprawdę coś otworzy.</p>
+<p>Aplikacje i gry mają tu wiersz <a href="displays.html#app-resolution">Rozdzielczość</a>, żeby coś wymagającego rysowało mniej pikseli.</p>
+</section>
+</div>
+</main>
+<footer class="site-foot">
+<p>Dalej: <a href="displays.html">Ekrany ›</a> · Wstecz: <a href="media.html">‹ Aplikacje i multimedia</a> · <a href="index.html#guide">Ekran startowy</a> · LineXinBar to wolne oprogramowanie na licencji <a href="https://github.com/Petexy/LineXinBar/blob/master/LICENSE">GPL-3.0</a>.</p>
+</footer>
+<script defer="" src="../assets/js/wallpaper.js"></script>
+<script defer="" src="../assets/js/i18n.js"></script>
+<script defer="" src="../assets/js/shell.js"></script>
+<script defer="" src="../assets/js/page.js"></script>
+</body>
+</html>

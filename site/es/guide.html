@@ -1,0 +1,137 @@
+<!DOCTYPE html>
+
+<html lang="es">
+<head>
+<meta charset="utf-8"/>
+<meta content="width=device-width, initial-scale=1, viewport-fit=cover" name="viewport"/>
+<title>La guía: la capa de LineXinBar sobre cualquier juego o aplicación</title>
+<meta content="La guía de LineXinBar se abre sobre cualquier cosa con el botón de guía del mando: cambie de aplicación, ajuste el volumen y el brillo, mezcle el sonido de cada aplicación, convierta el stick en un ratón y deje un vídeo flotando sobre un juego." name="description"/>
+<!-- search and sharing: written by tools/translate.py build -->
+<link rel="canonical" href="https://petexy.github.io/LineXinBar/es/guide.html">
+<link rel="alternate" hreflang="x-default" href="https://petexy.github.io/LineXinBar/guide.html">
+<link rel="alternate" hreflang="en" href="https://petexy.github.io/LineXinBar/guide.html">
+<link rel="alternate" hreflang="de" href="https://petexy.github.io/LineXinBar/de/guide.html">
+<link rel="alternate" hreflang="en-GB" href="https://petexy.github.io/LineXinBar/guide.html">
+<link rel="alternate" hreflang="en-US" href="https://petexy.github.io/LineXinBar/en-us/guide.html">
+<link rel="alternate" hreflang="es" href="https://petexy.github.io/LineXinBar/es/guide.html">
+<link rel="alternate" hreflang="fr" href="https://petexy.github.io/LineXinBar/fr/guide.html">
+<link rel="alternate" hreflang="pl" href="https://petexy.github.io/LineXinBar/pl/guide.html">
+<link rel="alternate" hreflang="pt-BR" href="https://petexy.github.io/LineXinBar/pt-br/guide.html">
+<link rel="alternate" hreflang="ru" href="https://petexy.github.io/LineXinBar/ru/guide.html">
+<link rel="alternate" hreflang="hi" href="https://petexy.github.io/LineXinBar/hi/guide.html">
+<link rel="alternate" hreflang="zh-CN" href="https://petexy.github.io/LineXinBar/zh-cn/guide.html">
+<meta property="og:type" content="website">
+<meta property="og:site_name" content="LineXinBar">
+<meta property="og:title" content="La guía: la capa de LineXinBar sobre cualquier juego o aplicación">
+<meta property="og:description" content="La guía de LineXinBar se abre sobre cualquier cosa con el botón de guía del mando: cambie de aplicación, ajuste el volumen y el brillo, mezcle el sonido de cada aplicación, convierta el stick en un ratón y deje un vídeo flotando sobre un juego.">
+<meta property="og:url" content="https://petexy.github.io/LineXinBar/es/guide.html">
+<meta property="og:locale" content="es_ES">
+<meta property="og:image" content="https://petexy.github.io/LineXinBar/assets/img/desktop.png">
+<meta property="og:image:width" content="1600">
+<meta property="og:image:height" content="900">
+<meta name="twitter:card" content="summary_large_image">
+<script type="application/ld+json">{"@context":"https://schema.org","@type":"WebPage","@id":"https://petexy.github.io/LineXinBar/es/guide.html","url":"https://petexy.github.io/LineXinBar/es/guide.html","name":"La guía: la capa de LineXinBar sobre cualquier juego o aplicación","description":"La guía de LineXinBar se abre sobre cualquier cosa con el botón de guía del mando: cambie de aplicación, ajuste el volumen y el brillo, mezcle el sonido de cada aplicación, convierta el stick en un ratón y deje un vídeo flotando sobre un juego.","inLanguage":"es","isPartOf":{"@id":"https://petexy.github.io/LineXinBar/#website"},"about":{"@id":"https://petexy.github.io/LineXinBar/#software"},"breadcrumb":{"@type":"BreadcrumbList","itemListElement":[{"@type":"ListItem","position":1,"name":"Pantalla de inicio","item":"https://petexy.github.io/LineXinBar/es/"},{"@type":"ListItem","position":2,"name":"La guía","item":"https://petexy.github.io/LineXinBar/es/guide.html"}]}}</script>
+<!-- /search and sharing -->
+<meta content="#060314" name="theme-color"/>
+<link href="../assets/glyphs/sm/logo.webp" rel="icon" type="image/webp"/>
+<link as="font" crossorigin="" href="../assets/fonts/Roboto-Regular-latin.woff2" rel="preload" type="font/woff2"/>
+<link href="../assets/css/lxb.css" rel="stylesheet"/>
+</head>
+<body data-page="guide" data-screen="page">
+<a class="skip" href="#content">Saltar al contenido</a>
+<canvas aria-hidden="true" id="wallpaper"></canvas>
+<header class="page-head">
+<a class="trail" data-back="" href="index.html#guide">
+<span class="trail-tile"><img alt="" class="glyph" src="../assets/glyphs/lg/pad-guide.webp"/></span>
+<span class="trail-text"><span class="trail-back">‹ Pantalla de inicio</span><span class="trail-name">La guía</span></span>
+</a>
+</header>
+<main class="column-page" id="content">
+<h1 class="visually-hidden">La guía: la capa de LineXinBar sobre cualquier juego o aplicación</h1>
+<nav aria-label="En esta página" class="rows-nav">
+<ol class="rows">
+<li><a class="row" data-lxb-row="" href="#overlay"><span class="row-icon"><img alt="" class="glyph" src="../assets/glyphs/lg/pad-guide.webp"/></span><span class="row-text"><span class="row-title">A un botón de distancia</span><span class="row-comment">La guía se abre sobre cualquier cosa que esté en marcha</span></span></a></li>
+<li><a class="row" data-lxb-row="" href="#cards"><span class="row-icon"><img alt="" class="glyph" src="../assets/glyphs/lg/select-multiple.webp"/></span><span class="row-text"><span class="row-title">Cambiar de aplicación</span><span class="row-comment">Cada ventana, una tarjeta</span></span></a></li>
+<li><a class="row" data-lxb-row="" href="#quick"><span class="row-icon"><img alt="" class="glyph" src="../assets/glyphs/lg/volume.webp"/></span><span class="row-text"><span class="row-title">Ajustes rápidos</span><span class="row-comment">Volumen, brillo y no molestar</span></span></a></li>
+<li><a class="row" data-lxb-row="" href="#mixer"><span class="row-icon"><img alt="" class="glyph" src="../assets/glyphs/lg/volume-mixer.webp"/></span><span class="row-text"><span class="row-title">Mezclador de volumen</span><span class="row-comment">Un control deslizante para todo lo que suena</span></span></a></li>
+<li><a class="row" data-lxb-row="" href="#notifications"><span class="row-icon"><img alt="" class="glyph" src="../assets/glyphs/lg/notifications.webp"/></span><span class="row-text"><span class="row-title">Notificaciones</span><span class="row-comment">Todos los avisos, los más recientes primero</span></span></a></li>
+<li><a class="row" data-lxb-row="" href="#stick"><span class="row-icon"><img alt="" class="glyph" src="../assets/glyphs/lg/pointer-stick.webp"/></span><span class="row-text"><span class="row-title">Puntero con el stick</span><span class="row-comment">El stick derecho se convierte en un ratón</span></span></a></li>
+<li><a class="row" data-lxb-row="" href="#pip"><span class="row-icon"><img alt="" class="glyph" src="../assets/glyphs/lg/setting-pip.webp"/></span><span class="row-text"><span class="row-title">Imagen en imagen</span><span class="row-comment">Un vídeo flotando sobre un juego</span></span></a></li>
+<li><a class="row" data-lxb-row="" href="#menu"><span class="row-icon"><img alt="" class="glyph" src="../assets/glyphs/lg/mouse-right.webp"/></span><span class="row-text"><span class="row-title">Menús contextuales</span><span class="row-comment">Opciones sobre cualquier cosa, desde cualquier control</span></span></a></li>
+</ol>
+</nav>
+<div class="panes">
+<section aria-labelledby="overlay-t" class="pane glass" id="overlay">
+<h2 id="overlay-t"><img alt="" class="glyph" src="../assets/glyphs/lg/pad-guide.webp"/>A un botón de distancia</h2>
+<p class="lede">Un juego llena la pantalla y se queda con el teclado, así que hace falta una salida que no pueda tragarse. Pulse el <strong>botón de guía</strong> del mando —o la tecla <kbd>Super</kbd>— y la guía se abre sobre lo que esté en marcha.</p>
+<p>Es una columna en el lado izquierdo de la pantalla: arriba la hora y lo que está en marcha, cuatro mosaicos rápidos, el volumen y el brillo, y luego <strong>Reanudar</strong>, <strong>Cerrar</strong> la aplicación, la <strong>Pantalla de inicio</strong> y el botón de <strong>Encendido</strong> para suspender, apagar o cerrar la sesión. Todo lo que hay detrás se suaviza y se oscurece.</p>
+<p>Ninguna aplicación puede quedarse con ese botón: la guía se alcanza desde absolutamente cualquier sitio, y por eso solo el botón de encendido termina la sesión; <kbd>Esc</kbd> abre la guía en lugar de salir.</p>
+<p class="note"><img alt="" class="glyph" src="../assets/glyphs/sm/key-g.webp"/>Este sitio web también tiene una guía: pulse <kbd>G</kbd>, el botón de guía del mando o el botón de arriba a la izquierda. Pruebe desde ahí los colores de acento y las partículas.</p>
+<figure>
+<img alt="La guía abierta en el lado izquierdo de la pantalla, con la hora, mosaicos rápidos, una barra de volumen y un botón Reanudar, junto a una tarjeta de la pantalla de inicio" class="shot" height="900" loading="lazy" src="../assets/img/guide.webp" width="1600"/>
+<figcaption>La guía: su columna a la izquierda y la pantalla de inicio como una tarjeta a su lado.</figcaption>
+</figure>
+<div class="more"><a class="control lit" data-select="Guía completa" href="https://github.com/Petexy/LineXinBar/blob/master/docs/guide.md" rel="noopener" target="_blank">Leer sobre la guía</a></div>
+</section>
+<section aria-labelledby="cards-t" class="pane glass" id="cards">
+<h2 id="cards-t"><img alt="" class="glyph" src="../assets/glyphs/lg/select-multiple.webp"/>Cambiar de aplicación</h2>
+<p class="lede">Junto a la columna de la guía hay un mazo de tarjetas: una por cada ventana de esta pantalla, con la pantalla de inicio como la última de todas.</p>
+<p>Son las ventanas en vivo, no imágenes suyas: cada una vuela a su sitio cuando se abre la guía y vuelve cuando se cierra. Entre hacia la derecha en el mazo, recórralo arriba y abajo y pulse una tarjeta para volver a esa ventana. <kbd>Alt</kbd>+<kbd>Tab</kbd> recorre el mismo mazo desde el teclado, y al soltar <kbd>Alt</kbd> se abre aquella en la que se haya quedado.</p>
+</section>
+<section aria-labelledby="quick-t" class="pane glass" id="quick">
+<h2 id="quick-t"><img alt="" class="glyph" src="../assets/glyphs/lg/volume.webp"/>Ajustes rápidos</h2>
+<p class="lede">Los cuatro mosaicos de la cabeza de la guía y las dos barras de debajo son lo que merece la pena alcanzar sin salir de un juego.</p>
+<ul>
+<li><strong>Puntero con el stick</strong>: el mando como ratón, dentro de la aplicación que está delante.</li>
+<li><strong>Mezclador de volumen</strong>: cada aplicación que suena, cada una con su propio control deslizante.</li>
+<li><strong>No molestar</strong>: sin burbujas ni avisos sonoros; todo sigue llegando, en silencio. Se queda activado hasta que lo desactive, incluso tras reiniciar.</li>
+<li><strong>Notificaciones</strong>: todo lo avisado, con una gota en la campana cuando hay algo que no ha visto.</li>
+<li><strong>Volumen</strong> y <strong>Brillo</strong>: de toda la sesión y de esta pantalla. Las teclas de volumen de un teclado mueven la misma barra desde cualquier sitio.</li>
+</ul>
+</section>
+<section aria-labelledby="mixer-t" class="pane glass" id="mixer">
+<h2 id="mixer-t"><img alt="" class="glyph" src="../assets/glyphs/lg/volume-mixer.webp"/>Mezclador de volumen</h2>
+<p class="lede">Una fila por cada aplicación que está sonando, con el nombre y el icono con que la conoce la barra. Izquierda y Derecha la deslizan; <kbd>A</kbd> la silencia y la devuelve.</p>
+<p>Un navegador con tres pestañas sonando es una fila, no tres: es una sola cosa que cualquiera querría bajar. Los sonidos propios del shell y la música de la pantalla de inicio tienen una fila propia al final, llamada Sistema.</p>
+</section>
+<section aria-labelledby="notifications-t" class="pane glass" id="notifications">
+<h2 id="notifications-t"><img alt="" class="glyph" src="../assets/glyphs/lg/notifications.webp"/>Notificaciones</h2>
+<p class="lede">Las aplicaciones avisan de las cosas por la vía habitual, y una burbuja sube en la esquina con un sonido. Todo lo que llega se guarda en una lista detrás de la campana, lo más reciente primero.</p>
+<p>La campana lleva una pequeña gota mientras espera algo que nadie ha mirado; sin número, porque lo que importa desde el otro lado de la habitación es que ha llegado algo. Abrir la lista es lo que cuenta como mirar.</p>
+</section>
+<section aria-labelledby="stick-t" class="pane glass" id="stick">
+<h2 id="stick-t"><img alt="" class="glyph" src="../assets/glyphs/lg/pointer-stick.webp"/>Puntero con el stick</h2>
+<p class="lede">Mucho de lo que funciona en un equipo de sofá se hizo para un ratón: un navegador, el menú de un emulador, una página de ajustes. Un mosaico convierte el mando en uno, dentro de la aplicación que está delante.</p>
+<div class="table-wrap"><table>
+<thead><tr><th>Control</th><th>Qué hace</th></tr></thead>
+<tbody>
+<tr><td>Stick derecho</td><td>Mueve el puntero</td></tr>
+<tr><td>Gatillo derecho</td><td>Clic izquierdo</td></tr>
+<tr><td>Gatillo izquierdo</td><td>Clic derecho</td></tr>
+<tr><td>Stick izquierdo o cruceta</td><td>Desplaza lo que hay debajo</td></tr>
+</tbody>
+</table></div>
+<p>Los gatillos hacen clic porque ahí pone el clic el modo escritorio de un portátil de juego. El puntero no sale de la ventana de la aplicación, y puede activarse de forma permanente para una aplicación.</p>
+</section>
+<section aria-labelledby="pip-t" class="pane glass" id="pip">
+<h2 id="pip-t"><img alt="" class="glyph" src="../assets/glyphs/lg/setting-pip.webp"/>Imagen en imagen</h2>
+<p class="lede">Saque un vídeo de su navegador a imagen en imagen y flotará en una esquina, delante de todo: sobre un juego, sobre la pantalla de inicio, incluso sobre la guía.</p>
+<p>Nunca le quita el teclado a lo que está haciendo, y no es una ventana a la que cambiar; simplemente sigue ahí. Su tamaño y su esquina se eligen en <em>Ajustes › Sistema › Imagen en imagen</em>, y un mando puede moverlo o cambiar su tamaño desde su propio menú.</p>
+</section>
+<section aria-labelledby="menu-t" class="pane glass" id="menu">
+<h2 id="menu-t"><img alt="" class="glyph" src="../assets/glyphs/lg/mouse-right.webp"/>Menús contextuales</h2>
+<p class="lede"><kbd>A</kbd> hace lo único para lo que está una fila. Todo lo demás está detrás del botón frontal superior: <kbd>Y</kbd> en un mando de Xbox, <kbd>△</kbd> en uno de PlayStation, el botón derecho del ratón o <kbd>F10</kbd>.</p>
+<p>El menú crece desde aquello de lo que trata y se repliega en ello cuando responde. Juegos, aplicaciones y archivos tienen uno; un valor de los Ajustes no, y la indicación del botón solo ofrece <em>Opciones</em> donde una pulsación abriría algo de verdad.</p>
+<p>Las aplicaciones y los juegos llevan aquí una fila de <a href="displays.html#app-resolution">Resolución</a>, para que algo exigente dibuje con menos píxeles.</p>
+</section>
+</div>
+</main>
+<footer class="site-foot">
+<p>Siguiente: <a href="displays.html">Pantallas ›</a> · Anterior: <a href="media.html">‹ Aplicaciones y multimedia</a> · <a href="index.html#guide">Pantalla de inicio</a> · LineXinBar es software libre bajo la <a href="https://github.com/Petexy/LineXinBar/blob/master/LICENSE">GPL-3.0</a>.</p>
+</footer>
+<script defer="" src="../assets/js/wallpaper.js"></script>
+<script defer="" src="../assets/js/i18n.js"></script>
+<script defer="" src="../assets/js/shell.js"></script>
+<script defer="" src="../assets/js/page.js"></script>
+</body>
+</html>

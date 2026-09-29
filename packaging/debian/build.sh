@@ -217,3 +217,4 @@ build_deb desktop lxb-desktop control.in lxb-desktop lxb-portal lxb-updates
 # understood.
 build_deb retroarch lxb-retroarch control-retroarch.in lxb-retroarch
 build_deb heroic lxb-heroic control-heroic.in lxb-heroic
+build_deb rpcs3 lxb-rpcs3 control-rpcs3.in lxb-rpcs3

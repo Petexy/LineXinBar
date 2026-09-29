@@ -14,7 +14,7 @@
     all copies or substantial portions of the Software.
   </copyright>
 
-  <interface name="lxb_shell_v1" version="44">
+  <interface name="lxb_shell_v1" version="45">
     <description summary="private channel between LineXinBar and its session shell">
       Layer-shell lets a shell draw itself, but says nothing about the two
       things a console-style session needs: a hardware button that reaches the
@@ -1049,6 +1049,96 @@
            summary="pixels across, or 0 with height for the display's own"/>
       <arg name="height" type="uint"
            summary="pixels down, or 0 with width for the display's own"/>
+    </request>
+
+    <request name="user_active" since="45">
+      <description summary="somebody is at the machine">
+        Says that the person in front of the machine did something the
+        compositor could not see: a button on a controller, a stick pushed. A
+        shell reads its pads straight from /dev/input, so a game played for an
+        hour with nothing but a controller leaves no trace at all in the seat
+        this compositor idles from.
+
+        It counts exactly as a key or a movement of the mouse counts: every
+        ext_idle_notification_v1 on the seat is resumed and starts its wait
+        again. That is what lets a program outside the session — a screen
+        locker, swayidle — see the same idleness the shell does.
+
+        Expected at most a few times a second while the controller is in use;
+        a timer that is minutes long is not made more accurate by being told
+        about every frame of a stick held over.
+      </description>
+    </request>
+
+    <request name="hold_the_screen" since="45">
+      <description summary="a program has asked for the screen to stay on">
+        Holds every ext_idle_notification_v1 made with get_idle_notification —
+        the kind that respects inhibitors — exactly as a zwp_idle_inhibitor_v1
+        on a surface that can be seen would, and lets them go again when sent
+        with hold set to 0.
+
+        For the programs that ask over the session bus rather than over
+        Wayland. org.freedesktop.ScreenSaver.Inhibit is how an X11 client, a
+        film player running under Xwayland and most of what SDL builds asks for
+        the screen to stay lit, and the session bus is the shell's rather than
+        this compositor's, so the shell answers the call and says here whether
+        anybody is still holding it.
+
+        Notifications made with get_input_idle_notification are not held, by
+        this or by anything else: they are about the person, not about what is
+        on the screen.
+      </description>
+      <arg name="hold" type="uint" summary="1 while held, 0 to let go"/>
+    </request>
+
+    <enum name="display_power" since="45">
+      <description summary="how lit a display is kept">
+        What set_output_power asks of one display.
+      </description>
+      <entry name="on" value="0" summary="drawn as it always is"/>
+      <entry name="dim" value="1"
+             summary="drawn under a sheet that takes most of its light away"/>
+      <entry name="off" value="2"
+             summary="faded to black and then switched off at the connector"/>
+    </enum>
+
+    <request name="set_output_power" since="45">
+      <description summary="dim a display, switch it off, or bring it back">
+        Sets how lit one display is kept while nobody is using the machine.
+
+        dim draws a black sheet over the whole display — over every
+        application, the shell's own surfaces and the cursor — that leaves a
+        little under half of its light: enough to see that the machine has not
+        gone anywhere, little enough to be plainly waiting. A panel wired into
+        the machine is better dimmed by its own backlight, which saves the
+        power this cannot, and a shell that has one is expected to use it and
+        send on for that display.
+
+        off takes the display to black over about a second and then switches
+        it off at the connector, which on a panel is the backlight going out
+        and on a monitor is the monitor going to sleep. While it is off,
+        nothing on it is on screen: its windows are sent no frames and the
+        applications they belong to are stopped, exactly as on a display
+        resting behind cover_output_in_black. A nested compositor has no
+        connector to switch off and keeps the black instead.
+
+        on brings it back — the connector first, then the picture up out of
+        the black in about a quarter of a second — and continues what was
+        stopped before the first frame of it.
+
+        Input does not bring a display back by itself. The shell hears about
+        activity through ext_idle_notification_v1 and is expected to send on
+        when it does, which keeps the one decision about the screen in the one
+        place that knows about the controller as well as the keyboard. A shell
+        that goes away takes its decisions with it: every display is brought
+        back when the last lxb_shell_v1 is destroyed.
+
+        Silently ignored when the output is gone.
+      </description>
+      <arg name="output" type="object" interface="wl_output"
+           summary="the display being dimmed, switched off or brought back"/>
+      <arg name="power" type="uint" enum="display_power"
+           summary="how lit it is to be kept"/>
     </request>
 
     <request name="cover_in_black" since="26">
@@ -2698,6 +2788,26 @@
         somebody's back. The overlay is left standing instead, where every
         other way of driving it still reaches it.
       </description>
+    </event>
+
+    <event name="power_button" since="45">
+      <description summary="the machine's power button went down or came up">
+        Sent for the power button — KEY_POWER on whatever device reports it —
+        instead of handing it to the application that has the keyboard. It is
+        the machine's button, not a key of a program's, and a console decides
+        what it does itself: a press puts it to sleep, a longer hold asks what
+        to do.
+
+        Both edges are sent, so the shell can tell a press from a hold; a
+        compositor that never saw the button go down sends no release.
+
+        The login manager handles the button itself unless something holds a
+        handle-power-key inhibitor, and nothing here takes one. A shell that
+        wants this event to be the only thing a press does takes that
+        inhibitor itself, for as long as it is willing to answer the button.
+      </description>
+      <arg name="state" type="uint" enum="key_state"
+           summary="pressed or released"/>
     </event>
   </interface>
 </protocol>

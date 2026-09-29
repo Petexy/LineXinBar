@@ -69,14 +69,14 @@ grep -Fqx 'pkgver=@VERSION@' "$PACKAGING_DIR/arch/PKGBUILD.in" \
     || package_die "arch/PKGBUILD.in no longer reads its version from VERSION"
 grep -Fq 'builtins.readFile ../../VERSION' "$PACKAGING_DIR/nix/package.nix" \
     || package_die "nix/package.nix no longer reads its version from VERSION"
-for control in control.in control-compositor.in control-retroarch.in control-heroic.in; do
+for control in control.in control-compositor.in control-retroarch.in control-heroic.in control-rpcs3.in; do
     grep -Fq 'Version: @VERSION@-1' "$PACKAGING_DIR/debian/$control" \
         || package_die "debian/$control no longer reads its version from VERSION"
 done
 # The two binaries read the same file, and each says so for itself: a build
 # script that has stopped looking is a `--version` free to drift from the
 # package it ships in, which is what this whole section exists to prevent.
-for component in lxb-compositor lxb-desktop lxb-retroarch lxb-heroic; do
+for component in lxb-compositor lxb-desktop lxb-retroarch lxb-heroic lxb-rpcs3; do
     build_script="$PROJECT_ROOT/crates/$component/build.rs"
     [[ -f "$build_script" ]] \
         || package_die "crates/$component/build.rs is gone, and with it the check that it builds as the version in VERSION"
@@ -92,6 +92,8 @@ grep -Fq 'lxb-desktop (= @VERSION@-1)' "$PACKAGING_DIR/debian/control-retroarch.
     || package_die "debian/control-retroarch.in no longer depends on the matching lxb-desktop"
 grep -Fq 'lxb-desktop (= @VERSION@-1)' "$PACKAGING_DIR/debian/control-heroic.in" \
     || package_die "debian/control-heroic.in no longer depends on the matching lxb-desktop"
+grep -Fq 'lxb-desktop (= @VERSION@-1)' "$PACKAGING_DIR/debian/control-rpcs3.in" \
+    || package_die "debian/control-rpcs3.in no longer depends on the matching lxb-desktop"
 grep -Fq '"lxb-desktop=$pkgver-$pkgrel"' "$PACKAGING_DIR/arch/PKGBUILD.in" \
     || package_die "arch/PKGBUILD.in no longer version-locks lxb-retroarch to the shell"
 grep -Fq '"lxb-compositor=$pkgver-$pkgrel"' "$PACKAGING_DIR/arch/PKGBUILD.in" \
@@ -143,6 +145,7 @@ stage="$work/stage"
 "$PACKAGING_DIR/install.sh" --destdir "$work/desktop" --component desktop
 "$PACKAGING_DIR/install.sh" --destdir "$work/retroarch" --component retroarch
 "$PACKAGING_DIR/install.sh" --destdir "$work/heroic" --component heroic
+"$PACKAGING_DIR/install.sh" --destdir "$work/rpcs3" --component rpcs3
 
 package_note "checking the staged desktop and session payload"
 for binary in lxb lxb-desktop lxb-updates lxb-session; do
@@ -241,7 +244,42 @@ grep -q 'pub const STARTUP_FLAG: &str = "--mount-at-startup";' \
     "$PROJECT_ROOT/crates/lxb-desktop/src/drives.rs" \
     || package_die "the shell no longer names --mount-at-startup as its privileged flag"
 
-package_note "checking the four components partition the payload"
+# And Settings > Power's two: the machine's power settings, and a sleep asked
+# for past the account's own programs' locks. Unlike the three above these are
+# allowed to whoever is at the machine without a password — and to nobody
+# else without one — so that is what is checked.
+package_note "checking the power polkit actions are staged and bound"
+policy="$work/desktop/usr/share/polkit-1/actions/org.linexinbar.power.policy"
+[[ -f "$policy" ]] \
+    || package_die "the desktop component does not stage the power polkit actions"
+for action in org.linexinbar.power.settings org.linexinbar.power.sleep; do
+    grep -q "id=\"$action\"" "$policy" \
+        || package_die "the power policy does not declare $action"
+done
+[[ "$(grep -c '<annotate key="org.freedesktop.policykit.exec.path">/usr/bin/lxb-desktop</annotate>' "$policy")" == 2 ]] \
+    || package_die "the power policy is not bound to the installed shell path"
+grep -q '<annotate key="org.freedesktop.policykit.exec.argv1">--apply-power</annotate>' "$policy" \
+    || package_die "the power policy is not bound to the --apply-power argument"
+grep -q '<annotate key="org.freedesktop.policykit.exec.argv1">--sleep-now</annotate>' "$policy" \
+    || package_die "the power policy is not bound to the --sleep-now argument"
+grep -q '@HELPER@' "$policy" \
+    && package_die "the power policy still carries its @HELPER@ placeholder"
+grep -q 'auth_admin_keep' "$policy" \
+    && package_die "the power policy caches its authorization with auth_admin_keep"
+grep -q '<allow_any>yes</allow_any>' "$policy" \
+    && package_die "the power policy lets somebody who is not at the machine in"
+if command -v xmllint >/dev/null 2>&1; then
+    xmllint --noout "$policy" \
+        || package_die "the power policy is not well-formed XML"
+fi
+grep -q 'pub const APPLY_FLAG: &str = "--apply-power";' \
+    "$PROJECT_ROOT/crates/lxb-desktop/src/machine_power.rs" \
+    || package_die "the shell no longer names --apply-power as its privileged flag"
+grep -q 'pub const SLEEP_FLAG: &str = "--sleep-now";' \
+    "$PROJECT_ROOT/crates/lxb-desktop/src/machine_power.rs" \
+    || package_die "the shell no longer names --sleep-now as its privileged flag"
+
+package_note "checking the five components partition the payload"
 # The compositor is a package of its own so a display manager can depend on a
 # Wayland session without pulling in this project's shell, and the RetroArch
 # integration is one so that a machine which will never emulate a console does
@@ -252,12 +290,13 @@ staged_paths() {
     (cd "$1" && find . -mindepth 1 \( -type f -o -type l \) -printf '%P\n' | sort)
 }
 staged_paths "$stage" > "$work/all.list"
-for component in compositor desktop retroarch heroic; do
+for component in compositor desktop retroarch heroic rpcs3; do
     staged_paths "$work/$component" > "$work/$component.list"
 done
 
 for pair in "compositor desktop" "compositor retroarch" "desktop retroarch" \
-    "compositor heroic" "desktop heroic" "retroarch heroic"; do
+    "compositor heroic" "desktop heroic" "retroarch heroic" \
+    "compositor rpcs3" "desktop rpcs3" "retroarch rpcs3" "heroic rpcs3"; do
     read -r one other <<< "$pair"
     comm -12 "$work/$one.list" "$work/$other.list" > "$work/both.list"
     if [[ -s "$work/both.list" ]]; then
@@ -265,9 +304,9 @@ for pair in "compositor desktop" "compositor retroarch" "desktop retroarch" \
     fi
 done
 sort -u "$work/compositor.list" "$work/desktop.list" "$work/retroarch.list" \
-    "$work/heroic.list" > "$work/union.list"
+    "$work/heroic.list" "$work/rpcs3.list" > "$work/union.list"
 if ! diff -q "$work/all.list" "$work/union.list" >/dev/null; then
-    package_die "--component all differs from the four components together: $(
+    package_die "--component all differs from the five components together: $(
         diff "$work/all.list" "$work/union.list" | tr '\n' ' ')"
 fi
 
@@ -319,6 +358,13 @@ done
     || package_die "the heroic component does not stage lxb-heroic"
 grep -Fq 'lxb:shape' "$work/heroic/usr/share/lxb/glyphs/epic.svg" 2>/dev/null \
     || package_die "the heroic component does not stage its mark as the shape of itself"
+# And the PlayStation 3 integration, on the same terms.
+[[ ! -e "$work/desktop/usr/bin/lxb-rpcs3" ]] \
+    || package_die "the desktop component stages lxb-rpcs3, which is a package of its own"
+[[ -x "$work/rpcs3/usr/bin/lxb-rpcs3" ]] \
+    || package_die "the rpcs3 component does not stage lxb-rpcs3"
+grep -Fq 'lxb:shape' "$work/rpcs3/usr/share/lxb/glyphs/ps3.svg" 2>/dev/null \
+    || package_die "the rpcs3 component does not stage its mark as the shape of itself"
 session="$stage/usr/share/wayland-sessions/lxb.desktop"
 [[ -f "$session" ]] || package_die "Wayland session entry was not staged"
 for line in Exec=lxb-session TryExec=lxb-session DesktopNames=LineXinBar; do

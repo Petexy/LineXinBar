@@ -1434,6 +1434,11 @@ struct Globals {
     /// The picture standing behind everything: the layer being left, the layer
     /// being arrived at, and how much of each is showing. See [`Hero`].
     hero: [f32; 4],
+    /// The shape, width over height, of the picture in each of those two
+    /// layers — `x` the one being left, `y` the one arrived at. A layer holds
+    /// its picture stretched to fill it, and this is what the shader crops it
+    /// to the display from. `z` and `w` are padding. See [`crate::art::HERO_WIDTH`].
+    hero_shape: [f32; 4],
     /// Which material each half of the shell is drawn in: 0 for its own and 1
     /// for the plain one a slow machine asks for, under Settings > Appearance >
     /// Theme. `x` is the wallpaper — the band of water against the glass-silk
@@ -1844,6 +1849,9 @@ pub struct Gpu {
     scenery_texture: wgpu::Texture,
     scenery_bind_group: wgpu::BindGroup,
     scenery_layers: Vec<Option<crate::art::Sight>>,
+    /// The shape of the picture in each layer, width over height — see
+    /// [`crate::art::Scenery::shape`].
+    scenery_shapes: Vec<f32>,
     scenery_layout: wgpu::BindGroupLayout,
 
     /// The user's own wallpaper: one picture, or the newest frame of one film,
@@ -1851,17 +1859,24 @@ pub struct Gpu {
     ///
     /// Beside the scenery rather than in it, although both are pictures behind
     /// the shell, because they are different shapes and are asked different
-    /// questions. Every layer of the scenery is a hero — 1920 by 620, Valve's
-    /// shape, cropped to the middle of the display — and a wallpaper is whatever
-    /// shape the file is, held at whatever size it came at. Squeezing one into
-    /// the other would either letterbox somebody's photograph or throw two
-    /// thirds of it away.
+    /// questions. Every layer of the scenery is one fixed size — a texture array
+    /// has no other kind — holding its picture stretched, with the picture's
+    /// shape beside it; a wallpaper is whatever shape the file is, held at
+    /// whatever size it came at, and is a film as often as a picture.
     ///
     /// `None` until the first frame arrives, which is the state a session
     /// spends its first moments in and the state a file that cannot be read
     /// stays in for good. Nothing has to test for it downstream — see
     /// [`Gpu::wallpaper_flag`], which is what the shader is told instead.
     paper: Option<Paper>,
+    /// How many times the picture behind everything has changed — a frame put
+    /// up, or the picture taken away — which is how a caller that keeps what it
+    /// last drew can tell it has to draw again. See
+    /// [`crate::settings::low_end`].
+    paper_changes: u64,
+    /// The most snapshots of itself one frame may take: [`MAX_GLASS_BATCHES`],
+    /// or one in low-end hardware mode — see [`Gpu::set_low_end`].
+    glass_budget: usize,
     /// One transparent texel, so the wallpaper's binding has something to point
     /// at on a machine that has not set one. See where it is made.
     blank_paper: wgpu::Texture,
@@ -2481,8 +2496,11 @@ impl Gpu {
                 scenery_texture,
                 scenery_bind_group,
                 scenery_layers: vec![None; HERO_LAYERS as usize],
+                scenery_shapes: vec![1.0; HERO_LAYERS as usize],
                 scenery_layout,
                 paper: None,
+                paper_changes: 0,
+                glass_budget: MAX_GLASS_BATCHES,
                 blank_paper,
                 atlas_texture: atlas.texture,
                 slots: atlas.slots,
@@ -2578,6 +2596,56 @@ impl Gpu {
     /// disagree with the one the shell is running on.
     pub fn vulkan(&self) -> bool {
         self.adapter.get_info().backend == wgpu::Backend::Vulkan
+    }
+
+    /// Whether this shell is drawing on the processor rather than on a
+    /// graphics chip — llvmpipe, or any adapter that says it is a CPU. Where it
+    /// is, the default frame is not slow but unusable, and low-end hardware
+    /// mode is on until somebody says otherwise. See
+    /// [`crate::settings::low_end`].
+    pub fn software(&self) -> bool {
+        let info = self.adapter.get_info();
+        info.device_type == wgpu::DeviceType::Cpu || info.name.contains("llvmpipe")
+    }
+
+    /// Everything a frame of the wallpaper is drawn from except the clock: the
+    /// size, how blurred it is, the game's picture behind it, the palette, the
+    /// material and the user's own picture. Two frames with the same key are
+    /// the same frame once the clock is stopped, which is what lets low-end
+    /// hardware mode draw the wallpaper once and leave it. See
+    /// [`crate::settings::low_end`].
+    pub fn backdrop_key(&self, size: (u32, u32), blur: f32, hero: &Hero) -> Vec<u32> {
+        let theme = crate::theme::theme();
+        let mut key = vec![size.0, size.1, blur.to_bits()];
+        key.extend(hero.packed().map(f32::to_bits));
+        let colours = theme.sky.iter().chain([
+            &theme.accent,
+            &theme.accent_soft,
+            &theme.accent_deep,
+            &theme.glow,
+        ]);
+        for colour in colours {
+            key.extend(colour.a(1.0).map(f32::to_bits));
+        }
+        key.push(self.wallpaper_flag().to_bits());
+        key.push(crate::theme::particles_flag().to_bits());
+        key.push(self.paper_changes as u32);
+        key.push((self.paper_changes >> 32) as u32);
+        key
+    }
+
+    /// Whether a picture of the user's own is up behind everything.
+    pub fn has_paper(&self) -> bool {
+        self.paper.is_some()
+    }
+
+    /// Draw the cheap way or not. What it changes here is how many pictures of
+    /// itself a frame may take for its glass: one, rather than one per layer of
+    /// glass resting on another. A pane past the first then refracts the frame
+    /// as it stood before the pane under it — glass that has stopped frosting
+    /// in one corner, which nobody on a machine that needs this will miss.
+    pub fn set_low_end(&mut self, on: bool) {
+        self.glass_budget = if on { 1 } else { MAX_GLASS_BATCHES };
     }
 
     /// Atlas slot for an icon name, if it was loaded.
@@ -2956,6 +3024,40 @@ impl Gpu {
         self.thumbs.retain(|path, _| wanted.contains(path));
     }
 
+    /// The size, in pixels, a file's thumbnail was put into the atlas at.
+    pub fn thumbnail_size(&self, path: &Path) -> Option<(u32, u32)> {
+        let thumb = self.thumbs.get(path)?;
+        let edge = (THUMB_CELLS * CELL) as f32;
+        Some((
+            (thumb.covers[0] * edge).round() as u32,
+            (thumb.covers[1] * edge).round() as u32,
+        ))
+    }
+
+    /// Write a new picture over a file's thumbnail, in the block it already
+    /// holds — a PlayStation 3 game's film playing on its icon, one frame at a
+    /// time. See [`crate::preview`]. `false` when the file has no block.
+    pub fn repaint_thumbnail(&mut self, path: &Path, picture: &crate::thumbs::Picture) -> bool {
+        let Some(block) = self
+            .thumb_blocks
+            .iter()
+            .position(|held| held.as_deref() == Some(path))
+        else {
+            return false;
+        };
+        let cell = Self::band_cell(
+            self.atlas_cells_per_row,
+            self.thumb_band,
+            THUMB_CELLS,
+            block,
+        );
+        let Some(thumb) = self.write_block(THUMB_CELLS, cell, picture) else {
+            return false;
+        };
+        self.thumbs.insert(path.to_path_buf(), thumb);
+        true
+    }
+
     /// Throw away the thumbnail of one file, so the next look re-reads it.
     ///
     /// The counterpart of [`Self::retain_thumbnails`], and needed for the one
@@ -3030,6 +3132,7 @@ impl Gpu {
             );
         }
         self.scenery_layers[layer] = Some(of.clone());
+        self.scenery_shapes[layer] = scenery.shape;
         true
     }
 
@@ -3056,6 +3159,19 @@ impl Gpu {
     /// Nought where there is no picture, which is a shape the shader never asks
     /// about because it is only read on the branch [`Gpu::wallpaper_flag`]
     /// opens.
+    /// The shapes of the two layers `hero` names, for [`Globals::hero_shape`].
+    /// A layer that is not there is given a shape of one, which it is never
+    /// drawn at: it has no strength either.
+    fn hero_shapes(&self, hero: &Hero) -> [f32; 4] {
+        let shape = |layer: Option<u32>| {
+            layer
+                .and_then(|layer| self.scenery_shapes.get(layer as usize))
+                .copied()
+                .unwrap_or(1.0)
+        };
+        [shape(hero.from), shape(hero.to), 0.0, 0.0]
+    }
+
     fn paper_shape(&self) -> f32 {
         self.paper
             .as_ref()
@@ -3075,6 +3191,7 @@ impl Gpu {
     /// film's first frame is. Every frame after that writes into the texture
     /// already there.
     pub fn put_paper(&mut self, frame: crate::paper::Frame) -> Option<Vec<u8>> {
+        self.paper_changes += 1;
         let (width, height) = (frame.width.max(1), frame.height.max(1));
         if frame.pixels.len() < (width * height * 4) as usize {
             tracing::warn!(
@@ -3169,6 +3286,7 @@ impl Gpu {
         if self.paper.take().is_none() {
             return;
         }
+        self.paper_changes += 1;
         self.scenery_bind_group = scenery_group(
             &self.device,
             &self.scenery_layout,
@@ -3332,6 +3450,7 @@ impl Gpu {
                 glow: theme.glow.a(1.0),
                 covers: params.covers,
                 hero: hero.packed(),
+                hero_shape: self.hero_shapes(&hero),
                 style: [
                     self.wallpaper_flag(),
                     crate::theme::style_flag(crate::theme::Part::Icons),
@@ -3465,7 +3584,7 @@ impl Gpu {
 
         let stride = std::mem::size_of::<Instance>() as u64;
         let mut drawn = 0;
-        for batch in glass_batches(quads, MAX_GLASS_BATCHES) {
+        for batch in glass_batches(quads, self.glass_budget) {
             if batch.reads {
                 self.snapshot(&mut encoder, off, layers);
             }
@@ -3862,6 +3981,7 @@ impl Target {
                 glow: [0.0; 4],
                 covers: [[0.0; 4]; MAX_COVERS],
                 hero: [0.0; 4],
+                hero_shape: [1.0; 4],
                 style: [0.0; 4],
             }),
             usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,

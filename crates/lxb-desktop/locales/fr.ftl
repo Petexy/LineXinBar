@@ -1633,6 +1633,7 @@ achievement-summary = { $description } · { $points ->
     } · { $state }
 achievements-unlocked-count = Débloqués ({ $count })
 achievements-locked-count = Verrouillés ({ $count })
+achievements-hidden-count = Cachés ({ $count })
 achievements-unlocked-of = { $unlocked } / { $total } débloqués
 achievement-unlocked-at = Débloqué le { $date } à { $time }
 trophies-error-retry = { $error } Revenez en arrière et rouvrez pour réessayer.
@@ -2059,3 +2060,149 @@ epic-cloud-saves-off = Les sauvegardes restent sur cette machine
 epic-cloud-saves-not-changed = Les sauvegardes dans le cloud n'ont pas été changées.
 epic-achievement-summary = { $description } · { $xp } XP · { $state }
 epic-players-who-have-it = Joueurs qui l'ont
+
+## PlayStation 3, avec RPCS3
+ps3-looking = Recherche des jeux PlayStation 3
+ps3-press-to-set-up = Appuyez pour le préparer
+ps3-set-up = Préparer
+ps3-set-up-explanation = Les jeux PlayStation 3 ont besoin de deux téléchargements gratuits avant de pouvoir être joués : le programme qui les fait tourner et le logiciel système de la console. Rien d'autre n'est modifié sur cette machine.
+ps3-getting-rpcs3 = Téléchargement de ce qui fait tourner les jeux
+ps3-getting-the-system-software = Téléchargement du logiciel système PlayStation 3
+ps3-installing-the-game = Installation du jeu
+ps3-ready = Prêt
+ps3-not-done = Inachevé
+ps3-set-up-failed = Les jeux PlayStation 3 n'ont pas pu être préparés.
+ps3-choose-the-folder-your-games-are-in = Choisissez le dossier où se trouvent vos jeux
+ps3-the-folder-cannot-be-read = Le dossier des jeux ne peut pas être ouvert
+ps3-press-to-install = Appuyez pour l'installer
+ps3-press-to-get-it-ready = Appuyez pour le préparer
+ps3-installed = Installé
+ps3-ready-to-play = Prêt à jouer
+ps3-install-failed = Le jeu n'a pas pu être installé.
+ps3-uninstall-keeps = Ses sauvegardes et ses trophées sont conservés.
+ps3-uninstalling = Désinstallation…
+ps3-uninstall-failed = Le jeu n'a pas pu être désinstallé.
+ps3-clear-cache = Vider le cache
+ps3-clear-cache-explanation = Le prochain lancement sera plus long, le temps de tout préparer à nouveau.
+ps3-clearing-cache = Vidage du cache…
+ps3-clear-cache-failed = Le cache n'a pas pu être vidé.
+ps3-frame-limit = Limite d'images par seconde
+ps3-frame-limit-auto = Aussi vite que le jeu doit tourner
+ps3-performance-overlay = Indicateur de performances
+ps3-trophy-notices = Notifications de trophées
+ps3-console-language = Langue de la console
+ps3-controller-buttons = Boutons de la manette
+ps3-buttons-unchanged = Chaque bouton à sa place
+ps3-buttons-moved = { $count ->
+    [one] Un bouton déplacé
+   *[other] { $count } boutons déplacés
+    }
+ps3-buttons-back = Remettre tous les boutons en place
+ps3-buttons-back-explanation = Chacun retrouve sa place sur une manette PlayStation 3.
+ps3-button-cross = Croix
+ps3-button-circle = Rond
+ps3-button-square = Carré
+ps3-button-triangle = Triangle
+ps3-button-l1 = L1
+ps3-button-r1 = R1
+ps3-button-l2 = L2
+ps3-button-r2 = R2
+ps3-button-l3 = L3
+ps3-button-r3 = R3
+ps3-button-start = Start
+ps3-button-select = Select
+pad-button-south = Bouton du bas
+pad-button-east = Bouton de droite
+pad-button-west = Bouton de gauche
+pad-button-north = Bouton du haut
+pad-button-left-bumper = Bouton latéral gauche
+pad-button-right-bumper = Bouton latéral droit
+pad-button-left-trigger = Gâchette gauche
+pad-button-right-trigger = Gâchette droite
+pad-button-left-stick = Clic du stick gauche
+pad-button-right-stick = Clic du stick droit
+pad-button-start = Bouton Start
+pad-button-back = Bouton Retour
+ps3-disc-not-ready = Le jeu n'a pas pu être préparé.
+ps3-getting-the-disc-ready = Préparation du jeu
+ps3-look-again = Rechercher les jeux à nouveau
+ps3-open-rpcs3 = Ouvrir RPCS3
+ps3-play = Jouer
+ps3-trouble-no-rpcs3 = Préparez d'abord les jeux PlayStation 3 depuis leur ligne.
+ps3-trouble-offline = Internet est injoignable. Réessayez une fois la connexion rétablie.
+ps3-trouble-no-space = Il n'y a pas assez d'espace libre sur le disque.
+ps3-trouble-refused = Le téléchargement n'a pas abouti. Réessayez plus tard.
+ps3-trouble-firmware = Le logiciel système n'a pas pu être installé. Réessayez plus tard.
+ps3-trouble-not-a-package = Ce fichier n'est pas un jeu PlayStation 3 installable.
+ps3-trouble-package = Le fichier est peut-être endommagé, ou c'est une mise à jour d'un jeu qui n'est pas installé.
+ps3-trouble-other = Réessayez plus tard.
+ps3-where-your-games-are = Où se trouvent vos jeux PlayStation 3
+ps3-install-question = Installer ce jeu PlayStation 3 ? Il est copié dans la console, et ce fichier reste où il est.
+ps3-installed-find-it = Il est installé et prêt à jouer dans la colonne PlayStation 3.
+ps3-trophy-platinum = Platine
+ps3-trophy-gold = Or
+ps3-trophy-silver = Argent
+ps3-trophy-bronze = Bronze
+ps3-trophy-grade = Trophée
+ps3-trophy-summary = { $description } · { $grade } · { $state }
+
+# Paramètres > Alimentation, et ce que dit la batterie quand elle faiblit.
+power-title = Alimentation
+power-description = Veille, écran et bouton d'alimentation
+power-session-only = Ces réglages valent pour cette session seulement : ils n'ont pas pu être enregistrés pour tout l'appareil.
+power-dim-screen = Assombrir l'écran
+power-turn-off-screen = Éteindre l'écran
+power-sleep = Veille
+power-sleep-on-battery = Veille sur batterie
+power-sleep-plugged-in = Veille sur secteur
+power-never = Jamais
+power-after-seconds = { $count ->
+    [one] Après { $count } seconde
+   *[other] Après { $count } secondes
+    }
+power-after-minutes = { $count ->
+    [one] Après { $count } minute
+   *[other] Après { $count } minutes
+    }
+power-after-hours = { $count ->
+    [one] Après { $count } heure
+   *[other] Après { $count } heures
+    }
+power-button = Bouton d'alimentation
+power-button-sleep = Veille
+power-button-menu = Menu d'alimentation
+power-button-sleep-note = Un appui met l'appareil en veille. Maintenez-le pour le menu d'alimentation.
+power-button-menu-note = Un appui ouvre le menu d'alimentation.
+power-button-hibernate = Veille prolongée
+power-button-hibernate-note = Un appui enregistre ce qui est ouvert et éteint l'appareil. Maintenez-le pour le menu d'alimentation.
+power-button-power-off = Éteindre
+power-button-power-off-note = Un appui éteint l'appareil. Maintenez-le pour le menu d'alimentation.
+power-button-nothing = Ne rien faire
+power-button-nothing-note = Un appui ne fait rien. Maintenez-le pour le menu d'alimentation.
+power-mode = Mode d'alimentation
+power-mode-unknown = Inconnu
+power-mode-power-saver = Économie d'énergie
+power-mode-balanced = Équilibré
+power-mode-performance = Performances
+power-mode-power-saver-note = Plus d'autonomie, moins de vitesse
+power-mode-balanced-note = Vitesse et autonomie équilibrées
+power-mode-performance-note = Pleine vitesse, plus de consommation
+power-battery-saver = Économiseur de batterie
+power-battery-saver-description = Économie d'énergie quand la batterie est faible
+power-battery-saver-on-note = Passe en économie d'énergie à 20 % et revient pendant la charge
+power-battery-low = Batterie faible
+power-battery-low-body = Il reste { $percent } %. Branchez bientôt le chargeur.
+power-battery-very-low-body = Il reste { $percent } %. Branchez le chargeur maintenant.
+power-battery-empty = Batterie presque vide
+power-battery-empty-body = L'appareil se met en veille. Branchez le chargeur pour continuer.
+power-sleep-held = L'appareil ne peut pas encore se mettre en veille
+power-sleep-held-body = Le système termine une tâche qui le garde éveillé. Réessayez quand elle sera finie.
+
+# Paramètres > Système > Mode matériel modeste.
+low-end-title = Mode matériel modeste
+low-end-description = Sollicite moins la puce graphique et le processeur
+low-end-on-for-this-device = Activé, adapté à cet appareil
+low-end-off-note = Tous les effets, aussi fluides que l'appareil le permet
+low-end-on-note = Un fond d'écran fixe, des effets plus simples et moins d'images
+low-end-slow = L'interface est lente sur cet appareil
+low-end-slow-body = Le mode matériel modeste, dans Paramètres > Système, peut la rendre plus fluide.

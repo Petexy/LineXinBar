@@ -1,0 +1,23 @@
+<!--
+  The PlayStation 3 row, column and every game without an icon of its own:
+  RPCS3's "3", from RPCS3's own icon — three bars joined down the right, the
+  two gaps between them open to the left and rounded at their ends, and the
+  right side pinched in a little where the middle bar meets it.
+
+  The console set's rule is the machine rather than its logo (see
+  console-nes.svg in lxb-retroarch). This mark is the exception the user asked
+  for on 2026-09-29: the PlayStation 3 here is RPCS3, and RPCS3's "3" is what
+  somebody who uses it looks for. It is drawn anew on this set's grid rather
+  than copied — RPCS3's proportions (bars to gaps as 40 to 47, the whole as wide
+  as three halves its height), with no part narrower than the set's two and a
+  half units — and without RPCS3's tile, which the category's own tile is.
+
+  It ships in the lxb-rpcs3 package and is read at startup out of
+  share/lxb/glyphs as lxb:ps3.
+
+  lxb:shape
+-->
+
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32">
+  <path fill="#ffffff" d="M4.6 7.85H23.4A4.6 4.6 0 0 1 28 12.45V14.7A1.3 1.3 0 0 1 26.7 16A1.3 1.3 0 0 1 28 17.3V19.55A4.6 4.6 0 0 1 23.4 24.15H4.6A0.6 0.6 0 0 1 4 23.55V21.65A0.6 0.6 0 0 1 4.6 21.05H21.65A1.75 1.75 0 0 0 21.65 17.55H4.6A0.6 0.6 0 0 1 4 16.95V15.05A0.6 0.6 0 0 1 4.6 14.45H21.65A1.75 1.75 0 0 0 21.65 10.95H4.6A0.6 0.6 0 0 1 4 10.35V8.45A0.6 0.6 0 0 1 4.6 7.85Z"/>
+</svg>

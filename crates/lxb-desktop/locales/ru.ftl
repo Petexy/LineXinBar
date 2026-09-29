@@ -1744,6 +1744,7 @@ achievement-summary = { $description } · { $points ->
     } · { $state }
 achievements-unlocked-count = Открыто ({ $count })
 achievements-locked-count = Закрыто ({ $count })
+achievements-hidden-count = Скрыто ({ $count })
 achievements-unlocked-of = Открыто { $unlocked } / { $total }
 achievement-unlocked-at = Открыто { $date } { $time }
 trophies-error-retry = { $error } Вернитесь и откройте снова, чтобы повторить.
@@ -2175,3 +2176,152 @@ epic-cloud-saves-off = Сохранения остаются на этом ко�
 epic-cloud-saves-not-changed = Облачные сохранения не изменены.
 epic-achievement-summary = { $description } · { $xp } XP · { $state }
 epic-players-who-have-it = Игроки, у которых оно есть
+
+## PlayStation 3 через RPCS3
+ps3-looking = Поиск игр для PlayStation 3
+ps3-press-to-set-up = Нажмите, чтобы подготовить
+ps3-set-up = Подготовить
+ps3-set-up-explanation = Играм для PlayStation 3 нужны две бесплатные загрузки: программа, которая их запускает, и системное программное обеспечение консоли. Больше ничего на этом компьютере не меняется.
+ps3-getting-rpcs3 = Загрузка программы для запуска игр
+ps3-getting-the-system-software = Загрузка системного ПО PlayStation 3
+ps3-installing-the-game = Установка игры
+ps3-ready = Готово
+ps3-not-done = Не завершено
+ps3-set-up-failed = Не удалось подготовить игры для PlayStation 3.
+ps3-choose-the-folder-your-games-are-in = Выберите папку с вашими играми
+ps3-the-folder-cannot-be-read = Не удаётся открыть папку с играми
+ps3-press-to-install = Нажмите, чтобы установить
+ps3-press-to-get-it-ready = Нажмите, чтобы подготовить
+ps3-installed = Установлено
+ps3-ready-to-play = Можно играть
+ps3-install-failed = Не удалось установить игру.
+ps3-uninstall-keeps = Сохранения и трофеи останутся.
+ps3-uninstalling = Удаление…
+ps3-uninstall-failed = Не удалось удалить игру.
+ps3-clear-cache = Очистить кэш
+ps3-clear-cache-explanation = Следующий запуск займёт больше времени: всё будет подготовлено заново.
+ps3-clearing-cache = Очистка кэша…
+ps3-clear-cache-failed = Не удалось очистить кэш.
+ps3-frame-limit = Ограничение частоты кадров
+ps3-frame-limit-auto = Так быстро, как задумано в игре
+ps3-performance-overlay = Показатели производительности
+ps3-trophy-notices = Уведомления о трофеях
+ps3-console-language = Язык консоли
+ps3-controller-buttons = Кнопки контроллера
+ps3-buttons-unchanged = Все кнопки на своих местах
+ps3-buttons-moved = Перенесено кнопок: { $count }
+ps3-buttons-back = Вернуть все кнопки на место
+ps3-buttons-back-explanation = Каждая кнопка вернётся туда, где она находится на контроллере PlayStation 3.
+ps3-button-cross = Крест
+ps3-button-circle = Круг
+ps3-button-square = Квадрат
+ps3-button-triangle = Треугольник
+ps3-button-l1 = L1
+ps3-button-r1 = R1
+ps3-button-l2 = L2
+ps3-button-r2 = R2
+ps3-button-l3 = L3
+ps3-button-r3 = R3
+ps3-button-start = Start
+ps3-button-select = Select
+pad-button-south = Нижняя кнопка
+pad-button-east = Правая кнопка
+pad-button-west = Левая кнопка
+pad-button-north = Верхняя кнопка
+pad-button-left-bumper = Левый бампер
+pad-button-right-bumper = Правый бампер
+pad-button-left-trigger = Левый триггер
+pad-button-right-trigger = Правый триггер
+pad-button-left-stick = Нажатие левого стика
+pad-button-right-stick = Нажатие правого стика
+pad-button-start = Кнопка Start
+pad-button-back = Кнопка «Назад»
+ps3-disc-not-ready = Не удалось подготовить игру к запуску.
+ps3-getting-the-disc-ready = Подготовка игры
+ps3-look-again = Искать игры заново
+ps3-open-rpcs3 = Открыть RPCS3
+ps3-play = Играть
+ps3-trouble-no-rpcs3 = Сначала подготовьте игры для PlayStation 3 из их строки.
+ps3-trouble-offline = Нет доступа к интернету. Повторите попытку, когда связь появится.
+ps3-trouble-no-space = На диске недостаточно свободного места.
+ps3-trouble-refused = Загрузка не завершилась. Повторите попытку позже.
+ps3-trouble-firmware = Не удалось установить системное ПО. Повторите попытку позже.
+ps3-trouble-not-a-package = Этот файл не является игрой для PlayStation 3, которую можно установить.
+ps3-trouble-package = Возможно, файл повреждён или это обновление для игры, которая не установлена.
+ps3-trouble-other = Повторите попытку позже.
+ps3-where-your-games-are = Где находятся ваши игры для PlayStation 3
+ps3-install-question = Установить эту игру для PlayStation 3? Она будет скопирована в консоль, а этот файл останется на месте.
+ps3-installed-find-it = Установка завершена. Игра ждёт в столбце PlayStation 3.
+ps3-trophy-platinum = Платина
+ps3-trophy-gold = Золото
+ps3-trophy-silver = Серебро
+ps3-trophy-bronze = Бронза
+ps3-trophy-grade = Трофей
+ps3-trophy-summary = { $description } · { $grade } · { $state }
+
+# Настройки > Питание и то, что говорит батарея, когда разряжается.
+power-title = Питание
+power-description = Сон, экран и кнопка питания
+power-session-only = Действуют только в этом сеансе: сохранить их для всего устройства не удалось.
+power-dim-screen = Затемнение экрана
+power-turn-off-screen = Отключение экрана
+power-sleep = Сон
+power-sleep-on-battery = Сон от батареи
+power-sleep-plugged-in = Сон от сети
+power-never = Никогда
+power-after-seconds = { $count ->
+    [one] Через { $count } секунду
+    [few] Через { $count } секунды
+    [many] Через { $count } секунд
+   *[other] Через { $count } секунд
+    }
+power-after-minutes = { $count ->
+    [one] Через { $count } минуту
+    [few] Через { $count } минуты
+    [many] Через { $count } минут
+   *[other] Через { $count } минут
+    }
+power-after-hours = { $count ->
+    [one] Через { $count } час
+    [few] Через { $count } часа
+    [many] Через { $count } часов
+   *[other] Через { $count } часов
+    }
+power-button = Кнопка питания
+power-button-sleep = Сон
+power-button-menu = Меню питания
+power-button-sleep-note = Нажатие переводит устройство в сон. Удерживайте кнопку для меню питания.
+power-button-menu-note = Нажатие открывает меню питания.
+power-button-hibernate = Гибернация
+power-button-hibernate-note = Нажатие сохраняет всё открытое и выключает устройство. Удерживайте кнопку для меню питания.
+power-button-power-off = Выключение
+power-button-power-off-note = Нажатие выключает устройство. Удерживайте кнопку для меню питания.
+power-button-nothing = Без действия
+power-button-nothing-note = Нажатие ничего не делает. Удерживайте кнопку для меню питания.
+power-mode = Режим питания
+power-mode-unknown = Неизвестно
+power-mode-power-saver = Энергосбережение
+power-mode-balanced = Сбалансированный
+power-mode-performance = Производительность
+power-mode-power-saver-note = Дольше от батареи, ниже скорость
+power-mode-balanced-note = Баланс скорости и времени работы
+power-mode-performance-note = Полная скорость, выше расход энергии
+power-battery-saver = Экономия батареи
+power-battery-saver-description = Энергосбережение при низком заряде
+power-battery-saver-on-note = Включает энергосбережение при 20% и отключает при зарядке
+power-battery-low = Низкий заряд
+power-battery-low-body = Осталось { $percent }%. Скоро подключите зарядное устройство.
+power-battery-very-low-body = Осталось { $percent }%. Подключите зарядное устройство сейчас.
+power-battery-empty = Батарея почти разряжена
+power-battery-empty-body = Устройство переходит в сон. Подключите зарядное устройство, чтобы продолжить.
+power-sleep-held = Устройство пока не может перейти в сон
+power-sleep-held-body = Система завершает работу, для которой устройство должно оставаться включённым. Повторите попытку, когда она закончится.
+
+# Настройки > Система > Режим для слабого оборудования.
+low-end-title = Режим для слабого оборудования
+low-end-description = Меньше нагружает видеочип и процессор
+low-end-on-for-this-device = Включён для этого устройства
+low-end-off-note = Все эффекты, настолько плавно, насколько позволяет устройство
+low-end-on-note = Неподвижные обои, более простые эффекты и меньше кадров
+low-end-slow = Оболочка работает медленно на этом устройстве
+low-end-slow-body = Режим для слабого оборудования в Настройки > Система может сделать её плавнее.

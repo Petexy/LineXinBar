@@ -1,0 +1,111 @@
+<!DOCTYPE html>
+
+<html lang="fr">
+<head>
+<meta charset="utf-8"/>
+<meta content="width=device-width, initial-scale=1, viewport-fit=cover" name="viewport"/>
+<title>Les écrans dans LineXinBar : plusieurs écrans, HDR et protection OLED</title>
+<meta content="Dans LineXinBar, chaque écran tourne indépendamment : sa propre barre, sa définition et sa fréquence, le HDR, la lumière nocturne, la protection OLED, l'échelle et l'orientation — et une définition par application." name="description"/>
+<!-- search and sharing: written by tools/translate.py build -->
+<link rel="canonical" href="https://petexy.github.io/LineXinBar/fr/displays.html">
+<link rel="alternate" hreflang="x-default" href="https://petexy.github.io/LineXinBar/displays.html">
+<link rel="alternate" hreflang="en" href="https://petexy.github.io/LineXinBar/displays.html">
+<link rel="alternate" hreflang="de" href="https://petexy.github.io/LineXinBar/de/displays.html">
+<link rel="alternate" hreflang="en-GB" href="https://petexy.github.io/LineXinBar/displays.html">
+<link rel="alternate" hreflang="en-US" href="https://petexy.github.io/LineXinBar/en-us/displays.html">
+<link rel="alternate" hreflang="es" href="https://petexy.github.io/LineXinBar/es/displays.html">
+<link rel="alternate" hreflang="fr" href="https://petexy.github.io/LineXinBar/fr/displays.html">
+<link rel="alternate" hreflang="pl" href="https://petexy.github.io/LineXinBar/pl/displays.html">
+<link rel="alternate" hreflang="pt-BR" href="https://petexy.github.io/LineXinBar/pt-br/displays.html">
+<link rel="alternate" hreflang="ru" href="https://petexy.github.io/LineXinBar/ru/displays.html">
+<link rel="alternate" hreflang="hi" href="https://petexy.github.io/LineXinBar/hi/displays.html">
+<link rel="alternate" hreflang="zh-CN" href="https://petexy.github.io/LineXinBar/zh-cn/displays.html">
+<meta property="og:type" content="website">
+<meta property="og:site_name" content="LineXinBar">
+<meta property="og:title" content="Les écrans dans LineXinBar : plusieurs écrans, HDR et protection OLED">
+<meta property="og:description" content="Dans LineXinBar, chaque écran tourne indépendamment : sa propre barre, sa définition et sa fréquence, le HDR, la lumière nocturne, la protection OLED, l'échelle et l'orientation — et une définition par application.">
+<meta property="og:url" content="https://petexy.github.io/LineXinBar/fr/displays.html">
+<meta property="og:locale" content="fr_FR">
+<meta property="og:image" content="https://petexy.github.io/LineXinBar/assets/img/desktop.png">
+<meta property="og:image:width" content="1600">
+<meta property="og:image:height" content="900">
+<meta name="twitter:card" content="summary_large_image">
+<script type="application/ld+json">{"@context":"https://schema.org","@type":"WebPage","@id":"https://petexy.github.io/LineXinBar/fr/displays.html","url":"https://petexy.github.io/LineXinBar/fr/displays.html","name":"Les écrans dans LineXinBar : plusieurs écrans, HDR et protection OLED","description":"Dans LineXinBar, chaque écran tourne indépendamment : sa propre barre, sa définition et sa fréquence, le HDR, la lumière nocturne, la protection OLED, l'échelle et l'orientation — et une définition par application.","inLanguage":"fr","isPartOf":{"@id":"https://petexy.github.io/LineXinBar/#website"},"about":{"@id":"https://petexy.github.io/LineXinBar/#software"},"breadcrumb":{"@type":"BreadcrumbList","itemListElement":[{"@type":"ListItem","position":1,"name":"Écran d'accueil","item":"https://petexy.github.io/LineXinBar/fr/"},{"@type":"ListItem","position":2,"name":"Écrans","item":"https://petexy.github.io/LineXinBar/fr/displays.html"}]}}</script>
+<!-- /search and sharing -->
+<meta content="#060314" name="theme-color"/>
+<link href="../assets/glyphs/sm/logo.webp" rel="icon" type="image/webp"/>
+<link as="font" crossorigin="" href="../assets/fonts/Roboto-Regular-latin.woff2" rel="preload" type="font/woff2"/>
+<link href="../assets/css/lxb.css" rel="stylesheet"/>
+</head>
+<body data-page="displays" data-screen="page">
+<a class="skip" href="#content">Aller au contenu</a>
+<canvas aria-hidden="true" id="wallpaper"></canvas>
+<header class="page-head">
+<a class="trail" data-back="" href="index.html#displays">
+<span class="trail-tile"><img alt="" class="glyph" src="../assets/glyphs/lg/setting-display.webp"/></span>
+<span class="trail-text"><span class="trail-back">‹ Écran d'accueil</span><span class="trail-name">Écrans</span></span>
+</a>
+</header>
+<main class="column-page" id="content">
+<h1 class="visually-hidden">Les écrans dans LineXinBar : plusieurs écrans, HDR et protection OLED</h1>
+<nav aria-label="Sur cette page" class="rows-nav">
+<ol class="rows">
+<li><a class="row" data-lxb-row="" href="#multi"><span class="row-icon"><img alt="" class="glyph" src="../assets/glyphs/lg/setting-display.webp"/></span><span class="row-text"><span class="row-title">Plusieurs écrans</span><span class="row-comment">Chaque écran navigue de son côté</span></span></a></li>
+<li><a class="row" data-lxb-row="" href="#modes"><span class="row-icon"><img alt="" class="glyph" src="../assets/glyphs/lg/setting-refresh.webp"/></span><span class="row-text"><span class="row-title">Définition et fréquence</span><span class="row-comment">Chaque écran à son propre rythme</span></span></a></li>
+<li><a class="row" data-lxb-row="" href="#hdr"><span class="row-icon"><img alt="" class="glyph" src="../assets/glyphs/lg/setting-hdr.webp"/></span><span class="row-text"><span class="row-title">HDR</span><span class="row-comment">Grande plage dynamique, écran par écran</span></span></a></li>
+<li><a class="row" data-lxb-row="" href="#night"><span class="row-icon"><img alt="" class="glyph" src="../assets/glyphs/lg/setting-night-light.webp"/></span><span class="row-text"><span class="row-title">Lumière nocturne</span><span class="row-comment">Des couleurs plus chaudes le soir</span></span></a></li>
+<li><a class="row" data-lxb-row="" href="#oled"><span class="row-icon"><img alt="" class="glyph" src="../assets/glyphs/lg/setting-screen-rest.webp"/></span><span class="row-text"><span class="row-title">Protection OLED</span><span class="row-comment">Met au repos un écran que personne ne regarde</span></span></a></li>
+<li><a class="row" data-lxb-row="" href="#scaling"><span class="row-icon"><img alt="" class="glyph" src="../assets/glyphs/lg/setting-scale.webp"/></span><span class="row-text"><span class="row-title">Échelle et orientation</span><span class="row-comment">Plus grand ou plus petit, couché ou debout</span></span></a></li>
+<li><a class="row" data-lxb-row="" href="#app-resolution"><span class="row-icon"><img alt="" class="glyph" src="../assets/glyphs/lg/setting-resolution.webp"/></span><span class="row-text"><span class="row-title">Une définition par application</span><span class="row-comment">Faire dessiner un jeu gourmand avec moins de pixels</span></span></a></li>
+</ol>
+</nav>
+<div class="panes">
+<section aria-labelledby="multi-t" class="pane glass" id="multi">
+<h2 id="multi-t"><img alt="" class="glyph" src="../assets/glyphs/lg/setting-display.webp"/>Plusieurs écrans</h2>
+<p class="lede">Chaque écran reçoit sa propre barre — pas une copie d'une autre. Chacun navigue indépendamment et se souvient d'où il en était, si bien qu'une télévision peut rester sur Vidéos pendant que le moniteur du bureau est sur Jeux.</p>
+<p>Un seul écran reçoit les entrées à la fois, et l'on voit tout de suite lequel : les autres s'assombrissent. <kbd>L1</kbd> et <kbd>R1</kbd> sur la manette, ou <kbd>Tab</kbd> et <kbd>Shift</kbd>+<kbd>Tab</kbd>, passent les commandes à l'écran suivant, et un clic sur un écran les y amène. Une souris qui ne fait que traverser un autre écran ne le fait pas — passer par là n'est pas décider de l'écran qu'on utilise.</p>
+<p>Ce que vous ouvrez s'ouvre sur l'écran où vous avez appuyé, même quand deux écrans chargent deux choses à la fois. <kbd>Super</kbd>+<kbd>Shift</kbd>+<kbd>→</kbd> déplace une fenêtre vers l'écran suivant.</p>
+</section>
+<section aria-labelledby="modes-t" class="pane glass" id="modes">
+<h2 id="modes-t"><img alt="" class="glyph" src="../assets/glyphs/lg/setting-refresh.webp"/>Définition et fréquence</h2>
+<p class="lede">Contrairement à Gamescope, qui possède une sortie et y met une application à l'échelle, chaque écran est ici une vraie sortie avec sa propre boucle de rendu, cadencée par sa propre fréquence.</p>
+<p>Un moniteur 144 Hz à côté d'une télévision 60 Hz tourne à 144 et à 60, pas sur un battement commun. <em>Paramètres › Écran</em> pose les deux questions séparément : choisissez une taille, et la page suivante liste toutes les fréquences que cette taille offre vraiment — jamais un mode que l'écran n'a pas annoncé.</p>
+<div class="more"><a class="control lit" data-select="Réglages d'écran" href="https://github.com/Petexy/LineXinBar/blob/master/docs/settings.md#display" rel="noopener" target="_blank">Les réglages d'écran, en détail</a></div>
+</section>
+<section aria-labelledby="hdr-t" class="pane glass" id="hdr">
+<h2 id="hdr-t"><img alt="" class="glyph" src="../assets/glyphs/lg/setting-hdr.webp"/>HDR</h2>
+<p class="lede">Activez la grande plage dynamique sur tout écran qui la prend en charge, et réglez la luminosité du contenu ordinaire sur cet écran.</p>
+<p>Chaque écran compatible HDR est listé avec ce qu'il est en train de faire et la luminosité maximale qu'il annonce ; un nouveau apparaît dès qu'il est branché. Ici, le HDR est un réglage de l'écran : le bureau s'affiche correctement sur un signal HDR, et les jeux qui transmettent le HDR par la voie Wayland native de Proton sont transmis tels quels à l'écran.</p>
+</section>
+<section aria-labelledby="night-t" class="pane glass" id="night">
+<h2 id="night-t"><img alt="" class="glyph" src="../assets/glyphs/lg/setting-night-light.webp"/>Lumière nocturne</h2>
+<p class="lede">Tout ce qui est à l'écran teinté vers une couleur plus chaude le soir, pour qu'un écran regardé tard ne soit pas d'un blanc de plein jour.</p>
+<p>Selon un horaire — du coucher au lever du soleil là où vous êtes, ou entre des heures de votre choix — ou activée jusqu'à ce que vous la coupiez, à la chaleur que vous réglez sur une barre. Elle fonctionne avec le HDR plutôt que contre lui.</p>
+</section>
+<section aria-labelledby="oled-t" class="pane glass" id="oled">
+<h2 id="oled-t"><img alt="" class="glyph" src="../assets/glyphs/lg/setting-screen-rest.webp"/>Protection OLED</h2>
+<p class="lede">Un panneau OLED garde ce qu'on lui montre, et un écran d'accueil laissé sur un second écran pendant une soirée de jeu, c'est une barre marquée dedans. Un interrupteur met cet écran au repos derrière du noir pendant qu'un autre est utilisé.</p>
+<p>Y amener le pointeur le rallume en un quart de seconde. Une fois tout à fait noir, l'écran dort : le shell cesse de le dessiner et tout ce qu'il affiche est en pause, sans rien coûter jusqu'à votre retour.</p>
+</section>
+<section aria-labelledby="scaling-t" class="pane glass" id="scaling">
+<h2 id="scaling-t"><img alt="" class="glyph" src="../assets/glyphs/lg/setting-scale.webp"/>Échelle et orientation</h2>
+<p class="lede"><strong>L'échelle des applications</strong> fait dessiner leurs interfaces en plus grand aux programmes d'un écran — de 100 % à 300 %, réglée sur une barre qui affiche <em>150 % · Une fois et demie plus grand</em>.</p>
+<p><strong>L'orientation</strong> fait pivoter un écran posé sur le côté ou accroché à l'envers : 0°, 90°, 180° ou 270°. Les deux se règlent écran par écran, comme tout sur cette page.</p>
+</section>
+<section aria-labelledby="app-resolution-t" class="pane glass" id="app-resolution">
+<h2 id="app-resolution-t"><img alt="" class="glyph" src="../assets/glyphs/lg/setting-resolution.webp"/>Une définition par application</h2>
+<p class="lede">Le menu d'une application, d'un jeu Steam ou d'un jeu de console porte une ligne <strong>Résolution</strong> : Native, ou toute taille plus petite qui tient à l'écran.</p>
+<p>Choisissez 1280 × 720 pour un jeu gourmand sur une télévision 4K et il dessine vraiment en 1280 × 720, étiré sur tout l'écran — une manière bon marché de regagner des images par seconde sur un matériel modeste. Le choix est retenu pour ce jeu dès lors ; choisissez à nouveau Native pour revenir en arrière.</p>
+<div class="more"><a class="control lit" data-select="Guide complet" href="https://github.com/Petexy/LineXinBar/blob/master/docs/guide.md#the-resolution-something-draws-at" rel="noopener" target="_blank">La définition à laquelle quelque chose dessine</a></div>
+</section>
+</div>
+</main>
+<footer class="site-foot">
+<p>Suivant : <a href="settings.html">Paramètres ›</a> · Précédent : <a href="guide.html">‹ Le guide</a> · <a href="index.html#displays">Écran d'accueil</a> · LineXinBar est un logiciel libre sous <a href="https://github.com/Petexy/LineXinBar/blob/master/LICENSE">GPL-3.0</a>.</p>
+</footer>
+<script defer="" src="../assets/js/wallpaper.js"></script>
+<script defer="" src="../assets/js/i18n.js"></script>
+<script defer="" src="../assets/js/shell.js"></script>
+<script defer="" src="../assets/js/page.js"></script>
+</body>
+</html>

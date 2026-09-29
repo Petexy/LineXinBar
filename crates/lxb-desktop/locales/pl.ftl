@@ -1696,6 +1696,7 @@ achievement-summary = { $description } · { $points ->
     } · { $state }
 achievements-unlocked-count = Odblokowane ({ $count })
 achievements-locked-count = Zablokowane ({ $count })
+achievements-hidden-count = Ukryte ({ $count })
 achievements-unlocked-of = Odblokowano { $unlocked } / { $total }
 achievement-unlocked-at = Odblokowano { $date } { $time }
 trophies-error-retry = { $error } Wróć i otwórz ponownie, aby spróbować jeszcze raz.
@@ -2125,3 +2126,152 @@ epic-cloud-saves-off = Zapisy zostają na tym komputerze
 epic-cloud-saves-not-changed = Zapisy w chmurze nie zostały zmienione.
 epic-achievement-summary = { $description } · { $xp } XP · { $state }
 epic-players-who-have-it = Gracze, którzy je mają
+
+## PlayStation 3 przez RPCS3
+ps3-looking = Szukanie gier z PlayStation 3
+ps3-press-to-set-up = Wybierz, aby przygotować
+ps3-set-up = Przygotuj
+ps3-set-up-explanation = Gry z PlayStation 3 potrzebują dwóch bezpłatnych pobrań, zanim będzie można w nie grać: programu, który je uruchamia, i oprogramowania systemowego konsoli. Nic innego na tym komputerze się nie zmieni.
+ps3-getting-rpcs3 = Pobieranie programu, który uruchamia gry
+ps3-getting-the-system-software = Pobieranie oprogramowania systemowego PlayStation 3
+ps3-installing-the-game = Instalowanie gry
+ps3-ready = Gotowe
+ps3-not-done = Nie ukończono
+ps3-set-up-failed = Nie udało się przygotować gier z PlayStation 3.
+ps3-choose-the-folder-your-games-are-in = Wybierz folder z grami
+ps3-the-folder-cannot-be-read = Nie można otworzyć folderu z grami
+ps3-press-to-install = Wybierz, aby zainstalować
+ps3-press-to-get-it-ready = Wybierz, aby przygotować
+ps3-installed = Zainstalowano
+ps3-ready-to-play = Można grać
+ps3-install-failed = Nie udało się zainstalować gry.
+ps3-uninstall-keeps = Zapisy gry i trofea zostają.
+ps3-uninstalling = Odinstalowywanie…
+ps3-uninstall-failed = Nie udało się odinstalować gry.
+ps3-clear-cache = Wyczyść pamięć podręczną
+ps3-clear-cache-explanation = Następne uruchomienie potrwa dłużej, bo wszystko zostanie przygotowane od nowa.
+ps3-clearing-cache = Czyszczenie pamięci podręcznej…
+ps3-clear-cache-failed = Nie udało się wyczyścić pamięci podręcznej.
+ps3-frame-limit = Limit klatek na sekundę
+ps3-frame-limit-auto = Tak szybko, jak gra ma działać
+ps3-performance-overlay = Nakładka wydajności
+ps3-trophy-notices = Powiadomienia o trofeach
+ps3-console-language = Język konsoli
+ps3-controller-buttons = Przyciski kontrolera
+ps3-buttons-unchanged = Każdy przycisk na swoim miejscu
+ps3-buttons-moved = Przeniesione przyciski: { $count }
+ps3-buttons-back = Przywróć wszystkie przyciski
+ps3-buttons-back-explanation = Każdy wraca na swoje miejsce z kontrolera PlayStation 3.
+ps3-button-cross = Krzyżyk
+ps3-button-circle = Kółko
+ps3-button-square = Kwadrat
+ps3-button-triangle = Trójkąt
+ps3-button-l1 = L1
+ps3-button-r1 = R1
+ps3-button-l2 = L2
+ps3-button-r2 = R2
+ps3-button-l3 = L3
+ps3-button-r3 = R3
+ps3-button-start = Start
+ps3-button-select = Select
+pad-button-south = Dolny przycisk
+pad-button-east = Prawy przycisk
+pad-button-west = Lewy przycisk
+pad-button-north = Górny przycisk
+pad-button-left-bumper = Lewy bumper
+pad-button-right-bumper = Prawy bumper
+pad-button-left-trigger = Lewy spust
+pad-button-right-trigger = Prawy spust
+pad-button-left-stick = Wciśnięcie lewej gałki
+pad-button-right-stick = Wciśnięcie prawej gałki
+pad-button-start = Przycisk Start
+pad-button-back = Przycisk Wstecz
+ps3-disc-not-ready = Nie udało się przygotować gry do uruchomienia.
+ps3-getting-the-disc-ready = Przygotowywanie gry
+ps3-look-again = Poszukaj gier ponownie
+ps3-open-rpcs3 = Otwórz RPCS3
+ps3-play = Graj
+ps3-trouble-no-rpcs3 = Najpierw przygotuj gry z PlayStation 3, wybierając ich wiersz.
+ps3-trouble-offline = Brak połączenia z internetem. Spróbuj ponownie, gdy połączenie wróci.
+ps3-trouble-no-space = Na dysku brakuje wolnego miejsca.
+ps3-trouble-refused = Pobieranie się nie powiodło. Spróbuj ponownie później.
+ps3-trouble-firmware = Nie udało się zainstalować oprogramowania systemowego. Spróbuj ponownie później.
+ps3-trouble-not-a-package = Tego pliku nie można zainstalować jako gry z PlayStation 3.
+ps3-trouble-package = Plik może być uszkodzony albo być aktualizacją gry, której nie ma na dysku.
+ps3-trouble-other = Spróbuj ponownie później.
+ps3-where-your-games-are = Gdzie są twoje gry z PlayStation 3
+ps3-install-question = Zainstalować tę grę z PlayStation 3? Zostanie skopiowana do konsoli, a ten plik pozostanie na swoim miejscu.
+ps3-installed-find-it = Instalacja zakończona. Gra czeka w kolumnie PlayStation 3.
+ps3-trophy-platinum = Platyna
+ps3-trophy-gold = Złoto
+ps3-trophy-silver = Srebro
+ps3-trophy-bronze = Brąz
+ps3-trophy-grade = Trofeum
+ps3-trophy-summary = { $description } · { $grade } · { $state }
+
+# Ustawienia > Zasilanie i to, co mówi bateria, gdy się kończy.
+power-title = Zasilanie
+power-description = Uśpienie, ekran i przycisk zasilania
+power-session-only = Obowiązują tylko w tej sesji: nie udało się ich zapisać dla całego urządzenia.
+power-dim-screen = Przyciemnianie ekranu
+power-turn-off-screen = Wyłączanie ekranu
+power-sleep = Uśpienie
+power-sleep-on-battery = Uśpienie na baterii
+power-sleep-plugged-in = Uśpienie przy zasilaczu
+power-never = Nigdy
+power-after-seconds = { $count ->
+    [one] Po { $count } sekundzie
+    [few] Po { $count } sekundach
+    [many] Po { $count } sekundach
+   *[other] Po { $count } sekundach
+    }
+power-after-minutes = { $count ->
+    [one] Po { $count } minucie
+    [few] Po { $count } minutach
+    [many] Po { $count } minutach
+   *[other] Po { $count } minutach
+    }
+power-after-hours = { $count ->
+    [one] Po { $count } godzinie
+    [few] Po { $count } godzinach
+    [many] Po { $count } godzinach
+   *[other] Po { $count } godzinach
+    }
+power-button = Przycisk zasilania
+power-button-sleep = Uśpienie
+power-button-menu = Menu zasilania
+power-button-sleep-note = Naciśnięcie usypia urządzenie. Przytrzymaj, aby otworzyć menu zasilania.
+power-button-menu-note = Naciśnięcie otwiera menu zasilania.
+power-button-hibernate = Hibernacja
+power-button-hibernate-note = Naciśnięcie zapisuje to, co otwarte, i wyłącza urządzenie. Przytrzymaj, aby otworzyć menu zasilania.
+power-button-power-off = Wyłączenie
+power-button-power-off-note = Naciśnięcie wyłącza urządzenie. Przytrzymaj, aby otworzyć menu zasilania.
+power-button-nothing = Brak działania
+power-button-nothing-note = Naciśnięcie nic nie robi. Przytrzymaj, aby otworzyć menu zasilania.
+power-mode = Tryb zasilania
+power-mode-unknown = Nieznany
+power-mode-power-saver = Oszczędzanie energii
+power-mode-balanced = Zrównoważony
+power-mode-performance = Wydajność
+power-mode-power-saver-note = Dłuższa praca na baterii, mniejsza szybkość
+power-mode-balanced-note = Równowaga szybkości i czasu pracy na baterii
+power-mode-performance-note = Pełna szybkość, większe zużycie energii
+power-battery-saver = Oszczędzanie baterii
+power-battery-saver-description = Oszczędzanie energii przy niskim poziomie baterii
+power-battery-saver-on-note = Przełącza na oszczędzanie energii przy 20% i wraca podczas ładowania
+power-battery-low = Niski poziom baterii
+power-battery-low-body = Zostało { $percent }%. Wkrótce podłącz ładowarkę.
+power-battery-very-low-body = Zostało { $percent }%. Podłącz ładowarkę teraz.
+power-battery-empty = Bateria prawie wyczerpana
+power-battery-empty-body = Urządzenie przechodzi w uśpienie. Podłącz ładowarkę, aby kontynuować.
+power-sleep-held = Urządzenie nie może jeszcze przejść w uśpienie
+power-sleep-held-body = System kończy coś, co wymaga, by urządzenie nie spało. Spróbuj ponownie, gdy to się skończy.
+
+# Ustawienia > System > Tryb słabszego sprzętu.
+low-end-title = Tryb słabszego sprzętu
+low-end-description = Mniej obciąża układ graficzny i procesor
+low-end-on-for-this-device = Włączony, dopasowany do tego urządzenia
+low-end-off-note = Wszystkie efekty, tak płynne, jak pozwala urządzenie
+low-end-on-note = Nieruchoma tapeta, prostsze efekty i mniej klatek
+low-end-slow = Interfejs działa wolno na tym urządzeniu
+low-end-slow-body = Tryb słabszego sprzętu w Ustawienia > System może poprawić płynność.

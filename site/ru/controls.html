@@ -1,0 +1,149 @@
+<!DOCTYPE html>
+
+<html lang="ru">
+<head>
+<meta charset="utf-8"/>
+<meta content="width=device-width, initial-scale=1, viewport-fit=cover" name="viewport"/>
+<title>Управление в LineXinBar: геймпад, клавиатура, мышь и сенсорный экран</title>
+<meta content="Управляйте LineXinBar контроллером, клавиатурой, мышью или сенсорным экраном: кнопка гида, которая всегда выход, подсказки кнопок, нарисованные для вашего геймпада, экранная клавиатура и все сочетания клавиш." name="description"/>
+<!-- search and sharing: written by tools/translate.py build -->
+<link rel="canonical" href="https://petexy.github.io/LineXinBar/ru/controls.html">
+<link rel="alternate" hreflang="x-default" href="https://petexy.github.io/LineXinBar/controls.html">
+<link rel="alternate" hreflang="en" href="https://petexy.github.io/LineXinBar/controls.html">
+<link rel="alternate" hreflang="de" href="https://petexy.github.io/LineXinBar/de/controls.html">
+<link rel="alternate" hreflang="en-GB" href="https://petexy.github.io/LineXinBar/controls.html">
+<link rel="alternate" hreflang="en-US" href="https://petexy.github.io/LineXinBar/en-us/controls.html">
+<link rel="alternate" hreflang="es" href="https://petexy.github.io/LineXinBar/es/controls.html">
+<link rel="alternate" hreflang="fr" href="https://petexy.github.io/LineXinBar/fr/controls.html">
+<link rel="alternate" hreflang="pl" href="https://petexy.github.io/LineXinBar/pl/controls.html">
+<link rel="alternate" hreflang="pt-BR" href="https://petexy.github.io/LineXinBar/pt-br/controls.html">
+<link rel="alternate" hreflang="ru" href="https://petexy.github.io/LineXinBar/ru/controls.html">
+<link rel="alternate" hreflang="hi" href="https://petexy.github.io/LineXinBar/hi/controls.html">
+<link rel="alternate" hreflang="zh-CN" href="https://petexy.github.io/LineXinBar/zh-cn/controls.html">
+<meta property="og:type" content="website">
+<meta property="og:site_name" content="LineXinBar">
+<meta property="og:title" content="Управление в LineXinBar: геймпад, клавиатура, мышь и сенсорный экран">
+<meta property="og:description" content="Управляйте LineXinBar контроллером, клавиатурой, мышью или сенсорным экраном: кнопка гида, которая всегда выход, подсказки кнопок, нарисованные для вашего геймпада, экранная клавиатура и все сочетания клавиш.">
+<meta property="og:url" content="https://petexy.github.io/LineXinBar/ru/controls.html">
+<meta property="og:locale" content="ru_RU">
+<meta property="og:image" content="https://petexy.github.io/LineXinBar/assets/img/desktop.png">
+<meta property="og:image:width" content="1600">
+<meta property="og:image:height" content="900">
+<meta name="twitter:card" content="summary_large_image">
+<script type="application/ld+json">{"@context":"https://schema.org","@type":"WebPage","@id":"https://petexy.github.io/LineXinBar/ru/controls.html","url":"https://petexy.github.io/LineXinBar/ru/controls.html","name":"Управление в LineXinBar: геймпад, клавиатура, мышь и сенсорный экран","description":"Управляйте LineXinBar контроллером, клавиатурой, мышью или сенсорным экраном: кнопка гида, которая всегда выход, подсказки кнопок, нарисованные для вашего геймпада, экранная клавиатура и все сочетания клавиш.","inLanguage":"ru","isPartOf":{"@id":"https://petexy.github.io/LineXinBar/#website"},"about":{"@id":"https://petexy.github.io/LineXinBar/#software"},"breadcrumb":{"@type":"BreadcrumbList","itemListElement":[{"@type":"ListItem","position":1,"name":"Стартовый экран","item":"https://petexy.github.io/LineXinBar/ru/"},{"@type":"ListItem","position":2,"name":"Управление","item":"https://petexy.github.io/LineXinBar/ru/controls.html"}]}}</script>
+<!-- /search and sharing -->
+<meta content="#060314" name="theme-color"/>
+<link href="../assets/glyphs/sm/logo.webp" rel="icon" type="image/webp"/>
+<link as="font" crossorigin="" href="../assets/fonts/Roboto-Regular-latin.woff2" rel="preload" type="font/woff2"/>
+<link href="../assets/css/lxb.css" rel="stylesheet"/>
+</head>
+<body data-page="controls" data-screen="page">
+<a class="skip" href="#content">Перейти к содержимому</a>
+<canvas aria-hidden="true" id="wallpaper"></canvas>
+<header class="page-head">
+<a class="trail" data-back="" href="index.html#controls">
+<span class="trail-tile"><img alt="" class="glyph" src="../assets/glyphs/lg/setting-input.webp"/></span>
+<span class="trail-text"><span class="trail-back">‹ Стартовый экран</span><span class="trail-name">Управление</span></span>
+</a>
+</header>
+<main class="column-page" id="content">
+<h1 class="visually-hidden">Управление в LineXinBar: геймпад, клавиатура, мышь и сенсорный экран</h1>
+<nav aria-label="На этой странице" class="rows-nav">
+<ol class="rows">
+<li><a class="row" data-lxb-row="" href="#pads"><span class="row-icon"><img alt="" class="glyph" src="../assets/glyphs/lg/pad-stick.webp"/></span><span class="row-text"><span class="row-title">Контроллеры</span><span class="row-comment">Подключите один и управляйте всем</span></span></a></li>
+<li><a class="row" data-lxb-row="" href="#guide-button"><span class="row-icon"><img alt="" class="glyph" src="../assets/glyphs/lg/pad-guide.webp"/></span><span class="row-text"><span class="row-title">Кнопка гида</span><span class="row-comment">Всегда выход, что бы ни было запущено</span></span></a></li>
+<li><a class="row" data-lxb-row="" href="#hints"><span class="row-icon"><img alt="" class="glyph" src="../assets/glyphs/lg/pad-north.webp"/></span><span class="row-text"><span class="row-title">Подсказки кнопок</span><span class="row-comment">Нарисованы для устройства у вас в руках</span></span></a></li>
+<li><a class="row" data-lxb-row="" href="#keyboard"><span class="row-icon"><img alt="" class="glyph" src="../assets/glyphs/lg/setting-keyboard.webp"/></span><span class="row-text"><span class="row-title">Клавиатура</span><span class="row-comment">Стрелки, Enter и клавиша Super</span></span></a></li>
+<li><a class="row" data-lxb-row="" href="#osk"><span class="row-icon"><img alt="" class="glyph" src="../assets/glyphs/lg/setting-typed.webp"/></span><span class="row-text"><span class="row-title">Экранная клавиатура</span><span class="row-comment">Печатайте что угодно, не вставая с дивана</span></span></a></li>
+<li><a class="row" data-lxb-row="" href="#pointer"><span class="row-icon"><img alt="" class="glyph" src="../assets/glyphs/lg/setting-mouse.webp"/></span><span class="row-text"><span class="row-title">Мышь и сенсор</span><span class="row-comment">Щелчки, касания и колесо</span></span></a></li>
+<li><a class="row" data-lxb-row="" href="#bindings"><span class="row-icon"><img alt="" class="glyph" src="../assets/glyphs/lg/setting-keys.webp"/></span><span class="row-text"><span class="row-title">Сочетания клавиш</span><span class="row-comment">Все сочетания и как их изменить</span></span></a></li>
+</ol>
+</nav>
+<div class="panes">
+<section aria-labelledby="pads-t" class="pane glass" id="pads">
+<h2 id="pads-t"><img alt="" class="glyph" src="../assets/glyphs/lg/pad-stick.webp"/>Контроллеры</h2>
+<p class="lede">Подключите геймпад — Xbox, PlayStation, Nintendo, 8BitDo, Steam Controller, — и весь рабочий стол ваш прямо с дивана. Заранее ничего настраивать не нужно.</p>
+<div class="table-wrap"><table>
+<thead><tr><th>Действие</th><th>Контроллер</th><th>Клавиатура</th></tr></thead>
+<tbody>
+<tr><td>Перемещение</td><td>Крестовина или левый стик</td><td>Стрелки</td></tr>
+<tr><td>Выбрать</td><td>Нижняя кнопка</td><td><kbd>Enter</kbd></td></tr>
+<tr><td>Назад</td><td>Правая кнопка</td><td><kbd>Esc</kbd></td></tr>
+<tr><td>Параметры строки</td><td>Верхняя кнопка</td><td><kbd>F10</kbd> или правая кнопка мыши</td></tr>
+<tr><td>Друзья</td><td>Левая кнопка</td><td><kbd>Shift</kbd></td></tr>
+<tr><td>Гид</td><td>Кнопка гида</td><td><kbd>Super</kbd></td></tr>
+<tr><td>Следующий экран</td><td>Бамперы</td><td><kbd>Tab</kbd> / <kbd>Shift</kbd>+<kbd>Tab</kbd></td></tr>
+<tr><td>Снимок экрана</td><td>Гид + правый бампер</td><td><kbd>Print Screen</kbd></td></tr>
+</tbody>
+</table></div>
+<p>Кнопки называются по положению, а не по букве, поэтому нижняя кнопка выбирает на любой раскладке — даже у Nintendo, где A на другой стороне. Геймпад, который засыпает и просыпается или подключается посреди работы, просто работает.</p>
+<p>Портативные приставки — полноправная цель: оболочка должна хорошо работать на машине класса Steam Deck, расходовать мало энергии и иметь <a href="settings.html#low-end">режим для слабого оборудования</a> на случай, когда этого мало.</p>
+</section>
+<section aria-labelledby="guide-button-t" class="pane glass" id="guide-button">
+<h2 id="guide-button-t"><img alt="" class="glyph" src="../assets/glyphs/lg/pad-guide.webp"/>Кнопка гида</h2>
+<p class="lede">Кнопка гида принадлежит оболочке, и ни одно приложение не может её забрать — это выход из всего, что держит всё остальное.</p>
+<p>Игры обычно читают контроллер напрямую, поэтому геймпад нельзя придержать, как клавиатуру. LineXinBar забирает каждый геймпад и отдаёт остальной системе такой же, только без одной кнопки: то же имя, те же кнопки, та же вибрация, просто без гида. Игры видят тот геймпад, который ожидали, а Гид открывается каждый раз.</p>
+<p>А нажатие, сделанное в Гиде, не достаётся ещё и игре: всё, что ваш палец держит при возвращении, сначала отпускается, поэтому закрытие Гида кнопкой <kbd>A</kbd> не нажимает <kbd>A</kbd> и в игре.</p>
+</section>
+<section aria-labelledby="hints-t" class="pane glass" id="hints">
+<h2 id="hints-t"><img alt="" class="glyph" src="../assets/glyphs/lg/pad-north.webp"/>Подсказки кнопок</h2>
+<p class="lede">Угол напротив часов говорит, что делают кнопки на экране перед вами, — <em>Выбрать</em>, <em>Параметры</em>, <em>Гид</em>.</p>
+<p>Каждая <strong>нарисована</strong>, а не подписана буквой: картинка группы кнопок, где нужная закрашена, — это верно на геймпаде любой марки. И она называет <strong>то устройство, что у вас в руках</strong>: возьмите клавиатуру — будет написано <kbd>Enter</kbd>; коснитесь геймпада снова — вернётся геймпад. <em>Параметры</em> появляются только там, где нажатие действительно что-то откроет. Когда вы их выучите, <em>Настройки › Система › Подсказки кнопок</em> выключат их везде разом.</p>
+<p>Этот сайт делает то же самое: посмотрите в правый нижний угол, переключаясь между контроллером и клавиатурой.</p>
+</section>
+<section aria-labelledby="keyboard-t" class="pane glass" id="keyboard">
+<h2 id="keyboard-t"><img alt="" class="glyph" src="../assets/glyphs/lg/setting-keyboard.webp"/>Клавиатура</h2>
+<p class="lede">Стрелки перемещают, <kbd>Enter</kbd> выбирает, <kbd>Esc</kbd> возвращает назад, а одна <kbd>Super</kbd> открывает Гид.</p>
+<p>На стартовом экране любая набранная буква начинает <a href="media.html#search">поиск по всей панели</a>. <kbd>Super</kbd> отслеживается как клавиша, нажатая и отпущенная сама по себе, поэтому все сочетания с <kbd>Super</kbd> продолжают работать; а <kbd>Alt</kbd>+<kbd>Tab</kbd> проходит колоду окон Гида, как на любом рабочем столе. Раскладки клавиатуры выбираются в Настройках из полного списка, который знает система.</p>
+</section>
+<section aria-labelledby="osk-t" class="pane glass" id="osk">
+<h2 id="osk-t"><img alt="" class="glyph" src="../assets/glyphs/lg/setting-typed.webp"/>Экранная клавиатура</h2>
+<p class="lede">У консоли нет клавиатуры, поэтому оболочка ею становится. Она появляется сама, когда приложение ставит курсор в текстовое поле, и её можно вызвать вручную в любой момент.</p>
+<div class="table-wrap"><table>
+<thead><tr><th>Элемент</th><th>Что делает</th></tr></thead>
+<tbody>
+<tr><td>Крестовина или стик</td><td>Перемещение между клавишами</td></tr>
+<tr><td><kbd>A</kbd></td><td>Нажать клавишу под курсором</td></tr>
+<tr><td><kbd>B</kbd></td><td>Убрать клавиатуру</td></tr>
+<tr><td>Select + левая кнопка</td><td>Показать или скрыть, где угодно</td></tr>
+<tr><td>Любая клавиша настоящей клавиатуры</td><td>Убирает экранную клавиатуру и вводится</td></tr>
+</tbody>
+</table></div>
+<p>Она следует вашей раскладке клавиатуры, а маленький значок в углу предлагает её, когда полю она может пригодиться.</p>
+</section>
+<section aria-labelledby="pointer-t" class="pane glass" id="pointer">
+<h2 id="pointer-t"><img alt="" class="glyph" src="../assets/glyphs/lg/setting-mouse.webp"/>Мышь и сенсор</h2>
+<p class="lede">Щелчок делает ровно то же, что перейти туда и нажать <kbd>A</kbd>. Остальное подчиняется одному правилу.</p>
+<p>То, что <strong>стоит на месте</strong>, — Гид, меню, кнопки панели, экранная клавиатура — подсвечивается под указателем и отвечает на первый щелчок. То, что <strong>сдвигается при выборе</strong>, — строки панели — требует одного щелчка, чтобы выбрать, и второго, чтобы действовать, потому что наведение, которое выбирало бы, уводило бы строку и оставляло курсор бродить по панели самостоятельно. Колесо прокручивает, а касание сенсорного экрана — это щелчок.</p>
+<p>Стартовый экран этого сайта следует тому же правилу: щелчок по строке выделяет её и сдвигает в середину панели, а щелчок по выделенной строке её открывает. Гид и его меню, которые стоят на месте, отвечают на первый щелчок.</p>
+</section>
+<section aria-labelledby="bindings-t" class="pane glass" id="bindings">
+<h2 id="bindings-t"><img alt="" class="glyph" src="../assets/glyphs/lg/setting-keys.webp"/>Сочетания клавиш</h2>
+<p class="lede">Значения по умолчанию, которые, кроме Гида, можно изменить в таблице <code>[keybindings]</code> файла конфигурации.</p>
+<div class="table-wrap"><table>
+<thead><tr><th>Сочетание</th><th>Действие</th></tr></thead>
+<tbody>
+<tr><td>Одна <kbd>Super</kbd>, <kbd>Super</kbd>+<kbd>Home</kbd>, боковая кнопка мыши</td><td>Показать Гид</td></tr>
+<tr><td><kbd>Super</kbd>+<kbd>Q</kbd></td><td>Закрыть активное окно</td></tr>
+<tr><td><kbd>Super</kbd>+<kbd>K</kbd></td><td>Показать экранную клавиатуру</td></tr>
+<tr><td><kbd>Print</kbd>, <kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>3</kbd></td><td>Сфотографировать этот экран</td></tr>
+<tr><td><kbd>Super</kbd>+<kbd>Tab</kbd></td><td>Перебрать окна на этом экране</td></tr>
+<tr><td><kbd>Alt</kbd>+<kbd>Tab</kbd></td><td>Пройти колоду окон Гида</td></tr>
+<tr><td><kbd>Super</kbd>+<kbd>←</kbd> / <kbd>→</kbd></td><td>Перейти к предыдущему или следующему экрану</td></tr>
+<tr><td><kbd>Super</kbd>+<kbd>Shift</kbd>+<kbd>→</kbd></td><td>Перенести окно на следующий экран</td></tr>
+<tr><td><kbd>Ctrl</kbd>+<kbd>Alt</kbd>+<kbd>Backspace</kbd></td><td>Завершить сеанс</td></tr>
+</tbody>
+</table></div>
+<div class="more"><a class="control lit" data-select="Всё управление" href="https://github.com/Petexy/LineXinBar/blob/master/docs/controls.md" rel="noopener" target="_blank">Всё управление, подробно</a></div>
+</section>
+</div>
+</main>
+<footer class="site-foot">
+<p>Далее: <a href="desktop.html">Рабочий стол ›</a> · Назад: <a href="settings.html">‹ Настройки</a> · <a href="index.html#controls">Стартовый экран</a> · LineXinBar — свободное ПО под лицензией <a href="https://github.com/Petexy/LineXinBar/blob/master/LICENSE">GPL-3.0</a>.</p>
+</footer>
+<script defer="" src="../assets/js/wallpaper.js"></script>
+<script defer="" src="../assets/js/i18n.js"></script>
+<script defer="" src="../assets/js/shell.js"></script>
+<script defer="" src="../assets/js/page.js"></script>
+</body>
+</html>

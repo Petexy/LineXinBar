@@ -1,0 +1,42 @@
+# LineXinBar
+
+> LineXinBar is a console-style Linux desktop with an XMB launcher, in the manner of the XrossMediaBar, for your games, apps and media: a lightweight Wayland compositor you drive with a gamepad, a keyboard or a mouse.
+
+LineXinBar is free software under the GNU GPL 3.0, at version 0.9.3 and in early development. It is a whole Linux session — compositor, launcher, file manager, settings and prompts — laid out as an XMB (a cross-media bar in the manner of the PlayStation 3's XrossMediaBar) and made to be driven from the couch with a gamepad, as well as with a keyboard, a mouse or a touchscreen. The site and the shell are in ten languages.
+
+## Pages
+
+- [Overview: LineXinBar, the XMB-style console desktop for Linux](https://petexy.github.io/LineXinBar/overview.html): LineXinBar pairs a lightweight Wayland compositor with a controller-friendly XMB launcher: browse your games, apps and media, and switch between screens, with a gamepad, a keyboard or a mouse.
+- [Get started with LineXinBar: Arch, Debian, Ubuntu, Fedora, NixOS](https://petexy.github.io/LineXinBar/install.html): Try LineXinBar in a window inside your current desktop, or build and install packages for Arch Linux, Debian and Ubuntu, Fedora and NixOS, then choose LineXinBar at your login screen.
+- [Games on LineXinBar: Steam, Epic Games, RetroArch and PS3](https://petexy.github.io/LineXinBar/games.html): Steam, Epic Games, RetroArch and PlayStation 3 libraries in one console-style column, with covers, friends, chat, trophies and game discs — all driven by a controller.
+- [Apps and media on LineXinBar: music, videos, pictures and files](https://petexy.github.io/LineXinBar/media.html): Every installed application in familiar categories, a search across the whole bar, your music, videos and pictures gathered from your home folder, and a file manager you can drive with a controller.
+- [The guide: LineXinBar's overlay over any game or app](https://petexy.github.io/LineXinBar/guide.html): LineXinBar's guide opens over anything with the controller's guide button: switch apps, change the volume and brightness, mix sounds per application, turn the stick into a mouse and keep a video floating over a game.
+- [Displays in LineXinBar: several screens, HDR and OLED protection](https://petexy.github.io/LineXinBar/displays.html): Every display runs independently in LineXinBar: its own bar, resolution and refresh rate, HDR, night light, OLED protection, scaling and orientation — and a resolution per application.
+- [Settings in LineXinBar: accents, wallpaper, languages, updates](https://petexy.github.io/LineXinBar/settings.html): Twelve accent palettes, a wallpaper of water or silk, your own picture or film, ten languages, networks, Bluetooth, sound, power, one-press updates and a low-end mode for handhelds — all changed with a controller.
+- [Controls in LineXinBar: gamepad, keyboard, mouse and touch](https://petexy.github.io/LineXinBar/controls.html): Drive LineXinBar with a controller, a keyboard, a mouse or a touchscreen: the guide button that is always the way out, button hints drawn for your pad, an on-screen keyboard and every keybinding.
+- [Desktop essentials in LineXinBar: screenshots, sharing, dialogs](https://petexy.github.io/LineXinBar/desktop.html): The desktop essentials in LineXinBar: screenshots from a pad, screen sharing in OBS and Discord, open and save dialogs you can drive with a controller, password prompts, and games that keep the screen awake.
+- [The LineXinBar family: login screen, app store and media apps](https://petexy.github.io/LineXinBar/family.html): The projects made alongside LineXinBar: a controller-first login screen, a Flatpak store, music, film and photo applications, and lxb-toolkit for building apps in the shell's own material.
+- [Develop LineXinBar: documentation, source code, translations](https://petexy.github.io/LineXinBar/develop.html): LineXinBar's documentation, how the compositor and shell are built in Rust, how to translate it, how to report a bug and how to contribute. Free software under the GPL-3.0.
+
+## Source and documentation
+
+- [Source code on GitHub](https://github.com/Petexy/LineXinBar): the compositor and the shell, in Rust
+- [Documentation](https://github.com/Petexy/LineXinBar/tree/HEAD/docs): installing, using, building and translating LineXinBar
+- [Releases](https://github.com/Petexy/LineXinBar/releases): the published versions and their packages
+- [Issues](https://github.com/Petexy/LineXinBar/issues): reporting a bug
+
+## In other languages
+
+- [Deutsch](https://petexy.github.io/LineXinBar/de/)
+- [English (US)](https://petexy.github.io/LineXinBar/en-us/)
+- [Español](https://petexy.github.io/LineXinBar/es/)
+- [Français](https://petexy.github.io/LineXinBar/fr/)
+- [Polski](https://petexy.github.io/LineXinBar/pl/)
+- [Português (Brasil)](https://petexy.github.io/LineXinBar/pt-br/)
+- [Русский](https://petexy.github.io/LineXinBar/ru/)
+- [हिन्दी](https://petexy.github.io/LineXinBar/hi/)
+- [简体中文](https://petexy.github.io/LineXinBar/zh-cn/)
+
+## Optional
+
+- [Every page in full](https://petexy.github.io/LineXinBar/llms-full.txt): the English text of the whole site, as Markdown

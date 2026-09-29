@@ -1,0 +1,111 @@
+<!DOCTYPE html>
+
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8"/>
+<meta content="width=device-width, initial-scale=1, viewport-fit=cover" name="viewport"/>
+<title>LineXinBar 的显示器：多屏幕、HDR 和 OLED 保护</title>
+<meta content="在 LineXinBar 中，每台显示器都独立运行：有自己的主栏、分辨率和刷新率、HDR、夜间模式、OLED 保护、缩放和方向 — 还能为每个应用程序单独设置分辨率。" name="description"/>
+<!-- search and sharing: written by tools/translate.py build -->
+<link rel="canonical" href="https://petexy.github.io/LineXinBar/zh-cn/displays.html">
+<link rel="alternate" hreflang="x-default" href="https://petexy.github.io/LineXinBar/displays.html">
+<link rel="alternate" hreflang="en" href="https://petexy.github.io/LineXinBar/displays.html">
+<link rel="alternate" hreflang="de" href="https://petexy.github.io/LineXinBar/de/displays.html">
+<link rel="alternate" hreflang="en-GB" href="https://petexy.github.io/LineXinBar/displays.html">
+<link rel="alternate" hreflang="en-US" href="https://petexy.github.io/LineXinBar/en-us/displays.html">
+<link rel="alternate" hreflang="es" href="https://petexy.github.io/LineXinBar/es/displays.html">
+<link rel="alternate" hreflang="fr" href="https://petexy.github.io/LineXinBar/fr/displays.html">
+<link rel="alternate" hreflang="pl" href="https://petexy.github.io/LineXinBar/pl/displays.html">
+<link rel="alternate" hreflang="pt-BR" href="https://petexy.github.io/LineXinBar/pt-br/displays.html">
+<link rel="alternate" hreflang="ru" href="https://petexy.github.io/LineXinBar/ru/displays.html">
+<link rel="alternate" hreflang="hi" href="https://petexy.github.io/LineXinBar/hi/displays.html">
+<link rel="alternate" hreflang="zh-CN" href="https://petexy.github.io/LineXinBar/zh-cn/displays.html">
+<meta property="og:type" content="website">
+<meta property="og:site_name" content="LineXinBar">
+<meta property="og:title" content="LineXinBar 的显示器：多屏幕、HDR 和 OLED 保护">
+<meta property="og:description" content="在 LineXinBar 中，每台显示器都独立运行：有自己的主栏、分辨率和刷新率、HDR、夜间模式、OLED 保护、缩放和方向 — 还能为每个应用程序单独设置分辨率。">
+<meta property="og:url" content="https://petexy.github.io/LineXinBar/zh-cn/displays.html">
+<meta property="og:locale" content="zh_CN">
+<meta property="og:image" content="https://petexy.github.io/LineXinBar/assets/img/desktop.png">
+<meta property="og:image:width" content="1600">
+<meta property="og:image:height" content="900">
+<meta name="twitter:card" content="summary_large_image">
+<script type="application/ld+json">{"@context":"https://schema.org","@type":"WebPage","@id":"https://petexy.github.io/LineXinBar/zh-cn/displays.html","url":"https://petexy.github.io/LineXinBar/zh-cn/displays.html","name":"LineXinBar 的显示器：多屏幕、HDR 和 OLED 保护","description":"在 LineXinBar 中，每台显示器都独立运行：有自己的主栏、分辨率和刷新率、HDR、夜间模式、OLED 保护、缩放和方向 — 还能为每个应用程序单独设置分辨率。","inLanguage":"zh-CN","isPartOf":{"@id":"https://petexy.github.io/LineXinBar/#website"},"about":{"@id":"https://petexy.github.io/LineXinBar/#software"},"breadcrumb":{"@type":"BreadcrumbList","itemListElement":[{"@type":"ListItem","position":1,"name":"主屏幕","item":"https://petexy.github.io/LineXinBar/zh-cn/"},{"@type":"ListItem","position":2,"name":"显示器","item":"https://petexy.github.io/LineXinBar/zh-cn/displays.html"}]}}</script>
+<!-- /search and sharing -->
+<meta content="#060314" name="theme-color"/>
+<link href="../assets/glyphs/sm/logo.webp" rel="icon" type="image/webp"/>
+<link as="font" crossorigin="" href="../assets/fonts/Roboto-Regular-latin.woff2" rel="preload" type="font/woff2"/>
+<link href="../assets/css/lxb.css" rel="stylesheet"/>
+</head>
+<body data-page="displays" data-screen="page">
+<a class="skip" href="#content">跳到正文</a>
+<canvas aria-hidden="true" id="wallpaper"></canvas>
+<header class="page-head">
+<a class="trail" data-back="" href="index.html#displays">
+<span class="trail-tile"><img alt="" class="glyph" src="../assets/glyphs/lg/setting-display.webp"/></span>
+<span class="trail-text"><span class="trail-back">‹ 主屏幕</span><span class="trail-name">显示器</span></span>
+</a>
+</header>
+<main class="column-page" id="content">
+<h1 class="visually-hidden">LineXinBar 的显示器：多屏幕、HDR 和 OLED 保护</h1>
+<nav aria-label="本页内容" class="rows-nav">
+<ol class="rows">
+<li><a class="row" data-lxb-row="" href="#multi"><span class="row-icon"><img alt="" class="glyph" src="../assets/glyphs/lg/setting-display.webp"/></span><span class="row-text"><span class="row-title">多台显示器</span><span class="row-comment">每块屏幕各自浏览</span></span></a></li>
+<li><a class="row" data-lxb-row="" href="#modes"><span class="row-icon"><img alt="" class="glyph" src="../assets/glyphs/lg/setting-refresh.webp"/></span><span class="row-text"><span class="row-title">分辨率和刷新率</span><span class="row-comment">每台显示器按自己的节奏运行</span></span></a></li>
+<li><a class="row" data-lxb-row="" href="#hdr"><span class="row-icon"><img alt="" class="glyph" src="../assets/glyphs/lg/setting-hdr.webp"/></span><span class="row-text"><span class="row-title">HDR</span><span class="row-comment">高动态范围，按显示器设置</span></span></a></li>
+<li><a class="row" data-lxb-row="" href="#night"><span class="row-icon"><img alt="" class="glyph" src="../assets/glyphs/lg/setting-night-light.webp"/></span><span class="row-text"><span class="row-title">夜间模式</span><span class="row-comment">晚上使用更暖的色调</span></span></a></li>
+<li><a class="row" data-lxb-row="" href="#oled"><span class="row-icon"><img alt="" class="glyph" src="../assets/glyphs/lg/setting-screen-rest.webp"/></span><span class="row-text"><span class="row-title">OLED 保护</span><span class="row-comment">让没人看的屏幕休息</span></span></a></li>
+<li><a class="row" data-lxb-row="" href="#scaling"><span class="row-icon"><img alt="" class="glyph" src="../assets/glyphs/lg/setting-scale.webp"/></span><span class="row-text"><span class="row-title">缩放和方向</span><span class="row-comment">放大或缩小，横放或竖放</span></span></a></li>
+<li><a class="row" data-lxb-row="" href="#app-resolution"><span class="row-icon"><img alt="" class="glyph" src="../assets/glyphs/lg/setting-resolution.webp"/></span><span class="row-text"><span class="row-title">每个应用单独的分辨率</span><span class="row-comment">让吃力的游戏以更少的像素绘制</span></span></a></li>
+</ol>
+</nav>
+<div class="panes">
+<section aria-labelledby="multi-t" class="pane glass" id="multi">
+<h2 id="multi-t"><img alt="" class="glyph" src="../assets/glyphs/lg/setting-display.webp"/>多台显示器</h2>
+<p class="lede">每块屏幕都有自己的主栏 — 而不是某一条的副本。每块屏幕独立浏览并记住自己的位置，所以电视可以停在视频上，而桌上的显示器停在游戏上。</p>
+<p>同一时间只有一台显示器接收输入，一眼就能看出是哪一台：其他显示器会变暗。手柄上的 <kbd>L1</kbd> 和 <kbd>R1</kbd>，或 <kbd>Tab</kbd> 和 <kbd>Shift</kbd>+<kbd>Tab</kbd>，会把操控交给下一块屏幕，在某台显示器上单击也会把操控带到那里。鼠标只是从另一块屏幕上经过，则不会这样 — 经过并不代表决定使用哪块屏幕。</p>
+<p>您打开的内容，会在您按下它的那块屏幕上打开，即使两块屏幕同时在加载两样东西。<kbd>Super</kbd>+<kbd>Shift</kbd>+<kbd>→</kbd> 会把窗口移到下一块屏幕。</p>
+</section>
+<section aria-labelledby="modes-t" class="pane glass" id="modes">
+<h2 id="modes-t"><img alt="" class="glyph" src="../assets/glyphs/lg/setting-refresh.webp"/>分辨率和刷新率</h2>
+<p class="lede">Gamescope 独占一个输出并把一个应用程序缩放到上面；而在这里，每台显示器都是真正的输出，拥有自己的渲染循环，由它自己的刷新率驱动。</p>
+<p>一台 144 Hz 的显示器和一台 60 Hz 的电视并排时，分别以 144 和 60 运行，而不是共用一个节拍。<em>设置 › 显示</em>会分开询问这两个问题：先选择尺寸，下一页会列出该尺寸真正支持的每种刷新率 — 绝不会出现显示器没有列出的模式。</p>
+<div class="more"><a class="control lit" data-select="显示设置" href="https://github.com/Petexy/LineXinBar/blob/master/docs/settings.md#display" rel="noopener" target="_blank">显示设置（完整版）</a></div>
+</section>
+<section aria-labelledby="hdr-t" class="pane glass" id="hdr">
+<h2 id="hdr-t"><img alt="" class="glyph" src="../assets/glyphs/lg/setting-hdr.webp"/>HDR</h2>
+<p class="lede">为任何支持高动态范围的显示器开启 HDR，并设置普通内容在上面应有多亮。</p>
+<p>每块支持 HDR 的屏幕都会列出它当前的状态和报告的峰值亮度；新的屏幕一插上就会出现。这里的 HDR 是显示器的一项设置：桌面在 HDR 信号下显示正确，而通过 Proton 原生 Wayland 路径输出 HDR 的游戏，会原样传递到屏幕上。</p>
+</section>
+<section aria-labelledby="night-t" class="pane glass" id="night">
+<h2 id="night-t"><img alt="" class="glyph" src="../assets/glyphs/lg/setting-night-light.webp"/>夜间模式</h2>
+<p class="lede">晚上，屏幕上的一切都偏向更暖的色调，这样深夜看屏幕时就不会是白昼般的冷白。</p>
+<p>可按时间表开启 — 在您所在地的日落到日出之间，或在您选择的时段 — 也可以一直开着直到您关闭，色温在一条滑杆上调节。它与 HDR 协同工作，而不是相互冲突。</p>
+</section>
+<section aria-labelledby="oled-t" class="pane glass" id="oled">
+<h2 id="oled-t"><img alt="" class="glyph" src="../assets/glyphs/lg/setting-screen-rest.webp"/>OLED 保护</h2>
+<p class="lede">OLED 面板会“记住”显示过的内容，一整晚都停在第二块显示器上的主屏幕，就是一条烙在面板上的主栏。一个开关可以在使用其他屏幕时，让这块屏幕在黑色之后休息。</p>
+<p>把指针移到它上面，四分之一秒内它就会恢复。完全变黑后，屏幕进入休眠：Shell 停止绘制它，上面的一切都会暂停，在您回来之前不耗费任何资源。</p>
+</section>
+<section aria-labelledby="scaling-t" class="pane glass" id="scaling">
+<h2 id="scaling-t"><img alt="" class="glyph" src="../assets/glyphs/lg/setting-scale.webp"/>缩放和方向</h2>
+<p class="lede"><strong>应用程序缩放</strong>让某块屏幕上的程序以更大的尺寸绘制界面 — 从 100% 到 300%，在一条显示<em>150% · 放大到一倍半</em>的滑杆上设置。</p>
+<p><strong>方向</strong>用于旋转侧放或倒挂的屏幕：0°、90°、180° 或 270°。两者都按显示器分别设置，就像本页的所有内容一样。</p>
+</section>
+<section aria-labelledby="app-resolution-t" class="pane glass" id="app-resolution">
+<h2 id="app-resolution-t"><img alt="" class="glyph" src="../assets/glyphs/lg/setting-resolution.webp"/>每个应用单独的分辨率</h2>
+<p class="lede">应用程序、Steam 游戏或主机游戏的菜单中有一个<strong>分辨率</strong>行：原生，或任何能放进屏幕的更小尺寸。</p>
+<p>在 4K 电视上为一款吃力的游戏选择 1280 × 720，它就会真正以 1280 × 720 绘制，再拉伸到整个屏幕 — 在普通硬件上找回帧率的一种廉价方法。此后该游戏会记住这个选择；再次选择原生即可还原。</p>
+<div class="more"><a class="control lit" data-select="完整指南" href="https://github.com/Petexy/LineXinBar/blob/master/docs/guide.md#the-resolution-something-draws-at" rel="noopener" target="_blank">内容绘制时使用的分辨率</a></div>
+</section>
+</div>
+</main>
+<footer class="site-foot">
+<p>下一页：<a href="settings.html">设置 ›</a> · 上一页：<a href="guide.html">‹ 指南</a> · <a href="index.html#displays">主屏幕</a> · LineXinBar 是以 <a href="https://github.com/Petexy/LineXinBar/blob/master/LICENSE">GPL-3.0</a> 发布的自由软件。</p>
+</footer>
+<script defer="" src="../assets/js/wallpaper.js"></script>
+<script defer="" src="../assets/js/i18n.js"></script>
+<script defer="" src="../assets/js/shell.js"></script>
+<script defer="" src="../assets/js/page.js"></script>
+</body>
+</html>

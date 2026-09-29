@@ -128,6 +128,10 @@ pub enum Want {
     /// three hundred pixels tall, and a wall of squares if it is enlarged
     /// honestly. See [`crate::art::blurred_scenery_from`].
     Snapshot,
+    /// The same, blurred lightly, for a game's own backdrop made for a small
+    /// screen — a PSP game's `PIC1.PNG`. A third want for the second's reason:
+    /// a third picture of the file. See [`crate::art::softened_scenery_from`].
+    Softened,
     /// A game's logo, at its own shape inside [`crate::art::LOGO_SIZE`] rather
     /// than inside [`SIZE`]: the loading screen draws it a third of a display
     /// wide, and a thumbnail blown up that far is a smear. An Epic game's,
@@ -145,6 +149,7 @@ pub enum Made {
     /// it is filed under downstream differs, and a backdrop put into the
     /// snapshot's layer would be a photograph nobody asked to have blurred.
     Snapshot(crate::art::Scenery),
+    Softened(crate::art::Scenery),
     Logo(Picture),
 }
 
@@ -292,6 +297,7 @@ fn produce(path: &Path, want: Want) -> Option<Made> {
         Want::Thumbnail => thumbnail(path).map(Made::Thumbnail),
         Want::Backdrop => backdrop(path).map(Made::Backdrop),
         Want::Snapshot => snapshot(path).map(Made::Snapshot),
+        Want::Softened => softened(path).map(Made::Softened),
         Want::Logo => std::fs::read(path)
             .ok()
             .and_then(|bytes| crate::art::logo(&bytes))
@@ -344,6 +350,17 @@ fn snapshot(path: &Path) -> Option<crate::art::Scenery> {
     }
     let image = full(path)?;
     Some(crate::art::blurred_scenery_from(image))
+}
+
+/// The picture behind the display, for a game's own backdrop made for a small
+/// screen — the same read, and a lighter softening than a screenshot's. See
+/// [`crate::art::softened_scenery_from`].
+fn softened(path: &Path) -> Option<crate::art::Scenery> {
+    if crate::media::kind_of(path)? != Kind::Image {
+        return None;
+    }
+    let image = full(path)?;
+    Some(crate::art::softened_scenery_from(image))
 }
 
 /// One of the user's pictures, decoded whole.

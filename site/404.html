@@ -1,0 +1,70 @@
+<!doctype html>
+<html lang="en-GB">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="robots" content="noindex">
+<title>Nothing here — LineXinBar</title>
+<meta name="theme-color" content="#060314">
+<meta name="robots" content="noindex">
+<script>
+  // GitHub Pages serves this for any missing address, however deep, so the
+  // page's own files are asked for from the site's root rather than from
+  // wherever the missing address happened to be.
+  (function () {
+    var parts = location.pathname.split("/").filter(Boolean);
+    var root = location.hostname.endsWith("github.io") && parts.length ? "/" + parts[0] + "/" : "/";
+    document.write('<base href="' + root + '">');
+  })();
+</script>
+<link rel="icon" href="assets/glyphs/sm/logo.webp" type="image/webp">
+<link rel="stylesheet" href="assets/css/lxb.css">
+<style>
+  .lost { position: relative; z-index: 10; min-height: 100svh; display: grid; place-items: center; padding: 96px var(--gutter); }
+  .lost .glass { max-width: 560px; padding: 40px 40px 34px; text-align: center; display: grid; justify-items: center; gap: 10px; }
+  .lost .glyph { width: 104px; height: 104px; margin-bottom: 6px; }
+  .lost h1 { margin: 0; font-size: 32px; }
+  .lost p { margin: 0 0 14px; color: var(--text-soft); }
+</style>
+</head>
+<body data-screen="lost" data-page="lost">
+<canvas id="wallpaper" aria-hidden="true"></canvas>
+<main class="lost" id="content">
+  <div class="glass">
+    <img class="glyph" src="assets/glyphs/lg/search.webp" alt="">
+    <h1 data-word="lost-title">Nothing is here</h1>
+    <p data-word="lost-text">The page you asked for is not on this site. It may have moved when the site was reorganised.</p>
+    <a class="control lit" href="index.html" data-home data-word="start-screen">Start screen</a>
+  </div>
+</main>
+<script src="assets/js/wallpaper.js" defer></script>
+<script src="assets/js/i18n.js" defer></script>
+<script src="assets/js/shell.js" defer></script>
+<script>
+  // One page answers for every language's missing addresses, so it says what
+  // it says in the language the visitor chose, and sends them back to that
+  // language's start screen.
+  (function () {
+    var tag = "en-GB";
+    try { tag = JSON.parse(localStorage.getItem("lxb-language")) || "en-GB"; } catch (e) { /* ignore */ }
+    document.documentElement.lang = tag;
+  })();
+  document.addEventListener("DOMContentLoaded", function () {
+    window.LXB.whenReady(function () {
+      var LXB = window.LXB;
+      var home = document.querySelector("[data-home]");
+      document.querySelectorAll("[data-word]").forEach(function (el) { el.textContent = LXB.t(el.dataset.word); });
+      document.title = LXB.t("lost-document");
+      home.href = LXB.home + "index.html";
+      LXB.screen = {
+        select: function () { LXB.launch(home.href, { glyph: "logo", name: LXB.t("start-screen") }); },
+        back: function () { this.select(); },
+        legend: function () { return ["select"]; },
+        label: function (act) { return act === "select" ? LXB.t("start-screen") : null; },
+      };
+      window.LXB.legend();
+    });
+  });
+</script>
+</body>
+</html>

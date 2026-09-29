@@ -110,6 +110,8 @@ one feature:
 | `lxb-retroarch` (a package of its own)    | [RetroArch and your own console games](retroarch.md#retroarch-and-your-own-console-games): a row under Steam, and a column of the consoles in your ROM folder | The shell never mentions RetroArch at all — no row, no column, no page under Settings |
 | `flatpak`, with `lxb-retroarch` installed | Installing RetroArch from the shell, and running the Flathub build | The row says RetroArch is not installed and that there is no flatpak to install it with; a distribution package of `retroarch` is used in preference either way |
 | `lxb-heroic` (a package of its own, needing `flatpak`) | [Epic Games](epic.md): a row under Steam, a sign-in by phone or on the screen, and a column of your Epic library to install and play | The shell never mentions Epic Games at all — no row, no column, no page under Settings |
+| `lxb-rpcs3` (a package of its own) | [PlayStation 3](ps3.md): a row under RetroArch, and a column of your PlayStation 3 games — discs, packages and installed games — with their previews and trophies | The shell never mentions the PlayStation 3 at all — no row, no column, no page under Settings |
+| `flatpak`, with `lxb-rpcs3` installed | Installing RPCS3 from the shell | The row says there is nothing to install RPCS3 with; any RPCS3 already on the machine is used either way |
 
 ### Permissions
 

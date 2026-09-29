@@ -29,6 +29,11 @@ struct Globals {
     // The picture standing behind the shell: the layer being left, the layer
     // being arrived at, and how much of each is showing.
     hero: vec4<f32>,
+    // The shape, width over height, of the picture in each of those layers:
+    // x the one being left, y the one arrived at. A layer holds its picture
+    // stretched to fill it, and this is what undoes the stretch. See
+    // `scenery()`.
+    hero_shape: vec4<f32>,
     // Which material each half of the shell is drawn in — 0 for its own, 1 for
     // the plain one a slow machine asks for under Settings > Appearance > Theme.
     // x is the wallpaper and y is every mark the shell draws; they are separate
@@ -56,11 +61,9 @@ struct Globals {
 // transparent texel on every machine that has never set one.
 @group(3) @binding(2) var paper_texture: texture_2d<f32>;
 
-// The shape a picture is kept at — `art::HERO_WIDTH` over `art::HERO_HEIGHT` —
-// and the deepest rung of halvings it carries, one less than `HERO_LEVELS`.
-// Both have to agree with Rust: a wrong shape squeezes every game's artwork,
-// and a rung that was never uploaded samples whatever the layer held before.
-const SCENERY_SHAPE: f32 = 1920.0 / 620.0;
+// The deepest rung of halvings a picture behind the shell carries, one less
+// than `HERO_LEVELS`. It has to agree with Rust: a rung that was never uploaded
+// samples whatever the layer held before.
 const SCENERY_LEVELS: f32 = 4.0;
 
 // How much of a game's picture reaches the screen.
@@ -212,10 +215,13 @@ fn ambient_field(p: vec2<f32>, center: vec2<f32>, radius: vec2<f32>) -> f32 {
 
 // The picture behind the shell at `uv`, and how much of it there is.
 //
-// Cropped to fill rather than squeezed to fit: a hero is wider than any
-// display, and the shape it was painted in is the shape it has to keep. What
-// is cut is the sides, which is what Valve's own guidance is written for —
-// everything that shows one of these crops it.
+// Cropped to fill rather than squeezed to fit: the shape a picture was painted
+// in is the shape it has to keep. A layer holds its picture stretched to fill
+// it, whatever shape the picture is, and `globals.hero_shape` says what that
+// shape was — so this is the one crop the picture is given, from its own shape
+// to the display's, keeping the middle. A Steam hero, wider than any display,
+// loses its sides, which is what Valve's guidance is written for; a 16:9
+// backdrop on a 16:9 screen loses nothing.
 //
 // Two layers, because the picture changes as the cursor moves and one must not
 // blink out to make room for the next. They are added by weight and divided by
@@ -236,23 +242,17 @@ fn scenery(uv: vec2<f32>, aspect: f32, lod: f32) -> vec4<f32> {
         return vec4<f32>(0.0);
     }
 
-    var window = vec2<f32>(1.0, 1.0);
-    if (aspect < SCENERY_SHAPE) {
-        window.x = aspect / SCENERY_SHAPE;
-    } else {
-        window.y = SCENERY_SHAPE / aspect;
-    }
-    let cropped = (uv - vec2<f32>(0.5)) * window + vec2<f32>(0.5);
-
     var color = vec3<f32>(0.0);
     var covered = 0.0;
     if (leaving > 0.0) {
+        let cropped = filled(uv, aspect, globals.hero_shape.x);
         let layer = textureSampleLevel(
             scenery_texture, scenery_sampler, cropped, i32(globals.hero.x), lod);
         color += layer.rgb * layer.a * leaving;
         covered += layer.a * leaving;
     }
     if (arriving > 0.0) {
+        let cropped = filled(uv, aspect, globals.hero_shape.y);
         let layer = textureSampleLevel(
             scenery_texture, scenery_sampler, cropped, i32(globals.hero.y), lod);
         color += layer.rgb * layer.a * arriving;
@@ -262,6 +262,20 @@ fn scenery(uv: vec2<f32>, aspect: f32, lod: f32) -> vec4<f32> {
         return vec4<f32>(0.0);
     }
     return vec4<f32>(color / covered, min(total, 1.0) * covered / total);
+}
+
+// Where in a picture of `shape` (width over height) the display's `uv` falls,
+// for the picture cropped to fill a display of `aspect`: the middle of it, the
+// sides cut from a picture wider than the display and the top and bottom from
+// a taller one.
+fn filled(uv: vec2<f32>, aspect: f32, shape: f32) -> vec2<f32> {
+    var window = vec2<f32>(1.0, 1.0);
+    if (aspect < shape) {
+        window.x = aspect / shape;
+    } else {
+        window.y = shape / aspect;
+    }
+    return (uv - vec2<f32>(0.5)) * window + vec2<f32>(0.5);
 }
 
 // The user's own wallpaper at `uv`, cropped to fill the display.
@@ -277,14 +291,7 @@ fn scenery(uv: vec2<f32>, aspect: f32, lod: f32) -> vec4<f32> {
 // drawing itself wider and dimmer, and a photograph can only answer it by
 // having smaller copies to be read from.
 fn paper(uv: vec2<f32>, aspect: f32, lod: f32) -> vec3<f32> {
-    let shape = globals.style.z;
-    var window = vec2<f32>(1.0, 1.0);
-    if (aspect < shape) {
-        window.x = aspect / shape;
-    } else {
-        window.y = shape / aspect;
-    }
-    let cropped = (uv - vec2<f32>(0.5)) * window + vec2<f32>(0.5);
+    let cropped = filled(uv, aspect, globals.style.z);
     let sampled = textureSampleLevel(paper_texture, scenery_sampler, cropped, lod);
     // A drawing on nothing at all — an SVG, a PNG with a transparent
     // background — shows the shell's own dark ground through it rather than

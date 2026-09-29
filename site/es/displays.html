@@ -1,0 +1,111 @@
+<!DOCTYPE html>
+
+<html lang="es">
+<head>
+<meta charset="utf-8"/>
+<meta content="width=device-width, initial-scale=1, viewport-fit=cover" name="viewport"/>
+<title>Pantallas en LineXinBar: varias pantallas, HDR y protección OLED</title>
+<meta content="Cada pantalla funciona de forma independiente en LineXinBar: con su propia barra, resolución y frecuencia de actualización, HDR, luz nocturna, protección OLED, escala y orientación, y una resolución por aplicación." name="description"/>
+<!-- search and sharing: written by tools/translate.py build -->
+<link rel="canonical" href="https://petexy.github.io/LineXinBar/es/displays.html">
+<link rel="alternate" hreflang="x-default" href="https://petexy.github.io/LineXinBar/displays.html">
+<link rel="alternate" hreflang="en" href="https://petexy.github.io/LineXinBar/displays.html">
+<link rel="alternate" hreflang="de" href="https://petexy.github.io/LineXinBar/de/displays.html">
+<link rel="alternate" hreflang="en-GB" href="https://petexy.github.io/LineXinBar/displays.html">
+<link rel="alternate" hreflang="en-US" href="https://petexy.github.io/LineXinBar/en-us/displays.html">
+<link rel="alternate" hreflang="es" href="https://petexy.github.io/LineXinBar/es/displays.html">
+<link rel="alternate" hreflang="fr" href="https://petexy.github.io/LineXinBar/fr/displays.html">
+<link rel="alternate" hreflang="pl" href="https://petexy.github.io/LineXinBar/pl/displays.html">
+<link rel="alternate" hreflang="pt-BR" href="https://petexy.github.io/LineXinBar/pt-br/displays.html">
+<link rel="alternate" hreflang="ru" href="https://petexy.github.io/LineXinBar/ru/displays.html">
+<link rel="alternate" hreflang="hi" href="https://petexy.github.io/LineXinBar/hi/displays.html">
+<link rel="alternate" hreflang="zh-CN" href="https://petexy.github.io/LineXinBar/zh-cn/displays.html">
+<meta property="og:type" content="website">
+<meta property="og:site_name" content="LineXinBar">
+<meta property="og:title" content="Pantallas en LineXinBar: varias pantallas, HDR y protección OLED">
+<meta property="og:description" content="Cada pantalla funciona de forma independiente en LineXinBar: con su propia barra, resolución y frecuencia de actualización, HDR, luz nocturna, protección OLED, escala y orientación, y una resolución por aplicación.">
+<meta property="og:url" content="https://petexy.github.io/LineXinBar/es/displays.html">
+<meta property="og:locale" content="es_ES">
+<meta property="og:image" content="https://petexy.github.io/LineXinBar/assets/img/desktop.png">
+<meta property="og:image:width" content="1600">
+<meta property="og:image:height" content="900">
+<meta name="twitter:card" content="summary_large_image">
+<script type="application/ld+json">{"@context":"https://schema.org","@type":"WebPage","@id":"https://petexy.github.io/LineXinBar/es/displays.html","url":"https://petexy.github.io/LineXinBar/es/displays.html","name":"Pantallas en LineXinBar: varias pantallas, HDR y protección OLED","description":"Cada pantalla funciona de forma independiente en LineXinBar: con su propia barra, resolución y frecuencia de actualización, HDR, luz nocturna, protección OLED, escala y orientación, y una resolución por aplicación.","inLanguage":"es","isPartOf":{"@id":"https://petexy.github.io/LineXinBar/#website"},"about":{"@id":"https://petexy.github.io/LineXinBar/#software"},"breadcrumb":{"@type":"BreadcrumbList","itemListElement":[{"@type":"ListItem","position":1,"name":"Pantalla de inicio","item":"https://petexy.github.io/LineXinBar/es/"},{"@type":"ListItem","position":2,"name":"Pantallas","item":"https://petexy.github.io/LineXinBar/es/displays.html"}]}}</script>
+<!-- /search and sharing -->
+<meta content="#060314" name="theme-color"/>
+<link href="../assets/glyphs/sm/logo.webp" rel="icon" type="image/webp"/>
+<link as="font" crossorigin="" href="../assets/fonts/Roboto-Regular-latin.woff2" rel="preload" type="font/woff2"/>
+<link href="../assets/css/lxb.css" rel="stylesheet"/>
+</head>
+<body data-page="displays" data-screen="page">
+<a class="skip" href="#content">Saltar al contenido</a>
+<canvas aria-hidden="true" id="wallpaper"></canvas>
+<header class="page-head">
+<a class="trail" data-back="" href="index.html#displays">
+<span class="trail-tile"><img alt="" class="glyph" src="../assets/glyphs/lg/setting-display.webp"/></span>
+<span class="trail-text"><span class="trail-back">‹ Pantalla de inicio</span><span class="trail-name">Pantallas</span></span>
+</a>
+</header>
+<main class="column-page" id="content">
+<h1 class="visually-hidden">Pantallas en LineXinBar: varias pantallas, HDR y protección OLED</h1>
+<nav aria-label="En esta página" class="rows-nav">
+<ol class="rows">
+<li><a class="row" data-lxb-row="" href="#multi"><span class="row-icon"><img alt="" class="glyph" src="../assets/glyphs/lg/setting-display.webp"/></span><span class="row-text"><span class="row-title">Varias pantallas</span><span class="row-comment">Cada pantalla navega por su cuenta</span></span></a></li>
+<li><a class="row" data-lxb-row="" href="#modes"><span class="row-icon"><img alt="" class="glyph" src="../assets/glyphs/lg/setting-refresh.webp"/></span><span class="row-text"><span class="row-title">Resolución y frecuencia</span><span class="row-comment">Cada pantalla a su propio ritmo</span></span></a></li>
+<li><a class="row" data-lxb-row="" href="#hdr"><span class="row-icon"><img alt="" class="glyph" src="../assets/glyphs/lg/setting-hdr.webp"/></span><span class="row-text"><span class="row-title">HDR</span><span class="row-comment">Alto rango dinámico, por pantalla</span></span></a></li>
+<li><a class="row" data-lxb-row="" href="#night"><span class="row-icon"><img alt="" class="glyph" src="../assets/glyphs/lg/setting-night-light.webp"/></span><span class="row-text"><span class="row-title">Luz nocturna</span><span class="row-comment">Colores más cálidos por la noche</span></span></a></li>
+<li><a class="row" data-lxb-row="" href="#oled"><span class="row-icon"><img alt="" class="glyph" src="../assets/glyphs/lg/setting-screen-rest.webp"/></span><span class="row-text"><span class="row-title">Protección OLED</span><span class="row-comment">Deja descansar una pantalla que nadie mira</span></span></a></li>
+<li><a class="row" data-lxb-row="" href="#scaling"><span class="row-icon"><img alt="" class="glyph" src="../assets/glyphs/lg/setting-scale.webp"/></span><span class="row-text"><span class="row-title">Escala y orientación</span><span class="row-comment">Más grande o más pequeño, en horizontal o en vertical</span></span></a></li>
+<li><a class="row" data-lxb-row="" href="#app-resolution"><span class="row-icon"><img alt="" class="glyph" src="../assets/glyphs/lg/setting-resolution.webp"/></span><span class="row-text"><span class="row-title">Una resolución por aplicación</span><span class="row-comment">Que un juego exigente dibuje con menos píxeles</span></span></a></li>
+</ol>
+</nav>
+<div class="panes">
+<section aria-labelledby="multi-t" class="pane glass" id="multi">
+<h2 id="multi-t"><img alt="" class="glyph" src="../assets/glyphs/lg/setting-display.webp"/>Varias pantallas</h2>
+<p class="lede">Cada pantalla tiene una barra propia, no una copia de otra. Cada una navega de forma independiente y recuerda dónde estaba, así que un televisor puede quedarse en Vídeos mientras el monitor del escritorio está en Juegos.</p>
+<p>Solo una pantalla recibe las entradas a la vez, y se nota cuál: las demás se oscurecen. <kbd>L1</kbd> y <kbd>R1</kbd> en el mando, o <kbd>Tab</kbd> y <kbd>Shift</kbd>+<kbd>Tab</kbd>, pasan los controles a la siguiente pantalla, y un clic en una pantalla los lleva allí. Un ratón que solo pasa por otra pantalla no lo hace: pasar por encima no es decidir qué pantalla usa.</p>
+<p>Lo que abra se abre en la pantalla en la que lo pulsó, incluso cuando dos pantallas cargan dos cosas a la vez. <kbd>Super</kbd>+<kbd>Shift</kbd>+<kbd>→</kbd> mueve una ventana a la siguiente.</p>
+</section>
+<section aria-labelledby="modes-t" class="pane glass" id="modes">
+<h2 id="modes-t"><img alt="" class="glyph" src="../assets/glyphs/lg/setting-refresh.webp"/>Resolución y frecuencia</h2>
+<p class="lede">A diferencia de Gamescope, que es dueño de una salida y escala una aplicación sobre ella, aquí cada pantalla es una salida real con su propio bucle de renderizado, marcado por su propia frecuencia.</p>
+<p>Un monitor de 144 Hz junto a un televisor de 60 Hz funciona a 144 y a 60, no a un latido común. <em>Ajustes › Pantalla</em> hace las dos preguntas por separado: elija un tamaño y la página siguiente lista todas las frecuencias que ese tamaño ofrece de verdad, nunca un modo que la pantalla no haya anunciado.</p>
+<div class="more"><a class="control lit" data-select="Ajustes de pantalla" href="https://github.com/Petexy/LineXinBar/blob/master/docs/settings.md#display" rel="noopener" target="_blank">Ajustes de pantalla, en detalle</a></div>
+</section>
+<section aria-labelledby="hdr-t" class="pane glass" id="hdr">
+<h2 id="hdr-t"><img alt="" class="glyph" src="../assets/glyphs/lg/setting-hdr.webp"/>HDR</h2>
+<p class="lede">Active el alto rango dinámico en cualquier pantalla que lo admita y elija lo brillante que debe verse en ella el contenido normal.</p>
+<p>Cada pantalla compatible con HDR aparece con lo que está haciendo y el brillo máximo que anuncia; una nueva aparece en cuanto se conecta. Aquí el HDR es un ajuste de la pantalla: el escritorio se muestra correctamente con una señal HDR, y los juegos que entregan HDR por la vía Wayland nativa de Proton llegan tal cual a la pantalla.</p>
+</section>
+<section aria-labelledby="night-t" class="pane glass" id="night">
+<h2 id="night-t"><img alt="" class="glyph" src="../assets/glyphs/lg/setting-night-light.webp"/>Luz nocturna</h2>
+<p class="lede">Todo lo de una pantalla, teñido hacia un color más cálido por la noche, para que una pantalla que se mira tarde no sea de un blanco de pleno día.</p>
+<p>Con horario —desde la puesta hasta la salida del sol donde esté, o entre las horas que elija— o activado hasta que lo desactive, con la calidez que fije en una barra. Funciona junto con el HDR, no en su contra.</p>
+</section>
+<section aria-labelledby="oled-t" class="pane glass" id="oled">
+<h2 id="oled-t"><img alt="" class="glyph" src="../assets/glyphs/lg/setting-screen-rest.webp"/>Protección OLED</h2>
+<p class="lede">Un panel OLED conserva lo que se le muestra, y una pantalla de inicio que se queda en una segunda pantalla durante toda una tarde de juego es una barra quemada en ella. Un interruptor deja descansar esa pantalla tras el negro mientras se usa otra.</p>
+<p>Mover el puntero hasta ella la recupera en un cuarto de segundo. Cuando está del todo en negro, la pantalla duerme: el shell deja de dibujarla y todo lo que hay en ella se pausa, sin costar nada hasta que vuelva.</p>
+</section>
+<section aria-labelledby="scaling-t" class="pane glass" id="scaling">
+<h2 id="scaling-t"><img alt="" class="glyph" src="../assets/glyphs/lg/setting-scale.webp"/>Escala y orientación</h2>
+<p class="lede"><strong>La escala de las aplicaciones</strong> hace que los programas de una pantalla dibujen su interfaz más grande: entre el 100 % y el 300 %, con una barra que dice <em>150 % · Una vez y media más grande</em>.</p>
+<p><strong>La orientación</strong> gira una pantalla puesta de lado o colgada al revés: 0°, 90°, 180° o 270°. Las dos son por pantalla, como todo en esta página.</p>
+</section>
+<section aria-labelledby="app-resolution-t" class="pane glass" id="app-resolution">
+<h2 id="app-resolution-t"><img alt="" class="glyph" src="../assets/glyphs/lg/setting-resolution.webp"/>Una resolución por aplicación</h2>
+<p class="lede">El menú de una aplicación, de un juego de Steam o de un juego de consola lleva una fila de <strong>Resolución</strong>: Nativa, o cualquier tamaño menor que quepa en la pantalla.</p>
+<p>Elija 1280 × 720 para un juego exigente en un televisor 4K y de verdad dibuja a 1280 × 720, estirado sobre toda la pantalla: una forma barata de recuperar fotogramas por segundo en un equipo modesto. La elección se recuerda para ese juego a partir de entonces; elija Nativa otra vez para deshacerla.</p>
+<div class="more"><a class="control lit" data-select="Guía completa" href="https://github.com/Petexy/LineXinBar/blob/master/docs/guide.md#the-resolution-something-draws-at" rel="noopener" target="_blank">La resolución a la que dibuja algo</a></div>
+</section>
+</div>
+</main>
+<footer class="site-foot">
+<p>Siguiente: <a href="settings.html">Ajustes ›</a> · Anterior: <a href="guide.html">‹ La guía</a> · <a href="index.html#displays">Pantalla de inicio</a> · LineXinBar es software libre bajo la <a href="https://github.com/Petexy/LineXinBar/blob/master/LICENSE">GPL-3.0</a>.</p>
+</footer>
+<script defer="" src="../assets/js/wallpaper.js"></script>
+<script defer="" src="../assets/js/i18n.js"></script>
+<script defer="" src="../assets/js/shell.js"></script>
+<script defer="" src="../assets/js/page.js"></script>
+</body>
+</html>

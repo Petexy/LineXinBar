@@ -1,0 +1,50 @@
+[package]
+name = "lxb-rpcs3"
+description = "The shell's PlayStation 3 integration through RPCS3: whether RPCS3 and the PS3 system software are here, installing both, what somebody's PS3 folder holds, the pictures, films and music each game carries, installing packages, disc keys, and trophies"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[[bin]]
+name = "lxb-rpcs3"
+path = "src/main.rs"
+
+[dependencies]
+clap.workspace = true
+serde.workspace = true
+
+# The whole of what passes between this binary and the shell: one JSON object
+# per line on stdout, as `lxb-retroarch` and `lxb-heroic` do.
+serde_json = "1"
+
+# Sony's own update server for the PS3 system software, and the published
+# collection of Redump's disc keys. Blocking, with a TLS stack of its own, for
+# the reasons the RetroArch helper gives: this process has nothing else to do
+# while it waits. Already in the lock.
+ureq = "3"
+
+# A downloaded game is nearly always a zip, and a package inside one is read
+# without being unpacked first. The same inflate the shell decodes every PNG
+# with, so it costs this tree nothing.
+flate2 = "1"
+
+# AES-128, the one cipher the PlayStation 3 uses for everything this reads: a
+# PSN package's contents are AES in counter mode and a Blu-ray disc's sectors
+# are AES in CBC. Both modes are a few lines over the block cipher (see
+# `crypt.rs`), so only the block cipher is taken; `cipher` and `inout` are the
+# two packages it adds, the rest of what it needs is already in the lock.
+aes = "0.8"
+
+# A trophy set's names and descriptions are XML (`TROP.SFM`). The same parser
+# the shell's SVG renderer uses, so it is already in the lock.
+roxmltree = "0.21"
+
+# A locked trophy's picture is its own picture without its colour, the way
+# Steam and RetroAchievements hand theirs over: a PNG in, a grey PNG out. The
+# compositor's PNG codec, so it is already in the lock.
+png = "0.18"
+
+[dev-dependencies]
+tempfile = "3"

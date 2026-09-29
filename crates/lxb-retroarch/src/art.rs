@@ -737,6 +737,11 @@ pub fn run(
         .iter()
         .flat_map(|console| console.roms.iter().map(move |rom| (console, rom)))
         .filter(|(_, rom)| only.is_empty() || only.contains(&rom.path))
+        // A game that carries its own icon and backdrop — a PSP game's ICON0
+        // and PIC1, see `crate::psp` — is drawn with those, so the run that
+        // happens by itself fetches nothing that would never be shown. Asked
+        // for again by somebody's press, it is fetched like any other.
+        .filter(|(_, rom)| again || rom.icon.is_none() || rom.backdrop.is_none())
         .collect();
     let of = wanted.len() as u32;
     let agent = agent();

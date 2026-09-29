@@ -4,6 +4,7 @@
 
 - [Appearance](#appearance)
 - [Display](#display)
+- [Power](#power)
 - [Sounds](#sounds)
 - [Network](#network)
 - [Storage](#storage)
@@ -118,6 +119,14 @@ its own name, and it is that copy the shell reads from then on. Tidying your
 Downloads folder, renaming the picture or unplugging the stick it came off does
 not take your wallpaper with it. The copy happens on a thread — a film can be several gigabytes — while the
 picture you chose is already on screen.
+
+**There is only ever the one copy, and only while it is your wallpaper.**
+Choosing another file replaces it. Choosing `Default` or `Simple` deletes it and
+forgets the file, because nothing would ever show it again: to have it back,
+choose it again from wherever it came from. The file you chose it from is never
+touched. Anything else in that directory is deleted when the session starts, such
+as a copy an older version left there after you stopped using it, or half of one
+from a session that ended while it was being made.
 
 ```toml
 theme-wallpaper = "Custom wallpaper"
@@ -697,6 +706,163 @@ the night light are remembered there — a session with no shell still has to
 come up in the right mode — this is a rule about what the *shell* is drawing
 and who is looking at it, and a compositor with no shell has neither.
 
+## Power
+
+```
+Settings > Power  >  Dim screen          >  After 2 minutes
+                     Turn off screen     >  After 5 minutes
+                     Sleep on battery    >  After 15 minutes
+                     Sleep when plugged in > After 1 hour
+                     Power button        >  Sleep
+                     Power mode          >  Balanced
+                     Battery saver       >  On
+```
+
+What a console does when it is put down: a little later the screen dims, a
+little after that it goes dark, and left long enough the machine sleeps. Pick
+it up — any key, the mouse, a finger, **or a button on a controller** — and it
+is where it was. The page is the four waits, what the power button does, and,
+where the machine has them, the power mode and the battery saver.
+
+**These are the device's settings, not the account's.** Every account on the
+machine shares them, and so does the login screen: a handheld left on the
+login screen dims, goes dark and sleeps on the same waits, and its power button
+does what the page says there too. See [Where they are kept](#where-they-are-kept).
+
+### The waits
+
+Each is a list from **Never** to the longest, headed by the one in force. A
+machine with a battery is asked about sleep twice — on the battery and plugged
+in — and a desktop once, as plain **Sleep**. A dim that would come at or after
+the screen going dark is skipped.
+
+- **Dim screen** takes a built-in panel's own backlight down to a third of
+  where it was, which is the only way dimming saves any power on it. Any other
+  display gets a sheet from the compositor that leaves a little under half its
+  light.
+- **Turn off screen** fades every display to black and then switches it off
+  at the connector — the panel's backlight goes out, a monitor goes to sleep.
+  While it is dark nothing on it is drawn and the applications on it are
+  stopped, as on a screen [OLED protection](#oled-protection) has rested. The
+  first press on a controller only wakes the screens; it does not also press
+  whatever the bar was on.
+- **Sleep** suspends the machine.
+
+While the screens are dark the Start screen's music stops, and whenever the
+shell has made no sound for twenty seconds it lets go of the audio output, so
+the machine's sound hardware can power down until the next click.
+
+**What keeps the screen lit.** A program that asks for it: a film player on
+Wayland (`zwp_idle_inhibit_manager_v1`), honoured while its window can be seen,
+and one that asks over the session bus (`org.freedesktop.ScreenSaver`, which
+this session answers) or, from inside a Flatpak, through the desktop portal's
+Inhibit (which this session's portal answers), honoured while any application
+is in front. Most games built on SDL ask for exactly this for as long as they
+are open.
+
+**What keeps the machine awake.** Everything that keeps the screen lit — a
+game in front that asked for the screen keeps the machine awake too — and what
+would really be lost by sleeping behind the start screen: music or a film
+*playing*, a Steam or Epic download, files being copied, an update being
+installed, a program that asked over `org.freedesktop.PowerManagement.Inhibit`
+or the portal's Inhibit for suspend, and anything the login manager has been
+asked to keep awake (`systemd-inhibit --what=sleep` or `idle`). When the last of
+them lets go and nobody has come back, the machine sleeps then.
+
+**None of that stops a sleep somebody asks for.** Sleep in the power menu and
+the power button put the machine to sleep whatever its programs are holding —
+including the locks they took with the login manager, which since systemd 257
+would otherwise stop the account that owns them and ask for an administrator's
+password. Only a lock the *system* holds — a firmware update, another account's
+work — is honoured, and a note in the corner says the device can't sleep yet.
+An update being installed by Settings > Updates holds every way of powering
+down, as it always has.
+
+A session running inside another desktop never sleeps the machine and never
+takes its power button — it shares that desktop's login manager. Its screens
+still dim and go dark, which is how the page can be tried without a laptop.
+
+### Power button
+
+What a press does: **Sleep**, **Hibernate** (listed only where the machine can
+hibernate), **Turn off**, **Power menu** or **Do nothing**. Sleep unless it is
+changed. Holding the button for a second opens the power menu whichever it is.
+
+The session takes the button from the login manager for as long as it runs (a
+`handle-power-key` inhibitor) and answers it itself: a press while the screens
+are dark only lights them again, and the press that woke the machine from sleep
+is not taken as a second one. Everywhere else — the login screen, a text
+console, the moment between two sessions — the login manager answers it, and
+the page has told it the same thing (`HandlePowerKey=`): `suspend`,
+`hibernate` or `poweroff`, and `ignore` for the two answers it has no word for.
+For **Power menu** the login screen (CEDM 0.9.3 and later) moves to its own
+power buttons, and at a text console the button does nothing.
+
+The login screen follows the rest of the page too: it dims, goes dark and puts
+the machine to sleep on the same waits, and it follows the last account's
+[low-end hardware mode](#low-end-hardware-mode).
+
+### Power mode and battery saver
+
+Where the machine runs `power-profiles-daemon`, **Power mode** is its list —
+Power saver, Balanced, Performance — and choosing one changes the machine's
+own mode, which the daemon remembers. Nothing of it is written into this
+shell's file.
+
+**Battery saver**, on a machine that also has a battery, switches to Power
+saver by itself at 20% while running on the battery and puts the mode that was
+chosen back when the charger goes in. A mode chosen by hand in between is left
+alone.
+
+### The battery running out
+
+Whatever the page says, a battery running the machine is announced at 10% and
+at 5%, and at 3% the machine says it is going to sleep and does so fifteen
+seconds later unless the charger goes in — whatever else is holding sleep off.
+
+### Where they are kept
+
+Not in `shell.toml`. The page writes two files of the machine's:
+
+- **`/etc/lxb/power.toml`**, which every LineXinBar session and the login
+  screen read. A session notices, within a minute, a change another account
+  made.
+
+  ```toml
+  dim-screen-after = 120
+  screen-off-after = 300
+  sleep-on-battery-after = 900
+  sleep-plugged-in-after = 3600
+  power-button = "sleep"
+  battery-saver = true
+  ```
+
+  In seconds, and 0 is Never. `power-button` is one of `sleep`, `hibernate`,
+  `power-off`, `menu` or `nothing`. A machine with no file has the values
+  above.
+
+- **`/etc/systemd/logind.conf.d/60-lxb-power.conf`**, the login manager's
+  answer for the power button (`HandlePowerKey=`), which is reloaded so it
+  holds at once.
+
+Both are root's, so a press on the page runs `lxb-desktop --apply-power` as
+root through polkit (`org.linexinbar.power.settings`). It is allowed without a
+password to whoever is at the machine, as sleeping and switching it off
+already are, and to nobody else without an administrator's. What bounds it is
+what it can do: six checked values, two files of fixed shape, nothing else. A
+sleep asked for past the account's own programs' locks goes the same way,
+through `lxb-desktop --sleep-now` (`org.linexinbar.power.sleep`), which checks
+for itself that every lock it sets aside is the asking account's.
+
+Where the machine will not take a change — no polkit, a read-only `/etc` — the
+session still uses it, and the page says under its title that the settings are
+for this session only. A session inside another desktop never writes either
+file.
+
+logind's own `IdleAction=` is deliberately left alone: it has one wait where
+the page has two, and it cannot tell a download or a film from a person having
+gone away. The session and the login screen carry the waits out themselves.
+
 ## Sounds
 
 `Settings > Sounds` holds two kinds of thing: where the *machine's* sound goes
@@ -1128,12 +1294,14 @@ every reading.
 ## System
 
 `Settings > System` is the page about neither the picture nor the sound. It holds
-five rows: **Startup category**, which is the column a session opens on,
+six rows: **Startup category**, which is the column a session opens on,
 **Picture-in-Picture**, which is what happens to a browser's floating video
 window, **Clock**, which is whether the corner writes the time the way this
 country does, **Button hints**, which is whether the start screen writes
-[what its buttons do](shell.md#what-the-buttons-do) in its corner, and **System
-information**, which is the page a console needs to be able to say what it is.
+[what its buttons do](shell.md#what-the-buttons-do) in its corner,
+[**Low-end hardware mode**](#low-end-hardware-mode), which is how much the
+shell asks of the machine to draw itself, and **System information**, which is
+the page a console needs to be able to say what it is.
 
 **Application scaling used to be the row this page existed for**, and it is
 [under Display](#application-scaling) now, per screen. The argument for keeping
@@ -1561,6 +1729,49 @@ Carried out by the compositor, which is what places windows, and remembered
 nowhere else: the shell says what this is as soon as it connects, which is long
 before any browser exists to put a video in — the same bargain the application
 scale above it is under.
+
+### Low-end hardware mode
+
+```
+Settings > System > Low-end hardware mode  >  On
+```
+
+For a device the shell is too much for. **On**, the shell draws itself the
+cheap way:
+
+- the wallpaper stands still, and is drawn once — again only when something
+  about it changes (the accent, a game's picture behind the bar, the size of
+  the screen) — instead of being worked out for every pixel of every screen on
+  every frame;
+- the wallpaper and the marks are drawn in the **Simple** material, and the
+  sparkles are left out, whatever the [Theme](#theme) page says — the page
+  still says what was chosen, and turning the mode off brings it back;
+- a pane of glass takes at most one picture of what is behind it per frame;
+- a [film wallpaper](#custom-wallpaper) is held on its first frame;
+- the start screen is drawn ten times a second while nothing on it moves, and
+  at the display's own refresh while something does, so the bar glides as
+  smoothly as it does outside the mode. A device that cannot keep that up —
+  more than a fifth of its frames late — is drawn at every other refresh
+  instead, which is a slower glide but an even one, and is given the full rate
+  back once it has shown for long enough that it can.
+
+On the start screen of the machine this was written on, that took the shell
+from 44 ms of GPU time a second to 2, and from 4.3% of a processor to 0.9%.
+
+**Nobody has to find the switch on a machine that cannot draw the shell.**
+Until somebody chooses, the mode is on by itself where the shell finds itself
+drawing on the processor rather than on a graphics chip (llvmpipe, or any
+adapter that says it is a CPU) and off everywhere else; the row says "On, to
+suit this device" when that is why. And where the default frame is visibly too
+much — the start screen drawn at under 20 frames a second for twenty seconds —
+the shell says so once, in a bubble that names this row.
+
+```toml
+low-end-mode = true
+```
+
+Missing is automatic. Write it by hand for a device the shell cannot be driven
+on at all.
 
 ### System information
 

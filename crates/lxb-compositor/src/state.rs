@@ -261,6 +261,11 @@ pub struct Lxb {
     /// different statement — that one is about the session leaving, this one
     /// is about a panel nobody is looking at. See [`crate::blackout`].
     pub blackouts: crate::blackout::Blackouts,
+    /// The idle timers every program on the session can ask for — the shell's
+    /// dim, off and sleep among them. See [`crate::idle`].
+    pub idle_notifier: smithay::wayland::idle_notify::IdleNotifierState<LxbState>,
+    /// What is holding those timers, and when activity was last passed on.
+    pub idleness: crate::idle::Idleness,
     /// Frames other clients have asked for over wlr-screencopy, and the damage
     /// each of them has been told about.
     pub screencopy: crate::screencopy::ScreencopyState,
@@ -424,6 +429,11 @@ impl LxbState {
         smithay::wayland::pointer_gestures::PointerGesturesState::new::<Self>(dh);
         smithay::wayland::single_pixel_buffer::SinglePixelBufferState::new::<Self>(dh);
         smithay::wayland::cursor_shape::CursorShapeManagerState::new::<Self>(dh);
+        // What a film player asks the screen to stay on with, and the timers a
+        // screen is dimmed, switched off and slept by. See [`crate::idle`].
+        smithay::wayland::idle_inhibit::IdleInhibitManagerState::new::<Self>(dh);
+        let idle_notifier =
+            smithay::wayland::idle_notify::IdleNotifierState::new(dh, loop_handle.clone());
         // Text input, input methods and virtual keyboards, which together are
         // what lets the shell put a keyboard on screen and type into whatever
         // asked for one.
@@ -545,6 +555,8 @@ impl LxbState {
                 flashes: crate::flash::Flashes::default(),
                 curtain: crate::curtain::Curtain::default(),
                 blackouts: crate::blackout::Blackouts::default(),
+                idle_notifier,
+                idleness: crate::idle::Idleness::default(),
                 screencopy,
                 hdr: crate::hdr::Manager::default(),
                 seat,

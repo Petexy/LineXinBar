@@ -612,6 +612,21 @@ struct Rom {
     boxart: Option<String>,
     #[serde(default)]
     snap: Option<String>,
+    /// What the game carries of its own, read out of it by the helper — a
+    /// PlayStation Portable game's icon (`ICON0.PNG`), film (`ICON1.PMF`),
+    /// music (`SND0.AT3`), backdrop (`PIC1.PNG`) and the picture over that
+    /// (`PIC0.PNG`). Drawn before libretro's; see [`pictures_for`]. Defaulted
+    /// for a helper too old to read them, which is the answer it would give.
+    #[serde(default)]
+    icon: Option<String>,
+    #[serde(default)]
+    preview: Option<String>,
+    #[serde(default)]
+    music: Option<String>,
+    #[serde(default)]
+    backdrop: Option<String>,
+    #[serde(default)]
+    overlay: Option<String>,
 }
 
 // --- the worker -------------------------------------------------------------
@@ -1338,7 +1353,13 @@ impl RetroArch {
                     .consoles
                     .iter()
                     .flat_map(|console| &console.roms)
-                    .any(|rom| rom.boxart.is_none() || rom.snap.is_none())
+                    // A picture the game carries of its own is one that need
+                    // not be fetched: a PSP game's icon and backdrop are what
+                    // its row wears whatever libretro holds.
+                    .any(|rom| {
+                        (rom.boxart.is_none() && rom.icon.is_none())
+                            || (rom.snap.is_none() && rom.backdrop.is_none())
+                    })
         });
         if !ask {
             return false;
@@ -2121,10 +2142,18 @@ impl RetroArch {
         // longer than the press. So for that moment the row that asked is what
         // is still standing there, and it is replaced by the games rather than
         // by nothing.
-        if inner.consoles.is_empty() {
+        // The PlayStation 3 folder is not a console of this column's where
+        // the PlayStation 3 package is here to play it: RetroArch has no core
+        // for it, and the package's own column is where those games are.
+        let shown: Vec<&Console> = inner
+            .consoles
+            .iter()
+            .filter(|console| !(crate::ps3::offered() && crate::ps3::is_ps3_folder(&console.title)))
+            .collect();
+        if shown.is_empty() {
             rows.push(folder_row());
         }
-        for console in &inner.consoles {
+        for console in shown {
             rows.push(self.console_row(console, picking));
         }
         rows
@@ -2305,8 +2334,9 @@ impl RetroArch {
                 }
             },
             start,
-            // The pictures: the ones somebody chose for this game, and
-            // libretro's where they chose nothing — see [`pictures_for`].
+            // The pictures: the ones somebody chose for this game, the game's
+            // own where they chose nothing, and libretro's where it carries
+            // none — see [`pictures_for`].
             // Carried on the row for the reason everything else here is: the
             // column is drawn from these rows sixty times a second, and a cover
             // looked up per frame would be a `stat` per row per frame.
@@ -2318,6 +2348,26 @@ impl RetroArch {
             // is blurred on its way there.
             own_cover: pictures.own_cover,
             own_background: pictures.own_background,
+            // And whether the picture behind the display is the game's own
+            // backdrop, which is softened lightly and which the game opens on.
+            game_background: pictures.game_background,
+            // The film plays in place of the icon, so it plays only over the
+            // game's own icon — scaled into somebody's own cover, or into a
+            // box, it would be the film squeezed into the wrong shape. The
+            // music is the game's whatever its card is wearing.
+            preview: rom
+                .preview
+                .as_deref()
+                .filter(|_| pictures.game_cover)
+                .map(PathBuf::from),
+            music: rom.music.as_deref().map(PathBuf::from),
+            // The picture that stands over the backdrop, which the loading
+            // screen stands in the middle of it — only over its own backdrop.
+            logo: rom
+                .overlay
+                .as_deref()
+                .filter(|_| pictures.game_background)
+                .map(PathBuf::from),
             // And the shape its console's boxes are, so the card the cover
             // stands on is the shape of the cover rather than of a Steam
             // capsule. On every row of the shelf and not only the ones with a
@@ -3012,16 +3062,28 @@ pub struct Shown {
     /// and is drawn as it is. See `Shell::sight_of`.
     pub own_cover: bool,
     pub own_background: bool,
+    /// Whether [`Shown::cover`] is the icon the game carries of its own — a
+    /// PSP game's `ICON0.PNG` — which is what its film plays in place of.
+    pub game_cover: bool,
+    /// Whether [`Shown::background`] is the backdrop the game carries of its
+    /// own — a PSP game's `PIC1.PNG`. Softened lightly, by much less than a
+    /// libretro screenshot: it is the game's artwork, but it was made for a
+    /// screen four inches across. And the game opens on it, as a PlayStation 3
+    /// game opens on its own.
+    pub game_background: bool,
 }
 
-/// The two pictures one game's row will draw: what somebody chose, and what was
-/// fetched where they chose nothing.
+/// The two pictures one game's row will draw: what somebody chose, what the
+/// game carries of its own where they chose nothing, and what was fetched
+/// where it carries nothing.
 ///
-/// Chosen first, and that is the whole of what choosing one means. libretro's
-/// is what nearly every game gets and it stays where nobody has said otherwise;
-/// a game whose cover somebody replaced by hand keeps theirs through every
-/// fetch afterwards, because a run that put the published picture back would be
-/// the shell overruling a choice on the user's behalf.
+/// Chosen first, and that is the whole of what choosing one means. A game's
+/// own comes next — a PSP game's icon and backdrop, read out of the game, which
+/// are what the handheld's own menu dressed it in and what the user asked to
+/// see. libretro's is what every other game gets and it stays where nobody has
+/// said otherwise; a game whose cover somebody replaced by hand keeps theirs
+/// through every fetch afterwards, because a run that put the published picture
+/// back would be the shell overruling a choice on the user's behalf.
 fn pictures_for(chosen: &[Chosen], rom: &Rom) -> Shown {
     let game = Path::new(&rom.path)
         .file_name()
@@ -3034,11 +3096,21 @@ fn pictures_for(chosen: &[Chosen], rom: &Rom) -> Shown {
             .map(|one| one.at.clone())
     };
     let (cover, background) = (theirs(Piece::Cover), theirs(Piece::Background));
+    let (icon, backdrop) = (
+        rom.icon.as_deref().map(PathBuf::from),
+        rom.backdrop.as_deref().map(PathBuf::from),
+    );
     Shown {
         own_cover: cover.is_some(),
         own_background: background.is_some(),
-        cover: cover.or_else(|| rom.boxart.as_deref().map(PathBuf::from)),
-        background: background.or_else(|| rom.snap.as_deref().map(PathBuf::from)),
+        game_cover: cover.is_none() && icon.is_some(),
+        game_background: background.is_none() && backdrop.is_some(),
+        cover: cover
+            .or(icon)
+            .or_else(|| rom.boxart.as_deref().map(PathBuf::from)),
+        background: background
+            .or(backdrop)
+            .or_else(|| rom.snap.as_deref().map(PathBuf::from)),
     }
 }
 
@@ -4471,6 +4543,11 @@ input_player1_right_btn = \"14\"
                     path: format!("/home/x/ROMs/psp/{title}.iso"),
                     boxart: None,
                     snap: None,
+                    icon: None,
+                    preview: None,
+                    music: None,
+                    backdrop: None,
+                    overlay: None,
                 })
                 .collect(),
             shape: None,
@@ -4695,6 +4772,106 @@ input_player1_right_btn = \"14\"
         };
         assert_eq!(rom.boxart.as_deref(), Some(Path::new("/cache/box.png")));
         assert_eq!(rom.snap.as_deref(), Some(Path::new("/cache/snap.png")));
+    }
+
+    /// A PSP game with its own ICON0 and PIC1 wears them rather than
+    /// libretro's box and screenshot, and carries its film, its music and its
+    /// PIC0 — the way the handheld's own menu dressed it.
+    #[test]
+    fn a_psp_game_wears_what_it_carries_of_its_own() {
+        let _held = GLOBALS.lock().unwrap_or_else(|err| err.into_inner());
+        let mut console = console("PlayStation Portable", &["Tekken 6"]);
+        let game = &mut console.roms[0];
+        game.boxart = Some("/cache/box.png".to_string());
+        game.snap = Some("/cache/snap.png".to_string());
+        game.icon = Some("/own/ICON0.PNG".to_string());
+        game.preview = Some("/own/ICON1.PMF".to_string());
+        game.music = Some("/own/SND0.AT3".to_string());
+        game.backdrop = Some("/own/PIC1.PNG".to_string());
+        game.overlay = Some("/own/PIC0.PNG".to_string());
+        let rows = found(vec![console]).rows(None);
+        let Entry::Folder(folder) = &rows[0] else {
+            panic!("a console opens a column");
+        };
+        let Entry::Rom(rom) = &folder.entries[0] else {
+            panic!("a console's rows are games");
+        };
+        assert_eq!(rom.boxart.as_deref(), Some(Path::new("/own/ICON0.PNG")));
+        assert_eq!(rom.snap.as_deref(), Some(Path::new("/own/PIC1.PNG")));
+        assert!(rom.game_background && !rom.own_background && !rom.own_cover);
+        assert_eq!(rom.preview.as_deref(), Some(Path::new("/own/ICON1.PMF")));
+        assert_eq!(rom.music.as_deref(), Some(Path::new("/own/SND0.AT3")));
+        assert_eq!(rom.logo.as_deref(), Some(Path::new("/own/PIC0.PNG")));
+    }
+
+    /// A game that carries nothing of its own is exactly the row it was.
+    #[test]
+    fn a_game_that_carries_nothing_of_its_own_keeps_libretros() {
+        let _held = GLOBALS.lock().unwrap_or_else(|err| err.into_inner());
+        let mut console = console("PlayStation Portable", &["Tekken 6"]);
+        console.roms[0].boxart = Some("/cache/box.png".to_string());
+        console.roms[0].snap = Some("/cache/snap.png".to_string());
+        let rows = found(vec![console]).rows(None);
+        let Entry::Folder(folder) = &rows[0] else {
+            panic!("a console opens a column");
+        };
+        let Entry::Rom(rom) = &folder.entries[0] else {
+            panic!("a console's rows are games");
+        };
+        assert_eq!(rom.boxart.as_deref(), Some(Path::new("/cache/box.png")));
+        assert!(!rom.game_background);
+        assert_eq!((&rom.preview, &rom.music, &rom.logo), (&None, &None, &None));
+    }
+
+    /// A cover somebody chose stands over the game's own icon too — and then
+    /// the film, which plays in place of that icon, does not play at all
+    /// rather than squeezed into their picture. The music is the game's
+    /// whatever its card wears, and the backdrop they said nothing about is
+    /// still the game's own.
+    #[test]
+    fn a_cover_of_your_own_stands_over_the_games_icon_and_silences_its_film() {
+        let _held = GLOBALS.lock().unwrap_or_else(|err| err.into_inner());
+        let at = pictures("chosen-psp");
+        set_kept_at(Some(at.clone()));
+
+        let mut console = console("PlayStation Portable", &["Tekken 6"]);
+        let game = &mut console.roms[0];
+        game.path = "/home/x/ROMs/psp/Tekken 6.iso".to_string();
+        game.icon = Some("/own/ICON0.PNG".to_string());
+        game.preview = Some("/own/ICON1.PMF".to_string());
+        game.music = Some("/own/SND0.AT3".to_string());
+        game.backdrop = Some("/own/PIC1.PNG".to_string());
+        let theirs = cover(&at, "mine", 512, 700);
+        let kept = keep_picture(
+            "PlayStation Portable",
+            Path::new(&console.roms[0].path),
+            Piece::Cover,
+            Path::new(&theirs),
+        )
+        .expect("it is kept");
+        reread_chosen_pictures();
+
+        let shown = pictures_for(&chosen_for("PlayStation Portable"), &console.roms[0]);
+        assert_eq!(shown.cover.as_deref(), Some(kept.as_path()));
+        assert!(shown.own_cover && !shown.game_cover);
+        assert_eq!(
+            shown.background.as_deref(),
+            Some(Path::new("/own/PIC1.PNG"))
+        );
+        assert!(shown.game_background);
+
+        let rows = found(vec![console]).rows(None);
+        let Entry::Folder(folder) = &rows[0] else {
+            panic!("a console opens a column");
+        };
+        let Entry::Rom(rom) = &folder.entries[0] else {
+            panic!("a console's rows are games");
+        };
+        assert_eq!(rom.preview, None, "no film over somebody's own cover");
+        assert_eq!(rom.music.as_deref(), Some(Path::new("/own/SND0.AT3")));
+
+        set_kept_at(None);
+        let _ = std::fs::remove_dir_all(&at);
     }
 
     /// The menu over a console's row: the shelf, and the emulator that plays

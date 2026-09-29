@@ -410,6 +410,27 @@ pub struct Rom {
     /// the shell's `thumbs::Want::Snapshot`.
     #[serde(default)]
     pub snap: Option<String>,
+    /// What the game carries of its own, read out of it and kept on this disk
+    /// — see [`crate::psp`]. Only a PlayStation Portable game has these today:
+    /// its icon (`ICON0.PNG`, 144×80), the film that plays in place of the icon
+    /// while it is chosen (`ICON1.PMF`), the music behind it (`SND0.AT3`), the
+    /// backdrop the screen turns to (`PIC1.PNG`) and the picture that stands
+    /// over that (`PIC0.PNG`).
+    ///
+    /// The shell draws these in preference to [`Rom::boxart`] and [`Rom::snap`],
+    /// which stay for a game none could be read out of. Defaulted so that a
+    /// record from a helper too old to read them still reads, which says the
+    /// same thing it would.
+    #[serde(default)]
+    pub icon: Option<String>,
+    #[serde(default)]
+    pub preview: Option<String>,
+    #[serde(default)]
+    pub music: Option<String>,
+    #[serde(default)]
+    pub backdrop: Option<String>,
+    #[serde(default)]
+    pub overlay: Option<String>,
 }
 
 /// One line of a collection's pictures being fetched, as they are fetched.

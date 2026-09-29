@@ -1,0 +1,21 @@
+<!--
+  The right trigger, as the pad it is on.
+
+  pad-right-bumper.svg's pad and side, with the trigger standing above the
+  bumper as a taller, rounded tab — which is where a trigger is, behind and
+  over the bumper — and the bumper kept as a thin line under it, so the two
+  are told apart by what is over what rather than by a letter that differs
+  between makers (LT, L2, ZL). Its mirror is pad-left-trigger.svg.
+
+  lxb:shape — the material is computed from this outline. See
+  category-games.svg, which is where it is explained.
+-->
+
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24">
+  <g transform="translate(0 2.6)">
+    <path fill="none" stroke="#fff" stroke-width="1.5" stroke-linejoin="round"
+          d="M7.7 7.4h8.6a4 4 0 0 1 3.9 3.1l0.95 4.3a2.35 2.35 0 0 1-4.25 1.85l-1.75-2.4H8.85l-1.75 2.4a2.35 2.35 0 0 1-4.25-1.85l0.95-4.3a4 4 0 0 1 3.9-3.1z"/>
+    <g transform="matrix(-1 0 0 1 24 0)"><path fill="#fff" d="M4.4 4.3V2.5a1.9 1.9 0 0 1 1.9-1.9h1.8a1.9 1.9 0 0 1 1.9 1.9v1.8a0.4 0.4 0 0 1-0.4 0.4H4.8a0.4 0.4 0 0 1-0.4-0.4z"/>
+    <path fill="none" stroke="#fff" stroke-width="1.1" stroke-linecap="round" d="M4.2 6.1h6"/></g>
+  </g>
+</svg>

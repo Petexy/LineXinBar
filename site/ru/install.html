@@ -1,0 +1,175 @@
+<!DOCTYPE html>
+
+<html lang="ru">
+<head>
+<meta charset="utf-8"/>
+<meta content="width=device-width, initial-scale=1, viewport-fit=cover" name="viewport"/>
+<title>Начало работы с LineXinBar: Arch, Debian, Ubuntu, Fedora, NixOS</title>
+<meta content="Попробуйте LineXinBar в окне внутри текущего рабочего стола или соберите и установите пакеты для Arch Linux, Debian и Ubuntu, Fedora и NixOS, а затем выберите LineXinBar на экране входа." name="description"/>
+<!-- search and sharing: written by tools/translate.py build -->
+<link rel="canonical" href="https://petexy.github.io/LineXinBar/ru/install.html">
+<link rel="alternate" hreflang="x-default" href="https://petexy.github.io/LineXinBar/install.html">
+<link rel="alternate" hreflang="en" href="https://petexy.github.io/LineXinBar/install.html">
+<link rel="alternate" hreflang="de" href="https://petexy.github.io/LineXinBar/de/install.html">
+<link rel="alternate" hreflang="en-GB" href="https://petexy.github.io/LineXinBar/install.html">
+<link rel="alternate" hreflang="en-US" href="https://petexy.github.io/LineXinBar/en-us/install.html">
+<link rel="alternate" hreflang="es" href="https://petexy.github.io/LineXinBar/es/install.html">
+<link rel="alternate" hreflang="fr" href="https://petexy.github.io/LineXinBar/fr/install.html">
+<link rel="alternate" hreflang="pl" href="https://petexy.github.io/LineXinBar/pl/install.html">
+<link rel="alternate" hreflang="pt-BR" href="https://petexy.github.io/LineXinBar/pt-br/install.html">
+<link rel="alternate" hreflang="ru" href="https://petexy.github.io/LineXinBar/ru/install.html">
+<link rel="alternate" hreflang="hi" href="https://petexy.github.io/LineXinBar/hi/install.html">
+<link rel="alternate" hreflang="zh-CN" href="https://petexy.github.io/LineXinBar/zh-cn/install.html">
+<meta property="og:type" content="website">
+<meta property="og:site_name" content="LineXinBar">
+<meta property="og:title" content="Начало работы с LineXinBar: Arch, Debian, Ubuntu, Fedora, NixOS">
+<meta property="og:description" content="Попробуйте LineXinBar в окне внутри текущего рабочего стола или соберите и установите пакеты для Arch Linux, Debian и Ubuntu, Fedora и NixOS, а затем выберите LineXinBar на экране входа.">
+<meta property="og:url" content="https://petexy.github.io/LineXinBar/ru/install.html">
+<meta property="og:locale" content="ru_RU">
+<meta property="og:image" content="https://petexy.github.io/LineXinBar/assets/img/desktop.png">
+<meta property="og:image:width" content="1600">
+<meta property="og:image:height" content="900">
+<meta name="twitter:card" content="summary_large_image">
+<script type="application/ld+json">{"@context":"https://schema.org","@type":"WebPage","@id":"https://petexy.github.io/LineXinBar/ru/install.html","url":"https://petexy.github.io/LineXinBar/ru/install.html","name":"Начало работы с LineXinBar: Arch, Debian, Ubuntu, Fedora, NixOS","description":"Попробуйте LineXinBar в окне внутри текущего рабочего стола или соберите и установите пакеты для Arch Linux, Debian и Ubuntu, Fedora и NixOS, а затем выберите LineXinBar на экране входа.","inLanguage":"ru","isPartOf":{"@id":"https://petexy.github.io/LineXinBar/#website"},"about":{"@id":"https://petexy.github.io/LineXinBar/#software"},"breadcrumb":{"@type":"BreadcrumbList","itemListElement":[{"@type":"ListItem","position":1,"name":"Стартовый экран","item":"https://petexy.github.io/LineXinBar/ru/"},{"@type":"ListItem","position":2,"name":"Начало работы","item":"https://petexy.github.io/LineXinBar/ru/install.html"}]}}</script>
+<!-- /search and sharing -->
+<meta content="#060314" name="theme-color"/>
+<link href="../assets/glyphs/sm/logo.webp" rel="icon" type="image/webp"/>
+<link as="font" crossorigin="" href="../assets/fonts/Roboto-Regular-latin.woff2" rel="preload" type="font/woff2"/>
+<link href="../assets/css/lxb.css" rel="stylesheet"/>
+</head>
+<body data-page="install" data-screen="page">
+<a class="skip" href="#content">Перейти к содержимому</a>
+<canvas aria-hidden="true" id="wallpaper"></canvas>
+<header class="page-head">
+<a class="trail" data-back="" href="index.html#install">
+<span class="trail-tile"><img alt="" class="glyph" src="../assets/glyphs/lg/setting-install-to.webp"/></span>
+<span class="trail-text"><span class="trail-back">‹ Стартовый экран</span><span class="trail-name">Начало работы</span></span>
+</a>
+</header>
+<main class="column-page" id="content">
+<h1 class="visually-hidden">Начало работы с LineXinBar: Arch, Debian, Ubuntu, Fedora, NixOS</h1>
+<nav aria-label="На этой странице" class="rows-nav">
+<ol class="rows">
+<li><a class="row" data-lxb-row="" href="#try"><span class="row-icon"><img alt="" class="glyph" src="../assets/glyphs/lg/launch.webp"/></span><span class="row-text"><span class="row-title">Попробовать в окне</span><span class="row-comment">Один скрипт, прямо из репозитория</span></span></a></li>
+<li><a class="row" data-lxb-row="" href="#packages"><span class="row-icon"><img alt="" class="glyph" src="../assets/glyphs/lg/setting-install-to.webp"/></span><span class="row-text"><span class="row-title">Установить пакет</span><span class="row-comment">Arch, Debian и Ubuntu, Fedora, NixOS</span></span></a></li>
+<li><a class="row" data-lxb-row="" href="#session"><span class="row-icon"><img alt="" class="glyph" src="../assets/glyphs/lg/sign-out.webp"/></span><span class="row-text"><span class="row-title">Запустить сеанс</span><span class="row-comment">Выберите LineXinBar на экране входа</span></span></a></li>
+<li><a class="row" data-lxb-row="" href="#optional"><span class="row-icon"><img alt="" class="glyph" src="../assets/glyphs/lg/add.webp"/></span><span class="row-text"><span class="row-title">Дополнительные пакеты</span><span class="row-comment">RetroArch, Epic Games и PlayStation 3</span></span></a></li>
+<li><a class="row" data-lxb-row="" href="#requirements"><span class="row-icon"><img alt="" class="glyph" src="../assets/glyphs/lg/setting-info.webp"/></span><span class="row-text"><span class="row-title">Что для этого нужно</span><span class="row-comment">Linux, работающий драйвер GPU, logind или seatd</span></span></a></li>
+<li><a class="row" data-lxb-row="" href="#hardware"><span class="row-icon"><img alt="" class="glyph" src="../assets/glyphs/lg/setting-system.webp"/></span><span class="row-text"><span class="row-title">Оборудование</span><span class="row-comment">На чём он уже работал</span></span></a></li>
+</ol>
+</nav>
+<div class="panes">
+<section aria-labelledby="try-t" class="pane glass" id="try">
+<h2 id="try-t"><img alt="" class="glyph" src="../assets/glyphs/lg/launch.webp"/>Попробовать в окне</h2>
+<p class="lede">Чтобы посмотреть на него, не нужно покидать свой рабочий стол. С Rust <strong>1.89 или новее</strong> и установленными зависимостями сборки один скрипт собирает LineXinBar и открывает его окном в уже запущенном сеансе.</p>
+<pre><code>git clone https://github.com/Petexy/LineXinBar.git
+cd LineXinBar
+./scripts/run-nested.sh</code></pre>
+<p>Вложенный рабочий стол получает свою сессионную шину, поэтому приложения, открытые внутри, остаются внутри. Закрытие окна его завершает. <code>./scripts/run-nested.sh 3</code> открывает три виртуальных экрана вместо одного, чтобы попробовать работу с несколькими экранами.</p>
+<p>Зависимости сборки для каждого дистрибутива:</p>
+<div aria-label="Зависимости сборки" class="tabs" role="tablist">
+<button aria-controls="deps-arch" aria-selected="true" id="deps-arch-tab" role="tab" type="button">Arch</button>
+<button aria-controls="deps-debian" aria-selected="false" id="deps-debian-tab" role="tab" type="button">Debian / Ubuntu</button>
+<button aria-controls="deps-fedora" aria-selected="false" id="deps-fedora-tab" role="tab" type="button">Fedora</button>
+</div>
+<div aria-labelledby="deps-arch-tab" class="tab-panel" id="deps-arch" role="tabpanel">
+<pre><code>sudo pacman -S --needed rust pkgconf clang wayland libinput seatd systemd-libs libdrm \
+    mesa libxkbcommon libglvnd libx11 libxcb libxcursor libxi libxkbcommon-x11 \
+    alsa-lib ffmpeg libpipewire</code></pre>
+</div>
+<div aria-labelledby="deps-debian-tab" class="tab-panel" hidden="" id="deps-debian" role="tabpanel">
+<pre><code>sudo apt install build-essential pkg-config cargo clang libwayland-dev libinput-dev \
+    libseat-dev libudev-dev libdrm-dev libgbm-dev libxkbcommon-dev \
+    libegl1-mesa-dev libx11-dev libxcb1-dev libxcursor-dev libxi-dev \
+    libxkbcommon-x11-dev libasound2-dev libavcodec-dev libavformat-dev \
+    libavutil-dev libswscale-dev libpipewire-0.3-dev</code></pre>
+<p>В Debian 13 установите Rust через <code>rustup</code>: версия из дистрибутива старее, чем нужно для сборки.</p>
+</div>
+<div aria-labelledby="deps-fedora-tab" class="tab-panel" hidden="" id="deps-fedora" role="tabpanel">
+<pre><code>sudo dnf install cargo pkgconf-pkg-config clang wayland-devel libinput-devel \
+    libseat-devel systemd-devel libdrm-devel mesa-libgbm-devel \
+    libxkbcommon-devel mesa-libEGL-devel libX11-devel libxcb-devel \
+    libXcursor-devel libXi-devel libxkbcommon-x11-devel alsa-lib-devel \
+    ffmpeg-free-devel pipewire-devel</code></pre>
+</div>
+<div class="more"><a class="control lit" data-select="Полное руководство" href="https://github.com/Petexy/LineXinBar/blob/master/docs/getting-started.md" rel="noopener" target="_blank">Начало работы, подробно</a></div>
+</section>
+<section aria-labelledby="packages-t" class="pane glass" id="packages">
+<h2 id="packages-t"><img alt="" class="glyph" src="../assets/glyphs/lg/setting-install-to.webp"/>Установить пакет</h2>
+<p class="lede">Готовые пакеты для Arch, Debian и Ubuntu, а также Fedora приложены к каждому <a href="https://github.com/Petexy/LineXinBar/releases">выпуску на GitHub</a>. Или соберите их сами из репозитория — рецепты лежат в нём.</p>
+<div aria-label="Дистрибутив" class="tabs" role="tablist">
+<button aria-controls="pkg-arch" aria-selected="true" id="pkg-arch-tab" role="tab" type="button">Arch</button>
+<button aria-controls="pkg-debian" aria-selected="false" id="pkg-debian-tab" role="tab" type="button">Debian / Ubuntu</button>
+<button aria-controls="pkg-fedora" aria-selected="false" id="pkg-fedora-tab" role="tab" type="button">Fedora</button>
+<button aria-controls="pkg-nix" aria-selected="false" id="pkg-nix-tab" role="tab" type="button">Nix / NixOS</button>
+</div>
+<div aria-labelledby="pkg-arch-tab" class="tab-panel" id="pkg-arch" role="tabpanel">
+<pre><code>./packaging/build.sh arch -- --syncdeps</code></pre>
+<p>Создаёт PKGBUILD для репозитория и запускает <code>makepkg</code>; пакеты попадают в <code>packaging/out/arch/</code>.</p>
+</div>
+<div aria-labelledby="pkg-debian-tab" class="tab-panel" hidden="" id="pkg-debian" role="tabpanel">
+<pre><code>sudo apt install dpkg-dev build-essential pkg-config clang rustup \
+    libasound2-dev libgbm-dev libavcodec-dev libavformat-dev libavutil-dev \
+    libswscale-dev libinput-dev libpipewire-0.3-dev libseat-dev libudev-dev \
+    libxkbcommon-dev
+./packaging/build.sh debian</code></pre>
+<p>Скрипт сначала всё проверяет и, если чего-то не хватает, называет это одной строкой <code>apt install</code>.</p>
+</div>
+<div aria-labelledby="pkg-fedora-tab" class="tab-panel" hidden="" id="pkg-fedora" role="tabpanel">
+<pre><code>sudo dnf install rpm-build dnf5-plugins git-core
+sudo dnf builddep packaging/fedora/lxb-desktop.spec
+./packaging/build.sh fedora</code></pre>
+<p>Бинарные и исходные RPM копируются в <code>packaging/out/fedora/</code>. Для сборки достаточно контейнера <code>fedora-toolbox</code>.</p>
+</div>
+<div aria-labelledby="pkg-nix-tab" class="tab-panel" hidden="" id="pkg-nix" role="tabpanel">
+<pre><code>nix build path:.#linexinbar          # the whole desktop, as one derivation
+nix build path:.#lxb-compositor      # the compositor alone</code></pre>
+<p>Репозиторий — закреплённый flake, а <code>nix-build packaging/nix</code> работает и без flakes.</p>
+</div>
+<p>Установите <strong>lxb-compositor</strong> и <strong>lxb-desktop</strong>: композитор и оболочку с её порталом, координатором обновлений и записью сеанса.</p>
+<div class="more"><a class="control lit" data-select="Выпуски" href="https://github.com/Petexy/LineXinBar/releases" rel="noopener" target="_blank">Выпуски на GitHub</a><a class="control" href="https://github.com/Petexy/LineXinBar/blob/master/docs/packaging.md" rel="noopener" target="_blank">Руководство по пакетированию</a></div>
+</section>
+<section aria-labelledby="session-t" class="pane glass" id="session">
+<h2 id="session-t"><img alt="" class="glyph" src="../assets/glyphs/lg/sign-out.webp"/>Запустить сеанс</h2>
+<p class="lede">Когда пакеты установлены, выберите <strong>LineXinBar</strong> в списке сеансов на экране входа, как любой другой рабочий стол.</p>
+<p>Из текстовой консоли всё запускает <code>lxb --shell</code>; выход из оболочки завершает сеанс, а не оставляет пустой экран. <a href="family.html#login">Экран входа Console Experience</a> сделан в пару к нему и передаёт управление оболочке одной непрерывной картинкой.</p>
+<p>Настройки хранятся в <code>~/.config/lxb/</code> — в основном их записывает сама колонка Настроек оболочки, и все их можно читать и править вручную.</p>
+<div class="more"><a class="control lit" data-select="Конфигурация" href="https://github.com/Petexy/LineXinBar/blob/master/docs/configuration.md" rel="noopener" target="_blank">Справочник по конфигурации</a></div>
+</section>
+<section aria-labelledby="optional-t" class="pane glass" id="optional">
+<h2 id="optional-t"><img alt="" class="glyph" src="../assets/glyphs/lg/add.webp"/>Дополнительные пакеты</h2>
+<p class="lede">Три интеграции — отдельные пакеты, чтобы машина, которая никогда не эмулирует консоль, не несла ничего из этого. Установите любой из них во время сеанса, и его строка появится через несколько секунд.</p>
+<div class="cards">
+<a class="card" href="games.html#retroarch"><img alt="" class="glyph" src="../assets/glyphs/lg/retroarch.webp"/><b>lxb-retroarch</b><span>Ваши собственные консольные игры через RetroArch, ядра и обложки загружаются за вас.</span></a>
+<a class="card" href="games.html#epic"><img alt="" class="glyph" src="../assets/glyphs/lg/epic.webp"/><b>lxb-heroic</b><span>Ваша библиотека Epic Games через Flatpak Heroic Games Launcher.</span></a>
+<a class="card" href="games.html#ps3"><img alt="" class="glyph" src="../assets/glyphs/lg/ps3.webp"/><b>lxb-rpcs3</b><span>Игры PlayStation 3 через RPCS3, с их роликами, музыкой и трофеями.</span></a>
+</div>
+<p>Каждый привязан к той версии оболочки, с которой собран. Steam не нужен отдельный пакет — только клиент Steam от Valve.</p>
+</section>
+<section aria-labelledby="requirements-t" class="pane glass" id="requirements">
+<h2 id="requirements-t"><img alt="" class="glyph" src="../assets/glyphs/lg/setting-info.webp"/>Что для этого нужно</h2>
+<ul>
+<li><strong>Linux</strong> с графическим драйвером, умеющим управлять экранами (DRM/KMS), и работающим драйвером OpenGL ES; если есть драйвер Vulkan, используется он.</li>
+<li><strong>systemd-logind или seatd</strong>, который передаёт сеансу его экраны и устройства ввода.</li>
+<li><strong>udev</strong>, чтобы узнавать о подключении экранов и контроллеров.</li>
+<li>Дополнительно: <strong>Xwayland</strong> для программ X11, <strong>PipeWire</strong> для звука и демонстрации экрана, <strong>Flatpak</strong> для интеграций, <strong>ddcutil</strong> для яркости внешних мониторов.</li>
+</ul>
+<p>Всё оборудование обнаруживается на ходу — каждый экран, режим и GPU, — так что заранее под вашу машину ничего настраивать не нужно.</p>
+</section>
+<section aria-labelledby="hardware-t" class="pane glass" id="hardware">
+<h2 id="hardware-t"><img alt="" class="glyph" src="../assets/glyphs/lg/setting-system.webp"/>Оборудование</h2>
+<p class="lede">LineXinBar находится на <strong>ранней стадии разработки</strong>. Пока тестирование шло в основном на одной видеокарте AMD с двумя экранами, а также во вложенных сеансах.</p>
+<p>Ничто не привязано к этому оборудованию — путь для нескольких GPU существует, — но другим производителям видеокарт, портативным приставкам и машинам с несколькими GPU нужно больше людей, которые их попробуют. Если запустите его на чём-то новом, отчёт о том, что заработало, а что нет, — одно из самых полезных, что можно прислать.</p>
+<div class="more"><a class="control lit" data-select="Отчёт" href="https://github.com/Petexy/LineXinBar/issues" rel="noopener" target="_blank">Расскажите, как всё прошло</a><a class="control" href="develop.html#bugs">Что приложить</a></div>
+</section>
+</div>
+</main>
+<footer class="site-foot">
+<p>Далее: <a href="games.html">Игры ›</a> · Назад: <a href="overview.html">‹ LineXinBar</a> · <a href="index.html#install">Стартовый экран</a> · LineXinBar — свободное ПО под лицензией <a href="https://github.com/Petexy/LineXinBar/blob/master/LICENSE">GPL-3.0</a>.</p>
+</footer>
+<script defer="" src="../assets/js/wallpaper.js"></script>
+<script defer="" src="../assets/js/i18n.js"></script>
+<script defer="" src="../assets/js/shell.js"></script>
+<script defer="" src="../assets/js/page.js"></script>
+</body>
+</html>

@@ -53,6 +53,17 @@ const SUPPLIES: &str = "/sys/class/power_supply";
 /// asked three times a minute rather than sixty times a second.
 const REFRESH: Duration = Duration::from_secs(20);
 
+/// How often it is read while the corner is not on screen.
+///
+/// It used to be not at all, which was right while the mark was the only
+/// reader. It no longer is: the idle policy sleeps the machine on a different
+/// wait on the battery than on the mains, and the low-battery warnings have to
+/// arrive in the middle of a game — which is exactly when the corner is not
+/// showing. A minute is a charge that has really moved long before anybody
+/// could be told about it too late, and a slow embedded controller asked once
+/// a minute is not a cost anybody can measure.
+const IN_THE_BACKGROUND: Duration = Duration::from_secs(60);
+
 /// What is in the battery, as the worker last read it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Charge {
@@ -138,6 +149,12 @@ struct State {
     /// is what keeps the mark, and the setting that would turn its number on,
     /// off the screen entirely.
     charge: Option<Charge>,
+    /// Whether the machine is running on its battery: a battery of its own
+    /// says it is discharging. Beside the charge rather than in it, because
+    /// the mark does not draw it — a battery sitting at full on the mains and
+    /// one slowly emptying on it can look the same — and the idle policy needs
+    /// nothing else. See [`crate::idle`].
+    on_battery: bool,
     /// Whether the start screen's corner is on screen, and so whether this is
     /// worth keeping true at all.
     corner: bool,
@@ -181,6 +198,20 @@ impl Power {
     /// comparison.
     pub fn charge(&self) -> Option<Charge> {
         self.held().charge
+    }
+
+    /// Whether the machine is running on its battery, as last read.
+    pub fn on_battery(&self) -> bool {
+        self.held().on_battery
+    }
+
+    /// Read again now rather than at the next tick — the machine has just
+    /// woken up, and the battery it woke with is not the one it went to sleep
+    /// with.
+    pub fn look_again(&self) {
+        let mut state = self.held();
+        state.dirty = true;
+        self.shared.signal.notify_one();
     }
 
     /// Say whether the start screen's corner is on screen.
@@ -230,9 +261,11 @@ impl Worker {
                 state.dirty = false;
             }
             let charge = read_charge(&self.shared.root);
+            let on_battery = charge.is_some() && discharging(&self.shared.root);
             {
                 let mut state = self.shared.state.lock().unwrap_or_else(|e| e.into_inner());
                 state.charge = charge;
+                state.on_battery = on_battery;
             }
             self.wait();
         }
@@ -251,11 +284,12 @@ impl Worker {
         if state.done || state.dirty {
             return;
         }
-        if state.corner {
-            let _held = self.shared.signal.wait_timeout(state, REFRESH);
+        let every = if state.corner {
+            REFRESH
         } else {
-            let _held = self.shared.signal.wait(state);
-        }
+            IN_THE_BACKGROUND
+        };
+        let _held = self.shared.signal.wait_timeout(state, every);
     }
 }
 
@@ -332,6 +366,16 @@ fn read_charge(root: &Path) -> Option<Charge> {
         percent: percent as u8,
         charging,
     })
+}
+
+/// Whether any of this machine's own batteries says it is discharging, which is
+/// what running on the battery is. "Not charging" and "Full" are a battery on
+/// the mains that is not taking any more, and "Unknown" is what some firmware
+/// says there too; none of those is the machine living off its battery.
+fn discharging(root: &Path) -> bool {
+    batteries(root)
+        .iter()
+        .any(|battery| read(battery, "status").as_deref() == Some("Discharging"))
 }
 
 /// Every supply in that directory that is this machine's own battery.

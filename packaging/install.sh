@@ -17,7 +17,7 @@ target_dir="${CARGO_TARGET_DIR:-$PROJECT_ROOT/target}"
 usage() {
     cat <<'EOF'
 Usage: packaging/install.sh --destdir DIR [--prefix PREFIX] [--target-dir DIR]
-                            [--component compositor|desktop|retroarch|heroic|all]
+                            [--component compositor|desktop|retroarch|heroic|rpcs3|all]
 
 Stages one part of LineXinBar, or all of them. PREFIX defaults to /usr and
 --component to all.
@@ -37,6 +37,9 @@ Stages one part of LineXinBar, or all of them. PREFIX defaults to /usr and
               Epic Games integration, through Heroic Games Launcher's flatpak.
               Found on PATH the same way; without it the shell never
               mentions Epic Games.
+  rpcs3       lxb-rpcs3 and the mark it draws its rows with: the optional
+              PlayStation 3 integration, through RPCS3. Found on PATH the
+              same way; without it the shell never mentions a PlayStation 3.
   all         Every part, as one tree.
 EOF
 }
@@ -72,8 +75,8 @@ while (($#)); do
 done
 
 case "$component" in
-    compositor|desktop|retroarch|heroic|all) ;;
-    *) package_die "unknown component: $component (compositor, desktop, retroarch, heroic or all)" ;;
+    compositor|desktop|retroarch|heroic|rpcs3|all) ;;
+    *) package_die "unknown component: $component (compositor, desktop, retroarch, heroic, rpcs3 or all)" ;;
 esac
 
 [[ -n "$destdir" ]] || package_die "--destdir is required"
@@ -143,6 +146,17 @@ stage_desktop() {
     local drives_policy="$install_root/share/polkit-1/actions/org.linexinbar.drives.policy"
     install -Dm0644 "$PACKAGING_DIR/files/org.linexinbar.drives.policy.in" "$drives_policy"
     sed -i "s|@HELPER@|$prefix/bin/lxb-desktop|g" "$drives_policy"
+
+    # And the fourth and fifth, in one file: the privileged halves of
+    # Settings > Power. The machine's power settings file and the login
+    # manager's answer for the power button are root's, and a sleep somebody
+    # asked for is set past their own programs' locks as root — see
+    # crates/lxb-desktop/src/machine_power.rs, and the two flags the actions
+    # are bound to. Both are allowed without a password to whoever is at the
+    # machine, as sleeping and switching it off already are.
+    local power_policy="$install_root/share/polkit-1/actions/org.linexinbar.power.policy"
+    install -Dm0644 "$PACKAGING_DIR/files/org.linexinbar.power.policy.in" "$power_policy"
+    sed -i "s|@HELPER@|$prefix/bin/lxb-desktop|g" "$power_policy"
     install -Dm0644 "$PROJECT_ROOT/docs/updates.md" "$install_root/share/doc/lxb-desktop/updates.md"
 
     install -Dm0755 "$PACKAGING_DIR/files/lxb-session" "$install_root/bin/lxb-session"
@@ -236,6 +250,15 @@ stage_heroic() {
     install -Dm0644 "$mark" "$install_root/share/lxb/glyphs/epic.svg"
 }
 
+# And the PlayStation 3, through RPCS3, on the same terms. See
+# `crates/lxb-rpcs3` and `lxb-desktop`'s `src/ps3.rs`.
+stage_rpcs3() {
+    install_binary lxb-rpcs3
+    local mark="$PROJECT_ROOT/crates/lxb-rpcs3/glyphs/ps3.svg"
+    [[ -f "$mark" ]] || package_die "no mark to stage at $mark"
+    install -Dm0644 "$mark" "$install_root/share/lxb/glyphs/ps3.svg"
+}
+
 if [[ "$component" == compositor || "$component" == all ]]; then
     stage_compositor
 fi
@@ -247,4 +270,7 @@ if [[ "$component" == retroarch || "$component" == all ]]; then
 fi
 if [[ "$component" == heroic || "$component" == all ]]; then
     stage_heroic
+fi
+if [[ "$component" == rpcs3 || "$component" == all ]]; then
+    stage_rpcs3
 fi

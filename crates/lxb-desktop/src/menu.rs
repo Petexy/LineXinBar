@@ -224,6 +224,32 @@ pub enum Command {
     EpicRefresh,
     /// Open Heroic's own window, which the shell otherwise keeps off the bar.
     EpicOpenHeroic,
+    /// Ask whether to set PlayStation 3 games up: RPCS3 where there is none,
+    /// and the console's system software either way. [`Command::Ps3SetUp`] is
+    /// the yes.
+    Ps3OfferSetUp,
+    /// Set PlayStation 3 games up, the user having said yes.
+    Ps3SetUp,
+    /// Open RPCS3's own window, which the shell otherwise keeps off the bar.
+    Ps3Open,
+    /// Read the PS3 folder and the installed games again.
+    Ps3Rescan,
+    /// Start, or install, the PlayStation 3 game the menu was raised over.
+    Ps3Play,
+    /// Install the PlayStation 3 package pressed in Files, the user having
+    /// said yes.
+    Ps3InstallFile,
+    /// Ask whether to uninstall the PlayStation 3 game the menu was raised
+    /// over. [`Command::Ps3Remove`] is the yes.
+    Ps3OfferRemove,
+    /// Uninstall the PlayStation 3 game the panel asked about. Only ever
+    /// reached from the panel [`Command::Ps3OfferRemove`] raises.
+    Ps3Remove,
+    /// Ask whether to clear what RPCS3 keeps for the PlayStation 3 game the
+    /// menu was raised over. [`Command::Ps3ClearCache`] is the yes.
+    Ps3OfferClearCache,
+    /// Clear the cache the panel asked about.
+    Ps3ClearCache,
     /// Start the Epic game the menu was raised over.
     EpicPlay,
     /// Ask whether to install the Epic game the menu was raised over.

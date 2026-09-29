@@ -19,14 +19,18 @@
 //! which is the only part of this desktop that can draw one, and carries the
 //! answer back as URIs. See [`filechooser`], and [`pick`] for the road.
 //!
-//! Both of them trust what they are handed, and both of them are published on
-//! a bus every process of this user can reach, so neither may answer anybody
+//! And keeping the machine awake, for a program in a sandbox that asked the
+//! portal rather than the session — see [`inhibit`].
+//!
+//! All of them trust what they are handed, and both of them are published on
+//! a bus every process of this user can reach, so none may answer anybody
 //! but the front desk. See [`caller`] for what that check is worth.
 
 mod caller;
 mod cast;
 mod consent;
 mod filechooser;
+mod inhibit;
 mod pick;
 mod screencast;
 

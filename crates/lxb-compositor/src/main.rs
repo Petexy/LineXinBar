@@ -14,6 +14,7 @@ mod focus;
 mod handlers;
 mod handover;
 mod hdr;
+mod idle;
 mod input;
 mod outputs;
 mod overview;
@@ -254,6 +255,19 @@ fn main() -> anyhow::Result<()> {
 
     std::env::set_var("WAYLAND_DISPLAY", &state.lxb.socket_name);
     tracing::info!(socket = %state.lxb.socket_name, "wayland socket ready");
+    // Which kind of session this is, for the shell it is about to start. Only
+    // a session on the machine's own displays is the machine's: a nested one
+    // run for testing shares the real login manager, and a shell that put the
+    // machine to sleep or took its power button from there would be doing it
+    // to the developer's desktop. See the shell's `idle` module.
+    std::env::set_var(
+        "LXB_SESSION_BACKEND",
+        match &state.backend {
+            backend::Backend::Udev(_) => "drm",
+            backend::Backend::X11(_) => "x11",
+            backend::Backend::Winit(_) => "winit",
+        },
+    );
 
     // Before the loop takes over: a session that is asked to stop has to stop
     // tidily, or every application it put to sleep stays asleep. See
@@ -264,7 +278,15 @@ fn main() -> anyhow::Result<()> {
     let shell = cli.shell.then(|| state.lxb.config.general.shell.clone());
     state.start_xwayland(autostart, shell, background_handoff);
 
-    let result = event_loop.run(std::time::Duration::from_millis(16), &mut state, |state| {
+    // The pass below runs after every dispatch — every event, every render
+    // timer, every vblank — so a session with anything to do runs it as often
+    // as it needs to. The timeout is only how long a session with *nothing*
+    // happening goes between passes, and it used to be sixteen milliseconds: a
+    // machine left on a still screen woke sixty-odd times a second to find
+    // nothing had changed, which on a handheld is a processor that never gets
+    // to sleep. What the pass notices without an event — a fade finishing, the
+    // black being all the way down — is at most a tenth of a second late.
+    let result = event_loop.run(std::time::Duration::from_millis(100), &mut state, |state| {
         if !state.lxb.running {
             state.lxb.loop_signal.stop();
             return;
@@ -309,6 +331,10 @@ fn main() -> anyhow::Result<()> {
         // one just after the covering window was placed — was the pass that
         // never ran. See [`sleep`].
         state.refresh_application_sleep();
+        // And whether what is asking for the screen to stay on can still be
+        // seen, which moves with exactly what the pass above looked at. See
+        // [`idle`].
+        state.refresh_idle_inhibition();
         // Answers to "what colour is this?" that could not be finished inside
         // the request that asked, because the event that ends one destroys the
         // object carrying it. See [`colour_management::finish_information`].

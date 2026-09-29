@@ -364,6 +364,23 @@ registration naming ScreenCast alone, and every Save dialog in the session
 opened GTK's. `lxb-portal` now compares what it answers against what its own
 registration claims and says so in the log when they disagree.
 
+## Keeping the machine awake
+
+A program in a Flatpak cannot see `org.freedesktop.ScreenSaver` or
+`org.freedesktop.PowerManagement.Inhibit`, which is where every other program
+asks this session to keep the screen lit or the machine awake. It asks the
+portal's Inhibit instead — SDL does, from inside a sandbox, so every game
+Heroic's Flatpak starts and RPCS3 from Flathub go this way — and before this
+backend answered it, the question went to whichever other desktop's backend the
+machine had, which hands it to a session manager this session has not got.
+
+`org.freedesktop.impl.portal.Inhibit` here carries it the last step: *idle*
+becomes the shell's screen inhibition and *suspend* its sleep inhibition, held
+until the front desk closes the request. *Logout* and *user switch* are not
+this session's to hold, and watching the session end (`CreateMonitor`) is not
+offered. Only the front desk may ask or let go, as with the other two. See
+[Settings > Power](settings.md#power) for what each inhibition holds.
+
 ## Showing a file
 
 The other direction, and the one the desktop had backwards. A browser finishing

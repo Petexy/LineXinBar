@@ -1,0 +1,12 @@
+<!--
+  The letter G, for the one keyboard legend the website needs and the shell
+  does not: a browser never sees the Super key on its own, so the guide is on G
+  here. Drawn as key-p.svg and key-escape.svg are, a stroke on the 24-unit grid.
+
+  lxb:shape
+-->
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24">
+  <path fill="none" stroke="#fff" stroke-width="1.7"
+        stroke-linecap="round" stroke-linejoin="round"
+        d="M16.2 7.1a5.2 7.4 0 1 0 0.6 8.9V12.6h-3.5"/>
+</svg>

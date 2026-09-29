@@ -1,0 +1,149 @@
+<!DOCTYPE html>
+
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8"/>
+<meta content="width=device-width, initial-scale=1, viewport-fit=cover" name="viewport"/>
+<title>LineXinBar 的操控：手柄、键盘、鼠标和触控</title>
+<meta content="用手柄、键盘、鼠标或触摸屏操控 LineXinBar：永远能退出的指南按键、为您的手柄绘制的按键提示、屏幕键盘，以及所有快捷键。" name="description"/>
+<!-- search and sharing: written by tools/translate.py build -->
+<link rel="canonical" href="https://petexy.github.io/LineXinBar/zh-cn/controls.html">
+<link rel="alternate" hreflang="x-default" href="https://petexy.github.io/LineXinBar/controls.html">
+<link rel="alternate" hreflang="en" href="https://petexy.github.io/LineXinBar/controls.html">
+<link rel="alternate" hreflang="de" href="https://petexy.github.io/LineXinBar/de/controls.html">
+<link rel="alternate" hreflang="en-GB" href="https://petexy.github.io/LineXinBar/controls.html">
+<link rel="alternate" hreflang="en-US" href="https://petexy.github.io/LineXinBar/en-us/controls.html">
+<link rel="alternate" hreflang="es" href="https://petexy.github.io/LineXinBar/es/controls.html">
+<link rel="alternate" hreflang="fr" href="https://petexy.github.io/LineXinBar/fr/controls.html">
+<link rel="alternate" hreflang="pl" href="https://petexy.github.io/LineXinBar/pl/controls.html">
+<link rel="alternate" hreflang="pt-BR" href="https://petexy.github.io/LineXinBar/pt-br/controls.html">
+<link rel="alternate" hreflang="ru" href="https://petexy.github.io/LineXinBar/ru/controls.html">
+<link rel="alternate" hreflang="hi" href="https://petexy.github.io/LineXinBar/hi/controls.html">
+<link rel="alternate" hreflang="zh-CN" href="https://petexy.github.io/LineXinBar/zh-cn/controls.html">
+<meta property="og:type" content="website">
+<meta property="og:site_name" content="LineXinBar">
+<meta property="og:title" content="LineXinBar 的操控：手柄、键盘、鼠标和触控">
+<meta property="og:description" content="用手柄、键盘、鼠标或触摸屏操控 LineXinBar：永远能退出的指南按键、为您的手柄绘制的按键提示、屏幕键盘，以及所有快捷键。">
+<meta property="og:url" content="https://petexy.github.io/LineXinBar/zh-cn/controls.html">
+<meta property="og:locale" content="zh_CN">
+<meta property="og:image" content="https://petexy.github.io/LineXinBar/assets/img/desktop.png">
+<meta property="og:image:width" content="1600">
+<meta property="og:image:height" content="900">
+<meta name="twitter:card" content="summary_large_image">
+<script type="application/ld+json">{"@context":"https://schema.org","@type":"WebPage","@id":"https://petexy.github.io/LineXinBar/zh-cn/controls.html","url":"https://petexy.github.io/LineXinBar/zh-cn/controls.html","name":"LineXinBar 的操控：手柄、键盘、鼠标和触控","description":"用手柄、键盘、鼠标或触摸屏操控 LineXinBar：永远能退出的指南按键、为您的手柄绘制的按键提示、屏幕键盘，以及所有快捷键。","inLanguage":"zh-CN","isPartOf":{"@id":"https://petexy.github.io/LineXinBar/#website"},"about":{"@id":"https://petexy.github.io/LineXinBar/#software"},"breadcrumb":{"@type":"BreadcrumbList","itemListElement":[{"@type":"ListItem","position":1,"name":"主屏幕","item":"https://petexy.github.io/LineXinBar/zh-cn/"},{"@type":"ListItem","position":2,"name":"操控","item":"https://petexy.github.io/LineXinBar/zh-cn/controls.html"}]}}</script>
+<!-- /search and sharing -->
+<meta content="#060314" name="theme-color"/>
+<link href="../assets/glyphs/sm/logo.webp" rel="icon" type="image/webp"/>
+<link as="font" crossorigin="" href="../assets/fonts/Roboto-Regular-latin.woff2" rel="preload" type="font/woff2"/>
+<link href="../assets/css/lxb.css" rel="stylesheet"/>
+</head>
+<body data-page="controls" data-screen="page">
+<a class="skip" href="#content">跳到正文</a>
+<canvas aria-hidden="true" id="wallpaper"></canvas>
+<header class="page-head">
+<a class="trail" data-back="" href="index.html#controls">
+<span class="trail-tile"><img alt="" class="glyph" src="../assets/glyphs/lg/setting-input.webp"/></span>
+<span class="trail-text"><span class="trail-back">‹ 主屏幕</span><span class="trail-name">操控</span></span>
+</a>
+</header>
+<main class="column-page" id="content">
+<h1 class="visually-hidden">LineXinBar 的操控：手柄、键盘、鼠标和触控</h1>
+<nav aria-label="本页内容" class="rows-nav">
+<ol class="rows">
+<li><a class="row" data-lxb-row="" href="#pads"><span class="row-icon"><img alt="" class="glyph" src="../assets/glyphs/lg/pad-stick.webp"/></span><span class="row-text"><span class="row-title">手柄</span><span class="row-comment">插上一个，就能操控一切</span></span></a></li>
+<li><a class="row" data-lxb-row="" href="#guide-button"><span class="row-icon"><img alt="" class="glyph" src="../assets/glyphs/lg/pad-guide.webp"/></span><span class="row-text"><span class="row-title">指南按键</span><span class="row-comment">无论运行着什么，总能靠它退出</span></span></a></li>
+<li><a class="row" data-lxb-row="" href="#hints"><span class="row-icon"><img alt="" class="glyph" src="../assets/glyphs/lg/pad-north.webp"/></span><span class="row-text"><span class="row-title">按键提示</span><span class="row-comment">按您手中的操控设备绘制</span></span></a></li>
+<li><a class="row" data-lxb-row="" href="#keyboard"><span class="row-icon"><img alt="" class="glyph" src="../assets/glyphs/lg/setting-keyboard.webp"/></span><span class="row-text"><span class="row-title">键盘</span><span class="row-comment">方向键、Enter 和 Super 键</span></span></a></li>
+<li><a class="row" data-lxb-row="" href="#osk"><span class="row-icon"><img alt="" class="glyph" src="../assets/glyphs/lg/setting-typed.webp"/></span><span class="row-text"><span class="row-title">屏幕键盘</span><span class="row-comment">不离开沙发就能输入任何内容</span></span></a></li>
+<li><a class="row" data-lxb-row="" href="#pointer"><span class="row-icon"><img alt="" class="glyph" src="../assets/glyphs/lg/setting-mouse.webp"/></span><span class="row-text"><span class="row-title">鼠标和触控</span><span class="row-comment">单击、轻触和滚轮</span></span></a></li>
+<li><a class="row" data-lxb-row="" href="#bindings"><span class="row-icon"><img alt="" class="glyph" src="../assets/glyphs/lg/setting-keys.webp"/></span><span class="row-text"><span class="row-title">快捷键</span><span class="row-comment">所有快捷键及修改方法</span></span></a></li>
+</ol>
+</nav>
+<div class="panes">
+<section aria-labelledby="pads-t" class="pane glass" id="pads">
+<h2 id="pads-t"><img alt="" class="glyph" src="../assets/glyphs/lg/pad-stick.webp"/>手柄</h2>
+<p class="lede">插上一个手柄 — Xbox、PlayStation、Nintendo、8BitDo、Steam 手柄 — 整个桌面就能在沙发上任您操控。无需事先设置。</p>
+<div class="table-wrap"><table>
+<thead><tr><th>操作</th><th>手柄</th><th>键盘</th></tr></thead>
+<tbody>
+<tr><td>浏览</td><td>方向键或左摇杆</td><td>方向键</td></tr>
+<tr><td>选择</td><td>下方按键</td><td><kbd>Enter</kbd></td></tr>
+<tr><td>返回</td><td>右侧按键</td><td><kbd>Esc</kbd></td></tr>
+<tr><td>某一行的选项</td><td>上方按键</td><td><kbd>F10</kbd> 或鼠标右键</td></tr>
+<tr><td>好友</td><td>左侧按键</td><td><kbd>Shift</kbd></td></tr>
+<tr><td>指南</td><td>指南按键</td><td><kbd>Super</kbd></td></tr>
+<tr><td>下一台显示器</td><td>肩键</td><td><kbd>Tab</kbd> / <kbd>Shift</kbd>+<kbd>Tab</kbd></td></tr>
+<tr><td>截图</td><td>指南键 + 右肩键</td><td><kbd>Print Screen</kbd></td></tr>
+</tbody>
+</table></div>
+<p>按键按位置命名，而不是按字母，因此在任何布局上都是下方按键负责选择 — 即使是 A 键在另一侧的 Nintendo 手柄。手柄进入休眠后又回来，或者中途才插上，都能直接使用。</p>
+<p>掌机是一等目标：Shell 的设计目标是在 Steam Deck 级别的机器上流畅运行，同时控制功耗，并在不够用时提供<a href="settings.html#low-end">低配硬件模式</a>。</p>
+</section>
+<section aria-labelledby="guide-button-t" class="pane glass" id="guide-button">
+<h2 id="guide-button-t"><img alt="" class="glyph" src="../assets/glyphs/lg/pad-guide.webp"/>指南按键</h2>
+<p class="lede">指南按键属于 Shell，任何应用程序都无法占用 — 无论什么东西卡住了其他一切，它都是退路。</p>
+<p>游戏通常直接读取手柄，所以手柄不能像键盘那样被拦下。LineXinBar 接管每个手柄，再给系统的其余部分一个完全相同、只少了一个按键的手柄：同样的名称、同样的按键、同样的震动，只是没有指南键。游戏看到的是它期望的手柄，而指南每次都能打开。</p>
+<p>而在指南中的按键操作不会同时传给游戏：返回时您的拇指仍按着的按键会先被松开，所以用 <kbd>A</kbd> 关闭指南时，不会同时触发游戏中的 <kbd>A</kbd>。</p>
+</section>
+<section aria-labelledby="hints-t" class="pane glass" id="hints">
+<h2 id="hints-t"><img alt="" class="glyph" src="../assets/glyphs/lg/pad-north.webp"/>按键提示</h2>
+<p class="lede">时钟对面的角落会说明在您面前的屏幕上各按键的作用 — <em>选择</em>、<em>选项</em>、<em>指南</em>。</p>
+<p>每个提示都是<strong>画出来的</strong>，而不是写着字母：一张按键组的图，相关的那个按键被填充，这在任何品牌的手柄上都成立。而且它会按照<strong>您手中的操控设备</strong>来命名 — 拿起键盘，它就显示 <kbd>Enter</kbd>；再碰一下手柄，它又回到手柄。<em>选项</em>只在按下确实能打开东西的地方出现。熟悉之后，<em>设置 › 系统 › 按键提示</em>可以一次性在所有地方关闭它们。</p>
+<p>这个网站也是这样：在手柄和键盘之间切换时，看看右下角。</p>
+</section>
+<section aria-labelledby="keyboard-t" class="pane glass" id="keyboard">
+<h2 id="keyboard-t"><img alt="" class="glyph" src="../assets/glyphs/lg/setting-keyboard.webp"/>键盘</h2>
+<p class="lede">方向键用于浏览，<kbd>Enter</kbd> 用于选择，<kbd>Esc</kbd> 用于返回，单独按 <kbd>Super</kbd> 会打开指南。</p>
+<p>在主屏幕上，输入任何字母都会开始<a href="media.html#search">搜索整个主栏</a>。<kbd>Super</kbd> 只有在被单独按下并松开时才会被识别，所以所有 <kbd>Super</kbd> 组合键仍然有效；<kbd>Alt</kbd>+<kbd>Tab</kbd> 会像其他桌面一样浏览指南中的窗口卡片。键盘布局在设置中选择，列表包含系统知道的全部布局。</p>
+</section>
+<section aria-labelledby="osk-t" class="pane glass" id="osk">
+<h2 id="osk-t"><img alt="" class="glyph" src="../assets/glyphs/lg/setting-typed.webp"/>屏幕键盘</h2>
+<p class="lede">主机没有键盘，所以 Shell 自己就是键盘。当应用程序把光标放进文本框时，它会自动出现，也可以随时手动调出。</p>
+<div class="table-wrap"><table>
+<thead><tr><th>操控</th><th>作用</th></tr></thead>
+<tbody>
+<tr><td>方向键或摇杆</td><td>在按键之间移动</td></tr>
+<tr><td><kbd>A</kbd></td><td>按下光标所在的按键</td></tr>
+<tr><td><kbd>B</kbd></td><td>收起键盘</td></tr>
+<tr><td>Select + 左侧按键</td><td>在任何地方显示或隐藏</td></tr>
+<tr><td>实体键盘上的任意按键</td><td>收起屏幕键盘，并输入该字符</td></tr>
+</tbody>
+</table></div>
+<p>它会跟随您的键盘布局，只要某个输入框可能需要它，角落里的小标签就会提示可以使用。</p>
+</section>
+<section aria-labelledby="pointer-t" class="pane glass" id="pointer">
+<h2 id="pointer-t"><img alt="" class="glyph" src="../assets/glyphs/lg/setting-mouse.webp"/>鼠标和触控</h2>
+<p class="lede">单击的效果与移动到那里再按 <kbd>A</kbd> 完全相同。其余的都遵循一条规则。</p>
+<p><strong>固定不动</strong>的东西 — 指南、菜单、面板上的按钮、屏幕键盘 — 会在指针下方高亮，并响应第一次单击。<strong>选中时会移动</strong>的东西 — 主栏上的行 — 需要单击一次来选中，再单击一次来执行，因为如果悬停就会选中，行会滑走，光标就会自己在主栏上游走。滚轮用于滚动，在触摸屏上轻触就是单击。</p>
+<p>本站的主屏幕也遵循同样的规则：单击某一行会点亮它并把它滑到主栏中间，再单击点亮的行即可打开。固定不动的指南及其菜单会响应第一次单击。</p>
+</section>
+<section aria-labelledby="bindings-t" class="pane glass" id="bindings">
+<h2 id="bindings-t"><img alt="" class="glyph" src="../assets/glyphs/lg/setting-keys.webp"/>快捷键</h2>
+<p class="lede">默认设置，除指南外都可以在配置文件的 <code>[keybindings]</code> 表中修改。</p>
+<div class="table-wrap"><table>
+<thead><tr><th>快捷键</th><th>操作</th></tr></thead>
+<tbody>
+<tr><td>单独按 <kbd>Super</kbd>、<kbd>Super</kbd>+<kbd>Home</kbd>、鼠标侧键</td><td>显示指南</td></tr>
+<tr><td><kbd>Super</kbd>+<kbd>Q</kbd></td><td>关闭当前窗口</td></tr>
+<tr><td><kbd>Super</kbd>+<kbd>K</kbd></td><td>显示屏幕键盘</td></tr>
+<tr><td><kbd>Print</kbd>, <kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>3</kbd></td><td>拍下这块显示器</td></tr>
+<tr><td><kbd>Super</kbd>+<kbd>Tab</kbd></td><td>在这块显示器的窗口间循环</td></tr>
+<tr><td><kbd>Alt</kbd>+<kbd>Tab</kbd></td><td>浏览指南中的窗口卡片</td></tr>
+<tr><td><kbd>Super</kbd>+<kbd>←</kbd> / <kbd>→</kbd></td><td>切换到上一台或下一台显示器</td></tr>
+<tr><td><kbd>Super</kbd>+<kbd>Shift</kbd>+<kbd>→</kbd></td><td>把窗口移到下一台显示器</td></tr>
+<tr><td><kbd>Ctrl</kbd>+<kbd>Alt</kbd>+<kbd>Backspace</kbd></td><td>退出会话</td></tr>
+</tbody>
+</table></div>
+<div class="more"><a class="control lit" data-select="全部操控" href="https://github.com/Petexy/LineXinBar/blob/master/docs/controls.md" rel="noopener" target="_blank">全部操控（完整版）</a></div>
+</section>
+</div>
+</main>
+<footer class="site-foot">
+<p>下一页：<a href="desktop.html">桌面 ›</a> · 上一页：<a href="settings.html">‹ 设置</a> · <a href="index.html#controls">主屏幕</a> · LineXinBar 是以 <a href="https://github.com/Petexy/LineXinBar/blob/master/LICENSE">GPL-3.0</a> 发布的自由软件。</p>
+</footer>
+<script defer="" src="../assets/js/wallpaper.js"></script>
+<script defer="" src="../assets/js/i18n.js"></script>
+<script defer="" src="../assets/js/shell.js"></script>
+<script defer="" src="../assets/js/page.js"></script>
+</body>
+</html>

@@ -127,6 +127,19 @@ struct SurfaceData {
     /// display's own claims about what it can show.
     hdr: crate::hdr::Pipeline,
     hdr_display: crate::hdr::Display,
+    /// Whether this connector has been switched off because the shell asked
+    /// for the display to be — see [`crate::blackout::Blackouts::is_off`]. Set
+    /// once the black is all the way down, cleared the moment it is asked back,
+    /// and what the next frame queued turns the connector back on from.
+    switched_off: bool,
+    /// How many frames in a row have come out with nothing new in them — see
+    /// [`idle_poll`] — and the timer of a render put off because of it, which a
+    /// real request for a frame cancels rather than waits behind.
+    empty_run: u32,
+    idle_timer: Option<RegistrationToken>,
+    /// When this display was last rendered, which is what a frame asked for
+    /// out of an idle wait is paced against.
+    last_render: Option<std::time::Instant>,
 }
 
 /// One DRM device (one GPU).
@@ -364,6 +377,16 @@ pub fn init(
                         }
                         for (crtc, surface) in device.surfaces.iter_mut() {
                             surface.render_state = RenderState::Idle;
+                            // An idle look scheduled before the pause is
+                            // forgotten; the frame scheduled below replaces it.
+                            if let Some(token) = surface.idle_timer.take() {
+                                state.lxb.loop_handle.remove(token);
+                            }
+                            // Taking the device back is a modeset that lights
+                            // every connector the way the driver starts it, so
+                            // one the shell wants dark is switched off again by
+                            // the first frame below rather than left lit.
+                            surface.switched_off = false;
                             crtcs.push((*node, *crtc));
                         }
                     }
@@ -1018,6 +1041,10 @@ fn connector_connected(
             modes: connector.modes().to_vec(),
             hdr,
             hdr_display,
+            switched_off: false,
+            empty_run: 0,
+            idle_timer: None,
+            last_render: None,
         },
     );
 
@@ -1319,7 +1346,34 @@ pub fn set_output_mode(state: &mut LxbState, output: &Output, want: ModeRequest)
 // rendering
 // ---------------------------------------------------------------------------
 
+/// After how long with nothing new on a display it is looked at less often,
+/// and how often it is looked at then.
+///
+/// A display is ordinarily looked at every retrace whether or not anything on
+/// it changed, because the compositor's own animations — a fade, a flight, a
+/// sheet coming down — move with the clock and announce nothing. That is a
+/// wake-up sixty to two hundred and forty times a second for a screen nobody
+/// is touching, which on a handheld is a processor that never gets to sleep.
+/// So once half a second of frames has come out empty, the next look is a
+/// tenth of a second away instead: nothing that starts moving without a
+/// request for a frame is missed for longer than that, and everything that
+/// asks — a client committing, input, a request from the shell — cancels the
+/// wait and is drawn at once. See [`idle_poll`].
+const IDLE_AFTER: Duration = Duration::from_millis(500);
+const IDLE_POLL: Duration = Duration::from_millis(100);
+
+/// How long to wait before looking at a display again after `empty_run` empty
+/// frames at `refresh`.
+fn idle_poll(empty_run: u32, refresh: Duration) -> Duration {
+    if refresh.saturating_mul(empty_run) < IDLE_AFTER {
+        refresh
+    } else {
+        IDLE_POLL.max(refresh)
+    }
+}
+
 fn schedule_render(state: &mut LxbState, node: DrmNode, crtc: crtc::Handle, delay: Duration) {
+    let mut delay = delay;
     {
         let super::Backend::Udev(udev) = &mut state.backend else {
             return;
@@ -1333,6 +1387,27 @@ fn schedule_render(state: &mut LxbState, node: DrmNode, crtc: crtc::Handle, dela
         };
 
         match surface.render_state {
+            // Put off because nothing was changing: a real request cancels the
+            // wait, but is still paced a retrace after the last render, which
+            // is what keeps a client that asks for a frame and draws nothing
+            // from being answered as fast as the processor can go.
+            RenderState::Scheduled if surface.idle_timer.is_some() => {
+                if let Some(token) = surface.idle_timer.take() {
+                    state.lxb.loop_handle.remove(token);
+                }
+                let refresh = surface
+                    .output
+                    .current_mode()
+                    .map(|m| Duration::from_secs_f64(1000.0 / m.refresh as f64))
+                    .unwrap_or(Duration::from_millis(16));
+                let paced = surface
+                    .last_render
+                    .map(|last| {
+                        (last + refresh).saturating_duration_since(std::time::Instant::now())
+                    })
+                    .unwrap_or_default();
+                delay = delay.max(paced);
+            }
             // Already going to draw; nothing to do but remember it is dirty.
             RenderState::Scheduled => return,
             RenderState::WaitingForVblank { .. } => {
@@ -1361,6 +1436,45 @@ fn schedule_render(state: &mut LxbState, node: DrmNode, crtc: crtc::Handle, dela
     }
 }
 
+/// Look at a display again after `delay` because nothing on it was changing,
+/// in a way the next real request for a frame can cut short. See [`idle_poll`].
+fn schedule_idle_render(state: &mut LxbState, node: DrmNode, crtc: crtc::Handle, delay: Duration) {
+    let token =
+        state
+            .lxb
+            .loop_handle
+            .insert_source(Timer::from_duration(delay), move |_, _, state| {
+                if let super::Backend::Udev(udev) = &mut state.backend {
+                    if let Some(surface) = udev
+                        .devices
+                        .get_mut(&node)
+                        .and_then(|d| d.surfaces.get_mut(&crtc))
+                    {
+                        surface.idle_timer = None;
+                    }
+                }
+                render_surface(state, node, crtc);
+                TimeoutAction::Drop
+            });
+    let super::Backend::Udev(udev) = &mut state.backend else {
+        return;
+    };
+    let Some(surface) = udev
+        .devices
+        .get_mut(&node)
+        .and_then(|d| d.surfaces.get_mut(&crtc))
+    else {
+        return;
+    };
+    match token {
+        Ok(token) => {
+            surface.render_state = RenderState::Scheduled;
+            surface.idle_timer = Some(token);
+        }
+        Err(err) => tracing::warn!(?err, "failed to schedule an idle look"),
+    }
+}
+
 fn render_surface(state: &mut LxbState, node: DrmNode, crtc: crtc::Handle) {
     // Before the borrows below, because committing HDR needs the whole state:
     // the settings are the session's and the properties are the device's. Here
@@ -1382,9 +1496,42 @@ fn render_surface(state: &mut LxbState, node: DrmNode, crtc: crtc::Handle) {
     };
 
     surface.render_state = RenderState::Idle;
+    surface.last_render = Some(std::time::Instant::now());
 
     let output = surface.output.clone();
     let primary_gpu = udev.primary_gpu;
+
+    // A display the shell has switched off, now that its black is all the way
+    // down: the connector goes off, and nothing is drawn or queued for it until
+    // it is asked back. Nothing is scheduled from here either, so a dark display
+    // costs no frames at all — the request that brings it back queues the
+    // redraw that lights it, and smithay turns the connector back on with the
+    // first frame queued after a clear. See [`crate::idle`].
+    if state
+        .lxb
+        .blackouts
+        .is_off(&output, std::time::Instant::now())
+    {
+        if !surface.switched_off {
+            let cleared = surface
+                .drm_output
+                .with_compositor(|compositor| compositor.clear());
+            match cleared {
+                Ok(()) => tracing::info!(display = %output.name(), "switched the display off"),
+                Err(err) => tracing::warn!(
+                    ?err,
+                    display = %output.name(),
+                    "could not switch the display off; it stays black instead"
+                ),
+            }
+            surface.switched_off = true;
+        }
+        return;
+    }
+    if surface.switched_off {
+        surface.switched_off = false;
+        tracing::info!(display = %output.name(), "switching the display back on");
+    }
 
     udev.cursor.status = state.lxb.cursor_now();
     let draw_cursor = state.lxb.config.general.draw_cursor;
@@ -1494,20 +1641,32 @@ fn render_surface(state: &mut LxbState, node: DrmNode, crtc: crtc::Handle) {
                     Ok(()) => {
                         surface.render_state = RenderState::WaitingForVblank { dirty: false };
                         surface.queued_at = Some(std::time::Instant::now());
-                        true
+                        surface.empty_run = 0;
+                        (true, 0)
                     }
                     // Nothing actually changed on screen.
-                    Err(FrameError::EmptyFrame) => false,
+                    Err(FrameError::EmptyFrame) => {
+                        surface.empty_run = surface.empty_run.saturating_add(1);
+                        (false, surface.empty_run)
+                    }
                     Err(err) => {
                         tracing::warn!(?err, output = output.name(), "failed to queue frame");
-                        false
+                        (false, 0)
                     }
                 }
             };
+            let (queued, empty_run) = queued;
 
-            // Not submitted, so no vblank is coming: poll again next retrace.
+            // Not submitted, so no vblank is coming: look again next retrace —
+            // or, once nothing has changed for a while, a good deal later. See
+            // [`idle_poll`].
             if !queued {
-                schedule_render(state, node, crtc, refresh);
+                let wait = idle_poll(empty_run, refresh);
+                if wait > refresh {
+                    schedule_idle_render(state, node, crtc, wait);
+                } else {
+                    schedule_render(state, node, crtc, refresh);
+                }
             } else {
                 watch_for_a_lost_flip(state, node, crtc);
             }
@@ -1874,6 +2033,24 @@ pub fn queue_redraw_all(state: &mut LxbState) {
 #[cfg(test)]
 mod tests {
     use super::primary_after_adding;
+    use super::{idle_poll, IDLE_AFTER, IDLE_POLL};
+    use std::time::Duration;
+
+    /// A display is looked at every retrace until half a second of frames has
+    /// come out empty, and a tenth of a second apart after that — never less
+    /// often than its own refresh.
+    #[test]
+    fn an_unchanging_display_is_looked_at_less_often() {
+        let refresh = Duration::from_micros(16_667);
+        assert_eq!(idle_poll(0, refresh), refresh);
+        assert_eq!(idle_poll(29, refresh), refresh);
+        let settled = (IDLE_AFTER.as_micros() / refresh.as_micros()) as u32 + 1;
+        assert_eq!(idle_poll(settled, refresh), IDLE_POLL);
+        // A display slower than the idle poll is never looked at less often
+        // than it refreshes.
+        let slow = Duration::from_millis(200);
+        assert_eq!(idle_poll(10, slow), slow);
+    }
 
     /// A card answers to one name, whichever route arrived at it.
     ///

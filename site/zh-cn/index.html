@@ -1,0 +1,223 @@
+<!DOCTYPE html>
+
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8"/>
+<meta content="width=device-width, initial-scale=1, viewport-fit=cover" name="viewport"/>
+<script>
+  // The first time a visit reaches the start screen, it opens in the
+  // visitor's language: the one they chose on this site before, or else the
+  // first their browser asks for that the site speaks. Only here and only
+  // then, so a page linked to in one language stays in it, and a choice made
+  // from the menu is never overruled.
+  (function () {
+    if (document.documentElement.lang !== "en-GB") return;
+    // A search engine's or a language model's crawler reads the page it
+    // asked for: every language has its own address, named in the head.
+    if (/bot|crawl|spider|slurp|preview/i.test(navigator.userAgent)) return;
+    try {
+      // A page opened off the disk arrives with what the page before it kept
+      // in its address, and is no first arrival either.
+      var came = sessionStorage.getItem("lxb-arrived") || /[?&]lxb=/.test(location.search);
+      sessionStorage.setItem("lxb-arrived", "1");
+      if (came) return;
+      var dirs = { "de": "de", "en-US": "en-us", "es": "es", "fr": "fr", "pl": "pl", "pt-BR": "pt-br", "ru": "ru", "hi": "hi", "zh-CN": "zh-cn" };
+      var want = JSON.parse(localStorage.getItem("lxb-language") || "null");
+      var asked = want ? [] : navigator.languages || [navigator.language || ""];
+      for (var i = 0; i < asked.length && !want; i++) {
+        var tag = String(asked[i]).toLowerCase(), first = tag.split("-")[0];
+        if (tag === "en-us") want = "en-US";
+        else if (first === "en") want = "en-GB";
+        else if (first === "pt") want = "pt-BR";
+        else if (first === "zh") want = /hant|tw|hk|mo/.test(tag) ? null : "zh-CN";
+        else if (dirs[first]) want = first;
+      }
+      if (want && dirs[want]) location.replace(dirs[want] + "/index.html" + location.hash);
+    } catch (e) { /* storage refused: stay in English */ }
+  })();
+</script>
+<title>LineXinBar — XMB 风格的 Linux 游戏主机式桌面</title>
+<meta content="LineXinBar 是一款游戏主机风格的 Linux 桌面，带有仿照 XrossMediaBar 的 XMB 启动器，为您的游戏、应用和媒体而生：一个轻量的 Wayland 合成器，用手柄、键盘或鼠标都能操作。" name="description"/>
+<!-- search and sharing: written by tools/translate.py build -->
+<link rel="canonical" href="https://petexy.github.io/LineXinBar/zh-cn/">
+<link rel="alternate" hreflang="x-default" href="https://petexy.github.io/LineXinBar/">
+<link rel="alternate" hreflang="en" href="https://petexy.github.io/LineXinBar/">
+<link rel="alternate" hreflang="de" href="https://petexy.github.io/LineXinBar/de/">
+<link rel="alternate" hreflang="en-GB" href="https://petexy.github.io/LineXinBar/">
+<link rel="alternate" hreflang="en-US" href="https://petexy.github.io/LineXinBar/en-us/">
+<link rel="alternate" hreflang="es" href="https://petexy.github.io/LineXinBar/es/">
+<link rel="alternate" hreflang="fr" href="https://petexy.github.io/LineXinBar/fr/">
+<link rel="alternate" hreflang="pl" href="https://petexy.github.io/LineXinBar/pl/">
+<link rel="alternate" hreflang="pt-BR" href="https://petexy.github.io/LineXinBar/pt-br/">
+<link rel="alternate" hreflang="ru" href="https://petexy.github.io/LineXinBar/ru/">
+<link rel="alternate" hreflang="hi" href="https://petexy.github.io/LineXinBar/hi/">
+<link rel="alternate" hreflang="zh-CN" href="https://petexy.github.io/LineXinBar/zh-cn/">
+<meta property="og:type" content="website">
+<meta property="og:site_name" content="LineXinBar">
+<meta property="og:title" content="LineXinBar — XMB 风格的 Linux 游戏主机式桌面">
+<meta property="og:description" content="LineXinBar 是一款游戏主机风格的 Linux 桌面，带有仿照 XrossMediaBar 的 XMB 启动器，为您的游戏、应用和媒体而生：一个轻量的 Wayland 合成器，用手柄、键盘或鼠标都能操作。">
+<meta property="og:url" content="https://petexy.github.io/LineXinBar/zh-cn/">
+<meta property="og:locale" content="zh_CN">
+<meta property="og:image" content="https://petexy.github.io/LineXinBar/assets/img/desktop.png">
+<meta property="og:image:width" content="1600">
+<meta property="og:image:height" content="900">
+<meta name="twitter:card" content="summary_large_image">
+<script type="application/ld+json">{"@context":"https://schema.org","@graph":[{"@type":"WebSite","@id":"https://petexy.github.io/LineXinBar/#website","url":"https://petexy.github.io/LineXinBar/zh-cn/","name":"LineXinBar","description":"LineXinBar 是一款游戏主机风格的 Linux 桌面，带有仿照 XrossMediaBar 的 XMB 启动器，为您的游戏、应用和媒体而生：一个轻量的 Wayland 合成器，用手柄、键盘或鼠标都能操作。","inLanguage":"zh-CN"},{"@type":"SoftwareApplication","@id":"https://petexy.github.io/LineXinBar/#software","name":"LineXinBar","alternateName":["LXB","LineXinBar XMB"],"description":"LineXinBar 是一款游戏主机风格的 Linux 桌面，带有仿照 XrossMediaBar 的 XMB 启动器，为您的游戏、应用和媒体而生：一个轻量的 Wayland 合成器，用手柄、键盘或鼠标都能操作。","url":"https://petexy.github.io/LineXinBar/zh-cn/","applicationCategory":"DesktopEnhancementApplication","applicationSubCategory":"Desktop environment","operatingSystem":"Linux","softwareVersion":"0.9.3","license":"https://www.gnu.org/licenses/gpl-3.0.html","isAccessibleForFree":true,"offers":{"@type":"Offer","price":"0","priceCurrency":"USD"},"downloadUrl":"https://github.com/Petexy/LineXinBar/releases","installUrl":"https://petexy.github.io/LineXinBar/zh-cn/install.html","screenshot":{"@type":"ImageObject","url":"https://petexy.github.io/LineXinBar/assets/img/desktop.png","width":1600,"height":900},"inLanguage":["de","en-GB","en-US","es","fr","pl","pt-BR","ru","hi","zh-CN"],"keywords":"LineXinBar, XMB, XrossMediaBar, cross-media bar, console-style desktop, Linux desktop, Wayland compositor, gamepad, controller, couch gaming, HTPC, Steam, Epic Games, RetroArch, RPCS3, PlayStation 3","author":{"@type":"Person","name":"Petexy","url":"https://github.com/Petexy"},"sameAs":["https://github.com/Petexy/LineXinBar"]}]}</script>
+<!-- /search and sharing -->
+<meta content="#060314" name="theme-color"/>
+<link href="../assets/glyphs/sm/logo.webp" rel="icon" type="image/webp"/>
+<link as="font" crossorigin="" href="../assets/fonts/Roboto-Regular-latin.woff2" rel="preload" type="font/woff2"/>
+<link as="font" crossorigin="" href="../assets/fonts/Roboto-Bold-latin.woff2" rel="preload" type="font/woff2"/>
+<link href="../assets/css/lxb.css" rel="stylesheet"/>
+</head>
+<body class="bar-page" data-page="start" data-screen="bar">
+<canvas aria-hidden="true" id="wallpaper"></canvas>
+<main class="bar" id="content">
+<h1 class="visually-hidden">LineXinBar — 为您的游戏、应用和媒体打造的 XMB 风格 Linux 游戏主机式桌面</h1>
+<p class="visually-hidden">用方向键、手柄、鼠标滚轮或滑动在主栏上移动，用 Enter、手柄下方的按键或单击打开点亮的项目。</p>
+<nav aria-label="LineXinBar">
+<ul class="bar-categories">
+<li data-glyph="logo" data-id="overview">
+<span class="cat-name">LineXinBar</span>
+<ul class="cat-rows">
+<li><a data-glyph="logo" href="overview.html#what"><span class="row-name">游戏主机风格的桌面</span><span class="row-note">为您的游戏、应用和媒体而生 — 用手柄、键盘或鼠标操作</span></a></li>
+<li><a data-glyph="chosen" href="overview.html#why"><span class="row-name">为什么选择 LineXinBar</span><span class="row-note">坐在沙发上就能用的桌面</span></a></li>
+<li><a data-glyph="category-images" href="overview.html#screenshots"><span class="row-name">截图</span><span class="row-note">主屏幕、设置和指南</span></a></li>
+<li><a data-glyph="setting-info" href="overview.html#status"><span class="row-name">项目状态</span><span class="row-note">早期开发 — 先了解这些</span></a></li>
+<li><a data-glyph="category-development" href="https://github.com/Petexy/LineXinBar" rel="noopener" target="_blank"><span class="row-name">源代码</span><span class="row-note">GitHub 上的 LineXinBar</span></a></li>
+</ul>
+</li>
+<li data-glyph="setting-install-to" data-id="install">
+<span class="cat-name">开始使用</span>
+<ul class="cat-rows">
+<li><a data-glyph="launch" href="install.html#try"><span class="row-name">在窗口中试用</span><span class="row-note">一个脚本，直接从代码仓库运行</span></a></li>
+<li><a data-glyph="setting-install-to" href="install.html#packages"><span class="row-name">安装软件包</span><span class="row-note">Arch、Debian 和 Ubuntu、Fedora、NixOS</span></a></li>
+<li><a data-glyph="sign-out" href="install.html#session"><span class="row-name">启动会话</span><span class="row-note">在登录界面选择 LineXinBar</span></a></li>
+<li><a data-glyph="add" href="install.html#optional"><span class="row-name">可选软件包</span><span class="row-note">RetroArch、Epic Games 和 PlayStation 3</span></a></li>
+<li><a data-glyph="setting-info" href="install.html#requirements"><span class="row-name">运行需要什么</span><span class="row-note">Linux、能正常工作的显卡驱动、logind 或 seatd</span></a></li>
+<li><a data-glyph="setting-system" href="install.html#hardware"><span class="row-name">硬件</span><span class="row-note">目前已在哪些硬件上运行过</span></a></li>
+</ul>
+</li>
+<li data-glyph="category-games" data-id="games">
+<span class="cat-name">游戏</span>
+<ul class="cat-rows">
+<li><a data-glyph="steam" href="games.html#steam"><span class="row-name">Steam</span><span class="row-note">您的整个游戏库，用手机登录</span></a></li>
+<li><a data-glyph="launch" href="games.html#playing"><span class="row-name">玩游戏</span><span class="row-note">按一下，出现的就是游戏</span></a></li>
+<li><a data-glyph="setting-users" href="games.html#friends"><span class="row-name">好友和聊天</span><span class="row-note">谁在玩、消息和邀请</span></a></li>
+<li><a data-glyph="epic" href="games.html#epic"><span class="row-name">Epic Games</span><span class="row-note">您的 Epic 游戏库，通过 Heroic</span></a></li>
+<li><a data-glyph="retroarch" href="games.html#retroarch"><span class="row-name">RetroArch</span><span class="row-note">您自己的主机游戏，以封面呈现</span></a></li>
+<li><a data-glyph="console-psx" href="games.html#discs"><span class="row-name">游戏光盘</span><span class="row-note">放入光盘，它就出现在主栏上</span></a></li>
+<li><a data-glyph="ps3" href="games.html#ps3"><span class="row-name">PlayStation 3</span><span class="row-note">通过 RPCS3，附带每款游戏的影片和音乐</span></a></li>
+<li><a data-glyph="category-trophies" href="games.html#trophies"><span class="row-name">奖杯</span><span class="row-note">所有游戏库的成就，汇聚在一列中</span></a></li>
+</ul>
+</li>
+<li data-glyph="category-multimedia" data-id="media">
+<span class="cat-name">应用和媒体</span>
+<ul class="cat-rows">
+<li><a data-glyph="category-other" href="media.html#applications"><span class="row-name">所有应用程序</span><span class="row-note">按您熟悉的分类整理</span></a></li>
+<li><a data-glyph="search" href="media.html#search"><span class="row-name">搜索一切</span><span class="row-note">在主屏幕上直接开始输入</span></a></li>
+<li><a data-glyph="category-music" href="media.html#music"><span class="row-name">音乐</span><span class="row-note">您的歌曲，从主目录中收集而来</span></a></li>
+<li><a data-glyph="category-video" href="media.html#video"><span class="row-name">视频</span><span class="row-note">您的影片，每部都配有一幅画面</span></a></li>
+<li><a data-glyph="category-images" href="media.html#images"><span class="row-name">图片</span><span class="row-note">您的照片，排成一列缩略图</span></a></li>
+<li><a data-glyph="category-files" href="media.html#files"><span class="row-name">文件</span><span class="row-note">用手柄复制、移动、重命名、压缩和解压</span></a></li>
+<li><a data-glyph="file-drive" href="media.html#drives"><span class="row-name">驱动器</span><span class="row-note">挂载磁盘，并可随意保持挂载</span></a></li>
+<li><a data-glyph="category-waydroid" href="media.html#android"><span class="row-name">Android 应用</span><span class="row-note">通过 Waydroid，在单独的一列中</span></a></li>
+</ul>
+</li>
+<li data-glyph="pad-guide" data-id="guide">
+<span class="cat-name">指南</span>
+<ul class="cat-rows">
+<li><a data-glyph="pad-guide" href="guide.html#overlay"><span class="row-name">一键即达</span><span class="row-note">指南会在任何正在运行的内容上方打开</span></a></li>
+<li><a data-glyph="select-multiple" href="guide.html#cards"><span class="row-name">切换应用</span><span class="row-note">每个窗口都是一张卡片</span></a></li>
+<li><a data-glyph="volume" href="guide.html#quick"><span class="row-name">快捷设置</span><span class="row-note">音量、亮度和勿扰模式</span></a></li>
+<li><a data-glyph="volume-mixer" href="guide.html#mixer"><span class="row-name">音量混合器</span><span class="row-note">为每个发声的程序配一个滑块</span></a></li>
+<li><a data-glyph="notifications" href="guide.html#notifications"><span class="row-name">通知</span><span class="row-note">所有通知，最新的在前</span></a></li>
+<li><a data-glyph="pointer-stick" href="guide.html#stick"><span class="row-name">摇杆指针</span><span class="row-note">右摇杆变成鼠标</span></a></li>
+<li><a data-glyph="setting-pip" href="guide.html#pip"><span class="row-name">画中画</span><span class="row-note">让视频悬浮在游戏上方</span></a></li>
+<li><a data-glyph="mouse-right" href="guide.html#menu"><span class="row-name">上下文菜单</span><span class="row-note">任何对象都有选项，任何操控方式都能打开</span></a></li>
+</ul>
+</li>
+<li data-glyph="setting-display" data-id="displays">
+<span class="cat-name">显示器</span>
+<ul class="cat-rows">
+<li><a data-glyph="setting-display" href="displays.html#multi"><span class="row-name">多台显示器</span><span class="row-note">每块屏幕各自浏览</span></a></li>
+<li><a data-glyph="setting-refresh" href="displays.html#modes"><span class="row-name">分辨率和刷新率</span><span class="row-note">每台显示器按自己的节奏运行</span></a></li>
+<li><a data-glyph="setting-hdr" href="displays.html#hdr"><span class="row-name">HDR</span><span class="row-note">高动态范围，按显示器设置</span></a></li>
+<li><a data-glyph="setting-night-light" href="displays.html#night"><span class="row-name">夜间模式</span><span class="row-note">晚上使用更暖的色调</span></a></li>
+<li><a data-glyph="setting-screen-rest" href="displays.html#oled"><span class="row-name">OLED 保护</span><span class="row-note">让没人看的屏幕休息</span></a></li>
+<li><a data-glyph="setting-scale" href="displays.html#scaling"><span class="row-name">缩放和方向</span><span class="row-note">放大或缩小，横放或竖放</span></a></li>
+<li><a data-glyph="setting-resolution" href="displays.html#app-resolution"><span class="row-name">每个应用单独的分辨率</span><span class="row-note">让吃力的游戏以更少的像素绘制</span></a></li>
+</ul>
+</li>
+<li data-glyph="category-settings" data-id="settings">
+<span class="cat-name">设置</span>
+<ul class="cat-rows">
+<li><a data-glyph="setting-accent" href="settings.html#accent"><span class="row-name">强调色</span><span class="row-note">十二种配色 — 在这里试试</span></a></li>
+<li><a data-glyph="setting-theme" href="settings.html#theme"><span class="row-name">主题</span><span class="row-note">水或丝绸，水珠或平面，闪光或没有</span></a></li>
+<li><a data-glyph="setting-wallpaper" href="settings.html#wallpaper"><span class="row-name">您自己的壁纸</span><span class="row-note">您自己的图片或影片</span></a></li>
+<li><a data-glyph="setting-language" href="settings.html#language"><span class="row-name">语言</span><span class="row-note">十种语言，整个系统都随之切换</span></a></li>
+<li><a data-glyph="setting-wifi" href="settings.html#network"><span class="row-name">网络和蓝牙</span><span class="row-note">用手柄连接 Wi-Fi、有线网络和配对设备</span></a></li>
+<li><a data-glyph="volume" href="settings.html#sound"><span class="row-name">声音</span><span class="row-note">输出、输入和 Shell 自己的声音</span></a></li>
+<li><a data-glyph="shutdown" href="settings.html#power"><span class="row-name">电源</span><span class="row-note">睡眠、电源按钮和省电模式</span></a></li>
+<li><a data-glyph="setting-updates" href="settings.html#updates"><span class="row-name">更新</span><span class="row-note">按一下，让机器保持最新</span></a></li>
+<li><a data-glyph="setting-system" href="settings.html#low-end"><span class="row-name">低配硬件模式</span><span class="row-note">适用于掌机和较旧的机器</span></a></li>
+</ul>
+</li>
+<li data-glyph="setting-input" data-id="controls">
+<span class="cat-name">操控</span>
+<ul class="cat-rows">
+<li><a data-glyph="pad-stick" href="controls.html#pads"><span class="row-name">手柄</span><span class="row-note">插上一个，就能操控一切</span></a></li>
+<li><a data-glyph="pad-guide" href="controls.html#guide-button"><span class="row-name">指南按键</span><span class="row-note">无论运行着什么，总能靠它退出</span></a></li>
+<li><a data-glyph="pad-north" href="controls.html#hints"><span class="row-name">按键提示</span><span class="row-note">按您手中的操控设备绘制</span></a></li>
+<li><a data-glyph="setting-keyboard" href="controls.html#keyboard"><span class="row-name">键盘</span><span class="row-note">方向键、Enter 和 Super 键</span></a></li>
+<li><a data-glyph="setting-typed" href="controls.html#osk"><span class="row-name">屏幕键盘</span><span class="row-note">不离开沙发就能输入任何内容</span></a></li>
+<li><a data-glyph="setting-mouse" href="controls.html#pointer"><span class="row-name">鼠标和触控</span><span class="row-note">单击、轻触和滚轮</span></a></li>
+<li><a data-glyph="setting-keys" href="controls.html#bindings"><span class="row-name">快捷键</span><span class="row-note">所有快捷键及修改方法</span></a></li>
+</ul>
+</li>
+<li data-glyph="category-utilities" data-id="desktop">
+<span class="cat-name">桌面</span>
+<ul class="cat-rows">
+<li><a data-glyph="screenshot" href="desktop.html#screenshots"><span class="row-name">截图</span><span class="row-note">指南键和右肩键</span></a></li>
+<li><a data-glyph="setting-connect" href="desktop.html#sharing"><span class="row-name">屏幕共享</span><span class="row-note">在通话或直播中共享显示器</span></a></li>
+<li><a data-glyph="file-folder" href="desktop.html#choosing"><span class="row-name">选择文件</span><span class="row-note">可以用手柄操作的打开和保存对话框</span></a></li>
+<li><a data-glyph="authenticate" href="desktop.html#prompts"><span class="row-name">密码请求</span><span class="row-note">当系统询问您是谁时</span></a></li>
+<li><a data-glyph="setting-schedule" href="desktop.html#awake"><span class="row-name">保持唤醒</span><span class="row-note">影片或游戏会让屏幕保持点亮</span></a></li>
+<li><a data-glyph="category-software" href="desktop.html#apps"><span class="row-name">与您的应用协同工作</span><span class="row-note">Wayland、X11 和 Flatpak</span></a></li>
+</ul>
+</li>
+<li data-glyph="file-home" data-id="family">
+<span class="cat-name">家族</span>
+<ul class="cat-rows">
+<li><a data-glyph="setting-person" href="family.html#login"><span class="row-name">登录界面</span><span class="row-note">Console Experience Desktop Manager</span></a></li>
+<li><a data-glyph="category-software" href="family.html#software"><span class="row-name">Software Hub</span><span class="row-note">用手柄操作的 Flatpak 商店</span></a></li>
+<li><a data-glyph="category-music" href="family.html#music"><span class="row-name">音乐</span><span class="row-note">SongOnSole，音乐库与播放器</span></a></li>
+<li><a data-glyph="category-video" href="family.html#videos"><span class="row-name">视频</span><span class="row-note">Videonsole，影片浏览器与播放器</span></a></li>
+<li><a data-glyph="category-images" href="family.html#pictures"><span class="row-name">图片</span><span class="row-note">Imagonsole，照片查看器</span></a></li>
+<li><a data-glyph="setting-appearance" href="family.html#toolkit"><span class="row-name">lxb-toolkit</span><span class="row-note">用 Shell 自己的材质构建应用</span></a></li>
+<li><a data-glyph="refresh" href="family.html#one-version"><span class="row-name">同一个版本号</span><span class="row-note">七个项目，同时发布</span></a></li>
+</ul>
+</li>
+<li data-glyph="category-development" data-id="develop">
+<span class="cat-name">开发</span>
+<ul class="cat-rows">
+<li><a data-glyph="category-office" href="develop.html#docs"><span class="row-name">文档</span><span class="row-note">所有指南，从安装到渲染</span></a></li>
+<li><a data-glyph="category-development" href="develop.html#architecture"><span class="row-name">它是怎样构建的</span><span class="row-note">一个合成器和一个 Shell，用 Rust 编写</span></a></li>
+<li><a data-glyph="setting-language" href="develop.html#translate"><span class="row-name">翻译</span><span class="row-note">十种语言，也为您的语言留有位置</span></a></li>
+<li><a data-glyph="notifications" href="develop.html#bugs"><span class="row-name">报告问题</span><span class="row-note">附上哪些信息才能修复它</span></a></li>
+<li><a data-glyph="add" href="develop.html#contribute"><span class="row-name">参与贡献</span><span class="row-note">代码、硬件测试和翻译</span></a></li>
+<li><a data-glyph="file-page" href="develop.html#licence"><span class="row-name">许可证</span><span class="row-note">以 GPL-3.0 发布的自由软件</span></a></li>
+</ul>
+</li>
+</ul>
+</nav>
+<p aria-live="polite" class="bar-live-region visually-hidden"></p>
+<div aria-hidden="false" class="bar-layer"></div>
+</main>
+<noscript><style>.guide-button{display:none}</style></noscript>
+<script defer="" src="../assets/js/wallpaper.js"></script>
+<script defer="" src="../assets/js/i18n.js"></script>
+<script defer="" src="../assets/js/shell.js"></script>
+<script defer="" src="../assets/js/xmb.js"></script>
+</body>
+</html>

@@ -1,0 +1,140 @@
+<!DOCTYPE html>
+
+<html lang="de">
+<head>
+<meta charset="utf-8"/>
+<meta content="width=device-width, initial-scale=1, viewport-fit=cover" name="viewport"/>
+<title>LineXinBar entwickeln: Dokumentation, Quellcode, Übersetzungen</title>
+<meta content="Die Dokumentation von LineXinBar, wie Compositor und Shell in Rust gebaut sind, wie man übersetzt, wie man einen Fehler meldet und wie man mitmacht. Freie Software unter der GPL-3.0." name="description"/>
+<!-- search and sharing: written by tools/translate.py build -->
+<link rel="canonical" href="https://petexy.github.io/LineXinBar/de/develop.html">
+<link rel="alternate" hreflang="x-default" href="https://petexy.github.io/LineXinBar/develop.html">
+<link rel="alternate" hreflang="en" href="https://petexy.github.io/LineXinBar/develop.html">
+<link rel="alternate" hreflang="de" href="https://petexy.github.io/LineXinBar/de/develop.html">
+<link rel="alternate" hreflang="en-GB" href="https://petexy.github.io/LineXinBar/develop.html">
+<link rel="alternate" hreflang="en-US" href="https://petexy.github.io/LineXinBar/en-us/develop.html">
+<link rel="alternate" hreflang="es" href="https://petexy.github.io/LineXinBar/es/develop.html">
+<link rel="alternate" hreflang="fr" href="https://petexy.github.io/LineXinBar/fr/develop.html">
+<link rel="alternate" hreflang="pl" href="https://petexy.github.io/LineXinBar/pl/develop.html">
+<link rel="alternate" hreflang="pt-BR" href="https://petexy.github.io/LineXinBar/pt-br/develop.html">
+<link rel="alternate" hreflang="ru" href="https://petexy.github.io/LineXinBar/ru/develop.html">
+<link rel="alternate" hreflang="hi" href="https://petexy.github.io/LineXinBar/hi/develop.html">
+<link rel="alternate" hreflang="zh-CN" href="https://petexy.github.io/LineXinBar/zh-cn/develop.html">
+<meta property="og:type" content="website">
+<meta property="og:site_name" content="LineXinBar">
+<meta property="og:title" content="LineXinBar entwickeln: Dokumentation, Quellcode, Übersetzungen">
+<meta property="og:description" content="Die Dokumentation von LineXinBar, wie Compositor und Shell in Rust gebaut sind, wie man übersetzt, wie man einen Fehler meldet und wie man mitmacht. Freie Software unter der GPL-3.0.">
+<meta property="og:url" content="https://petexy.github.io/LineXinBar/de/develop.html">
+<meta property="og:locale" content="de_DE">
+<meta property="og:image" content="https://petexy.github.io/LineXinBar/assets/img/desktop.png">
+<meta property="og:image:width" content="1600">
+<meta property="og:image:height" content="900">
+<meta name="twitter:card" content="summary_large_image">
+<script type="application/ld+json">{"@context":"https://schema.org","@type":"WebPage","@id":"https://petexy.github.io/LineXinBar/de/develop.html","url":"https://petexy.github.io/LineXinBar/de/develop.html","name":"LineXinBar entwickeln: Dokumentation, Quellcode, Übersetzungen","description":"Die Dokumentation von LineXinBar, wie Compositor und Shell in Rust gebaut sind, wie man übersetzt, wie man einen Fehler meldet und wie man mitmacht. Freie Software unter der GPL-3.0.","inLanguage":"de","isPartOf":{"@id":"https://petexy.github.io/LineXinBar/#website"},"about":{"@id":"https://petexy.github.io/LineXinBar/#software"},"breadcrumb":{"@type":"BreadcrumbList","itemListElement":[{"@type":"ListItem","position":1,"name":"Startbildschirm","item":"https://petexy.github.io/LineXinBar/de/"},{"@type":"ListItem","position":2,"name":"Entwicklung","item":"https://petexy.github.io/LineXinBar/de/develop.html"}]}}</script>
+<!-- /search and sharing -->
+<meta content="#060314" name="theme-color"/>
+<link href="../assets/glyphs/sm/logo.webp" rel="icon" type="image/webp"/>
+<link as="font" crossorigin="" href="../assets/fonts/Roboto-Regular-latin.woff2" rel="preload" type="font/woff2"/>
+<link href="../assets/css/lxb.css" rel="stylesheet"/>
+</head>
+<body data-page="develop" data-screen="page">
+<a class="skip" href="#content">Zum Inhalt springen</a>
+<canvas aria-hidden="true" id="wallpaper"></canvas>
+<header class="page-head">
+<a class="trail" data-back="" href="index.html#develop">
+<span class="trail-tile"><img alt="" class="glyph" src="../assets/glyphs/lg/category-development.webp"/></span>
+<span class="trail-text"><span class="trail-back">‹ Startbildschirm</span><span class="trail-name">Entwicklung</span></span>
+</a>
+</header>
+<main class="column-page" id="content">
+<h1 class="visually-hidden">LineXinBar entwickeln: Dokumentation, Quellcode, Übersetzungen</h1>
+<nav aria-label="Auf dieser Seite" class="rows-nav">
+<ol class="rows">
+<li><a class="row" data-lxb-row="" href="#docs"><span class="row-icon"><img alt="" class="glyph" src="../assets/glyphs/lg/category-office.webp"/></span><span class="row-text"><span class="row-title">Dokumentation</span><span class="row-comment">Jede Anleitung, von der Einrichtung bis zum Rendering</span></span></a></li>
+<li><a class="row" data-lxb-row="" href="#architecture"><span class="row-icon"><img alt="" class="glyph" src="../assets/glyphs/lg/category-development.webp"/></span><span class="row-text"><span class="row-title">Wie es aufgebaut ist</span><span class="row-comment">Ein Compositor und eine Shell, in Rust</span></span></a></li>
+<li><a class="row" data-lxb-row="" href="#translate"><span class="row-icon"><img alt="" class="glyph" src="../assets/glyphs/lg/setting-language.webp"/></span><span class="row-text"><span class="row-title">Übersetzungen</span><span class="row-comment">Zehn Sprachen, und Platz für Ihre</span></span></a></li>
+<li><a class="row" data-lxb-row="" href="#bugs"><span class="row-icon"><img alt="" class="glyph" src="../assets/glyphs/lg/notifications.webp"/></span><span class="row-text"><span class="row-title">Einen Fehler melden</span><span class="row-comment">Was dazugehört, damit er behoben werden kann</span></span></a></li>
+<li><a class="row" data-lxb-row="" href="#contribute"><span class="row-icon"><img alt="" class="glyph" src="../assets/glyphs/lg/add.webp"/></span><span class="row-text"><span class="row-title">Mitmachen</span><span class="row-comment">Code, Hardwaretests und Übersetzungen</span></span></a></li>
+<li><a class="row" data-lxb-row="" href="#licence"><span class="row-icon"><img alt="" class="glyph" src="../assets/glyphs/lg/file-page.webp"/></span><span class="row-text"><span class="row-title">Lizenz</span><span class="row-comment">Freie Software unter der GPL-3.0</span></span></a></li>
+</ol>
+</nav>
+<div class="panes">
+<section aria-labelledby="docs-t" class="pane glass" id="docs">
+<h2 id="docs-t"><img alt="" class="glyph" src="../assets/glyphs/lg/category-office.webp"/>Dokumentation</h2>
+<p class="lede">Die vollständige Referenz für Nutzer und Entwickler liegt neben dem Code, in <code>docs/</code>. Jede Anleitung:</p>
+<div class="cards">
+<a class="card" href="https://github.com/Petexy/LineXinBar/blob/master/docs/getting-started.md" rel="noopener" target="_blank"><b>Erste Schritte</b><span>Voraussetzungen, Berechtigungen, Bauen, verschachtelte und native Sitzungen</span></a>
+<a class="card" href="https://github.com/Petexy/LineXinBar/blob/master/docs/packaging.md" rel="noopener" target="_blank"><b>Paketierung</b><span>Pakete für Arch, Debian und Ubuntu, Fedora und Nix</span></a>
+<a class="card" href="https://github.com/Petexy/LineXinBar/blob/master/docs/configuration.md" rel="noopener" target="_blank"><b>Konfiguration</b><span>Jede Einstellung, und Einstellungen pro Anwendung</span></a>
+<a class="card" href="https://github.com/Petexy/LineXinBar/blob/master/docs/overview.md" rel="noopener" target="_blank"><b>Projektüberblick</b><span>Designziele, Gamescope, bekannte Einschränkungen</span></a>
+<a class="card" href="https://github.com/Petexy/LineXinBar/blob/master/docs/shell.md" rel="noopener" target="_blank"><b>Anwendungen, Medien und Dateien</b><span>Die Leiste, die Suche, die Regale und die Dateien</span></a>
+<a class="card" href="https://github.com/Petexy/LineXinBar/blob/master/docs/steam.md" rel="noopener" target="_blank"><b>Steam</b><span>Anmeldung, Bibliothek, Starten, Freunde und Einladungen</span></a>
+<a class="card" href="https://github.com/Petexy/LineXinBar/blob/master/docs/epic.md" rel="noopener" target="_blank"><b>Epic Games</b><span>Über Heroic: Anmeldung, Installationen, Cloud-Spielstände</span></a>
+<a class="card" href="https://github.com/Petexy/LineXinBar/blob/master/docs/retroarch.md" rel="noopener" target="_blank"><b>RetroArch</b><span>ROM-Ordner, Cores, BIOS-Dateien und Spieldiscs</span></a>
+<a class="card" href="https://github.com/Petexy/LineXinBar/blob/master/docs/ps3.md" rel="noopener" target="_blank"><b>PlayStation 3</b><span>RPCS3, Pakete, Disc-Schlüssel und Trophäen</span></a>
+<a class="card" href="https://github.com/Petexy/LineXinBar/blob/master/docs/settings.md" rel="noopener" target="_blank"><b>Desktop-Einstellungen</b><span>Erscheinungsbild, Bildschirme, Energie, Ton, Netzwerk, System</span></a>
+<a class="card" href="https://github.com/Petexy/LineXinBar/blob/master/docs/controls.md" rel="noopener" target="_blank"><b>Steuerung</b><span>Controller, Tastatur, Maus, Touch, Bildschirmtastatur</span></a>
+<a class="card" href="https://github.com/Petexy/LineXinBar/blob/master/docs/guide.md" rel="noopener" target="_blank"><b>Guide und Menüs</b><span>App-Wechsel, Schnelleinstellungen, Mixer, Stick-Zeiger</span></a>
+<a class="card" href="https://github.com/Petexy/LineXinBar/blob/master/docs/desktop-integration.md" rel="noopener" target="_blank"><b>Desktop-Integration</b><span>Bildschirmfotos, Freigabe, Dateidialoge, Abfragen</span></a>
+<a class="card" href="https://github.com/Petexy/LineXinBar/blob/master/docs/updates.md" rel="noopener" target="_blank"><b>Aktualisierungen</b><span>Quellen, Wiederherstellung und eigene Aktualisierungsanbieter</span></a>
+<a class="card" href="https://github.com/Petexy/LineXinBar/blob/master/docs/architecture.md" rel="noopener" target="_blank"><b>Architektur</b><span>Aufbau des Quellcodes, das Shell-Protokoll, Audio, Glas</span></a>
+<a class="card" href="https://github.com/Petexy/LineXinBar/blob/master/docs/localization.md" rel="noopener" target="_blank"><b>Lokalisierung</b><span>Sprachen, Kataloge und das Hinzufügen von Übersetzungen</span></a>
+</div>
+<div class="more"><a class="control lit" data-select="Dokumentation" href="https://github.com/Petexy/LineXinBar/blob/master/docs/index.md" rel="noopener" target="_blank">Das Inhaltsverzeichnis der Dokumentation</a></div>
+</section>
+<section aria-labelledby="architecture-t" class="pane glass" id="architecture">
+<h2 id="architecture-t"><img alt="" class="glyph" src="../assets/glyphs/lg/category-development.webp"/>Wie es aufgebaut ist</h2>
+<p class="lede">Zwei Programme, beide in Rust: <code>lxb</code>, ein kleiner Wayland-Compositor auf Basis von Smithay, und <code>lxb-desktop</code>, die Shell, mit wgpu auf der GPU gezeichnet.</p>
+<ul>
+<li><strong>Der Compositor</strong> steuert die Bildschirme selbst über DRM/KMS an — jeder Anschluss ein echter Ausgang mit eigener Swapchain und eigener vom VBlank getriebener Schleife — oder läuft zur Entwicklung verschachtelt in einem Fenster. X11-Programme führt er über ein privates Xwayland aus.</li>
+<li><strong>Die Shell</strong> ist ein Layer-Shell-Client, läuft also auch auf anderen Compositoren, die Layer-Shell umsetzen. Sie spricht mit dem Compositor über ein privates Protokoll, <code>lxb_shell_v1</code>, das nur die eigenen Programme der Sitzung benutzen dürfen.</li>
+<li><strong>Das Aussehen wird berechnet, nicht gemalt.</strong> Der Hintergrund ist eine einzige analytische Funktion des Blickpunkts, pro Pixel ausgewertet; jedes Zeichen ist eine weiße Silhouette, in ein Distanzfeld vermessen und vom Shader als Wassertropfen aufgestellt. Diese Website nutzt Portierungen derselben beiden Shader.</li>
+<li>Drumherum: <code>lxb-portal</code> für Bildschirmfreigabe, Dateidialoge und den Rest des Desktop-Portals; <code>lxb-updates</code>, der Aktualisierungskoordinator; und die optionalen Helfer für RetroArch, Heroic und RPCS3.</li>
+</ul>
+<div class="more"><a class="control lit" data-select="Architektur" href="https://github.com/Petexy/LineXinBar/blob/master/docs/architecture.md" rel="noopener" target="_blank">Architektur und Rendering</a></div>
+</section>
+<section aria-labelledby="translate-t" class="pane glass" id="translate">
+<h2 id="translate-t"><img alt="" class="glyph" src="../assets/glyphs/lg/setting-language.webp"/>Übersetzungen</h2>
+<p class="lede">Jedes Wort, das die Shell zeigt, stammt aus einem <a href="https://projectfluent.org/">Fluent</a>-Katalog, in zehn Sprachen: Deutsch, britisches und amerikanisches Englisch, Spanisch, Französisch, Hindi, Polnisch, brasilianisches Portugiesisch, Russisch und vereinfachtes Chinesisch.</p>
+<p>Die Kataloge sind einfache Textdateien in <code>crates/lxb-desktop/locales/</code>. Eine Übersetzung zu korrigieren heißt, eine Zeile zu bearbeiten; eine neue Sprache ist ein neuer Katalog, und die Tests prüfen, dass jeder Katalog dieselben Meldungen mit denselben Argumenten trägt. Der Anmeldebildschirm und die Geschwister-Anwendungen haben eigene Kataloge in derselben Form.</p>
+<div class="more"><a class="control lit" data-select="Vollständige Anleitung" href="https://github.com/Petexy/LineXinBar/blob/master/docs/localization.md#adding-or-editing-translations" rel="noopener" target="_blank">Übersetzungen hinzufügen oder bearbeiten</a></div>
+</section>
+<section aria-labelledby="bugs-t" class="pane glass" id="bugs">
+<h2 id="bugs-t"><img alt="" class="glyph" src="../assets/glyphs/lg/notifications.webp"/>Einen Fehler melden</h2>
+<p class="lede">Eröffnen Sie ein Issue auf GitHub und geben Sie die vier Dinge an, die ein Problem nachvollziehbar machen:</p>
+<ul>
+<li>Ihre <strong>Distribution</strong> und deren Version;</li>
+<li>Ihre <strong>Grafikkarte</strong> und den Treiber;</li>
+<li><strong>wie Sie LineXinBar gestartet haben</strong> — vom Anmeldebildschirm, mit <code>lxb --shell</code> auf einer Konsole oder verschachtelt;</li>
+<li>die <strong>Protokolle</strong> um den Moment, in dem es schiefging — <code>journalctl --user -b</code> für eine Sitzung oder die Terminalausgabe eines verschachtelten Laufs.</li>
+</ul>
+<p>Einem Controller-Problem ist mit Hersteller und Modell des Controllers leichter beizukommen, und damit, ob er per Kabel oder über Bluetooth verbunden ist.</p>
+<div class="more"><a class="control lit" data-select="Ein Issue eröffnen" href="https://github.com/Petexy/LineXinBar/issues" rel="noopener" target="_blank">Ein Issue eröffnen</a></div>
+</section>
+<section aria-labelledby="contribute-t" class="pane glass" id="contribute">
+<h2 id="contribute-t"><img alt="" class="glyph" src="../assets/glyphs/lg/add.webp"/>Mitmachen</h2>
+<p class="lede">Fehlerberichte, Hardwaretests, Übersetzungen und Code sind alle willkommen.</p>
+<ul>
+<li><strong>Hardwaretests</strong> zählen gerade am meisten: andere Grafikhersteller, Handhelds, mehrere GPUs, ungewöhnliche Bildschirme und Controller.</li>
+<li><strong>Übersetzungen</strong>: Korrigieren Sie, was in Ihrer Sprache falsch klingt, oder fügen Sie eine hinzu.</li>
+<li><strong>Code</strong>: Der Build ist <code>cargo build --release --locked</code>, die Tests sind <code>cargo test</code>, und die verschachtelte Sitzung ist der Weg, eine Änderung in Aktion zu sehen.</li>
+</ul>
+<div class="more"><a class="control lit" data-select="GitHub" href="https://github.com/Petexy/LineXinBar" rel="noopener" target="_blank">LineXinBar auf GitHub</a></div>
+</section>
+<section aria-labelledby="licence-t" class="pane glass" id="licence">
+<h2 id="licence-t"><img alt="" class="glyph" src="../assets/glyphs/lg/file-page.webp"/>Lizenz</h2>
+<p class="lede">LineXinBar ist freie Software, lizenziert unter der <strong>GNU General Public License, ausschließlich Version 3</strong>.</p>
+<p>Die mitgelieferten Schriften Roboto und Roboto Mono stehen unter ihren eigenen offenen Lizenzen, ebenso die Noto-Schriften, die die Shell für Hindi und Chinesisch mitbringt, und das Cursor-Thema Bibata. Diese Website ist Teil des Repositorys und steht unter derselben Lizenz.</p>
+<div class="more"><a class="control lit" data-select="Lizenz" href="https://github.com/Petexy/LineXinBar/blob/master/LICENSE" rel="noopener" target="_blank">Die Lizenz lesen</a></div>
+</section>
+</div>
+</main>
+<footer class="site-foot">
+<p>Zurück: <a href="family.html">‹ Familie</a> · <a href="index.html#develop">Startbildschirm</a> · LineXinBar ist freie Software unter der <a href="https://github.com/Petexy/LineXinBar/blob/master/LICENSE">GPL-3.0</a>.</p>
+</footer>
+<script defer="" src="../assets/js/wallpaper.js"></script>
+<script defer="" src="../assets/js/i18n.js"></script>
+<script defer="" src="../assets/js/shell.js"></script>
+<script defer="" src="../assets/js/page.js"></script>
+</body>
+</html>

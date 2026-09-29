@@ -155,6 +155,22 @@ pub enum Setting {
         key: &'static str,
         value: &'static str,
     },
+    /// Set RPCS3's own settings: every `(path, value)` in the list, written
+    /// into its `config.yml` — see [`crate::ps3_settings`]. A list, because one
+    /// row can be two of RPCS3's settings: "Fill the screen" is a shape and a
+    /// stretch.
+    Rpcs3(&'static [(&'static str, &'static str)]),
+    /// The PlayStation 3's language, by RPCS3's name for it — which also
+    /// stops it following the shell's.
+    Ps3Language(&'static str),
+    /// Put one of the PS3's buttons (RPCS3's key for it) on one of the pad's
+    /// (SDL's name for it).
+    Ps3Button {
+        button: &'static str,
+        to: &'static str,
+    },
+    /// Put every PS3 button back where RPCS3 would have it.
+    Ps3ButtonsBack,
     /// Fetch the cover and the screenshot of every game in somebody's ROM
     /// folder again, from libretro's collection.
     ///
@@ -221,6 +237,24 @@ pub enum Setting {
     /// application is drawn, which is the row above it, and not the same kind
     /// as an accent colour. See [`button_hints`].
     ButtonHints(bool),
+    /// One of Settings > Power's rows — see [`PowerValue`].
+    ///
+    /// Recorded here and carried out by the shell's idle policy, which reads
+    /// the value back every pass of the loop — see [`crate::idle`] — so the
+    /// press is in force from the frame it lands on. The one exception is the
+    /// power mode, which is the machine's power-profiles daemon's and is not
+    /// written down here at all: `main` hands it to [`crate::power_bus`], and
+    /// the daemon remembers it, on the terms [`Setting::Network`] is under.
+    Power(PowerValue),
+    /// Draw the shell the cheap way: a still wallpaper drawn once, the plain
+    /// materials, no sparkles, no blur, and far fewer frames while nothing
+    /// moves — see [`low_end`], which is where each of those is argued and
+    /// where the automatic answer comes from.
+    ///
+    /// Under System rather than Appearance: it is not how the shell looks but
+    /// what the machine can afford, and somebody whose device cannot keep up
+    /// is looking for a switch about the device.
+    LowEnd(bool),
     /// Send everything the machine plays to this device from now on, or take
     /// everything it records from it.
     ///
@@ -2349,10 +2383,12 @@ static START_MUSIC: Mutex<bool> = Mutex::new(true);
 /// the user pressed may be on a stick, in a folder they are about to tidy, or in
 /// a download they are about to clear out.
 ///
-/// Kept whatever the Theme setting says, and deliberately. Somebody who stands
-/// the wallpaper down to Simple for an evening's game has not thrown their
-/// picture away, and the shell that comes up in Custom tomorrow reads this to
-/// know what to draw. It is the *style* that says whether it is on screen.
+/// Forgotten the moment the wallpaper is set to anything else, and the copy
+/// with it — see [`crate::paper::Paper::keep_only`]. The copy can be a film of
+/// several gigabytes, and nothing brings it back: the Custom wallpaper row opens
+/// on to the disk and has no value of its own to press, so the user's own
+/// picture is only ever put back by choosing a file, which is a fresh copy.
+/// Keeping the old one meant keeping a film nobody could see on somebody's disk.
 static CUSTOM_WALLPAPER: Mutex<Option<PathBuf>> = Mutex::new(None);
 
 /// Where somebody keeps their ROMs, if they have said.
@@ -2396,6 +2432,42 @@ pub fn forget_roms_folder() {
     tracing::info!("the ROM folder is forgotten");
 }
 
+/// Where somebody keeps their PlayStation 3 games, if they have said.
+///
+/// Until they have, the PS3 folder inside [`ROMS_FOLDER`] is used where
+/// RetroArch's folder has one — see [`crate::ps3::folder`]. Kept whether or not
+/// the `lxb-rpcs3` package is installed, on the terms the ROM folder is.
+static PS3_FOLDER: Mutex<Option<PathBuf>> = Mutex::new(None);
+
+/// Whether somebody has chosen the PlayStation 3's language on its page. Until
+/// they have, it follows the shell's — see
+/// [`crate::ps3_settings::follow_the_shells_language`].
+static PS3_LANGUAGE_CHOSEN: Mutex<bool> = Mutex::new(false);
+
+/// The PS3 buttons somebody has moved to another of the pad's buttons, by
+/// RPCS3's key for each — only those that are not where RPCS3 would put them.
+static PS3_BUTTONS: Mutex<BTreeMap<String, String>> = Mutex::new(BTreeMap::new());
+
+pub fn ps3_language_chosen() -> bool {
+    *PS3_LANGUAGE_CHOSEN.lock().unwrap()
+}
+
+pub fn ps3_buttons() -> BTreeMap<String, String> {
+    PS3_BUTTONS.lock().unwrap().clone()
+}
+
+/// The PS3 folder somebody chose, if they chose one.
+pub fn ps3_folder() -> Option<PathBuf> {
+    PS3_FOLDER.lock().unwrap().clone()
+}
+
+/// Their PlayStation 3 games are in there from now on.
+pub fn choose_ps3_folder(at: &Path) {
+    *PS3_FOLDER.lock().unwrap() = Some(at.to_path_buf());
+    save(&stored());
+    tracing::info!(at = %at.display(), "the PS3 folder");
+}
+
 /// What a column of folders is being walked *for*.
 ///
 /// One answer today and it is an enum anyway, for the reason [`Setting`] is
@@ -2418,6 +2490,10 @@ pub enum Picking {
     /// Where Heroic installs Epic games: Settings > Games > Epic Games. See
     /// the helper's `folder.rs`.
     EpicFolder,
+    /// Where somebody's PlayStation 3 games are: Settings > Games >
+    /// PlayStation 3, and the question the PlayStation 3 row asks the first
+    /// time there is nothing to show. See [`crate::ps3`].
+    Ps3Folder,
 }
 
 impl Picking {
@@ -2429,6 +2505,7 @@ impl Picking {
             Picking::Firmware => crate::i18n::text("shell-copy-the-bios-out-of-this-folder"),
             Picking::SteamLibrary => crate::i18n::text("steam-add-library-here"),
             Picking::EpicFolder => crate::i18n::text("epic-install-games-here"),
+            Picking::Ps3Folder => crate::i18n::text("shell-look-for-games-in-this-folder"),
         }
     }
 }
@@ -2483,9 +2560,9 @@ pub fn note_custom_wallpaper(kept: PathBuf) {
 /// file, which is what the column has to show — the alternative is a row ticked
 /// for a picture nobody can see.
 ///
-/// Deliberately not what choosing Default or Simple does. That is somebody
-/// saying which of the three they want on screen, and their picture is still
-/// their picture.
+/// Choosing Default or Simple forgets the file too, in [`apply`]; what this
+/// does besides is choose the material for the user, because they chose a
+/// picture and there is none.
 pub fn forget_custom_wallpaper() {
     *CUSTOM_WALLPAPER.lock().unwrap() = None;
     theme::commit_style(theme::Part::Wallpaper, wallpaper::STYLES[0]);
@@ -3340,6 +3417,7 @@ pub fn column(bar: &[crate::apps::Column]) -> Vec<Entry> {
         appearance(),
         language(),
         display(),
+        power_page(),
         sounds(),
         network(),
         bluetooth(),
@@ -7592,6 +7670,9 @@ fn games() -> Entry {
     if crate::retroarch::offered() {
         rows.push(retroarch());
     }
+    if crate::ps3::offered() {
+        rows.push(ps3());
+    }
     if rows.is_empty() {
         rows.push(nothing_to_set_about_games());
     }
@@ -8274,6 +8355,316 @@ fn retroarch() -> Entry {
     )
 }
 
+/// The page belonging to the PlayStation 3 integration, on a machine that has
+/// its package: where the games are, and — once there is an RPCS3 — how it
+/// plays them. The folder row is the one that stands at the head of the
+/// PlayStation 3 column while the question is open — one setting, one row, in
+/// both places — and here it is an ordinary row of the page. The rest are
+/// RPCS3's own settings, written into its own file, and the controller's
+/// buttons, which are the shell's: see [`crate::ps3_settings`].
+fn ps3() -> Entry {
+    let Entry::Folder(mut row) = crate::ps3::folder_row() else {
+        unreachable!("it is a folder");
+    };
+    row.over_the_list = false;
+    row.identity = Some("ps3-games-folder".into());
+    let mut rows = vec![Entry::Folder(row)];
+    // RPCS3's own settings, where there is an RPCS3 to have them — read out of
+    // its own file every time the page is built, so this page and RPCS3's
+    // window say the same thing. See [`crate::ps3_settings`].
+    if let Some(now) = crate::ps3_settings::read() {
+        rows.push(ps3_resolution(&now));
+        rows.push(ps3_aspect_ratio(&now));
+        rows.push(ps3_video_driver(&now));
+        rows.push(ps3_frame_limit(&now));
+        rows.push(ps3_vertical_sync(&now));
+        rows.push(ps3_performance_overlay(&now));
+        rows.push(ps3_language(&now));
+        rows.push(ps3_trophy_notices(&now));
+        rows.push(ps3_controller_buttons());
+    }
+    folder(
+        crate::ps3::TITLE,
+        crate::i18n::text("ps3-where-your-games-are"),
+        crate::ps3::mark(),
+        rows,
+    )
+}
+
+/// One value of one of RPCS3's settings: what it writes into RPCS3's file, as
+/// `(path, value)` pairs, what the row calls it, and a line under it.
+type Rpcs3Value<'a> = (
+    &'static [(&'static str, &'static str)],
+    String,
+    Option<&'a str>,
+);
+
+/// One of RPCS3's settings as a list of values, each a set of `(path, value)`
+/// writes into its file: the one the file says now is marked, and the row
+/// says it — or, for a value set in RPCS3's own window that is not on the
+/// list, what the file says.
+fn rpcs3_choice(
+    title: &str,
+    icon: &str,
+    now: &crate::ps3_settings::Settings,
+    values: &[Rpcs3Value<'_>],
+) -> Entry {
+    let said = values
+        .iter()
+        .find(|(pairs, _, _)| now.is(pairs))
+        .map(|(_, label, _)| label.clone())
+        .or_else(|| values.first().map(|(pairs, _, _)| now.get(pairs[0].0)))
+        .unwrap_or_default();
+    let rows = values
+        .iter()
+        .map(|(pairs, label, comment)| value(label, *comment, now.is(pairs), Setting::Rpcs3(pairs)))
+        .collect();
+    folder(title, &said, icon, rows)
+}
+
+/// How sharp a game is drawn: the console's own 720p, or that many times more
+/// pixels — RPCS3's resolution scale, which is what makes a PS3 game sharp on
+/// a large screen, at the cost of the graphics card's time.
+fn ps3_resolution(now: &crate::ps3_settings::Settings) -> Entry {
+    rpcs3_choice(
+        crate::i18n::text("shell-resolution"),
+        icons::SETTING_RESOLUTION,
+        now,
+        &[
+            (
+                &[("Video/Resolution Scale", "100")],
+                "720p".to_string(),
+                Some(crate::i18n::text("shell-as-the-console-had-it")),
+            ),
+            (
+                &[("Video/Resolution Scale", "150")],
+                "1080p".to_string(),
+                None,
+            ),
+            (
+                &[("Video/Resolution Scale", "200")],
+                "1440p".to_string(),
+                None,
+            ),
+            (&[("Video/Resolution Scale", "300")], "4K".to_string(), None),
+        ],
+    )
+}
+
+/// The shape of the picture: the television shape the console tells a game it
+/// has, or the whole screen whatever the game draws.
+fn ps3_aspect_ratio(now: &crate::ps3_settings::Settings) -> Entry {
+    rpcs3_choice(
+        crate::i18n::text("shell-aspect-ratio"),
+        icons::SETTING_RESOLUTION,
+        now,
+        &[
+            (
+                &[
+                    ("Video/Aspect ratio", "16:9"),
+                    ("Video/Stretch To Display Area", "false"),
+                ],
+                "16:9".to_string(),
+                None,
+            ),
+            (
+                &[
+                    ("Video/Aspect ratio", "4:3"),
+                    ("Video/Stretch To Display Area", "false"),
+                ],
+                "4:3".to_string(),
+                None,
+            ),
+            (
+                &[
+                    ("Video/Aspect ratio", "16:9"),
+                    ("Video/Stretch To Display Area", "true"),
+                ],
+                crate::i18n::text("shell-fill-the-screen").to_string(),
+                None,
+            ),
+        ],
+    )
+}
+
+/// What RPCS3 draws with — the RetroArch page's row, for RPCS3's two.
+fn ps3_video_driver(now: &crate::ps3_settings::Settings) -> Entry {
+    rpcs3_choice(
+        crate::i18n::text("shell-video-driver"),
+        icons::SETTING_DISPLAY,
+        now,
+        &[
+            (&[("Video/Renderer", "Vulkan")], "Vulkan".to_string(), None),
+            (&[("Video/Renderer", "OpenGL")], "OpenGL".to_string(), None),
+        ],
+    )
+}
+
+/// How fast a game may run: as fast as it asks, or held to a rate.
+fn ps3_frame_limit(now: &crate::ps3_settings::Settings) -> Entry {
+    rpcs3_choice(
+        crate::i18n::text("ps3-frame-limit"),
+        icons::SETTING_REFRESH,
+        now,
+        &[
+            (
+                &[("Video/Frame limit", "Auto")],
+                crate::i18n::text("shell-automatic").to_string(),
+                Some(crate::i18n::text("ps3-frame-limit-auto")),
+            ),
+            (&[("Video/Frame limit", "30")], "30".to_string(), None),
+            (&[("Video/Frame limit", "60")], "60".to_string(), None),
+            (
+                &[("Video/Frame limit", "Off")],
+                crate::i18n::text("shell-off").to_string(),
+                None,
+            ),
+        ],
+    )
+}
+
+/// Whether a frame waits for the screen — the RetroArch page's row.
+fn ps3_vertical_sync(now: &crate::ps3_settings::Settings) -> Entry {
+    rpcs3_choice(
+        crate::i18n::text("shell-wait-for-the-screen"),
+        icons::SETTING_REFRESH,
+        now,
+        &[
+            (
+                &[("Video/VSync Mode", "Full")],
+                crate::i18n::text("shell-on").to_string(),
+                None,
+            ),
+            (
+                &[("Video/VSync Mode", "Disabled")],
+                crate::i18n::text("shell-off").to_string(),
+                None,
+            ),
+        ],
+    )
+}
+
+/// RPCS3's own readout over a game: its frame rate, and how busy the machine
+/// is keeping up.
+fn ps3_performance_overlay(now: &crate::ps3_settings::Settings) -> Entry {
+    rpcs3_choice(
+        crate::i18n::text("ps3-performance-overlay"),
+        icons::SETTING_INFO,
+        now,
+        &[
+            (
+                &[("Video/Performance Overlay/Enabled", "false")],
+                crate::i18n::text("shell-off").to_string(),
+                None,
+            ),
+            (
+                &[("Video/Performance Overlay/Enabled", "true")],
+                crate::i18n::text("shell-on").to_string(),
+                None,
+            ),
+        ],
+    )
+}
+
+/// Whether RPCS3 says so over the game when a trophy is earned.
+fn ps3_trophy_notices(now: &crate::ps3_settings::Settings) -> Entry {
+    rpcs3_choice(
+        crate::i18n::text("ps3-trophy-notices"),
+        icons::CATEGORY_TROPHIES,
+        now,
+        &[
+            (
+                &[("Miscellaneous/Show trophy popups", "true")],
+                crate::i18n::text("shell-on").to_string(),
+                None,
+            ),
+            (
+                &[("Miscellaneous/Show trophy popups", "false")],
+                crate::i18n::text("shell-off").to_string(),
+                None,
+            ),
+        ],
+    )
+}
+
+/// The language games speak: every one a PlayStation 3 had, each in its own
+/// words. It follows the shell's language until one is chosen here.
+fn ps3_language(now: &crate::ps3_settings::Settings) -> Entry {
+    let current = now.get("System/Language");
+    let said = crate::ps3_settings::LANGUAGES
+        .iter()
+        .find(|(name, _)| *name == current)
+        .map_or(current.as_str(), |(_, own)| own);
+    let rows = crate::ps3_settings::LANGUAGES
+        .iter()
+        .map(|(name, own)| value(own, None, *name == current, Setting::Ps3Language(name)))
+        .collect();
+    folder(
+        crate::i18n::text("ps3-console-language"),
+        said,
+        icons::SETTING_LANGUAGE,
+        rows,
+    )
+}
+
+/// Which of the pad's buttons each PS3 button is on — one page per PS3
+/// button, the way a console's own button settings are, and one row that puts
+/// them all back. The same for every player, and written into RPCS3's
+/// controller file before every game.
+fn ps3_controller_buttons() -> Entry {
+    let buttons = crate::ps3_settings::buttons();
+    let moved = buttons
+        .iter()
+        .zip(crate::ps3_settings::DEFAULT_BUTTONS)
+        .filter(|((_, on), default)| on != default)
+        .count();
+    let note = if moved == 0 {
+        crate::i18n::text("ps3-buttons-unchanged").to_string()
+    } else {
+        crate::message!("ps3-buttons-moved", "count" => moved)
+    };
+    let mut rows: Vec<Entry> = crate::ps3_settings::PS3_BUTTONS
+        .iter()
+        .zip(&buttons)
+        .map(|((button, message), (_, on))| {
+            let values = crate::ps3_settings::PAD_BUTTONS
+                .iter()
+                .map(|(pad, name, glyph)| {
+                    drawn_value(
+                        crate::i18n::text(name),
+                        None,
+                        glyph,
+                        on == pad,
+                        Setting::Ps3Button { button, to: pad },
+                    )
+                })
+                .collect();
+            let icon = crate::ps3_settings::PAD_BUTTONS
+                .iter()
+                .find(|(pad, _, _)| on == pad)
+                .map_or(icons::CATEGORY_GAMES, |(_, _, glyph)| *glyph);
+            folder(
+                crate::i18n::text(message),
+                &crate::ps3_settings::pad_button_name(on),
+                icon,
+                values,
+            )
+        })
+        .collect();
+    rows.push(action(
+        crate::i18n::text("ps3-buttons-back"),
+        crate::i18n::text("ps3-buttons-back-explanation"),
+        icons::CATEGORY_GAMES,
+        Setting::Ps3ButtonsBack,
+    ));
+    folder(
+        crate::i18n::text("ps3-controller-buttons"),
+        &note,
+        icons::CATEGORY_GAMES,
+        rows,
+    )
+}
+
 /// The page belonging to the Epic Games integration, on a machine that has
 /// its package — Steam's page, for Heroic.
 ///
@@ -8843,6 +9234,254 @@ fn nothing_to_set_about_games() -> Entry {
 /// about a display and is not about how the shell looks — and because a console
 /// that cannot say what it is is a console nobody can be helped over a
 /// telephone with.
+/// The waits each of Settings > Power's timers offers, in seconds. 0 is Never,
+/// and first, so the list reads from "not at all" to "the longest".
+const DIM_CHOICES: [u32; 6] = [0, 30, 60, 120, 300, 600];
+const SCREEN_OFF_CHOICES: [u32; 8] = [0, 60, 120, 300, 600, 900, 1800, 3600];
+const SLEEP_ON_BATTERY_CHOICES: [u32; 6] = [0, 300, 600, 900, 1800, 3600];
+const SLEEP_PLUGGED_IN_CHOICES: [u32; 6] = [0, 900, 1800, 3600, 7200, 10800];
+
+/// Settings > Power: how long the machine waits before it dims, goes dark and
+/// sleeps, what the power button does, and — where the machine has a
+/// power-profiles daemon — which power mode it runs in.
+///
+/// The machine's settings, not this account's: every account and the login
+/// screen share them, and a change is written for all of them. See
+/// [`crate::machine_power`].
+///
+/// Its own page rather than rows under Display or System, because it is the
+/// page somebody holding a handheld goes looking for when the battery is going
+/// down too fast, and everything on it is an answer to that one question.
+///
+/// The waits are the same four rows on every machine except for sleep, which a
+/// machine with a battery is asked twice about — once for the battery and once
+/// for the mains, as a phone is — and a desktop once, as plain Sleep. The power
+/// mode is offered only where there is a daemon to set it, and the battery
+/// saver only where there is also a battery to save.
+fn power_page() -> Entry {
+    let power = power_settings();
+    let battery = BATTERY.lock().unwrap().is_some();
+    let mut rows = vec![
+        wait_row(
+            crate::i18n::text("power-dim-screen"),
+            icons::BRIGHTNESS,
+            power.dim_after,
+            &DIM_CHOICES,
+            PowerValue::DimAfter,
+        ),
+        wait_row(
+            crate::i18n::text("power-turn-off-screen"),
+            icons::SETTING_SCREEN_REST,
+            power.screen_off_after,
+            &SCREEN_OFF_CHOICES,
+            PowerValue::ScreenOffAfter,
+        ),
+    ];
+    if battery {
+        rows.push(wait_row(
+            crate::i18n::text("power-sleep-on-battery"),
+            icons::SETTING_SCHEDULE,
+            power.sleep_on_battery,
+            &SLEEP_ON_BATTERY_CHOICES,
+            PowerValue::SleepOnBattery,
+        ));
+        rows.push(wait_row(
+            crate::i18n::text("power-sleep-plugged-in"),
+            icons::SETTING_SCHEDULE,
+            power.sleep_plugged_in,
+            &SLEEP_PLUGGED_IN_CHOICES,
+            PowerValue::SleepPluggedIn,
+        ));
+    } else {
+        rows.push(wait_row(
+            crate::i18n::text("power-sleep"),
+            icons::SETTING_SCHEDULE,
+            power.sleep_plugged_in,
+            &SLEEP_PLUGGED_IN_CHOICES,
+            PowerValue::SleepPluggedIn,
+        ));
+    }
+    rows.push(power_button_row(power.button));
+    if let Some(profiles) = power_profiles() {
+        rows.push(power_mode_row(&profiles));
+        if battery {
+            rows.push(battery_saver_row(power.battery_saver));
+        }
+    }
+    // The state goes under the page: settings the machine would not take are
+    // this session's alone, and the page says so rather than pretending.
+    let note = match crate::machine_power::standing() {
+        Some(crate::machine_power::Standing::SessionOnly) => {
+            crate::i18n::text("power-session-only")
+        }
+        _ => crate::i18n::text("power-description"),
+    };
+    folder(
+        crate::i18n::text("power-title"),
+        note,
+        icons::SHUTDOWN,
+        rows,
+    )
+}
+
+/// One of the waits: a list of how long, headed by the one in force.
+///
+/// A wait nobody offered — a hand-edited file saying 45 seconds — is listed all
+/// the same, in its place and marked, for the startup category's reason: a
+/// setting somebody chose is a setting they can still see.
+fn wait_row(
+    title: &str,
+    icon: &str,
+    chosen: u32,
+    choices: &[u32],
+    setting: fn(u32) -> PowerValue,
+) -> Entry {
+    let mut waits = choices.to_vec();
+    if !waits.contains(&chosen) {
+        waits.push(chosen);
+        waits.sort_unstable_by_key(|seconds| (*seconds != 0, *seconds));
+    }
+    folder(
+        title,
+        &wait_title(chosen),
+        icon,
+        waits
+            .into_iter()
+            .map(|seconds| {
+                value(
+                    &wait_title(seconds),
+                    None,
+                    seconds == chosen,
+                    Setting::Power(setting(seconds)),
+                )
+            })
+            .collect(),
+    )
+}
+
+/// How a wait is written: Never, or after so many seconds, minutes or hours —
+/// the largest unit it is a whole number of.
+fn wait_title(seconds: u32) -> String {
+    match seconds {
+        0 => crate::i18n::text("power-never").to_string(),
+        s if s % 3600 == 0 => crate::message!("power-after-hours", "count" => s / 3600),
+        s if s % 60 == 0 => crate::message!("power-after-minutes", "count" => s / 60),
+        s => crate::message!("power-after-seconds", "count" => s),
+    }
+}
+
+/// What a press of the power button does. The row says under each answer
+/// what a hold does too, where it is the half somebody might not guess.
+///
+/// Hibernate is listed only where the login manager says the machine can —
+/// or where it is already the answer, for the startup category's reason: a
+/// setting somebody chose is a setting they can still see.
+fn power_button_row(chosen: PowerButton) -> Entry {
+    let name = |button| match button {
+        PowerButton::Sleep => crate::i18n::text("power-button-sleep"),
+        PowerButton::Hibernate => crate::i18n::text("power-button-hibernate"),
+        PowerButton::PowerOff => crate::i18n::text("power-button-power-off"),
+        PowerButton::Menu => crate::i18n::text("power-button-menu"),
+        PowerButton::Nothing => crate::i18n::text("power-button-nothing"),
+    };
+    folder(
+        crate::i18n::text("power-button"),
+        name(chosen),
+        icons::SHUTDOWN,
+        PowerButton::ALL
+            .into_iter()
+            .filter(|button| {
+                *button != PowerButton::Hibernate || can_hibernate() || *button == chosen
+            })
+            .map(|button| {
+                value(
+                    name(button),
+                    Some(match button {
+                        PowerButton::Sleep => crate::i18n::text("power-button-sleep-note"),
+                        PowerButton::Hibernate => crate::i18n::text("power-button-hibernate-note"),
+                        PowerButton::PowerOff => crate::i18n::text("power-button-power-off-note"),
+                        PowerButton::Menu => crate::i18n::text("power-button-menu-note"),
+                        PowerButton::Nothing => crate::i18n::text("power-button-nothing-note"),
+                    }),
+                    button == chosen,
+                    Setting::Power(PowerValue::PowerButton(button)),
+                )
+            })
+            .collect(),
+    )
+}
+
+/// The power mode: the daemon's list, in its order, with the one in force
+/// marked and a word under each about what it is for.
+fn power_mode_row(profiles: &Profiles) -> Entry {
+    let active = profiles
+        .active
+        .map(profile_title)
+        .unwrap_or_else(|| crate::i18n::text("power-mode-unknown").to_string());
+    folder(
+        crate::i18n::text("power-mode"),
+        &active,
+        icons::SETTING_UPDATE_FIRMWARE,
+        profiles
+            .offered
+            .iter()
+            .map(|name| {
+                value(
+                    &profile_title(name),
+                    profile_note(name),
+                    profiles.active == Some(*name),
+                    Setting::Power(PowerValue::Profile(name)),
+                )
+            })
+            .collect(),
+    )
+}
+
+/// A power mode's name as a person reads it. One the daemon invented after
+/// this shell was written is shown by the daemon's own name, which is better
+/// than not showing it.
+fn profile_title(name: &str) -> String {
+    match name {
+        "power-saver" => crate::i18n::text("power-mode-power-saver").to_string(),
+        "balanced" => crate::i18n::text("power-mode-balanced").to_string(),
+        "performance" => crate::i18n::text("power-mode-performance").to_string(),
+        other => other.to_string(),
+    }
+}
+
+fn profile_note(name: &str) -> Option<&'static str> {
+    match name {
+        "power-saver" => Some(crate::i18n::text("power-mode-power-saver-note")),
+        "balanced" => Some(crate::i18n::text("power-mode-balanced-note")),
+        "performance" => Some(crate::i18n::text("power-mode-performance-note")),
+        _ => None,
+    }
+}
+
+/// The power saver by itself when the battery runs low: Off and On, the way
+/// every switch in this tree is.
+fn battery_saver_row(on: bool) -> Entry {
+    folder(
+        crate::i18n::text("power-battery-saver"),
+        crate::i18n::text("power-battery-saver-description"),
+        icons::BATTERY_LOW,
+        vec![
+            value(
+                crate::i18n::text("shell-off"),
+                None,
+                !on,
+                Setting::Power(PowerValue::BatterySaver(false)),
+            ),
+            value(
+                crate::i18n::text("shell-on"),
+                Some(crate::i18n::text("power-battery-saver-on-note")),
+                on,
+                Setting::Power(PowerValue::BatterySaver(true)),
+            ),
+        ],
+    )
+}
+
 fn system(bar: &[crate::apps::Column]) -> Entry {
     folder(
         crate::i18n::text("shell-system"),
@@ -8853,6 +9492,7 @@ fn system(bar: &[crate::apps::Column]) -> Entry {
             picture_in_picture_page(),
             clock_page(),
             button_hints_switch(),
+            low_end_switch(),
             system_information(),
         ],
     )
@@ -9042,6 +9682,42 @@ fn button_hints_switch() -> Entry {
                 )),
                 on,
                 Setting::ButtonHints(true),
+            ),
+        ],
+    )
+}
+
+/// Low-end hardware mode, Off and On.
+///
+/// The row says what the mode is for rather than what it turns off, because
+/// that is the question somebody on this page is asking: their device is
+/// struggling. What it turns off is under On, in a line, for somebody who wants
+/// to know what they are giving up. Where nobody has chosen and the answer is
+/// the automatic one, the row says the device was the reason.
+fn low_end_switch() -> Entry {
+    let on = low_end();
+    let automatic = LOW_END.lock().unwrap().is_none();
+    let comment = if automatic && on {
+        crate::i18n::text("low-end-on-for-this-device")
+    } else {
+        crate::i18n::text("low-end-description")
+    };
+    folder(
+        crate::i18n::text("low-end-title"),
+        comment,
+        icons::SETTING_PARTICLES,
+        vec![
+            value(
+                crate::i18n::text("shell-off"),
+                Some(crate::i18n::text("low-end-off-note")),
+                !on,
+                Setting::LowEnd(false),
+            ),
+            value(
+                crate::i18n::text("shell-on"),
+                Some(crate::i18n::text("low-end-on-note")),
+                on,
+                Setting::LowEnd(true),
             ),
         ],
     )
@@ -10351,6 +11027,14 @@ pub fn preview(setting: Option<Setting>) {
             | Setting::StartMusic(_)
             | Setting::BatteryPercent(_)
             | Setting::ButtonHints(_)
+            // Nor a Power row: a wait previewed would be a screen dimming under
+            // somebody who walked past "30 seconds", and the power mode is the
+            // daemon's to change, not a cursor's.
+            | Setting::Power(_)
+            // Nor the low-end mode: what it changes is the whole frame, and
+            // walking past On would take the wallpaper's motion away under
+            // somebody reading a list of two.
+            | Setting::LowEnd(_)
             // Nor a Steam row, and the two below it could not preview if they
             // wanted to: what they change is what happens the next time the
             // session starts and the next time a game ends. The integration
@@ -10377,6 +11061,12 @@ pub fn preview(setting: Option<Setting>) {
             | Setting::CoreOption { .. }
             | Setting::Emulator { .. }
             | Setting::EmulatorArt
+            // RPCS3's settings, for the emulators' reason: a file it reads
+            // when a game starts, and nothing is running to preview them on.
+            | Setting::Rpcs3(_)
+            | Setting::Ps3Language(_)
+            | Setting::Ps3Button { .. }
+            | Setting::Ps3ButtonsBack
             // Nor does a switch the Epic helper throws: highlighting On must
             // not turn Heroic's saves sync on.
             | Setting::EpicCloudSaves(_)
@@ -10424,6 +11114,225 @@ pub fn preview(setting: Option<Setting>) {
             theme::restore_style();
         }
     }
+}
+
+/// One press on Settings > Power.
+///
+/// The four waits are in seconds, and 0 is Never — the value a row reading
+/// "Never" carries, so there is one number for "not at all" and no second flag
+/// to disagree with it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PowerValue {
+    /// Dim the screen after this long with nothing used.
+    DimAfter(u32),
+    /// Switch the screen off after this long.
+    ScreenOffAfter(u32),
+    /// Put the machine to sleep after this long, while it runs on its battery.
+    SleepOnBattery(u32),
+    /// And while it is plugged in — which on a machine with no battery is the
+    /// only way it ever runs, and the page calls the row plain Sleep.
+    SleepPluggedIn(u32),
+    /// What a press of the machine's power button does.
+    PowerButton(PowerButton),
+    /// Go to the power saver by itself while the battery is low.
+    BatterySaver(bool),
+    /// The power mode, by the power-profiles daemon's own name for it —
+    /// `power-saver`, `balanced`, `performance`. Not written down here; see
+    /// [`Setting::Power`].
+    Profile(&'static str),
+}
+
+/// What a short press of the power button does. A hold always opens the power
+/// menu, whichever this is: see `idle::HOLD_FOR_THE_MENU`.
+///
+/// The machine's answer rather than the session's: it is written for the login
+/// manager too, so the button means the same at the login screen and at a text
+/// console as it does here — see [`crate::machine_power`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum PowerButton {
+    /// Put the machine to sleep, which is what a console's button does.
+    #[default]
+    Sleep,
+    /// Hibernate: everything written to the disk and the power cut, which a
+    /// machine that sits unplugged for days is better off with. Offered only
+    /// where the machine can.
+    Hibernate,
+    /// Shut the machine down.
+    PowerOff,
+    /// Open the power menu, which is what a desktop's does.
+    Menu,
+    /// Nothing at all, for a button that sits where it gets knocked.
+    Nothing,
+}
+
+impl PowerButton {
+    /// Every answer, in the order the page lists them.
+    pub const ALL: [PowerButton; 5] = [
+        PowerButton::Sleep,
+        PowerButton::Hibernate,
+        PowerButton::PowerOff,
+        PowerButton::Menu,
+        PowerButton::Nothing,
+    ];
+
+    /// The word written into the machine's power settings.
+    pub fn key(self) -> &'static str {
+        match self {
+            PowerButton::Sleep => "sleep",
+            PowerButton::Hibernate => "hibernate",
+            PowerButton::PowerOff => "power-off",
+            PowerButton::Menu => "menu",
+            PowerButton::Nothing => "nothing",
+        }
+    }
+
+    pub fn from_key(key: &str) -> Option<Self> {
+        PowerButton::ALL
+            .into_iter()
+            .find(|button| button.key() == key)
+    }
+}
+
+/// Everything Settings > Power remembers, in one piece: the idle policy reads
+/// all of it at once, and a test puts all of it back at once.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PowerSettings {
+    pub dim_after: u32,
+    pub screen_off_after: u32,
+    pub sleep_on_battery: u32,
+    pub sleep_plugged_in: u32,
+    pub button: PowerButton,
+    pub battery_saver: bool,
+}
+
+impl PowerSettings {
+    /// What a machine nobody has set anything on does, which is what a handheld
+    /// console does: the screen dims after two minutes and goes out after five,
+    /// the machine sleeps a quarter of an hour into its battery and an hour into
+    /// the mains, the button puts it to sleep, and a low battery turns the
+    /// power saver on.
+    ///
+    /// Sleep is on for the mains too, deliberately. A console left on the menu
+    /// all night is the case this whole page is for, and what would have made
+    /// sleeping wrong — a download, an update, music — holds it off for as long
+    /// as it lasts. See [`crate::idle`].
+    pub const DEFAULT: Self = Self {
+        dim_after: 120,
+        screen_off_after: 300,
+        sleep_on_battery: 900,
+        sleep_plugged_in: 3600,
+        button: PowerButton::Sleep,
+        battery_saver: true,
+    };
+}
+
+/// What Settings > Power is set to. See [`PowerSettings::DEFAULT`].
+static POWER: Mutex<PowerSettings> = Mutex::new(PowerSettings::DEFAULT);
+
+/// What Settings > Power is set to.
+pub fn power_settings() -> PowerSettings {
+    *POWER.lock().unwrap()
+}
+
+/// What the machine's power settings say — read from the machine's file at the
+/// start and whenever another account changes it. See
+/// [`crate::machine_power`], which is where they are kept, and why not here.
+pub fn note_power(settings: PowerSettings) {
+    *POWER.lock().unwrap() = settings;
+}
+
+/// Whether the machine can hibernate, as the login manager says. Reported
+/// rather than remembered, like [`BATTERY`].
+static CAN_HIBERNATE: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// The login manager's answer to whether the machine can hibernate.
+pub fn note_can_hibernate(can: bool) {
+    CAN_HIBERNATE.store(can, std::sync::atomic::Ordering::Relaxed);
+}
+
+fn can_hibernate() -> bool {
+    CAN_HIBERNATE.load(std::sync::atomic::Ordering::Relaxed)
+}
+
+/// The power modes the machine's power-profiles daemon offers, and the one in
+/// force — `None` where there is no daemon to ask, which is a machine where the
+/// Power mode row is not offered at all.
+///
+/// Reported rather than remembered, on the terms [`BATTERY`] is: a statement
+/// about the machine made by [`crate::power_bus`], and none of it goes into the
+/// settings file.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct Profiles {
+    /// The daemon's own names, in the order it lists them.
+    pub offered: Vec<&'static str>,
+    pub active: Option<&'static str>,
+}
+
+static PROFILES: Mutex<Option<Profiles>> = Mutex::new(None);
+
+/// Record what the daemon said. `true` when the column has to be rebuilt to
+/// say so.
+pub fn note_power_profiles(listing: Option<Profiles>) -> bool {
+    let mut held = PROFILES.lock().unwrap();
+    if *held == listing {
+        return false;
+    }
+    *held = listing;
+    true
+}
+
+/// The power modes on offer, as last reported.
+pub fn power_profiles() -> Option<Profiles> {
+    PROFILES.lock().unwrap().clone()
+}
+
+/// Low-end hardware mode, as somebody chose it — `None` where nobody has, which
+/// is the automatic answer: on where the machine draws without a graphics chip
+/// of its own, off everywhere else. See [`low_end`].
+static LOW_END: Mutex<Option<bool>> = Mutex::new(None);
+
+/// Whether the renderer found itself drawing on the processor — llvmpipe, or
+/// any adapter that says it is a CPU. Reported once, by the renderer, when it
+/// opens; nothing of it is written down.
+static SOFTWARE_RENDERER: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// Record what the renderer opened. `true` when the column has to be rebuilt,
+/// which is when the automatic answer to [`low_end`] changes with it.
+pub fn note_software_renderer(software: bool) -> bool {
+    use std::sync::atomic::Ordering;
+    SOFTWARE_RENDERER.swap(software, Ordering::AcqRel) != software
+}
+
+/// Whether the shell draws itself the cheap way.
+///
+/// **What a person gets.** A still wallpaper, drawn once and again only when
+/// something about it changes — the accent, a game's picture behind the bar,
+/// the size of the screen — instead of a function evaluated over every pixel
+/// of every screen sixty times a second; the plain materials for the wallpaper
+/// and the marks, whatever the Theme page says; no sparkles; no blur behind
+/// the guide; glass that takes one picture of what is behind it per frame
+/// rather than one per layer; a film wallpaper held on its first frame; and a
+/// start screen redrawn a few times a second while nothing on it is moving,
+/// and at thirty while something is. The bar still moves: a cursor walking
+/// down a column is the one animation that is not decoration.
+///
+/// **Who gets it without asking.** A machine whose renderer is the processor
+/// itself. There the shell as it is drawn by default is not slow but unusable,
+/// and somebody who cannot use the shell cannot find the switch in it — so
+/// the answer until they choose is on. Everywhere else it is off until chosen.
+/// Either way `low-end-mode` in `shell.toml` decides it for a machine the
+/// shell cannot be driven on at all.
+pub fn low_end() -> bool {
+    LOW_END
+        .lock()
+        .unwrap()
+        .unwrap_or_else(|| SOFTWARE_RENDERER.load(std::sync::atomic::Ordering::Acquire))
+}
+
+/// Low-end hardware mode as somebody chose it, or `None` where the answer is
+/// still the automatic one.
+pub fn low_end_chosen() -> Option<bool> {
+    *LOW_END.lock().unwrap()
 }
 
 /// Put a setting into force, and write it down. `false` if it names something
@@ -10531,6 +11440,12 @@ fn apply_with(setting: Setting, persist: impl FnOnce(&Stored)) -> bool {
                 return false;
             }
             tracing::info!(part = part.title(), theme = name, "theme");
+            // Leaving the user's own picture lets it go: the file the setting
+            // names, and with it the shell's copy, which the next frame takes
+            // off the disk. See [`CUSTOM_WALLPAPER`].
+            if part == theme::Part::Wallpaper && name != wallpaper::CUSTOM {
+                *CUSTOM_WALLPAPER.lock().unwrap() = None;
+            }
         }
         // Nothing to tell anybody, for the material's reason: the wallpaper
         // reads this once a frame.
@@ -10564,6 +11479,33 @@ fn apply_with(setting: Setting, persist: impl FnOnce(&Stored)) -> bool {
         Setting::EmulatorArt => {}
         // Heroic's to remember, through its helper — see the variant.
         Setting::EpicCloudSaves(_) => {}
+        // RPCS3's, written where RPCS3 reads them and nowhere else.
+        Setting::Rpcs3(pairs) => {
+            if !crate::ps3_settings::write(pairs) {
+                return false;
+            }
+        }
+        Setting::Ps3Language(language) => {
+            if !crate::ps3_settings::write(&[("System/Language", language)]) {
+                return false;
+            }
+            *PS3_LANGUAGE_CHOSEN.lock().unwrap() = true;
+        }
+        // The shell's own: it writes RPCS3's controller file itself before
+        // every game, from this.
+        Setting::Ps3Button { button, to } => {
+            let mut buttons: BTreeMap<String, String> = crate::ps3_settings::buttons()
+                .into_iter()
+                .map(|(button, on)| (button.to_string(), on))
+                .collect();
+            buttons.insert(button.to_string(), to.to_string());
+            *PS3_BUTTONS.lock().unwrap() = crate::ps3_settings::moved(&buttons);
+            tracing::info!(button, to, "a PlayStation 3 button");
+        }
+        Setting::Ps3ButtonsBack => {
+            PS3_BUTTONS.lock().unwrap().clear();
+            tracing::info!("the PlayStation 3 buttons, back where they were");
+        }
         Setting::StartMusic(playing) => {
             *START_MUSIC.lock().unwrap() = playing;
             tracing::info!(playing, "Start music");
@@ -10588,6 +11530,37 @@ fn apply_with(setting: Setting, persist: impl FnOnce(&Stored)) -> bool {
         Setting::ButtonHints(shown) => {
             *BUTTON_HINTS.lock().unwrap() = shown;
             tracing::info!(shown, "button hints");
+        }
+        // Nothing to tell anybody: the renderer and the theme read it back
+        // every frame. See [`low_end`].
+        Setting::LowEnd(on) => {
+            *LOW_END.lock().unwrap() = Some(on);
+            tracing::info!(on, "low-end hardware mode");
+        }
+        // The daemon's to remember, as a network is NetworkManager's: the row
+        // is marked when it says the mode has changed. See [`Setting::Power`].
+        Setting::Power(PowerValue::Profile(name)) => {
+            tracing::info!(profile = name, "the power mode");
+            return true;
+        }
+        // The idle policy reads these back every pass of the loop, so the frame
+        // this row was pressed on is the one the new wait starts counting on —
+        // see [`crate::idle`]. Nothing goes into `shell.toml`: they are the
+        // machine's settings, which the shell hands to the machine as the row
+        // is pressed. See [`crate::machine_power`].
+        Setting::Power(value) => {
+            let mut power = POWER.lock().unwrap();
+            match value {
+                PowerValue::DimAfter(seconds) => power.dim_after = seconds,
+                PowerValue::ScreenOffAfter(seconds) => power.screen_off_after = seconds,
+                PowerValue::SleepOnBattery(seconds) => power.sleep_on_battery = seconds,
+                PowerValue::SleepPluggedIn(seconds) => power.sleep_plugged_in = seconds,
+                PowerValue::PowerButton(button) => power.button = button,
+                PowerValue::BatterySaver(on) => power.battery_saver = on,
+                PowerValue::Profile(_) => {}
+            }
+            tracing::info!(?value, "power");
+            return true;
         }
         // Three switches about one program, and this module's whole part in
         // them is remembering which way each is thrown. What has to *happen* —
@@ -11044,7 +12017,19 @@ fn adopt_theme(stored: &Stored) {
     // further down: `Custom` then falls back to the shell's own scene by the
     // same route a file that turns out to be undecodable does, and the Settings
     // row goes back to saying what it can honestly offer.
+    //
+    // And a file under any other material is not the wallpaper at all. It is
+    // what a shell that kept every picture left behind — see
+    // [`CUSTOM_WALLPAPER`] — so it is not taken, the first frame takes the copy
+    // off the disk, and the next save leaves the key out.
+    let wallpaper_named = stored.theme_wallpaper.as_ref().or(stored.theme.as_ref());
     match stored.wallpaper_file.as_ref().map(PathBuf::from) {
+        Some(file) if wallpaper_named.map(String::as_str) != Some(wallpaper::CUSTOM) => {
+            tracing::info!(
+                file = %file.display(),
+                "the wallpaper is not the user's own, so the picture it was is let go"
+            );
+        }
         Some(file) if file.is_file() => *CUSTOM_WALLPAPER.lock().unwrap() = Some(file),
         Some(file) => {
             tracing::warn!(
@@ -11129,6 +12114,9 @@ fn adopt(stored: Stored) {
     // would go to change it — see [`crate::retroarch`], which reads the folder
     // and says what it found.
     *ROMS_FOLDER.lock().unwrap() = stored.retroarch_roms.as_deref().map(PathBuf::from);
+    *PS3_FOLDER.lock().unwrap() = stored.ps3_folder.as_deref().map(PathBuf::from);
+    *PS3_LANGUAGE_CHOSEN.lock().unwrap() = stored.ps3_language_chosen.unwrap_or(false);
+    *PS3_BUTTONS.lock().unwrap() = stored.ps3_buttons.clone().unwrap_or_default();
 
     // Before any display's section is read: a night light following the sun is
     // only kept where there is a sun to follow, and this is what decides that.
@@ -11198,6 +12186,10 @@ fn adopt(stored: Stored) {
     // [`button_hints`], where the default is argued.
     if let Some(shown) = stored.button_hints {
         *BUTTON_HINTS.lock().unwrap() = shown;
+    }
+    // A file that says nothing about the low-end mode leaves it automatic.
+    if let Some(on) = stored.low_end_mode {
+        *LOW_END.lock().unwrap() = Some(on);
     }
     // And a file that says nothing about Steam leaves the integration on, the
     // client unstarted until a game is pressed, and a client that has been
@@ -11586,11 +12578,14 @@ struct Stored {
     /// [`crate::paper::keep`]: a setting that named somebody's Downloads folder
     /// would be a wallpaper that disappeared the next time they tidied it.
     ///
-    /// Written whatever the theme says, so that a machine stood down to Simple
-    /// for a while has its picture back when it is asked for. Read by this shell
-    /// alone: the compositor's bridge frame and the login screen both draw the
-    /// shell's own scene here — see [`wallpaper::Style::analytic`] — because
-    /// neither of them is in a position to open a file under somebody's home.
+    /// Written only while it is the wallpaper: choosing Default or Simple
+    /// forgets it and takes the copy off the disk, and a file left under another
+    /// material by an older shell is not read — see [`CUSTOM_WALLPAPER`].
+    ///
+    /// Read by this shell alone: the compositor's bridge frame and the login
+    /// screen both draw the shell's own scene here — see
+    /// [`wallpaper::Style::analytic`] — because neither of them is in a position
+    /// to open a file under somebody's home.
     ///
     /// A file that is not there when the session starts is not an error and does
     /// not clear the key: the shell draws its own wallpaper for that session and
@@ -11608,6 +12603,14 @@ struct Stored {
     /// machine", and a shell that came back knowing where their games were
     /// would not have taken it off.
     retroarch_roms: Option<String>,
+    /// The folder somebody's PlayStation 3 games are in — see [`PS3_FOLDER`].
+    /// Read only where the `lxb-rpcs3` package is installed.
+    ps3_folder: Option<String>,
+    /// Whether the PlayStation 3's language was chosen rather than followed —
+    /// see [`PS3_LANGUAGE_CHOSEN`]. The language itself is RPCS3's setting.
+    ps3_language_chosen: Option<bool>,
+    /// The PS3 buttons moved to other pad buttons — see [`PS3_BUTTONS`].
+    ps3_buttons: Option<BTreeMap<String, String>>,
     /// What a display with no section of its own is set to.
     ///
     /// These four are where the first, single-display version of this page
@@ -11646,6 +12649,10 @@ struct Stored {
     /// with the hints off is a session with them off in the file question a
     /// program raises too — see [`button_hints`].
     button_hints: Option<bool>,
+    /// Low-end hardware mode, where somebody chose it. Missing is the automatic
+    /// answer — see [`low_end`] — and is written back as missing, so a machine
+    /// that gains a graphics chip is not held to an answer nobody gave.
+    low_end_mode: Option<bool>,
     /// Which column of the start screen a session opens on, by the name the
     /// column goes under on the bar rather than the one it is drawn with.
     ///
@@ -12008,6 +13015,9 @@ fn stored() -> Stored {
         theme_particles: Some(theme::applied_particles()),
         wallpaper_file: custom_wallpaper().map(|file| file.display().to_string()),
         retroarch_roms: roms_folder().map(|at| at.display().to_string()),
+        ps3_folder: ps3_folder().map(|at| at.display().to_string()),
+        ps3_language_chosen: ps3_language_chosen().then_some(true),
+        ps3_buttons: Some(ps3_buttons()).filter(|buttons| !buttons.is_empty()),
         // Never written. See [`Stored::theme`]: this is the key the two above
         // replaced, and writing it as well would be a third opinion about a
         // setting that now has two.
@@ -12019,6 +13029,7 @@ fn stored() -> Stored {
         battery_percent: Some(battery_percent()),
         show_hidden: Some(show_hidden()),
         button_hints: Some(button_hints()),
+        low_end_mode: *LOW_END.lock().unwrap(),
         // The settings themselves and never what this session is *doing*: a
         // session started with `--no-steam` drives no client and has still not
         // been told to stop wanting one, so writing `false` here would be the
@@ -12398,7 +13409,9 @@ const PREAMBLE: &str = "\
 # theme-wallpaper says Custom wallpaper. It is the shell's own copy of what was
 # chosen, under $XDG_DATA_HOME/lxb/wallpaper, so that moving or deleting the
 # original does not take the wallpaper with it — choose the file again from
-# Settings > Appearance > Theme > Wallpaper > Custom wallpaper to replace it. A
+# Settings > Appearance > Theme > Wallpaper > Custom wallpaper to replace it.
+# Choosing another file or another wallpaper deletes the copy, and this key
+# goes with it; the file you chose it from is never touched. A
 # film is drawn without its sound, which is not a setting: nothing in this shell
 # decodes audio. A file that is not there when the session starts is not an
 # error; the shell draws its own wallpaper and leaves this key alone, because
@@ -12497,6 +13510,18 @@ const PREAMBLE: &str = "\
 # the foot of the file question an application asks. Applications built on
 # lxb-toolkit read this key too and write their own legends from it, which is
 # why it is here rather than kept to the shell.
+#
+# Settings > Power is not kept here. How soon the screen dims, goes dark and
+# the machine sleeps, and what the power button does, are the device's settings,
+# shared by every account and by the login screen, and they are kept in
+# /etc/lxb/power.toml.
+#
+# low-end-mode: whether the shell draws itself the cheap way — a still
+# wallpaper drawn once, the plain materials, no sparkles and no blur, and a few
+# frames a second while nothing moves — which is Settings > System > Low-end
+# hardware mode. Missing, which is the default, is automatic: on where the
+# machine draws on its processor rather than a graphics chip, off everywhere
+# else. Set it here by hand for a device the shell cannot be driven on at all.
 #
 # startup-category: which column of the start screen a session opens on, by the
 # name that column goes under on the bar — settings, system, software,
@@ -13080,6 +14105,10 @@ mod tests {
         battery_percent: bool,
         show_hidden: bool,
         button_hints: bool,
+        power: PowerSettings,
+        profiles: Option<Profiles>,
+        low_end: Option<bool>,
+        software: bool,
         steam_integration: bool,
         steam_at_startup: bool,
         steam_after_a_game: bool,
@@ -13127,6 +14156,10 @@ mod tests {
             battery_percent: battery_percent(),
             show_hidden: show_hidden(),
             button_hints: button_hints(),
+            power: power_settings(),
+            profiles: power_profiles(),
+            low_end: *LOW_END.lock().unwrap(),
+            software: SOFTWARE_RENDERER.load(std::sync::atomic::Ordering::Acquire),
             // The statics rather than the readers, because the readers fold the
             // flag in and this has to be able to put back exactly what it took.
             steam_integration: *STEAM_INTEGRATION.lock().unwrap(),
@@ -13184,6 +14217,11 @@ mod tests {
         *KEYBOARD_DISPLAY.lock().unwrap() = None;
         *POINTER.lock().unwrap() = Pointer::DEFAULT;
         *INHERITED.lock().unwrap() = Hdr::default();
+        *POWER.lock().unwrap() = PowerSettings::DEFAULT;
+        note_can_hibernate(false);
+        note_power_profiles(None);
+        *LOW_END.lock().unwrap() = None;
+        note_software_renderer(false);
         saved
     }
 
@@ -13205,6 +14243,10 @@ mod tests {
         *BATTERY_PERCENT.lock().unwrap() = saved.battery_percent;
         *SHOW_HIDDEN.lock().unwrap() = saved.show_hidden;
         *BUTTON_HINTS.lock().unwrap() = saved.button_hints;
+        *POWER.lock().unwrap() = saved.power;
+        note_power_profiles(saved.profiles);
+        *LOW_END.lock().unwrap() = saved.low_end;
+        note_software_renderer(saved.software);
         *STEAM_INTEGRATION.lock().unwrap() = saved.steam_integration;
         *STEAM_AT_STARTUP.lock().unwrap() = saved.steam_at_startup;
         *STEAM_AFTER_A_GAME.lock().unwrap() = saved.steam_after_a_game;
@@ -14268,6 +15310,76 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
+    /// Leaving the user's own picture lets it go. Choosing Default or Simple
+    /// forgets the file and writes it down forgotten, which is what has the
+    /// next frame take the copy off the disk. At startup, a file an older shell
+    /// left under another material is not taken up.
+    #[test]
+    fn a_wallpaper_nobody_is_using_is_let_go() {
+        let _held = WALLPAPER.lock().unwrap_or_else(|held| held.into_inner());
+        let _put_back = WallpaperRestore::taken();
+        let icons = theme::applied_style(theme::Part::Icons);
+        let kept = Path::new("/home/somebody/.local/share/lxb/wallpaper/reel.webm");
+
+        for material in wallpaper::STYLES {
+            choose_custom_wallpaper_without_writing(kept);
+            let mut persisted = None;
+            assert!(apply_with(
+                Setting::Style(theme::Part::Wallpaper, material),
+                |stored| {
+                    persisted = Some((
+                        stored.theme_wallpaper.clone(),
+                        stored.wallpaper_file.clone(),
+                    ))
+                },
+            ));
+            assert_eq!(custom_wallpaper(), None, "{material}");
+            assert_eq!(
+                persisted,
+                Some((Some(material.to_string()), None)),
+                "and written down without it"
+            );
+        }
+
+        // The marks are the other half, and a mark says nothing about the
+        // picture behind it.
+        choose_custom_wallpaper_without_writing(kept);
+        assert!(apply_with(
+            Setting::Style(theme::Part::Icons, "Simple"),
+            |_| {}
+        ));
+        assert_eq!(custom_wallpaper().as_deref(), Some(kept));
+        theme::set_style(theme::Part::Icons, icons.name());
+
+        // A file that is really there, so that it is the material and nothing
+        // else that refuses it: the machine this was written on had a film of a
+        // gigabyte and a half under Default.
+        let dir = std::env::temp_dir().join(format!("lxb-let-go-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).expect("a scratch directory");
+        let file = dir.join("reel.webm");
+        std::fs::write(&file, b"x").expect("a file to point at");
+        for stored in [
+            Stored {
+                theme_wallpaper: Some("Default".to_string()),
+                wallpaper_file: Some(file.display().to_string()),
+                ..Stored::default()
+            },
+            // And under the key both halves shared before they were two.
+            Stored {
+                theme: Some("Simple".to_string()),
+                wallpaper_file: Some(file.display().to_string()),
+                ..Stored::default()
+            },
+        ] {
+            *CUSTOM_WALLPAPER.lock().unwrap() = None;
+            adopt_theme(&stored);
+            assert_eq!(custom_wallpaper(), None, "{stored:?}");
+        }
+        theme::set_style(theme::Part::Icons, icons.name());
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     /// The two keys the halves are written under, spelled once and asserted
     /// here.
     ///
@@ -14873,6 +15985,215 @@ mod tests {
                 |_| {},
             ));
             assert!(!button_hints());
+        });
+    }
+
+    /// Settings > Power, as this machine's hardware lays it out.
+    fn power_rows() -> Vec<Entry> {
+        power_page()
+            .entries()
+            .expect("Power opens onto its rows")
+            .to_vec()
+    }
+
+    fn power_titles(rows: &[Entry]) -> Vec<String> {
+        rows.iter().map(|entry| entry.title().to_string()).collect()
+    }
+
+    fn power_row<'a>(rows: &'a [Entry], title: &str) -> &'a Entry {
+        rows.iter()
+            .find(|entry| entry.title() == title)
+            .unwrap_or_else(|| panic!("the Power page has a {title} row"))
+    }
+
+    /// A machine with no battery is asked about sleep once, as plain Sleep, and
+    /// is not offered a power mode nobody could set.
+    #[test]
+    fn a_desktop_is_asked_about_sleep_once() {
+        with_battery(None, || {
+            assert_eq!(
+                power_titles(&power_rows()),
+                ["Dim screen", "Turn off screen", "Sleep", "Power button"]
+            );
+        });
+    }
+
+    /// A handheld is asked twice — on the battery and on the mains — and where
+    /// the machine has a power-profiles daemon, offered its modes and the
+    /// battery saver.
+    #[test]
+    fn a_handheld_is_asked_about_sleep_twice_and_offered_the_power_modes() {
+        let charge = Some(crate::power::Charge {
+            percent: 50,
+            charging: false,
+        });
+        with_battery(charge, || {
+            note_power_profiles(Some(Profiles {
+                offered: vec!["power-saver", "balanced", "performance"],
+                active: Some("balanced"),
+            }));
+            let rows = power_rows();
+            assert_eq!(
+                power_titles(&rows),
+                [
+                    "Dim screen",
+                    "Turn off screen",
+                    "Sleep on battery",
+                    "Sleep when plugged in",
+                    "Power button",
+                    "Power mode",
+                    "Battery saver",
+                ]
+            );
+            let mode = power_row(&rows, "Power mode");
+            assert_eq!(
+                mode.comment(),
+                Some("Balanced"),
+                "the mode in force, under the row"
+            );
+            let modes = mode.entries().unwrap();
+            assert_eq!(
+                power_titles(modes),
+                ["Power saver", "Balanced", "Performance"]
+            );
+            assert!(modes[1].chosen() && !modes[0].chosen() && !modes[2].chosen());
+            assert_eq!(
+                power_row(&rows, "Sleep on battery").comment(),
+                Some("After 15 minutes")
+            );
+            assert_eq!(
+                power_row(&rows, "Sleep when plugged in").comment(),
+                Some("After 1 hour")
+            );
+        });
+    }
+
+    /// A wait is chosen and put in force — and not written into the account's
+    /// own file, because it is the machine's — and a wait nobody offered is
+    /// still shown, where it belongs and marked.
+    #[test]
+    fn a_wait_is_chosen_and_kept_out_of_the_accounts_file() {
+        with_battery(None, || {
+            let dim = || power_row(&power_rows(), "Dim screen").clone();
+            assert_eq!(dim().comment(), Some("After 2 minutes"));
+            let values = dim().entries().unwrap().to_vec();
+            assert_eq!(
+                power_titles(&values),
+                [
+                    "Never",
+                    "After 30 seconds",
+                    "After 1 minute",
+                    "After 2 minutes",
+                    "After 5 minutes",
+                    "After 10 minutes",
+                ]
+            );
+            assert!(values[3].chosen());
+
+            assert!(apply_with(values[1].setting().unwrap(), |_| {
+                panic!("the machine's power settings are not the account's to write down")
+            }));
+            assert_eq!(power_settings().dim_after, 30);
+            assert!(
+                dim().entries().unwrap()[1].chosen(),
+                "the mark moves with it"
+            );
+            let body = toml::to_string_pretty(&stored()).unwrap();
+            assert!(!body.contains("dim-screen-after"), "{body}");
+
+            // Hand-edited to a wait the page does not offer.
+            POWER.lock().unwrap().dim_after = 45;
+            let values = dim().entries().unwrap().to_vec();
+            assert_eq!(values[2].title(), "After 45 seconds");
+            assert!(values[2].chosen());
+            assert_eq!(dim().comment(), Some("After 45 seconds"));
+        });
+    }
+
+    /// The power button's answers — hibernate only where the machine can — and
+    /// the one chosen marked.
+    #[test]
+    fn the_power_button_is_a_press_that_sleeps_until_told_otherwise() {
+        with_battery(None, || {
+            let button = || power_row(&power_rows(), "Power button").clone();
+            assert_eq!(button().comment(), Some("Sleep"));
+            let answers = button().entries().unwrap().to_vec();
+            assert_eq!(
+                power_titles(&answers),
+                ["Sleep", "Turn off", "Power menu", "Do nothing"]
+            );
+            apply_with(answers[2].setting().unwrap(), |_| {});
+            assert_eq!(power_settings().button, PowerButton::Menu);
+            assert!(button().entries().unwrap()[2].chosen());
+
+            note_can_hibernate(true);
+            let answers = button().entries().unwrap().to_vec();
+            assert_eq!(
+                power_titles(&answers),
+                ["Sleep", "Hibernate", "Turn off", "Power menu", "Do nothing"]
+            );
+            apply_with(answers[1].setting().unwrap(), |_| {});
+            note_can_hibernate(false);
+            assert_eq!(
+                button().comment(),
+                Some("Hibernate"),
+                "an answer already chosen is still listed"
+            );
+            assert_eq!(button().entries().unwrap().len(), 5);
+        });
+    }
+
+    /// Low-end hardware mode is off on a machine with a graphics chip and on
+    /// where the renderer is the processor, until somebody chooses — and what
+    /// they choose is written down, while the automatic answer is not.
+    #[test]
+    fn low_end_mode_is_automatic_until_chosen() {
+        with_displays(&[], || {
+            let row = || {
+                system_page()
+                    .into_iter()
+                    .find(|entry| entry.title() == "Low-end hardware mode")
+                    .expect("the System page offers the low-end mode")
+            };
+            assert!(!low_end());
+            assert!(
+                row().entries().unwrap()[0].chosen(),
+                "off with a graphics chip"
+            );
+            assert_eq!(stored().low_end_mode, None, "and nothing is written down");
+
+            note_software_renderer(true);
+            assert!(low_end(), "on where the processor draws");
+            assert_eq!(row().comment(), Some("On, to suit this device"));
+            assert!(row().entries().unwrap()[1].chosen());
+
+            let off = row().entries().unwrap()[0].setting().unwrap();
+            let mut persisted = None;
+            assert!(apply_with(off, |stored| persisted = Some(stored.low_end_mode)));
+            assert!(!low_end(), "a choice outranks the machine");
+            assert_eq!(persisted, Some(Some(false)));
+            assert_eq!(
+                row().comment(),
+                Some("Uses less of the graphics chip and the processor")
+            );
+
+            let body = toml::to_string_pretty(&stored()).unwrap();
+            assert!(body.contains("low-end-mode = false"), "{body}");
+            *LOW_END.lock().unwrap() = None;
+            adopt(toml::from_str(&body).unwrap());
+            assert_eq!(low_end_chosen(), Some(false), "and it comes back");
+        });
+    }
+
+    /// The power mode is the daemon's to remember, so nothing is written down
+    /// when one is chosen.
+    #[test]
+    fn the_power_mode_is_not_written_down() {
+        with_battery(None, || {
+            assert!(apply_with(
+                Setting::Power(PowerValue::Profile("performance")),
+                |_| panic!("the power mode is not the shell's to write down"),
+            ));
         });
     }
 
@@ -18122,6 +19443,7 @@ hdr = true
                     "Picture-in-Picture",
                     "Clock",
                     "Button hints",
+                    "Low-end hardware mode",
                     "System information"
                 ],
                 "the settings come first and the page to read comes last"

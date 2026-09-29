@@ -303,6 +303,10 @@ pub struct Lattice {
     /// Dropping a [`Child`] never terminates the process, so applications still
     /// outlive the shell if LineXinBar itself exits first.
     launched_apps: Vec<LaunchedApp>,
+    /// The pads the next PlayStation 3 game is handed, as the event nodes of
+    /// the guard's copies in player order — set by the shell the moment
+    /// before it starts one. See [`crate::ps3::input_config`].
+    pub rpcs3_pads: Vec<std::path::PathBuf>,
 }
 
 /// Where one display's bar is pointing.
@@ -629,6 +633,10 @@ struct LaunchedApp {
     /// playtime and exits — so its going is the moment the library on the
     /// disk has something new in it. See [`Lattice::running_through_heroic`].
     through_heroic: bool,
+    /// Whether this is RPCS3 playing a game. Counted, as Heroic's couriers
+    /// are, so a game ending is noticed: what it unlocked is read again. See
+    /// [`Lattice::running_through_rpcs3`].
+    through_rpcs3: bool,
 }
 
 /// One game a launched process was playing, and how quickly it stopped.
@@ -678,6 +686,7 @@ impl Lattice {
             wayland_display,
             xwayland_display,
             launched_apps: Vec::new(),
+            rpcs3_pads: Vec::new(),
         }
     }
 
@@ -731,6 +740,12 @@ impl Lattice {
             let game = game.clone();
             return self.play_epic(&game);
         }
+        // A PlayStation 3 game, which carries RPCS3's command for it — see
+        // [`crate::apps::Ps3Game::start`] — filed under the game's name.
+        if let Some(game) = cursor.current_entry(self).and_then(Entry::ps3_game) {
+            let game = game.clone();
+            return self.play_ps3(&game);
+        }
         let app = cursor.current_app(self)?;
         let name = app.name.clone();
         let entry = app.path.clone();
@@ -767,6 +782,7 @@ impl Lattice {
                     wait_error_reported: false,
                     played: None,
                     through_heroic: false,
+                    through_rpcs3: false,
                 });
                 Some(pid)
             }
@@ -814,6 +830,7 @@ impl Lattice {
                     wait_error_reported: false,
                     played: None,
                     through_heroic: false,
+                    through_rpcs3: false,
                 });
                 Some(pid)
             }
@@ -871,6 +888,45 @@ impl Lattice {
             launched.through_heroic = true;
         }
         Some(pid)
+    }
+
+    /// Start one PlayStation 3 game in RPCS3. A row with no command is a
+    /// package, whose press installs it before it ever gets here.
+    pub fn play_ps3(&mut self, game: &crate::apps::Ps3Game) -> Option<u32> {
+        let start = game.start.as_ref()?;
+        tracing::info!(game = %game.name, path = %game.path.display(), "playing, in RPCS3");
+        // The guard's copies of the pads, first in SDL's list: see
+        // [`crate::ps3::input_config`] for why that is what makes the right
+        // device player one.
+        let mut argv = Vec::new();
+        if !self.rpcs3_pads.is_empty() {
+            let nodes: Vec<String> = self
+                .rpcs3_pads
+                .iter()
+                .map(|node| node.to_string_lossy().into_owned())
+                .collect();
+            argv.push("env".to_string());
+            argv.push(format!("SDL_JOYSTICK_DEVICE={}", nodes.join(":")));
+        }
+        argv.extend(start.iter().cloned());
+        let pid = self.open_command(crate::media::Opening {
+            name: game.name.clone(),
+            icon: None,
+            command: crate::retroarch::shell_command(&argv),
+        })?;
+        if let Some(launched) = self.launched_apps.last_mut() {
+            launched.through_rpcs3 = true;
+        }
+        Some(pid)
+    }
+
+    /// How many games RPCS3 is playing that this shell started. The shell
+    /// compares it across a reap.
+    pub fn running_through_rpcs3(&self) -> usize {
+        self.launched_apps
+            .iter()
+            .filter(|app| app.through_rpcs3)
+            .count()
     }
 
     /// Since when a Heroic this shell started has been running, where one is:
@@ -1004,6 +1060,7 @@ impl Lattice {
                     wait_error_reported: false,
                     played,
                     through_heroic: false,
+                    through_rpcs3: false,
                 });
                 Some(pid)
             }
@@ -1046,6 +1103,7 @@ impl Lattice {
                     wait_error_reported: false,
                     played: None,
                     through_heroic: false,
+                    through_rpcs3: false,
                 });
                 Some(pid)
             }
@@ -6513,6 +6571,10 @@ mod tests {
                 snap: None,
                 own_cover: false,
                 own_background: false,
+                game_background: false,
+                preview: None,
+                music: None,
+                logo: None,
                 shape: None,
                 glyph: "lxb:console-ps1".to_string(),
                 disc: None,

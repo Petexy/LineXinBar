@@ -1633,6 +1633,7 @@ achievement-summary = { $description } · { $points ->
     } · { $state }
 achievements-unlocked-count = Freigeschaltet ({ $count })
 achievements-locked-count = Gesperrt ({ $count })
+achievements-hidden-count = Verborgen ({ $count })
 achievements-unlocked-of = { $unlocked } / { $total } freigeschaltet
 achievement-unlocked-at = Freigeschaltet am { $date } um { $time }
 trophies-error-retry = { $error } Gehen Sie zurück und öffnen Sie es erneut, um es noch einmal zu versuchen.
@@ -2059,3 +2060,149 @@ epic-cloud-saves-off = Spielstände bleiben auf diesem Rechner
 epic-cloud-saves-not-changed = Cloud-Spielstände wurden nicht geändert.
 epic-achievement-summary = { $description } · { $xp } XP · { $state }
 epic-players-who-have-it = Spieler, die ihn haben
+
+## PlayStation 3, über RPCS3
+ps3-looking = PlayStation-3-Spiele werden gesucht
+ps3-press-to-set-up = Drücken, um es einzurichten
+ps3-set-up = Einrichten
+ps3-set-up-explanation = PlayStation-3-Spiele brauchen zwei kostenlose Downloads, bevor sie gespielt werden können: das Programm, das sie spielt, und die Systemsoftware der Konsole. Sonst wird auf diesem Rechner nichts geändert.
+ps3-getting-rpcs3 = Das Programm für die Spiele wird heruntergeladen
+ps3-getting-the-system-software = Die PlayStation-3-Systemsoftware wird heruntergeladen
+ps3-installing-the-game = Das Spiel wird installiert
+ps3-ready = Fertig
+ps3-not-done = Nicht abgeschlossen
+ps3-set-up-failed = PlayStation-3-Spiele konnten nicht eingerichtet werden.
+ps3-choose-the-folder-your-games-are-in = Wählen Sie den Ordner mit Ihren Spielen
+ps3-the-folder-cannot-be-read = Der Spieleordner lässt sich nicht öffnen
+ps3-press-to-install = Drücken, um es zu installieren
+ps3-press-to-get-it-ready = Drücken, um es vorzubereiten
+ps3-installed = Installiert
+ps3-ready-to-play = Bereit zum Spielen
+ps3-install-failed = Das Spiel konnte nicht installiert werden.
+ps3-uninstall-keeps = Spielstände und Trophäen bleiben erhalten.
+ps3-uninstalling = Spiel wird deinstalliert…
+ps3-uninstall-failed = Das Spiel konnte nicht deinstalliert werden.
+ps3-clear-cache = Cache leeren
+ps3-clear-cache-explanation = Der nächste Start dauert länger, weil alles neu vorbereitet wird.
+ps3-clearing-cache = Cache wird geleert…
+ps3-clear-cache-failed = Der Cache konnte nicht geleert werden.
+ps3-frame-limit = Bildratenbegrenzung
+ps3-frame-limit-auto = So schnell, wie das Spiel laufen soll
+ps3-performance-overlay = Leistungsanzeige
+ps3-trophy-notices = Trophäen-Hinweise
+ps3-console-language = Konsolensprache
+ps3-controller-buttons = Controller-Tasten
+ps3-buttons-unchanged = Alle Tasten an ihrem Platz
+ps3-buttons-moved = { $count ->
+    [one] Eine Taste verlegt
+   *[other] { $count } Tasten verlegt
+    }
+ps3-buttons-back = Alle Tasten zurücksetzen
+ps3-buttons-back-explanation = Jede Taste kommt dorthin zurück, wo sie auf einem PlayStation 3-Controller liegt.
+ps3-button-cross = Kreuz
+ps3-button-circle = Kreis
+ps3-button-square = Quadrat
+ps3-button-triangle = Dreieck
+ps3-button-l1 = L1
+ps3-button-r1 = R1
+ps3-button-l2 = L2
+ps3-button-r2 = R2
+ps3-button-l3 = L3
+ps3-button-r3 = R3
+ps3-button-start = Start
+ps3-button-select = Select
+pad-button-south = Untere Taste
+pad-button-east = Rechte Taste
+pad-button-west = Linke Taste
+pad-button-north = Obere Taste
+pad-button-left-bumper = Linke Schultertaste
+pad-button-right-bumper = Rechte Schultertaste
+pad-button-left-trigger = Linker Trigger
+pad-button-right-trigger = Rechter Trigger
+pad-button-left-stick = Linken Stick drücken
+pad-button-right-stick = Rechten Stick drücken
+pad-button-start = Start-Taste
+pad-button-back = Zurück-Taste
+ps3-disc-not-ready = Das Spiel konnte nicht spielbereit gemacht werden.
+ps3-getting-the-disc-ready = Das Spiel wird vorbereitet
+ps3-look-again = Erneut nach Spielen suchen
+ps3-open-rpcs3 = RPCS3 öffnen
+ps3-play = Spielen
+ps3-trouble-no-rpcs3 = Richten Sie PlayStation-3-Spiele zuerst über ihre Zeile ein.
+ps3-trouble-offline = Das Internet ist nicht erreichbar. Versuchen Sie es erneut, sobald es erreichbar ist.
+ps3-trouble-no-space = Auf dem Datenträger ist nicht genug Platz frei.
+ps3-trouble-refused = Der Download ist nicht durchgegangen. Versuchen Sie es später erneut.
+ps3-trouble-firmware = Die Systemsoftware konnte nicht installiert werden. Versuchen Sie es später erneut.
+ps3-trouble-not-a-package = Diese Datei ist kein PlayStation-3-Spiel, das sich installieren lässt.
+ps3-trouble-package = Die Datei ist möglicherweise beschädigt oder ein Update für ein Spiel, das nicht installiert ist.
+ps3-trouble-other = Versuchen Sie es später erneut.
+ps3-where-your-games-are = Wo Ihre PlayStation-3-Spiele sind
+ps3-install-question = Dieses PlayStation-3-Spiel installieren? Es wird in die Konsole kopiert, und diese Datei bleibt, wo sie ist.
+ps3-installed-find-it = Es ist installiert und in der Spalte PlayStation 3 spielbereit.
+ps3-trophy-platinum = Platin
+ps3-trophy-gold = Gold
+ps3-trophy-silver = Silber
+ps3-trophy-bronze = Bronze
+ps3-trophy-grade = Trophäe
+ps3-trophy-summary = { $description } · { $grade } · { $state }
+
+# Einstellungen > Energie, und was der Akku sagt, wenn er zur Neige geht.
+power-title = Energie
+power-description = Ruhezustand, Bildschirm und Ein-/Aus-Taste
+power-session-only = Gilt nur für diese Sitzung: Die Einstellungen konnten nicht für das ganze Gerät gespeichert werden.
+power-dim-screen = Bildschirm abdunkeln
+power-turn-off-screen = Bildschirm ausschalten
+power-sleep = Ruhezustand
+power-sleep-on-battery = Ruhezustand im Akkubetrieb
+power-sleep-plugged-in = Ruhezustand am Netzteil
+power-never = Nie
+power-after-seconds = { $count ->
+    [one] Nach { $count } Sekunde
+   *[other] Nach { $count } Sekunden
+    }
+power-after-minutes = { $count ->
+    [one] Nach { $count } Minute
+   *[other] Nach { $count } Minuten
+    }
+power-after-hours = { $count ->
+    [one] Nach { $count } Stunde
+   *[other] Nach { $count } Stunden
+    }
+power-button = Ein-/Aus-Taste
+power-button-sleep = Ruhezustand
+power-button-menu = Energiemenü
+power-button-sleep-note = Ein Druck versetzt das Gerät in den Ruhezustand. Halten Sie die Taste für das Energiemenü.
+power-button-menu-note = Ein Druck öffnet das Energiemenü.
+power-button-hibernate = Tiefschlaf
+power-button-hibernate-note = Ein Druck speichert alles Geöffnete und schaltet das Gerät aus. Halten Sie die Taste für das Energiemenü.
+power-button-power-off = Ausschalten
+power-button-power-off-note = Ein Druck schaltet das Gerät aus. Halten Sie die Taste für das Energiemenü.
+power-button-nothing = Nichts tun
+power-button-nothing-note = Ein Druck bewirkt nichts. Halten Sie die Taste für das Energiemenü.
+power-mode = Energiemodus
+power-mode-unknown = Unbekannt
+power-mode-power-saver = Energiesparen
+power-mode-balanced = Ausgeglichen
+power-mode-performance = Leistung
+power-mode-power-saver-note = Längere Akkulaufzeit, weniger Tempo
+power-mode-balanced-note = Tempo und Akkulaufzeit im Gleichgewicht
+power-mode-performance-note = Volles Tempo, höherer Verbrauch
+power-battery-saver = Akkusparmodus
+power-battery-saver-description = Energiesparen, wenn der Akku fast leer ist
+power-battery-saver-on-note = Wechselt bei 20 % zu Energiesparen und beim Laden zurück
+power-battery-low = Akku schwach
+power-battery-low-body = Noch { $percent } %. Schließen Sie bald das Ladegerät an.
+power-battery-very-low-body = Noch { $percent } %. Schließen Sie jetzt das Ladegerät an.
+power-battery-empty = Akku fast leer
+power-battery-empty-body = Das Gerät geht in den Ruhezustand. Schließen Sie das Ladegerät an, um weiterzumachen.
+power-sleep-held = Das Gerät kann noch nicht in den Ruhezustand
+power-sleep-held-body = Das System erledigt gerade etwas, wofür es wach bleiben muss. Versuchen Sie es erneut, sobald es fertig ist.
+
+# Einstellungen > System > Modus für schwache Hardware.
+low-end-title = Modus für schwache Hardware
+low-end-description = Belastet Grafikchip und Prozessor weniger
+low-end-on-for-this-device = Ein, passend zu diesem Gerät
+low-end-off-note = Alle Effekte, so flüssig das Gerät es erlaubt
+low-end-on-note = Ein stehendes Hintergrundbild, einfachere Effekte und weniger Bilder
+low-end-slow = Die Oberfläche läuft auf diesem Gerät langsam
+low-end-slow-body = Der Modus für schwache Hardware unter Einstellungen > System kann sie flüssiger machen.

@@ -1,0 +1,67 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE policyconfig PUBLIC "-//freedesktop//DTD PolicyKit Policy Configuration 1.0//EN" "http://www.freedesktop.org/standards/PolicyKit/1/policyconfig.dtd">
+<policyconfig>
+  <vendor>LineXinBar</vendor>
+  <!-- Settings > Power: the machine's power settings file and the login
+       manager's answer for the power button, from six checked values. Allowed
+       without a password to whoever is at the machine, as sleeping and
+       switching it off already are. -->
+  <action id="org.linexinbar.power.settings">
+    <description>Change this device's power settings</description>
+    <description xml:lang="fr">Modifier les réglages d'alimentation de cet appareil</description>
+    <description xml:lang="es">Cambiar los ajustes de energía de este dispositivo</description>
+    <description xml:lang="pl">Zmiana ustawień zasilania tego urządzenia</description>
+    <description xml:lang="de">Die Energieeinstellungen dieses Geräts ändern</description>
+    <description xml:lang="hi">इस डिवाइस की पावर सेटिंग बदलें</description>
+    <description xml:lang="pt_BR">Alterar as configurações de energia deste dispositivo</description>
+    <description xml:lang="ru">Изменение настроек питания этого устройства</description>
+    <description xml:lang="zh_CN">更改此设备的电源设置</description>
+    <message>Authentication is required to change the power settings of this device.</message>
+    <message xml:lang="fr">Une authentification est nécessaire pour modifier les réglages d'alimentation de cet appareil.</message>
+    <message xml:lang="es">Hace falta autenticarse para cambiar los ajustes de energía de este dispositivo.</message>
+    <message xml:lang="pl">Zmiana ustawień zasilania tego urządzenia wymaga uwierzytelnienia.</message>
+    <message xml:lang="de">Zum Ändern der Energieeinstellungen dieses Geräts ist eine Authentifizierung erforderlich.</message>
+    <message xml:lang="hi">इस डिवाइस की पावर सेटिंग बदलने के लिए प्रमाणीकरण आवश्यक है।</message>
+    <message xml:lang="pt_BR">É necessária autenticação para alterar as configurações de energia deste dispositivo.</message>
+    <message xml:lang="ru">Для изменения настроек питания этого устройства требуется аутентификация.</message>
+    <message xml:lang="zh_CN">更改此设备的电源设置需要进行身份验证。</message>
+    <icon_name>preferences-system-power</icon_name>
+    <defaults>
+      <allow_any>auth_admin</allow_any>
+      <allow_inactive>auth_admin</allow_inactive>
+      <allow_active>yes</allow_active>
+    </defaults>
+    <annotate key="org.freedesktop.policykit.exec.path">@HELPER@</annotate>
+    <annotate key="org.freedesktop.policykit.exec.argv1">--apply-power</annotate>
+  </action>
+  <!-- A sleep somebody asked for, past the locks their own programs hold and
+       never past anybody else's: the helper checks that before it sleeps. -->
+  <action id="org.linexinbar.power.sleep">
+    <description>Put this device to sleep</description>
+    <description xml:lang="fr">Mettre cet appareil en veille</description>
+    <description xml:lang="es">Suspender este dispositivo</description>
+    <description xml:lang="pl">Uśpienie tego urządzenia</description>
+    <description xml:lang="de">Dieses Gerät in den Ruhezustand versetzen</description>
+    <description xml:lang="hi">इस डिवाइस को स्लीप में डालें</description>
+    <description xml:lang="pt_BR">Suspender este dispositivo</description>
+    <description xml:lang="ru">Перевод этого устройства в сон</description>
+    <description xml:lang="zh_CN">让此设备睡眠</description>
+    <message>Authentication is required to put this device to sleep.</message>
+    <message xml:lang="fr">Une authentification est nécessaire pour mettre cet appareil en veille.</message>
+    <message xml:lang="es">Hace falta autenticarse para suspender este dispositivo.</message>
+    <message xml:lang="pl">Uśpienie tego urządzenia wymaga uwierzytelnienia.</message>
+    <message xml:lang="de">Um dieses Gerät in den Ruhezustand zu versetzen, ist eine Authentifizierung erforderlich.</message>
+    <message xml:lang="hi">इस डिवाइस को स्लीप में डालने के लिए प्रमाणीकरण आवश्यक है।</message>
+    <message xml:lang="pt_BR">É necessária autenticação para suspender este dispositivo.</message>
+    <message xml:lang="ru">Для перевода этого устройства в сон требуется аутентификация.</message>
+    <message xml:lang="zh_CN">让此设备睡眠需要进行身份验证。</message>
+    <icon_name>system-suspend</icon_name>
+    <defaults>
+      <allow_any>no</allow_any>
+      <allow_inactive>no</allow_inactive>
+      <allow_active>yes</allow_active>
+    </defaults>
+    <annotate key="org.freedesktop.policykit.exec.path">@HELPER@</annotate>
+    <annotate key="org.freedesktop.policykit.exec.argv1">--sleep-now</annotate>
+  </action>
+</policyconfig>

@@ -1,5 +1,5 @@
 Name:           lxb-desktop
-Version:        0.9.2
+Version:        0.9.3
 Release:        1%{?dist}
 Summary:        Multi-display Wayland desktop with a console-style shell
 
@@ -161,6 +161,26 @@ it is installed. Where Heroic itself is missing, the shell offers to install
 the Flathub build into the user's own flatpak installation, which needs no
 administrative rights.
 
+%package -n     lxb-rpcs3
+Summary:        PlayStation 3 integration for the LineXinBar shell, through RPCS3
+# Version-locked to the shell for the reason lxb-retroarch is. Any RPCS3 will
+# do; flatpak is how the shell installs one where there is none.
+Requires:       lxb-desktop%{?_isa} = %{version}-%{release}
+Recommends:     flatpak
+
+%description -n lxb-rpcs3
+Adds the PlayStation 3 to the LineXinBar shell, through RPCS3: a row under
+RetroArch in the Games column, and a column of the user's PlayStation 3 games,
+disc images, unpacked games, packages to install and the games RPCS3 has
+installed, each on its own icon and backdrop, with its animated preview and
+music while it is chosen, and their trophies in the Trophies column.
+
+The shell looks for this subpackage on PATH and mentions the PlayStation 3
+only when it is installed. Where RPCS3 itself is missing, the shell offers to
+install the Flathub build into the user's own flatpak installation, which needs
+no administrative rights, and the console's system software from Sony's own
+update server.
+
 %description -n lxb-compositor
 A small DRM/KMS Wayland compositor that manages every connected display as an
 independent output, with per-output colour management, HDR and a night light.
@@ -259,6 +279,7 @@ cp -p third_party/lxb-gilrs/LICENSE-MIT GilRs-LICENSE-MIT.txt
 %{_datadir}/polkit-1/actions/org.linexinbar.updates.policy
 %{_datadir}/polkit-1/actions/org.linexinbar.locale.policy
 %{_datadir}/polkit-1/actions/org.linexinbar.drives.policy
+%{_datadir}/polkit-1/actions/org.linexinbar.power.policy
 %{_datadir}/doc/lxb-desktop/updates.md
 %{_bindir}/lxb-session
 %{_datadir}/wayland-sessions/lxb.desktop
@@ -306,7 +327,38 @@ cp -p third_party/lxb-gilrs/LICENSE-MIT GilRs-LICENSE-MIT.txt
 %dir %{_datadir}/lxb/glyphs
 %{_datadir}/lxb/glyphs/epic.svg
 
+%files -n       lxb-rpcs3
+%license LICENSE
+%{_bindir}/lxb-rpcs3
+%dir %{_datadir}/lxb
+%dir %{_datadir}/lxb/glyphs
+%{_datadir}/lxb/glyphs/ps3.svg
+
 %changelog
+* Tue Sep 29 2026 Piotr Lewandowski <piotr.petexy@gmail.com> - 0.9.3-1
+- PlayStation 3 through RPCS3, as the new optional lxb-rpcs3 package: a
+  column of its own, packages and encrypted discs, trophies, and RPCS3's
+  settings on Settings > Games > PlayStation 3.
+- PlayStation Portable games in RetroArch's column wear their own icon,
+  preview film, music and backdrop.
+- Settings > Power: the screen dims, goes dark and the machine sleeps when
+  nobody uses it, the power button's answer, power mode and battery saver, and
+  battery warnings. They are the machine's settings, in /etc/lxb/power.toml and
+  a logind drop-in written through the new org.linexinbar.power polkit
+  actions, so the CEDM login screen and a text console follow them. A game
+  holds sleep off; a sleep somebody asks for is never held off.
+- Settings > System > Low-end hardware mode, on by itself on a software
+  renderer: a still wallpaper, the plain materials and fewer frames.
+- The compositor and the shell wake far less often while nothing happens, the
+  shell lets go of the sound output when quiet, and the portal answers Inhibit
+  for sandboxed programs.
+- A custom wallpaper's copy under ~/.local/share/lxb/wallpaper is deleted once
+  it stops being the wallpaper: set back to Default or Simple, replaced by
+  another file, or left behind by an earlier version. A film there could hold
+  gigabytes that nothing would ever show again.
+- A picture behind the bar is cropped once rather than twice, and Steam's
+  Hidden trophies heading is translated.
+
 * Sat Sep 26 2026 Piotr Lewandowski <piotr.petexy@gmail.com> - 0.9.2-1
 - Three Steam fixes on from 0.9.1, and nothing else:
 - A game's own Steamworks writes the header of Steam's logs, and was taken for

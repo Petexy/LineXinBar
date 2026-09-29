@@ -532,9 +532,8 @@ pub async fn serve() -> anyhow::Result<()> {
     // The second interface on the same object, because a portal backend is one
     // bus name and one path however many questions it answers. See
     // [`crate::filechooser`].
-    let connection = crate::filechooser::serve_at(connection, &path)?
-        .build()
-        .await?;
+    let connection = crate::filechooser::serve_at(connection, &path)?;
+    let connection = crate::inhibit::serve_at(connection, &path)?.build().await?;
     tracing::info!(name = PORTAL_NAME, "the portal is listening");
     warn_if_unregistered();
 

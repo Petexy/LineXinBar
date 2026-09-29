@@ -663,9 +663,18 @@ const STILL: std::time::Duration = std::time::Duration::from_secs(3);
 /// across a game for a minute into thirty events rather than several thousand.
 const POINTER_REPEAT: std::time::Duration = std::time::Duration::from_secs(2);
 
+/// First version with the machine's power in it: `user_active`,
+/// `hold_the_screen`, `set_output_power` and the `power_button` event.
+///
+/// The requests are gated by nothing, for the reason the two above are. The
+/// event is gated here, because a shell below this has no way to be told the
+/// button went down — and for that shell the button does what the login
+/// manager says, since nothing in it holds the inhibitor that would stop it.
+const POWER_SINCE: u32 = 45;
+
 /// The version advertised, and so the highest a shell can bind. Every request
 /// below it is still served, so an older shell keeps working.
-const CURRENT_VERSION: u32 = APP_RESOLUTION_SINCE;
+const CURRENT_VERSION: u32 = POWER_SINCE;
 
 /// Each constant above names the one feature that arrived in its version, and
 /// the numbers only ever go up by one. Said here so that two branches each
@@ -694,6 +703,7 @@ const _: () = assert!(LAUNCH_RECORDS_SINCE == UNSEEN_WINDOWS_SINCE + 1);
 const _: () = assert!(EXACT_GAMUT_SINCE == LAUNCH_RECORDS_SINCE + 1);
 const _: () = assert!(PER_DISPLAY_APP_SCALE_SINCE == EXACT_GAMUT_SINCE + 1);
 const _: () = assert!(APP_RESOLUTION_SINCE == PER_DISPLAY_APP_SCALE_SINCE + 1);
+const _: () = assert!(POWER_SINCE == APP_RESOLUTION_SINCE + 1);
 
 /// What a client allowed onto this protocol is allowed to do with it.
 ///
@@ -1171,6 +1181,25 @@ impl ShellControlState {
             tracing::debug!("a key was pressed on a keyboard; the shell is told");
             self.typing_is_news = false;
         }
+    }
+
+    /// Tell every shell new enough that the machine's power button went down or
+    /// came up. See `lxb_shell_v1.power_button`, and [`POWER_SINCE`] for what
+    /// happens to the button when no shell is new enough to hear it.
+    pub(crate) fn send_power_button(&self, pressed: bool) {
+        let state = if pressed {
+            lxb_shell_v1::KeyState::Pressed
+        } else {
+            lxb_shell_v1::KeyState::Released
+        };
+        let mut told = false;
+        for instance in &self.instances {
+            if instance.version() >= POWER_SINCE {
+                instance.power_button(state);
+                told = true;
+            }
+        }
+        tracing::info!(pressed, told, "the power button");
     }
 
     /// Tell every shell that the black it asked for is on every display.
@@ -4365,6 +4394,22 @@ impl Dispatch<LxbShellV1, ()> for LxbState {
             lxb_shell_v1::Request::CoverInBlack { covered } => {
                 state.cover_the_session_in_black(covered == 1)
             }
+            lxb_shell_v1::Request::UserActive => state.note_activity(),
+            lxb_shell_v1::Request::HoldTheScreen { hold } => state.hold_the_screen(hold == 1),
+            lxb_shell_v1::Request::SetOutputPower { output, power } => {
+                let power = match power.into_result() {
+                    Ok(lxb_shell_v1::DisplayPower::Dim) => crate::blackout::Power::Dim,
+                    Ok(lxb_shell_v1::DisplayPower::Off) => crate::blackout::Power::Off,
+                    // On, and anything a later shell may mean by a number this
+                    // compositor does not know: a display lit is the answer that
+                    // cannot leave anybody in the dark.
+                    _ => crate::blackout::Power::On,
+                };
+                match Output::from_resource(&output) {
+                    Some(output) => state.set_output_power(&output, power),
+                    None => tracing::debug!("a display that is gone was asked to dim or wake"),
+                }
+            }
             lxb_shell_v1::Request::CoverOutputInBlack { output, covered } => {
                 match Output::from_resource(&output) {
                     Some(output) => state.cover_output_in_black(&output, covered == 1),
@@ -4441,6 +4486,13 @@ impl Dispatch<LxbShellV1, ()> for LxbState {
                 state.refresh_foreground();
                 state.queue_redraw();
             }
+
+            // And no one left to bring back a display it dimmed or switched
+            // off, or to let go of the screen it was holding for a program. A
+            // screen left dark by a shell that crashed is a machine that looks
+            // dead with the session still running on it.
+            state.every_display_on();
+            state.hold_the_screen(false);
         }
     }
 }

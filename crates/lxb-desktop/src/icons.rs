@@ -76,6 +76,17 @@ pub const PAD_GUIDE: &str = "lxb:pad-guide";
 /// with a triangle over it because the stick pushed and the stick pressed are
 /// two different acts on one control here. See pad-stick.svg.
 pub const PAD_STICK: &str = "lxb:pad-stick";
+/// And the other stick pressed, and the four shoulder buttons, which the
+/// PlayStation 3's button page names as the pad buttons a PS3 button can be
+/// moved to. The stick is [`PAD_STICK`] with an `L`; the shoulders are drawn by
+/// side and by place on the pad, as the face buttons are — a bumper a bar on
+/// its shoulder, a trigger a tab standing over the bumper — because LB, L1 and
+/// L are one button with three names. See pad-left-bumper.svg.
+pub const PAD_STICK_LEFT: &str = "lxb:pad-stick-left";
+pub const PAD_LEFT_BUMPER: &str = "lxb:pad-left-bumper";
+pub const PAD_RIGHT_BUMPER: &str = "lxb:pad-right-bumper";
+pub const PAD_LEFT_TRIGGER: &str = "lxb:pad-left-trigger";
+pub const PAD_RIGHT_TRIGGER: &str = "lxb:pad-right-trigger";
 /// The right mouse button, which is what raises a menu for anybody using a
 /// pointer. Not a keyboard key: no key printed on a keyboard says "menu" to as
 /// many people as the right button does.
@@ -962,7 +973,7 @@ pub fn letter_mark(letter: char) -> Option<&'static str> {
 /// has these whatever is installed on the machine — which is what the
 /// quick-settings bars are *for* — and they are still drawings, editable in
 /// anything that opens an SVG rather than in a string literal.
-pub const BUILTIN: [(&str, &str); 155] = [
+pub const BUILTIN: [(&str, &str); 160] = [
     (VOLUME, include_str!("glyphs/volume.svg")),
     (VOLUME_MUTED, include_str!("glyphs/volume-muted.svg")),
     (BRIGHTNESS, include_str!("glyphs/brightness.svg")),
@@ -983,6 +994,20 @@ pub const BUILTIN: [(&str, &str); 155] = [
     (PAD_NORTH, include_str!("glyphs/pad-north.svg")),
     (PAD_GUIDE, include_str!("glyphs/pad-guide.svg")),
     (PAD_STICK, include_str!("glyphs/pad-stick.svg")),
+    (PAD_STICK_LEFT, include_str!("glyphs/pad-stick-left.svg")),
+    (PAD_LEFT_BUMPER, include_str!("glyphs/pad-left-bumper.svg")),
+    (
+        PAD_RIGHT_BUMPER,
+        include_str!("glyphs/pad-right-bumper.svg"),
+    ),
+    (
+        PAD_LEFT_TRIGGER,
+        include_str!("glyphs/pad-left-trigger.svg"),
+    ),
+    (
+        PAD_RIGHT_TRIGGER,
+        include_str!("glyphs/pad-right-trigger.svg"),
+    ),
     (MOUSE_RIGHT, include_str!("glyphs/mouse-right.svg")),
     (KEY_ESCAPE, include_str!("glyphs/key-escape.svg")),
     (KEY_SPACE, include_str!("glyphs/key-space.svg")),
@@ -1773,6 +1798,36 @@ pub fn package_glyphs() -> &'static [(String, String)] {
     FOUND.get_or_init(from_packages)
 }
 
+/// Marks an integration's own program carried, handed over while the shell
+/// starts — see [`bring_mark`].
+static BROUGHT: std::sync::Mutex<Vec<(String, String)>> = std::sync::Mutex::new(Vec::new());
+
+/// Take a mark from an integration's program rather than off the disk, for a
+/// package whose program is here and whose data directory is not — the
+/// program run from where it was built, or a package installed without its
+/// share folder. The file in `lxb/glyphs` still wins where there is one.
+///
+/// Only before [`package_glyphs`] is first read: the atlas is built once, and
+/// a mark arriving after that has nowhere to be drawn. The shell asks while it
+/// starts, before anything is drawn.
+pub fn bring_mark(name: &str, drawing: String) {
+    let stem = name.strip_prefix("lxb:").unwrap_or(name);
+    if stem.is_empty()
+        || !stem
+            .bytes()
+            .all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit() || byte == b'-')
+    {
+        tracing::warn!(
+            glyph = name,
+            "a program offered a mark with a name that is not one"
+        );
+        return;
+    }
+    if let Ok(mut brought) = BROUGHT.lock() {
+        brought.push((format!("lxb:{stem}"), drawing));
+    }
+}
+
 /// The same, read fresh. [`package_glyphs`] is what everything else calls.
 ///
 /// Most specific directory first, and the first spelling of a name wins — the
@@ -1823,6 +1878,20 @@ fn from_packages() -> Vec<(String, String)> {
                 Err(err) => tracing::warn!(at = %path.display(), ?err, "could not read a mark"),
             }
         }
+    }
+    // Then what an integration's program carried, for a name no directory
+    // had — the same refusal of the shell's own names.
+    let brought = BROUGHT
+        .lock()
+        .map(|brought| brought.clone())
+        .unwrap_or_default();
+    for (name, drawing) in brought {
+        if BUILTIN.iter().any(|(had, _)| *had == name) || found.iter().any(|(had, _)| *had == name)
+        {
+            continue;
+        }
+        tracing::info!(glyph = %name, "an integration's program brought a mark");
+        found.push((name, drawing));
     }
     found
 }
@@ -2497,6 +2566,24 @@ pub(crate) mod tests {
     /// that along the diagonals and a blur fails it everywhere — and either
     /// one produces a bevel that is visibly not a bevel, which is the sort of
     /// thing that gets noticed on screen and nowhere else.
+    /// A mark an integration's program hands over is drawn where no directory
+    /// has one — and never under one of the shell's own names, or a name that
+    /// is not one.
+    #[test]
+    fn a_program_can_bring_its_own_mark() {
+        bring_mark("lxb:test-brought-mark", "<svg/>".to_string());
+        bring_mark(VOLUME, "<svg/>".to_string());
+        bring_mark("lxb:../escape", "<svg/>".to_string());
+        let found = from_packages();
+        assert!(found
+            .iter()
+            .any(|(name, _)| name == "lxb:test-brought-mark"));
+        assert!(!found
+            .iter()
+            .any(|(name, drawing)| name == VOLUME && drawing == "<svg/>"));
+        assert!(!found.iter().any(|(name, _)| name.contains("..")));
+    }
+
     #[test]
     fn a_glyph_can_ship_as_the_shape_of_itself() {
         let shapes: Vec<&str> = BUILTIN
@@ -2839,13 +2926,13 @@ pub(crate) mod tests {
     fn every_built_in_glyph_ships_and_draws_something() {
         assert_eq!(
             BUILTIN.len(),
-            155,
+            160,
             "a speaker, a struck-out one, a sun, a note, the three transport \
              buttons and the second face of the middle one, a stick pointer, a \
              mixer, a \
              moon, a \
              bell, seven \
-             controller buttons and the stick pressed, a mouse, six keycaps — \
+             controller buttons, both sticks pressed and the four shoulder buttons, a mouse, six keycaps — \
              the fifth being the Shift the friends panel is raised with and the \
              sixth the bare P the floating video is reached by — four arrows, a \
              keyboard folding away, a power \
@@ -2977,6 +3064,11 @@ pub(crate) mod tests {
                 PAD_NORTH,
                 PAD_GUIDE,
                 PAD_STICK,
+                PAD_STICK_LEFT,
+                PAD_LEFT_BUMPER,
+                PAD_RIGHT_BUMPER,
+                PAD_LEFT_TRIGGER,
+                PAD_RIGHT_TRIGGER,
                 MOUSE_RIGHT,
                 KEY_ESCAPE,
                 KEY_SPACE,

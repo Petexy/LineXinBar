@@ -36,6 +36,7 @@ mod archive;
 mod art;
 mod avatars;
 mod bluetooth;
+mod cadence;
 mod catalogue;
 mod controller;
 mod crypt;
@@ -49,11 +50,13 @@ mod guide;
 mod heroic;
 mod i18n;
 mod icons;
+mod idle;
 mod keyboard;
 mod launch;
 mod layouts;
 mod locale;
 mod machine;
+mod machine_power;
 mod marks;
 mod media;
 mod menu;
@@ -68,6 +71,10 @@ mod playing;
 mod pointer;
 mod polkit;
 mod power;
+mod power_bus;
+mod preview;
+mod ps3;
+mod ps3_settings;
 mod resolution;
 mod retroachievements;
 mod retroarch;
@@ -132,6 +139,10 @@ use smithay_client_toolkit::{delegate_registry, registry_handlers};
 use wayland_client::globals::registry_queue_init;
 use wayland_client::protocol::{wl_keyboard, wl_output, wl_pointer, wl_seat, wl_surface, wl_touch};
 use wayland_client::{Connection, Dispatch, EventQueue, Proxy, QueueHandle};
+use wayland_protocols::ext::idle_notify::v1::client::ext_idle_notification_v1::{
+    self, ExtIdleNotificationV1,
+};
+use wayland_protocols::ext::idle_notify::v1::client::ext_idle_notifier_v1::ExtIdleNotifierV1;
 
 use crate::apps::Entry;
 use crate::controller::ControllerInput;
@@ -501,6 +512,13 @@ const APP_SCALE_PER_DISPLAY_SHELL_VERSION: u32 = 43;
 /// compositor comes next, and the menu row still says what it is set to.
 const APP_RESOLUTION_SHELL_VERSION: u32 = 44;
 
+/// First version with the machine's power in it: `user_active`,
+/// `hold_the_screen`, `set_output_power` and the `power_button` event. Below
+/// it the idle policy still keeps its timers — ext-idle-notify is its own
+/// protocol — but has nothing to dim or switch off with, and no button to
+/// hear. See [`crate::idle`].
+const POWER_SHELL_VERSION: u32 = 45;
+
 /// What `answer_pick` says when no kind of file was in force. The protocol's
 /// own number for it, quoted here so the two halves cannot disagree about which
 /// index means "not one of them".
@@ -578,6 +596,126 @@ const MEDIA_GRACE: Duration = Duration::from_secs(30);
 /// in `lxb_shell_v1.cover_output_in_black` — a second down, a quarter of a
 /// second back — which is what makes it safe to keep a copy of.
 const REST_FADE: Duration = Duration::from_secs(1);
+
+/// Where the wallpaper's clock is stopped in low-end hardware mode: a moment
+/// of the current that looks like the wallpaper rather than like the first
+/// frame of it, which is the band still gathering itself. See
+/// [`settings::low_end`].
+const STILL_WALLPAPER_AT: f32 = 24.0;
+
+/// How often a display is drawn in low-end hardware mode while nothing on it
+/// is moving. While something is — a cursor gliding, a panel arriving — it is
+/// drawn at the display's own refresh, or at half of it on a device that cannot
+/// keep up: see [`cadence`].
+///
+/// Ten a second: what changes on a still start screen with nothing moving is a
+/// clock's minute, a battery's step and a bubble arriving, and none of them is
+/// worse for being drawn a tenth of a second late — while every frame not drawn
+/// is the bar's whole cost not paid.
+const LOW_END_STILL: Duration = Duration::from_millis(100);
+
+/// How long the loop goes on waking at the controller's full rate after the
+/// last thing a hand did on one — see [`Shell::poll_interval`].
+const HOT_FOR: Duration = Duration::from_secs(3);
+
+/// How often the loop wakes while a game has the screen and the pad is in use:
+/// what the shell reads from a pad then is the guide button and its chords,
+/// and a sixtieth of a second is well inside what a press can feel.
+const PLAYING_POLL: Duration = Duration::from_millis(16);
+
+/// How often it wakes when nobody has touched a pad for [`HOT_FOR`]: the first
+/// press after a pause is at most this late, and a machine left alone wakes
+/// thirty times a second rather than a hundred and twenty-five.
+const QUIET_POLL: Duration = Duration::from_millis(33);
+
+/// And while the idle policy has the screens dark, when the only thing a press
+/// does is light them again.
+const DARK_POLL: Duration = Duration::from_millis(100);
+
+/// How long the shell's frame rate is measured over, and the rate under which a
+/// device is too slow for it — see [`Pace`].
+const PACE_WINDOW: Duration = Duration::from_secs(10);
+const PACE_TOO_SLOW: u32 = 20;
+
+/// Whether this device keeps up with the shell as it is drawn by default.
+///
+/// Counted only while a display is on screen and wanting every frame — the
+/// start screen, whose wallpaper moves — because that is the only time the
+/// count means anything: a frame is asked for at every refresh, and a device
+/// that draws fewer than [`PACE_TOO_SLOW`] of them a second, for two windows
+/// running, is one where the shell is visibly struggling. It is said once a
+/// session, in a bubble that names the switch, and never where low-end hardware
+/// mode is already on or somebody has turned it off themselves.
+#[derive(Default)]
+struct Pace {
+    since: Option<Instant>,
+    frames: u32,
+    slow: u8,
+    said: bool,
+}
+
+impl Pace {
+    /// A frame was drawn on a display that wanted every one. `true`, once,
+    /// when this device has shown itself too slow.
+    fn drew(&mut self, now: Instant) -> bool {
+        let since = *self.since.get_or_insert(now);
+        self.frames += 1;
+        let over = now.saturating_duration_since(since);
+        if over < PACE_WINDOW {
+            return false;
+        }
+        let rate = self.frames as f32 / over.as_secs_f32();
+        self.slow = if rate < PACE_TOO_SLOW as f32 {
+            self.slow + 1
+        } else {
+            0
+        };
+        self.since = Some(now);
+        self.frames = 0;
+        if self.slow >= 2 && !self.said {
+            self.said = true;
+            tracing::info!(rate, "the shell is drawing slowly on this device");
+            return true;
+        }
+        false
+    }
+
+    /// Nothing is being drawn continuously, so the count starts again.
+    fn interrupted(&mut self) {
+        self.since = None;
+        self.frames = 0;
+    }
+}
+
+/// When a display last drawn at `last` may be drawn again in low-end hardware
+/// mode: on the display's beat while something on it is moving, and for the
+/// frame that shows it stopped — see [`cadence`] — and every
+/// [`LOW_END_STILL`] while nothing is.
+fn low_end_next(
+    cadence: &cadence::Cadence,
+    last: Option<Instant>,
+    now: Instant,
+    moving: bool,
+) -> cadence::Next {
+    if moving || cadence.moved() {
+        return cadence.next(now);
+    }
+    match last {
+        Some(last) if now.saturating_duration_since(last) < LOW_END_STILL => {
+            cadence::Next::At(last + LOW_END_STILL)
+        }
+        _ => cadence::Next::Now,
+    }
+}
+
+/// The rate a display is being driven at, in millihertz, as it reports it;
+/// 0 where it does not say.
+fn refresh_of(info: &smithay_client_toolkit::output::OutputInfo) -> u32 {
+    info.modes
+        .iter()
+        .find(|mode| mode.current)
+        .map_or(0, |mode| u32::try_from(mode.refresh_rate).unwrap_or(0))
+}
 
 /// How often to look up while every display is hidden behind an application.
 /// Nothing is being drawn, so this only has to be often enough to notice a
@@ -720,6 +858,29 @@ struct Cli {
     )]
     mount_at_startup: Option<Vec<String>>,
 
+    /// Write the machine's power settings — the file every account and the
+    /// login screen read, and the login manager's answer for the power button
+    /// — from six values, and exit.
+    ///
+    /// The privileged half of Settings > Power, started by polkit and by
+    /// nothing else, on the terms `--apply-language` is. See
+    /// [`machine_power::apply_as_root`].
+    #[arg(
+        long = "apply-power",
+        hide = true,
+        num_args = 6,
+        value_names = ["DIM", "OFF", "BATTERY", "PLUGGED", "BUTTON", "SAVER"]
+    )]
+    apply_power: Option<Vec<String>>,
+
+    /// Put the machine to sleep past the locks this account's own programs
+    /// hold, and exit — `suspend` or `hibernate`.
+    ///
+    /// The privileged half of a sleep somebody asked for, started by polkit
+    /// and by nothing else. See [`machine_power::sleep_now_as_root`].
+    #[arg(long = "sleep-now", hide = true, value_name = "HOW")]
+    sleep_now: Option<String>,
+
     /// Perform actions at fixed times after start-up, as a comma-separated
     /// list of `seconds:action` (`--debug-actions 2:guide,3:right,4:launch`).
     /// Actions are `guide`, `keyboard`, `back`, `launch`, `submit`, `up`,
@@ -813,6 +974,12 @@ struct Cli {
     #[arg(long, hide = true)]
     heroic_helper: Option<std::path::PathBuf>,
 
+    /// Use this program as the PlayStation 3 integration instead of looking
+    /// for `lxb-rpcs3` beside the shell or on `PATH` — the same development aid
+    /// as the two above.
+    #[arg(long, hide = true)]
+    rpcs3_helper: Option<std::path::PathBuf>,
+
     /// Read the battery out of this directory instead of the kernel's own
     /// `/sys/class/power_supply`.
     ///
@@ -825,6 +992,16 @@ struct Cli {
     /// as if it were.
     #[arg(long, hide = true)]
     debug_power_supply: Option<std::path::PathBuf>,
+
+    /// Read the machine's power settings out of this file instead of
+    /// `/etc/lxb/power.toml`.
+    ///
+    /// Development aid, for trying the waits in a nested session without
+    /// changing the machine's: a nested session never writes the machine's
+    /// file, and the page offers nothing shorter than half a minute. Only this
+    /// session's reading moves — the root half always writes the machine's.
+    #[arg(long, hide = true)]
+    debug_power_file: Option<std::path::PathBuf>,
 
     /// Show a file or a folder in the running session's Files column, and
     /// exit without starting a shell.
@@ -1057,6 +1234,15 @@ fn main() -> anyhow::Result<()> {
         return drives::at_startup_as_root(uuid, on);
     }
 
+    // And these two: the machine's power settings, and a sleep somebody asked
+    // for, each by a process polkit started as root for that and nothing else.
+    if let Some(values) = cli.apply_power.as_deref() {
+        return machine_power::apply_as_root(values);
+    }
+    if let Some(how) = cli.sleep_now.as_deref() {
+        return machine_power::sleep_now_as_root(how);
+    }
+
     // Nor this one: an archive, unpacked where it stands, and out. Before
     // everything below for the reason above — no settings are read, no
     // catalogue is scanned, no compositor is looked for — and it does not even
@@ -1075,6 +1261,12 @@ fn main() -> anyhow::Result<()> {
     // so the shell has to know what it is set to before it builds the rows
     // that say so — and before the first frame is drawn in a colour.
     settings::load();
+    // And the machine's power settings, which are not in the account's file:
+    // every account and the login screen share them. See [`machine_power`].
+    settings::note_power(match cli.debug_power_file.as_deref() {
+        Some(file) => machine_power::read_from(file),
+        None => machine_power::prime(),
+    });
     // And, before any thread exists, the session's locale: a chosen language
     // is the language of every program this shell will open, and the one
     // moment a variable can be added to the environment safely is now. See
@@ -1134,6 +1326,22 @@ fn main() -> anyhow::Result<()> {
         apps::offer_epic(
             &mut categories,
             Some(crate::i18n::text("epic-looking").to_string()),
+            None,
+        );
+    }
+    // And the PlayStation 3 integration's, on the same terms: RPCS3's own
+    // entry off the bar, and the shell's row standing in for it.
+    let ps3_helper = ps3::look_for_helper(cli.rpcs3_helper.clone());
+    // Its mark, from the helper itself, before the atlas is built — for a
+    // machine whose data directory has no copy of it.
+    if let Some(helper) = &ps3_helper {
+        ps3::bring_the_mark(helper);
+    }
+    if ps3_helper.is_some() {
+        apps::hide_rpcs3_client(&mut categories);
+        apps::offer_ps3(
+            &mut categories,
+            Some(crate::i18n::text("ps3-looking").to_string()),
             None,
         );
     }
@@ -1211,6 +1419,10 @@ fn main() -> anyhow::Result<()> {
         Some(at) if settings::epic_integration() => heroic::Heroic::start(at),
         _ => heroic::Heroic::absent(),
     };
+    let ps3 = match ps3_helper {
+        Some(at) => ps3::Ps3::start(at),
+        None => ps3::Ps3::absent(),
+    };
 
     // Whether the games on the bar are somebody's actual library, which is
     // what decides whether their artwork may be fetched. See `art::Art`.
@@ -1256,11 +1468,7 @@ fn main() -> anyhow::Result<()> {
     // LineXinBar's own protocol, which carries the guide binding and lets the
     // overlay close an application. Absent on every other compositor, where the
     // shell simply falls back to what it can do as an ordinary client.
-    let shell_control = match globals.bind::<LxbShellV1, _, _>(
-        &qh,
-        1..=APP_RESOLUTION_SHELL_VERSION,
-        (),
-    ) {
+    let shell_control = match globals.bind::<LxbShellV1, _, _>(&qh, 1..=POWER_SHELL_VERSION, ()) {
         Ok(control) => Some(control),
         Err(err) => {
             tracing::info!(
@@ -1270,6 +1478,11 @@ fn main() -> anyhow::Result<()> {
             None
         }
     };
+
+    // Whether this session is the machine's own: the compositor says which
+    // backend it runs on, and only one on the machine's own displays may put
+    // the machine to sleep or take its power button. See [`idle`].
+    let owns_the_machine = std::env::var("LXB_SESSION_BACKEND").as_deref() == Ok("drm");
 
     let mut shell = Shell {
         registry_state: RegistryState::new(&globals),
@@ -1367,6 +1580,15 @@ fn main() -> anyhow::Result<()> {
             None => power::Power::start(),
         },
         battery_seen: None,
+        idle: idle::Idle::default(),
+        power_bus: power_bus::PowerBus::start(owns_the_machine),
+        owns_the_machine,
+        screen_held: false,
+        saved_profile: None,
+        renderer_noted: false,
+        low_end_was: false,
+        pace: Pace::default(),
+        pad_touched: None,
         storage: storage::Storage::start(),
         drives: drives::Drives::start(),
         drives_seen: 0,
@@ -1397,6 +1619,16 @@ fn main() -> anyhow::Result<()> {
         heroic_enter: false,
         epic_asked: None,
         epic_signing_here: false,
+        ps3,
+        ps3_looked: None,
+        ps3_setup_panel: false,
+        ps3_asked_remove: None,
+        ps3_asked_clear: None,
+        ps3_after_setup: false,
+        ps3_play_once_keyed: None,
+        ps3_playing: 0,
+        ps3_from_files: None,
+        preview: preview::Preview::default(),
         retroachievements: retroachievements::RetroAchievements::default(),
         trophy_browser: trophies::Browser::default(),
         retroachievement_buttons: Vec::new(),
@@ -1497,9 +1729,11 @@ fn main() -> anyhow::Result<()> {
         drained: Drained::default(),
         leaving: None,
         update_power_permit: None,
+        power_standing: None,
         exit: false,
         needs_redraw: true,
         next_frame_deadline: Instant::now(),
+        paced_until: None,
         wallpaper_clock: wallpaper_handoff.unwrap_or_else(wallpaper_clock::WallpaperClock::local),
         start: Instant::now(),
         last_frame: Instant::now(),
@@ -1523,6 +1757,13 @@ fn main() -> anyhow::Result<()> {
     match shell.seat_state.seats().next() {
         Some(seat) => {
             shell.osk.attach(&globals, &qh, &seat);
+            // And the idle timers, which are per seat too. A compositor with
+            // no ext-idle-notify leaves the screens lit and the machine awake,
+            // which is what a session did before there was a Power page.
+            match globals.bind::<ExtIdleNotifierV1, _, _>(&qh, 1..=2, ()) {
+                Ok(notifier) => shell.idle.timers = Some(idle::Timers::new(notifier, seat)),
+                Err(err) => tracing::info!(%err, "no idle timers: the screens stay lit"),
+            }
         }
         None => tracing::info!("no seat; the on-screen keyboard is off"),
     }
@@ -1692,6 +1933,7 @@ fn main() -> anyhow::Result<()> {
         if shell.startup.ready {
             shell.sync_retroarch();
             shell.sync_heroic();
+            shell.sync_ps3();
             shell.sync_retroachievements();
             shell.sync_updates();
         }
@@ -1758,7 +2000,16 @@ fn main() -> anyhow::Result<()> {
         // Silence is part of leaving. The music fades out over about the time
         // the screen takes to go black, so the session goes quiet with the
         // picture rather than being cut off mid-bar by the machine.
-        let music_wanted = !shell.is_leaving()
+        // A PlayStation 3 or PlayStation Portable game's own music, while its
+        // row is chosen, stands in for the start screen's — neither console's
+        // menu had anything else under a game's.
+        let game_music = shell.sync_game_preview(now);
+        let music_wanted = !game_music
+            && !shell.is_leaving()
+            // Nor while the screens are dark: music playing to a screen that
+            // has gone out for want of anybody watching it is the machine
+            // entertaining an empty room. See [`idle`].
+            && shell.idle.applied() != idle::Screens::Off
             && lattice_music_wanted(
                 !shell.panels.is_empty(),
                 shell.any_app_open(),
@@ -1767,6 +2018,9 @@ fn main() -> anyhow::Result<()> {
                 !shell.launching.is_empty() || shell.restoring.is_some(),
             );
         shell.sounds.sync_music(music_wanted, now);
+        // And the output let go of once nothing has sounded for a while, so the
+        // machine's audio hardware can sleep. See [`sound::Sounds::rest`].
+        shell.sounds.rest(now);
         shell.sync_launch_output(shell.launch_display());
         shell.sync_driven_output();
         shell.place_the_launches();
@@ -1803,6 +2057,9 @@ fn main() -> anyhow::Result<()> {
         // And its neighbour, which is the same shape of answer about
         // applications rather than screens, and moves on its own clock too.
         shell.sync_media_awake(now);
+        // And whether anybody is still using the machine, which moves on the
+        // compositor's clock and on the battery's. See [`idle`].
+        shell.sync_idle(now, &qh);
         // And whether the window Steam was asked for is still wanted, which is
         // the same shape of answer again: nothing announces it, so it is looked
         // at once a pass against what the compositor has already said.
@@ -1834,6 +2091,9 @@ fn main() -> anyhow::Result<()> {
         // anything is drawn, since what parks it is nobody saying they want a
         // frame. See [`paper::Paper::wanted`].
         shell.sync_wallpaper();
+        // And how cheaply the frame is to be drawn, before it is. See
+        // [`settings::low_end`].
+        shell.sync_low_end();
         if now >= shell.next_frame_deadline {
             shell.needs_redraw = true;
         }
@@ -1846,10 +2106,11 @@ fn main() -> anyhow::Result<()> {
         let until_watchdog = shell
             .next_frame_deadline
             .saturating_duration_since(Instant::now());
-        wait_for_wayland(
-            &mut event_queue,
-            until_watchdog.min(controller::POLL_INTERVAL),
-        )?;
+        let poll = shell.poll_interval(Instant::now());
+        let until_paced = shell.paced_until.map_or(Duration::MAX, |at| {
+            at.saturating_duration_since(Instant::now())
+        });
+        wait_for_wayland(&mut event_queue, until_watchdog.min(poll).min(until_paced))?;
     }
 
     tracing::info!("exiting");
@@ -2706,6 +2967,23 @@ struct Panel {
     /// not resent every frame — and when it was asked, which is what says
     /// whether the black has finished coming down.
     resting: Option<(bool, Instant)>,
+    /// When the idle policy switched this display off, while it is off — see
+    /// [`crate::idle`]. A display switched off is a display nothing on can be
+    /// seen, exactly as a rested one is, and [`Panel::is_rested`] says so.
+    dark_since: Option<Instant>,
+    /// The built-in panel's backlight, where this display has one, and the
+    /// level it was at before the idle policy dimmed it.
+    dimmed_light: Option<(system::PanelLight, u32)>,
+    /// When this display was last drawn, which is what low-end hardware mode
+    /// paces it by while nothing on it moves — see [`low_end_next`].
+    last_drawn: Option<Instant>,
+    /// And its pace while something does: the display's own refresh, or half
+    /// of it on a device that cannot keep up. See [`cadence`].
+    cadence: cadence::Cadence,
+    /// What the wallpaper on this display was last drawn from, in low-end
+    /// hardware mode, where a wallpaper drawn from the same things again is the
+    /// same still picture and is not drawn at all. See [`gpu::Gpu::backdrop_key`].
+    backdrop_key: Option<Vec<u32>>,
     /// The windows on this display, topmost first, as the compositor lists
     /// them for the overview. Empty on compositors without the protocol.
     windows: Vec<WindowCard>,
@@ -2847,9 +3125,15 @@ impl Panel {
     /// drawn behind a black sheet; erring early would freeze the picture the
     /// sheet is still fading over.
     fn is_rested(&self, now: Instant) -> bool {
-        self.resting.is_some_and(|(resting, since)| {
+        let rested = self.resting.is_some_and(|(resting, since)| {
             resting && now.saturating_duration_since(since) >= REST_FADE
-        })
+        });
+        // And a display the idle policy has switched off, on the same clock:
+        // the compositor's black comes down over it at the same speed.
+        let dark = self
+            .dark_since
+            .is_some_and(|since| now.saturating_duration_since(since) >= REST_FADE);
+        rested || dark
     }
 }
 
@@ -4352,6 +4636,33 @@ struct Shell {
     /// this shell is the change itself and never the fact that the wallpaper
     /// happens to be moving anyway.
     battery_seen: Option<power::Charge>,
+    /// Dimming, going dark and sleeping, and the power button — see
+    /// [`crate::idle`].
+    idle: idle::Idle,
+    /// The login manager, the power-profiles daemon, and the programs that ask
+    /// the machine to stay awake — see [`crate::power_bus`].
+    power_bus: power_bus::PowerBus,
+    /// Whether this session is on the machine's own displays, and so may put
+    /// the machine to sleep and take its power button. See `idle`'s notes on a
+    /// nested session.
+    owns_the_machine: bool,
+    /// Whether the compositor has last been told to hold the screen for a
+    /// program that asked over the session bus.
+    screen_held: bool,
+    /// The power mode the battery saver switched away from, while it has the
+    /// power saver on — so the charger going in puts back the one that was
+    /// chosen rather than one this shell picked.
+    saved_profile: Option<&'static str>,
+    /// Whether the renderer has been asked if it draws on the processor —
+    /// once, when it first exists. See [`Shell::sync_low_end`].
+    renderer_noted: bool,
+    /// Low-end hardware mode as the last pass had it, so a change is said once.
+    low_end_was: bool,
+    /// Whether this device keeps up with the default frame. See [`Pace`].
+    pace: Pace,
+    /// When a hand was last on a pad, which is what keeps the loop waking at
+    /// the controller's full rate. See [`Shell::poll_interval`].
+    pad_touched: Option<Instant>,
     /// The partitions on this machine and how full each is, and the worker that
     /// keeps them true while Settings is open — see [`storage`].
     storage: storage::Storage,
@@ -4506,6 +4817,35 @@ struct Shell {
     /// front of the bar, so a sign-in that goes through brings the bar back
     /// over it. See [`Shell::sign_in_to_epic_here`].
     epic_signing_here: bool,
+    /// The optional PlayStation 3 integration, through RPCS3. Empty on a
+    /// machine without the `lxb-rpcs3` package. See [`ps3`].
+    ps3: ps3::Ps3,
+    /// When the package was last looked for — see [`ps3::look_again`].
+    ps3_looked: Option<Instant>,
+    /// Whether the panel over the PlayStation 3 setup is up, so a line of
+    /// progress arriving after somebody put it away does not bring it back.
+    ps3_setup_panel: bool,
+    /// The installed PlayStation 3 game the uninstall question on screen is
+    /// about, by its folder.
+    ps3_asked_remove: Option<PathBuf>,
+    /// The PlayStation 3 game the Clear cache question on screen is about: its
+    /// serial, and its name for the panel that follows.
+    ps3_asked_clear: Option<(String, String)>,
+    /// Set by a setup that has just worked: once the machine has been asked
+    /// again, the row goes on to what it was pressed for.
+    ps3_after_setup: bool,
+    /// A disc pressed while its key was still to be fetched: it is started
+    /// when the key arrives, if the cursor is still on it.
+    ps3_play_once_keyed: Option<PathBuf>,
+    /// How many games RPCS3 was playing last frame — see
+    /// [`model::Lattice::running_through_rpcs3`].
+    ps3_playing: usize,
+    /// A package pressed in Files: the one the question on screen is about,
+    /// and then the one installing — whose end is said out loud, because
+    /// the game lands in a column somebody is not looking at.
+    ps3_from_files: Option<PathBuf>,
+    /// The chosen PlayStation 3 game's film and music. See [`preview`].
+    preview: preview::Preview,
     retroachievements: retroachievements::RetroAchievements,
     trophy_browser: trophies::Browser,
     retroachievement_buttons: Vec<menu::Command>,
@@ -4972,9 +5312,16 @@ struct Shell {
     /// is going black, and nothing the user does reaches anything until it has.
     leaving: Option<Leaving>,
     update_power_permit: Option<lxb_updates::service::PowerPermit>,
+    /// Where this session's last change to the machine's power settings
+    /// stands, as the page last said it. See [`machine_power::standing`].
+    power_standing: Option<machine_power::Standing>,
     exit: bool,
     needs_redraw: bool,
     next_frame_deadline: Instant,
+    /// The moment a display held back by low-end hardware mode is next due,
+    /// where one is waiting for a moment rather than for its display. See
+    /// [`low_end_next`].
+    paced_until: Option<Instant>,
     wallpaper_clock: wallpaper_clock::WallpaperClock,
     start: Instant,
     last_frame: Instant,
@@ -5077,9 +5424,10 @@ impl Shell {
         }
         menu.commit();
 
-        let name = self
-            .output_state
-            .info(&output)
+        let info = self.output_state.info(&output);
+        let mut cadence = cadence::Cadence::default();
+        cadence.set_refresh(info.as_ref().map_or(0, refresh_of));
+        let name = info
             .and_then(|info| info.name)
             .unwrap_or_else(|| "?".to_string());
         tracing::info!(output = %name, "showing the bar on a display");
@@ -5117,6 +5465,11 @@ impl Shell {
             // as it was plugged in would look like one that had failed.
             attention: Instant::now(),
             resting: None,
+            dark_since: None,
+            dimmed_light: None,
+            last_drawn: None,
+            cadence,
+            backdrop_key: None,
             modes: Vec::new(),
             pending_modes: Vec::new(),
             applied_mode: None,
@@ -5410,6 +5763,13 @@ impl Shell {
         let app_in_front = app_label.is_some();
         let screen_label = self.screen_label();
         let time = self.wallpaper_clock.elapsed_secs();
+        // What the wallpaper is drawn at, which in low-end hardware mode is one
+        // moment for good. Only the wallpaper reads it; everything that moves
+        // in the bar keeps `time`. See [`settings::low_end`].
+        let low_end = settings::low_end();
+        let paint_time = if low_end { STILL_WALLPAPER_AT } else { time };
+        let mut paced = false;
+        let mut paced_until = None;
         let clock = wall_clock();
         let clock_face = wall_clock_face();
         // The cards keep the compositor's time, not the menu's.
@@ -6135,6 +6495,22 @@ impl Shell {
                 || cursor_moving[index]
                 || (pressing && index == focused_panel);
             let draw_now = should_draw(rested, visible, settling, panel.was_visible);
+            // Low-end hardware mode draws a still display far less often, and
+            // a moving one on the display's own beat — see [`low_end_next`]. A
+            // frame held back here is drawn on a later pass of the loop, which
+            // is asked to come back for it below: when the display answers the
+            // last frame, or at the moment it names.
+            let next = if low_end && draw_now {
+                low_end_next(&panel.cadence, panel.last_drawn, now, settling)
+            } else {
+                cadence::Next::Now
+            };
+            if let cadence::Next::At(at) = next {
+                paced_until = Some(paced_until.map_or(at, |until: Instant| until.min(at)));
+            }
+            let held_back = next != cadence::Next::Now;
+            paced |= held_back;
+            let draw_now = draw_now && !held_back;
             if visible != panel.was_visible {
                 // Worth a line: whether a display believes it is covered is
                 // the difference between an idle shell and one burning a
@@ -6212,6 +6588,8 @@ impl Shell {
                 continue;
             }
             drew = true;
+            panel.last_drawn = Some(now);
+            panel.cadence.drew(now, settling);
             // From here on this display has shown something, so its arrival has
             // a frame to start from.
             panel.arrival_has_a_frame = self.startup.ready;
@@ -6313,7 +6691,14 @@ impl Shell {
             if let Some(backdrop_target) = panel.backdrop_target.as_mut() {
                 // Nothing of the backdrop shows past an application either, so
                 // a board on top of one costs no wallpaper.
-                if !board_only {
+                // And in low-end hardware mode, nothing of it is drawn again
+                // while it would be the same still picture: the compositor goes
+                // on showing the one already there. See [`gpu::Gpu::backdrop_key`].
+                let key =
+                    low_end.then(|| gpu.backdrop_key(backdrop_target.size(), backdrop_blur, &hero));
+                let unchanged = key.is_some() && key == panel.backdrop_key;
+                panel.backdrop_key = key;
+                if !board_only && !unchanged {
                     let params = gpu::Backdrop {
                         blur: backdrop_blur,
                         ..Default::default()
@@ -6322,7 +6707,7 @@ impl Shell {
                         backdrop_target,
                         &[],
                         &[],
-                        time,
+                        paint_time,
                         gpu::Behind {
                             backdrop: Some(params),
                             hero,
@@ -7257,7 +7642,7 @@ impl Shell {
                         menu_target,
                         &menu_scene.quads,
                         &menu_scene.texts,
-                        time,
+                        paint_time,
                         gpu::Behind {
                             backdrop: None,
                             hero: gpu::Hero::default(),
@@ -7282,7 +7667,7 @@ impl Shell {
                 target,
                 &scene.quads,
                 &scene.texts,
-                time,
+                paint_time,
                 gpu::Behind {
                     backdrop: main_backdrop,
                     hero,
@@ -7297,6 +7682,37 @@ impl Shell {
                 Ok(()) => self.menu_frame_drawn |= menu_here,
                 Err(err) => tracing::warn!(?err, "render failed"),
             }
+        }
+
+        // A display low-end hardware mode held back is drawn on a later pass,
+        // and nothing else is going to ask for it: no frame was requested for
+        // it, so no frame callback will come. One held for a moment of its own
+        // has the loop wake for that moment, which is a refresh of the display
+        // and is kept to the millisecond. See [`cadence`].
+        if paced {
+            self.needs_redraw = true;
+        }
+        self.paced_until = paced_until;
+
+        // And whether this device keeps up with the default frame, counted on
+        // the display being driven while it is on screen. A device that does
+        // not is told where the switch is, once. See [`Pace`].
+        let counted = self.startup.ready
+            && !low_end
+            && settings::low_end_chosen().is_none()
+            && drew
+            && visible.get(focused_panel).copied().unwrap_or(false);
+        if !counted {
+            self.pace.interrupted();
+        } else if self.pace.drew(now) {
+            if self.notifications.announce(
+                crate::i18n::text("low-end-slow"),
+                crate::i18n::text("low-end-slow-body"),
+                icons::SETTING_PARTICLES,
+            ) {
+                self.sounds.notified();
+            }
+            self.sync_notification_panel();
         }
 
         // And, with the frame committed, a fresh picture of what the compositor
@@ -7322,7 +7738,17 @@ impl Shell {
         // gone quiet behind an application reads as an honest zero.
         self.frames += u32::from(drew);
         if self.fps_window.elapsed() >= std::time::Duration::from_secs(1) {
-            tracing::debug!(fps = self.frames, panels = self.panels.len(), "frame rate");
+            tracing::debug!(
+                fps = self.frames,
+                panels = self.panels.len(),
+                // Whether low-end hardware mode has the display being driven
+                // at half its refresh. See [`cadence`].
+                halved = self
+                    .panels
+                    .get(self.focused_panel)
+                    .is_some_and(|panel| panel.cadence.halved()),
+                "frame rate"
+            );
             self.frames = 0;
             self.fps_window = Instant::now();
         }
@@ -7490,7 +7916,15 @@ impl Shell {
         // board a press is about to summon should not be one this shell is
         // still refusing to offer.
         if poll.stirred {
+            self.pad_touched = Some(now);
             self.hands_moved_to_the_controller();
+            // And somebody is at the machine, which the compositor's idle
+            // timers cannot see for themselves. A press that lands on screens
+            // that are dark is the press that wakes them, and nothing more: a
+            // console does not act on a button nobody could see the answer to.
+            if self.controller_woke_the_screens(now) {
+                return;
+            }
         }
         // The pointer first. An action can close the menu or start an
         // application, either of which changes whether the stick should be
@@ -9055,6 +9489,20 @@ impl Shell {
                     if let settings::Setting::EpicCloudSaves(on) = setting {
                         self.heroic.set_cloud_saves(on);
                     }
+                    // And the power mode, which is the power-profiles daemon's
+                    // to remember; the row is marked when it says so. A mode
+                    // chosen by hand is the person's, so the battery saver
+                    // stops holding the one it would have put back.
+                    if let settings::Setting::Power(settings::PowerValue::Profile(name)) = setting {
+                        self.saved_profile = None;
+                        self.power_bus.set_profile(name);
+                    } else if let settings::Setting::Power(_) = setting {
+                        // And every other row on Settings > Power, which is the
+                        // machine's: handed to it as the row is pressed, for
+                        // every account and the login screen. The session has
+                        // it already. See [`machine_power`].
+                        machine_power::adopt(settings::power_settings());
+                    }
                     // And a Bluetooth row is BlueZ's, on exactly those terms
                     // again — including the last one, which matters more here
                     // than anywhere: connecting to a device is a conversation
@@ -9137,6 +9585,19 @@ impl Shell {
                     // left standing would name the column somebody has just
                     // stopped choosing.
                     if matches!(setting, settings::Setting::StartupCategory(_)) {
+                        self.rebuild_settings();
+                    }
+                    // And the PlayStation 3's, for the same reason: every one
+                    // of them is written under a row above it — Resolution says
+                    // 1440p, Cross says which button — and those are read out
+                    // of RPCS3's file and the shell's when the page is built.
+                    if matches!(
+                        setting,
+                        settings::Setting::Rpcs3(_)
+                            | settings::Setting::Ps3Language(_)
+                            | settings::Setting::Ps3Button { .. }
+                            | settings::Setting::Ps3ButtonsBack
+                    ) {
                         self.rebuild_settings();
                     }
                     // And the screen the on-screen keyboard comes up on, for
@@ -9899,6 +10360,23 @@ impl Shell {
             Some((_, true)) => return self.press_epic_game(),
             _ => {}
         }
+        // The PlayStation 3 row, and a game of its column that is a package to
+        // install or a disc whose key has not been fetched. The row walks the
+        // setup; the game does what it needs before it can start.
+        match self.panels.get(self.focused_panel).and_then(|panel| {
+            panel.cursor.current_entry(&self.lattice).map(|entry| {
+                (
+                    entry.ps3().is_some(),
+                    entry
+                        .ps3_game()
+                        .is_some_and(|game| game.start.is_none() || game.needs_key),
+                )
+            })
+        }) {
+            Some((true, _)) => return self.press_ps3_row(),
+            Some((_, true)) => return self.press_ps3_game(),
+            _ => {}
+        }
         match self.panels.get(self.focused_panel).and_then(|panel| {
             panel.cursor.current_entry(&self.lattice).map(|entry| {
                 (
@@ -9950,6 +10428,12 @@ impl Shell {
                 return self.offer_to_install(&game)
             }
             _ => {}
+        }
+        // A PlayStation 3 package — or the zip one came in — pressed in Files,
+        // where RPCS3 is here to install it: the press asks whether to. Before
+        // the archive's own question, which would unpack it.
+        if let Some(path) = self.ps3_package_under_cursor() {
+            return self.offer_to_install_ps3_package(path);
         }
         // An archive whose handler is the shell's own Extract, which is every
         // archive until somebody says otherwise. Nothing is forked for this
@@ -10018,6 +10502,13 @@ impl Shell {
         {
             self.hand_the_controllers_over();
         }
+        // And a PlayStation 3 game, the same way and for the same reason.
+        if self
+            .selected_ps3_game()
+            .is_some_and(|game| game.start.is_some())
+        {
+            self.ready_rpcs3_for_a_game();
+        }
         self.launch_the_selection(None);
     }
 
@@ -10045,6 +10536,16 @@ impl Shell {
             .selected_epic_game()
             .map(|game| (game.app_name.clone(), game.logo.clone()));
         let through_heroic = epic.as_ref().map(|(_, logo)| logo.clone());
+        let ps3_logo = self
+            .selected_ps3_game()
+            .map(|game| game.logo.clone())
+            // And a PSP game wearing its own backdrop opens on it the same
+            // way, with its PIC0 where it has one.
+            .or_else(|| {
+                self.selected_rom()
+                    .filter(|rom| rom.game_background)
+                    .map(|rom| rom.logo.clone())
+            });
         // And whether a Heroic is running already, asked before the press
         // starts one: it decides whether the process about to be started is
         // Heroic itself or a courier to it.
@@ -10093,12 +10594,17 @@ impl Shell {
                                 foreground: &foreground,
                             },
                         );
-                        let splash = match through_heroic {
-                            Some(logo) => splash
+                        let splash = match (through_heroic, ps3_logo) {
+                            (Some(logo), _) => splash
                                 .through_heroic()
                                 .heroic_already_running(heroic_running)
                                 .on_its_own_picture(logo),
-                            None => splash,
+                            // A PlayStation 3 or PSP game opens on its own
+                            // backdrop with the picture PIC0 in the middle of
+                            // it, the way a Steam game opens on its key art and
+                            // logo.
+                            (None, Some(logo)) => splash.on_its_own_picture(logo),
+                            (None, None) => splash,
                         };
                         self.begin_launch(splash);
                         true
@@ -10264,6 +10770,7 @@ impl Shell {
             apps::Entry::EpicGame(game) => {
                 Some((game.name.clone(), Some(heroic::mark().to_string())))
             }
+            apps::Entry::Ps3Game(game) => Some((game.name.clone(), Some(ps3::mark().to_string()))),
             _ => None,
         }
     }
@@ -11733,6 +12240,13 @@ impl Shell {
         if self.selected_epic_game().is_some() {
             return self.epic_game_entry_menu();
         }
+        // And the PlayStation 3 row and its games, on the same argument.
+        if self.selected_ps3().is_some() {
+            return self.ps3_entry_menu();
+        }
+        if self.selected_ps3_game().is_some() {
+            return self.ps3_game_entry_menu();
+        }
         // And one of somebody's own games is a sixth: a file on their disk that
         // nothing installed, which is neither an application nor a song. See
         // [`Shell::rom_entry_menu`].
@@ -13201,6 +13715,8 @@ impl Shell {
         let mut games = self.steam.trophy_games();
         // Epic's beside Steam's, as games somebody has something to show for.
         games.extend(self.heroic.trophy_rows());
+        // And the PlayStation 3's, out of RPCS3's own records and the games'.
+        games.extend(self.ps3.trophy_rows());
         let from_the_stores = !games.is_empty();
         if retroarch::offered() && self.retroarch.command().is_some() {
             games.extend(self.retroachievements.rows());
@@ -18075,6 +18591,16 @@ impl Shell {
             menu::Command::EpicSignOutNow => self.heroic.sign_out(),
             menu::Command::EpicRefresh => self.heroic.refresh(),
             menu::Command::EpicOpenHeroic => self.open_heroic(),
+            menu::Command::Ps3OfferSetUp => self.offer_to_set_up_ps3(),
+            menu::Command::Ps3SetUp => self.set_up_ps3(),
+            menu::Command::Ps3Open => self.open_rpcs3(),
+            menu::Command::Ps3Rescan => self.ps3.rescan(),
+            menu::Command::Ps3Play => self.press_ps3_game_or_play(),
+            menu::Command::Ps3InstallFile => self.install_ps3_package_from_files(),
+            menu::Command::Ps3OfferRemove => self.offer_to_uninstall_ps3_game(),
+            menu::Command::Ps3Remove => self.uninstall_ps3_game(),
+            menu::Command::Ps3OfferClearCache => self.offer_to_clear_ps3_cache(),
+            menu::Command::Ps3ClearCache => self.clear_ps3_cache(),
             menu::Command::EpicPlay => self.start_selection(),
             menu::Command::EpicOfferGet => {
                 self.ask_about_selected_epic_game(heroic::Question::Install)
@@ -19622,6 +20148,9 @@ impl Shell {
         if self.heroic.note().is_some() {
             apps::hide_heroic_client(&mut categories);
         }
+        if self.ps3.note().is_some() {
+            apps::hide_rpcs3_client(&mut categories);
+        }
         // And the three applications this shell takes off its own bar, which a
         // scan has of course just found again. They are reached from the shelf
         // of files each is for — Graphics > Images, Multimedia > Video,
@@ -19680,6 +20209,7 @@ impl Shell {
         // integration puts up nothing — see [`Self::rebuild_retroarch`].
         self.rebuild_retroarch();
         self.rebuild_heroic();
+        self.rebuild_ps3();
         // And every cursor put back where it was standing, now that the bar is
         // the whole of what it is going to be. Nothing between here and the
         // footings above may be trusted to have left one where it was:
@@ -19793,6 +20323,12 @@ impl Shell {
         self.heroic_installing_panel = false;
         self.epic_asked = None;
         self.epic_signing_here = false;
+        // A PlayStation 3 panel put away goes on behind the bar, with the
+        // row saying how far along it is; it is not brought back by the next
+        // line of progress.
+        self.ps3_setup_panel = false;
+        self.ps3_asked_remove = None;
+        self.ps3_asked_clear = None;
         self.osk.offer_shell_field(false);
         // A core offered and not answered is an offer given up on; a fetch
         // already running is not, and goes on behind the bar with the row
@@ -19949,6 +20485,11 @@ impl Shell {
                 art::Sight::Snapshot(path) => {
                     self.thumbs.want(path, thumbs::Want::Snapshot);
                 }
+                // A game's own backdrop made for a small screen, softened by
+                // less than a screenshot is — see `art::softened_scenery_from`.
+                art::Sight::Softened(path) => {
+                    self.thumbs.want(path, thumbs::Want::Softened);
+                }
             }
         }
         // And that game's logo, which is what a launch splash puts in the
@@ -19976,6 +20517,22 @@ impl Shell {
                     .filter_map(|panel| panel.cursor.current_entry(&self.lattice))
                     .filter_map(Entry::epic_game)
                     .filter_map(|game| game.logo.clone())
+                    // And a PlayStation 3 or PSP game's PIC0, which its
+                    // loading screen stands in the middle of its backdrop.
+                    .chain(
+                        self.panels
+                            .iter()
+                            .filter_map(|panel| panel.cursor.current_entry(&self.lattice))
+                            .filter_map(Entry::ps3_game)
+                            .filter_map(|game| game.logo.clone()),
+                    )
+                    .chain(
+                        self.panels
+                            .iter()
+                            .filter_map(|panel| panel.cursor.current_entry(&self.lattice))
+                            .filter_map(Entry::rom)
+                            .filter_map(|rom| rom.logo.clone()),
+                    )
                     .chain(
                         self.launching
                             .iter()
@@ -20058,6 +20615,10 @@ impl Shell {
                 }
                 thumbs::Made::Snapshot(picture) => {
                     let of = art::Sight::Snapshot(path);
+                    scenery.contains(&of) && gpu.put_scenery(&of, picture)
+                }
+                thumbs::Made::Softened(picture) => {
+                    let of = art::Sight::Softened(path);
                     scenery.contains(&of) && gpu.put_scenery(&of, picture)
                 }
                 thumbs::Made::Logo(picture) => {
@@ -20247,6 +20808,11 @@ impl Shell {
                     Entry::EpicGame(game) => {
                         files.extend(game.cover.clone());
                     }
+                    // A PlayStation 3 game's icon, which the helper read out
+                    // of the game: a file on this disk like the two above.
+                    Entry::Ps3Game(game) => {
+                        files.extend(game.cover.clone());
+                    }
                     _ => {
                         if let Some(file) = entry.media().filter(|file| file.kind.has_picture()) {
                             files.insert(file.path.clone());
@@ -20351,6 +20917,15 @@ impl Shell {
         // into the shell's cache and read like a photograph. A game whose
         // backdrop has not come down yet keeps the wallpaper until it has.
         if let Some(game) = entry.epic_game() {
+            let hero = game.hero.as_deref()?;
+            return match self.thumbs.hopeless(hero, thumbs::Want::Backdrop) {
+                true => None,
+                false => Some(art::Sight::Picture(hero.to_path_buf())),
+            };
+        }
+        // And a PlayStation 3 game, whose picture is its own backdrop, PIC1 —
+        // what the console turned its screen to when the game was chosen.
+        if let Some(game) = entry.ps3_game() {
             let hero = game.hero.as_deref()?;
             return match self.thumbs.hopeless(hero, thumbs::Want::Backdrop) {
                 true => None,
@@ -24209,6 +24784,907 @@ impl Shell {
         Some((anchor, Some(game.name.clone()), self.heroic.game_menu(game)))
     }
 
+    // --- PlayStation 3 ---------------------------------------------------------
+
+    /// What the PlayStation 3 integration has to say this frame. See
+    /// [`ps3::Ps3::poll`].
+    fn sync_ps3(&mut self) {
+        self.look_for_the_ps3_package();
+        // A folder chosen, or RetroArch's folder that holds the PS3 one, is a
+        // folder to read again — whichever page changed it.
+        self.ps3.rescan_if_moved();
+        // A game RPCS3 was playing has ended: the games are read again, for
+        // what RPCS3 has compiled for it since, and their trophies after
+        // them, for what it unlocked.
+        let playing = self.lattice.running_through_rpcs3();
+        if playing < self.ps3_playing {
+            tracing::info!("a PlayStation 3 game has ended");
+            self.ps3.rescan();
+        }
+        self.ps3_playing = playing;
+        let change = self.ps3.poll();
+        if change.rows {
+            self.rebuild_ps3();
+            self.needs_redraw = true;
+        }
+        if change.trophies {
+            self.rebuild_trophies();
+        }
+        if change.panel && self.ps3_setup_panel {
+            self.show_ps3_working();
+        }
+        if let Some(ended) = change.set_up {
+            self.ps3_setup_ended(ended);
+        }
+        if let Some((path, ended)) = change.added {
+            self.ps3_package_added(&path, ended);
+        }
+        if let Some((image, ended)) = change.keyed {
+            self.ps3_keyed(&image, ended);
+        }
+        if let Some((folder, ended)) = change.removed {
+            self.ps3_game_removed(&folder, ended);
+        }
+        if let Some((serial, ended)) = change.cleared {
+            self.ps3_cache_cleared(&serial, ended);
+        }
+        // A setup that has just worked goes on to what the row was pressed
+        // for, once the machine has been asked again what is here.
+        if change.rows && self.ps3_after_setup {
+            match self.ps3.press() {
+                ps3::Press::Folder => {
+                    self.ps3_after_setup = false;
+                    self.open_ps3_picker();
+                }
+                ps3::Press::Enter => {
+                    self.ps3_after_setup = false;
+                    if self.selected_ps3().is_some() && self.step_to_ps3_column() {
+                        self.sounds.step();
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+
+    /// Look for the package again every few seconds, as the Epic one is, so
+    /// installing or removing it while the session runs puts the row on the
+    /// bar or takes it off.
+    fn look_for_the_ps3_package(&mut self) {
+        let due = self
+            .ps3_looked
+            .is_none_or(|at| at.elapsed() >= Duration::from_secs(5));
+        if !due {
+            return;
+        }
+        self.ps3_looked = Some(Instant::now());
+        let Some(found) = ps3::look_again() else {
+            return;
+        };
+        match found {
+            Some(helper) => {
+                tracing::info!(at = %helper.display(), "the PlayStation 3 integration has been installed");
+                self.ps3 = ps3::Ps3::start(helper);
+            }
+            None => {
+                tracing::info!("the PlayStation 3 integration has been taken off this machine");
+                self.ps3 = ps3::Ps3::absent();
+            }
+        }
+        self.scan_the_bar_again();
+        self.needs_redraw = true;
+    }
+
+    /// Put the PlayStation 3 row and column back on the bar from what the
+    /// integration knows, every display left on the game it was on. A package
+    /// that has just been installed is a row that has gone, and the display
+    /// that was on it goes to the installed game in its place.
+    fn rebuild_ps3(&mut self) {
+        let shifted = apps::offer_ps3(
+            &mut self.lattice.categories,
+            self.ps3.note(),
+            self.ps3.arriving(),
+        );
+        self.absorb(shifted);
+        let standing: Vec<Option<(String, Option<String>)>> = match self.ps3_column() {
+            Some(at) => self
+                .panels
+                .iter()
+                .map(|panel| {
+                    let game = panel
+                        .cursor
+                        .entry_in_column(&self.lattice, at)?
+                        .ps3_game()?;
+                    Some((game.id.clone(), game.serial.clone()))
+                })
+                .collect(),
+            None => Vec::new(),
+        };
+        let rows = self.ps3.rows();
+        let shifted = apps::shelve_ps3(&mut self.lattice.categories, rows);
+        self.absorb(shifted);
+        if let Some(at) = self.ps3_column() {
+            let lattice = &self.lattice;
+            for (panel, was) in self.panels.iter_mut().zip(standing) {
+                let Some((id, serial)) = was else {
+                    continue;
+                };
+                let here = lattice.categories[at]
+                    .entries
+                    .iter()
+                    .any(|entry| entry.ps3_game().is_some_and(|game| game.id == id));
+                if here {
+                    panel.cursor.keep_on_row(lattice, at, |entry| {
+                        entry.ps3_game().is_some_and(|game| game.id == id)
+                    });
+                } else if serial.is_some() {
+                    panel.cursor.keep_on_row(lattice, at, |entry| {
+                        entry.ps3_game().is_some_and(|game| {
+                            game.serial == serial && game.form == ps3::Form::Installed
+                        })
+                    });
+                }
+            }
+        }
+        for panel in &mut self.panels {
+            panel.cursor.keep_in_bounds(&self.lattice);
+        }
+    }
+
+    /// What pressing the PlayStation 3 row does — see [`ps3::Ps3::press`].
+    fn press_ps3_row(&mut self) {
+        match self.ps3.press() {
+            ps3::Press::Waiting => {
+                if self.ps3.setting_up().is_some() {
+                    self.ps3_setup_panel = true;
+                    self.show_ps3_working();
+                } else {
+                    self.ps3.reprobe();
+                }
+            }
+            ps3::Press::SetUp => self.offer_to_set_up_ps3(),
+            ps3::Press::Cannot(why) => self.say_about_ps3(vec![dialog::Line::Note(why)]),
+            ps3::Press::Folder => self.open_ps3_picker(),
+            ps3::Press::Enter => {
+                if self.step_to_ps3_column() {
+                    self.sounds.step();
+                } else {
+                    self.ps3.rescan();
+                }
+            }
+        }
+    }
+
+    /// Ask whether to set PlayStation 3 games up. What is downloaded is said as
+    /// what it does — PlayStation 3 games can be played — and not as RPCS3, a
+    /// flatpak and a firmware file, which are the log's business.
+    fn offer_to_set_up_ps3(&mut self) {
+        let from = self.dialog_origin();
+        self.dialog.ask(
+            from,
+            Some(ps3::mark().to_string()),
+            vec![
+                dialog::Line::Heading(ps3::TITLE.to_string()),
+                dialog::Line::Note(crate::i18n::text("ps3-set-up-explanation").to_string()),
+                dialog::Line::Rule,
+            ],
+            vec![
+                menu::Entry::new(menu::Command::Dismiss, crate::i18n::text("shell-not-now")),
+                menu::Entry::new(menu::Command::Ps3SetUp, crate::i18n::text("shell-install")),
+            ],
+            // On Not now, which is the answer drawn first: this one spends
+            // somebody's line and their disk.
+            0,
+        );
+    }
+
+    /// They said yes.
+    fn set_up_ps3(&mut self) {
+        tracing::info!("setting PlayStation 3 games up");
+        self.ps3.set_up();
+        self.rebuild_ps3();
+        self.ps3_setup_panel = true;
+        self.show_ps3_working();
+    }
+
+    /// The panel over something the PlayStation 3 integration is counting up
+    /// — the setup, or a package installing — with nothing to press.
+    fn show_ps3_working(&mut self) {
+        let (heading, working) = match (self.ps3.setting_up(), self.ps3.adding()) {
+            (Some(working), _) => (ps3::TITLE.to_string(), working.clone()),
+            (None, Some((path, working))) => (
+                self.ps3_title_at(path)
+                    .or_else(|| {
+                        path.file_stem()
+                            .map(|stem| stem.to_string_lossy().into_owned())
+                    })
+                    .unwrap_or_else(|| ps3::TITLE.to_string()),
+                working.clone(),
+            ),
+            _ => return,
+        };
+        let bar = match working.progress {
+            Some(done) => dialog::Line::Progress((done * 100.0).round().clamp(0.0, 100.0) as u8),
+            None => dialog::Line::Waiting,
+        };
+        let from = self.dialog_origin();
+        self.dialog.wait(
+            from,
+            Some(ps3::mark().to_string()),
+            vec![
+                dialog::Line::Heading(heading),
+                dialog::Line::Note(working.sentence()),
+                bar,
+            ],
+        );
+        self.needs_redraw = true;
+    }
+
+    /// The setup is over, one way or the other.
+    fn ps3_setup_ended(&mut self, ended: Result<(), ps3::Trouble>) {
+        self.rebuild_ps3();
+        let panel_up = std::mem::take(&mut self.ps3_setup_panel);
+        match ended {
+            Ok(()) => {
+                tracing::info!("PlayStation 3 games are set up");
+                if panel_up && self.dialog.is_open() {
+                    self.dialog.close();
+                }
+                self.ps3_after_setup = true;
+            }
+            Err(trouble) => {
+                self.say_about_ps3(vec![
+                    dialog::Line::Note(crate::i18n::text("ps3-set-up-failed").to_string()),
+                    dialog::Line::Note(ps3::trouble_sentence(trouble).to_string()),
+                ]);
+            }
+        }
+    }
+
+    /// A package has been installed, or has not.
+    fn ps3_package_added(&mut self, path: &Path, ended: Result<(), ps3::Trouble>) {
+        let panel_up = std::mem::take(&mut self.ps3_setup_panel);
+        match ended {
+            Ok(()) => {
+                tracing::info!(package = %path.display(), "a PlayStation 3 package is installed");
+                if panel_up && self.dialog.is_open() {
+                    self.dialog.close();
+                }
+                // Installed from Files, the game has landed in a column
+                // somebody is not looking at: where it is, is said.
+                if self.ps3_from_files.as_deref() == Some(path) {
+                    self.ps3_from_files = None;
+                    let name = path
+                        .file_stem()
+                        .map(|stem| stem.to_string_lossy().into_owned());
+                    self.say_about_ps3_game(
+                        name,
+                        vec![dialog::Line::Note(
+                            crate::i18n::text("ps3-installed-find-it").to_string(),
+                        )],
+                    );
+                }
+            }
+            Err(trouble) => {
+                if self.ps3_from_files.as_deref() == Some(path) {
+                    self.ps3_from_files = None;
+                }
+                let title = self.ps3_title_at(path).or_else(|| {
+                    path.file_stem()
+                        .map(|stem| stem.to_string_lossy().into_owned())
+                });
+                let mut lines = vec![dialog::Line::Note(
+                    crate::i18n::text("ps3-install-failed").to_string(),
+                )];
+                lines.push(dialog::Line::Note(
+                    ps3::trouble_sentence(trouble).to_string(),
+                ));
+                self.say_about_ps3_game(title, lines);
+            }
+        }
+    }
+
+    /// A disc's key has been asked for. Where it has come, the disc that was
+    /// pressed for it starts — if the cursor is still on it.
+    fn ps3_keyed(&mut self, image: &Path, ended: Result<(), ps3::Trouble>) {
+        let waiting = self.ps3_play_once_keyed.take();
+        let panel_up = std::mem::take(&mut self.ps3_setup_panel);
+        match ended {
+            Ok(()) => {
+                if panel_up && self.dialog.is_open() {
+                    self.dialog.close();
+                }
+                let still_on_it = self
+                    .selected_ps3_game()
+                    .is_some_and(|game| game.path == image);
+                if waiting.as_deref() == Some(image) && still_on_it {
+                    self.start_selection();
+                }
+            }
+            Err(trouble) => {
+                let title = self.ps3_title_at(image);
+                self.say_about_ps3_game(
+                    title,
+                    vec![
+                        dialog::Line::Note(crate::i18n::text("ps3-disc-not-ready").to_string()),
+                        dialog::Line::Note(ps3::trouble_sentence(trouble).to_string()),
+                    ],
+                );
+            }
+        }
+    }
+
+    /// A press on a PlayStation 3 game that does not simply start it: a
+    /// package installs, and a disc still encrypted has its key fetched and
+    /// then starts.
+    fn press_ps3_game(&mut self) {
+        let Some(game) = self.selected_ps3_game().cloned() else {
+            return;
+        };
+        if self.ps3.adding().is_some() {
+            // One install at a time: the one running is what is shown.
+            self.ps3_setup_panel = true;
+            self.show_ps3_working();
+            return;
+        }
+        match game.form {
+            ps3::Form::Package => {
+                tracing::info!(package = %game.path.display(), "installing a PlayStation 3 package");
+                self.ps3.add(&game.path);
+                self.rebuild_ps3();
+                self.ps3_setup_panel = true;
+                self.show_ps3_working();
+            }
+            _ if game.needs_key => {
+                tracing::info!(image = %game.path.display(), "fetching a disc's key before it starts");
+                self.ps3.fetch_key(&game.path);
+                self.ps3_play_once_keyed = Some(game.path.clone());
+                self.ps3_setup_panel = true;
+                let from = self.dialog_origin();
+                self.dialog.wait(
+                    from,
+                    Some(ps3::mark().to_string()),
+                    vec![
+                        dialog::Line::Heading(game.name.clone()),
+                        dialog::Line::Note(
+                            crate::i18n::text("ps3-getting-the-disc-ready").to_string(),
+                        ),
+                        dialog::Line::Waiting,
+                    ],
+                );
+                self.needs_redraw = true;
+            }
+            _ => self.start_selection(),
+        }
+    }
+
+    /// The PlayStation 3 package the bar is standing on in Files, where there
+    /// is an RPCS3 with its system software to install it into.
+    fn ps3_package_under_cursor(&self) -> Option<PathBuf> {
+        if !matches!(self.ps3.press(), ps3::Press::Enter | ps3::Press::Folder) {
+            return None;
+        }
+        let file = self.selected_file()?;
+        ps3::holds_a_package(&file.path).then(|| file.path.clone())
+    }
+
+    /// Ask whether to install a package pressed in Files.
+    fn offer_to_install_ps3_package(&mut self, path: PathBuf) {
+        let name = path
+            .file_stem()
+            .map(|stem| stem.to_string_lossy().into_owned())
+            .unwrap_or_default();
+        self.ps3_from_files = Some(path);
+        let from = self.dialog_origin();
+        self.dialog.ask(
+            from,
+            Some(ps3::mark().to_string()),
+            vec![
+                dialog::Line::Heading(name),
+                dialog::Line::Note(crate::i18n::text("ps3-install-question").to_string()),
+                dialog::Line::Rule,
+            ],
+            vec![
+                menu::Entry::new(
+                    menu::Command::Ps3InstallFile,
+                    crate::i18n::text("shell-install"),
+                ),
+                menu::Entry::new(menu::Command::Dismiss, crate::i18n::text("shell-not-now")),
+            ],
+            0,
+        );
+        self.needs_redraw = true;
+    }
+
+    /// They said yes.
+    fn install_ps3_package_from_files(&mut self) {
+        let Some(path) = self.ps3_from_files.clone() else {
+            return;
+        };
+        if self.ps3.adding().is_some() {
+            self.ps3_setup_panel = true;
+            self.show_ps3_working();
+            return;
+        }
+        tracing::info!(package = %path.display(), "installing a PlayStation 3 package from Files");
+        self.ps3.add(&path);
+        self.rebuild_ps3();
+        self.ps3_setup_panel = true;
+        self.show_ps3_working();
+    }
+
+    /// Get RPCS3 ready for a game, the moment before it starts: its own
+    /// questions off ([`ps3::write_quiet_settings`]), the console in the
+    /// shell's language where nobody chose it another
+    /// ([`ps3_settings::follow_the_shells_language`]), and which controller is
+    /// which player — [`Shell::hand_the_controllers_over`] for RPCS3. The same
+    /// order (the pad in hand first, then the other live ones; never a grabbed
+    /// original), written as RPCS3's own controller file and handed to its
+    /// SDL as the devices to open first. See [`ps3::input_config`].
+    fn ready_rpcs3_for_a_game(&mut self) {
+        let Some(config) = self.ps3.config_dir().map(Path::to_path_buf) else {
+            return;
+        };
+        ps3::write_quiet_settings(&config);
+        ps3_settings::follow_the_shells_language(&config);
+        let pads = pads::joysticks();
+        let grabbed = pad_guard::grabbed_nodes();
+        let in_hand = self.controller.in_hand();
+        let order = pads::order(&pads, &grabbed, in_hand.as_ref());
+        let live: Vec<&pads::Pad> = order
+            .iter()
+            .filter_map(|at| pads.get(*at))
+            .filter(|pad| !grabbed.contains(&pad.node))
+            .take(7)
+            .collect();
+        let names: Vec<String> = live
+            .iter()
+            .map(|pad| self.controller.sdl_name(pad))
+            .collect();
+        let players = ps3::player_names(&names);
+        tracing::info!(?players, "the controllers, as RPCS3 will find them");
+        ps3::write_input_config(&config, &players);
+        self.lattice.rpcs3_pads = live.iter().map(|pad| pad.node.clone()).collect();
+    }
+
+    /// The chosen game's film on its card and its music behind it, while the
+    /// start screen is what is on the display and nothing is raised over it —
+    /// a PlayStation 3 game's `ICON1.PAM` and `SND0.AT3`, and a PlayStation
+    /// Portable game's `ICON1.PMF` and `SND0.AT3`, as each console's own menu
+    /// played them. Returns whether the game's music is playing.
+    fn sync_game_preview(&mut self, now: Instant) -> bool {
+        let covered = self.is_leaving()
+            || self.any_app_open()
+            || !self.launching.is_empty()
+            || self.restoring.is_some()
+            || self.dialog.is_open()
+            || self.context_menu.is_open()
+            || self.guide.is_menu();
+        let chosen = (!covered)
+            .then(|| {
+                self.selected_ps3_game()
+                    .map(|game| (&game.cover, &game.preview, &game.music))
+                    .or_else(|| {
+                        self.selected_rom()
+                            .map(|rom| (&rom.boxart, &rom.preview, &rom.music))
+                    })
+            })
+            .flatten();
+        let want = chosen
+            .filter(|(_, film, music)| film.is_some() || music.is_some())
+            .and_then(|(icon, film, music)| {
+                Some(preview::Want {
+                    icon: icon.clone()?,
+                    film: film.clone(),
+                    music: music.clone(),
+                })
+            });
+        let size = want
+            .as_ref()
+            .and_then(|want| self.gpu.as_ref()?.thumbnail_size(&want.icon));
+        self.preview.want(want, size, now);
+        if let Some(icon) = self.preview.restore() {
+            if let Some(gpu) = self.gpu.as_mut() {
+                gpu.forget_thumbnail(&icon);
+            }
+            self.needs_redraw = true;
+        }
+        if let Some((icon, frame)) = self.preview.frame() {
+            if let Some(gpu) = self.gpu.as_mut() {
+                gpu.repaint_thumbnail(
+                    &icon,
+                    &thumbs::Picture {
+                        width: frame.width,
+                        height: frame.height,
+                        rgba: frame.pixels,
+                    },
+                );
+            }
+            self.needs_redraw = true;
+        }
+        let music = self.preview.music();
+        self.sounds.sync_game_music(music, now)
+    }
+
+    /// The menu's Play: whatever a press on the game would do.
+    fn press_ps3_game_or_play(&mut self) {
+        let simple = self
+            .selected_ps3_game()
+            .is_some_and(|game| game.start.is_some() && !game.needs_key);
+        if simple {
+            self.start_selection();
+        } else {
+            self.press_ps3_game();
+        }
+    }
+
+    /// Open RPCS3's own window, which the shell otherwise keeps off the bar.
+    fn open_rpcs3(&mut self) {
+        let Some(command) = self.ps3.open_command() else {
+            return;
+        };
+        let opening = media::Opening {
+            name: "RPCS3".to_string(),
+            icon: Some(ps3::mark().to_string()),
+            command: retroarch::shell_command(&command),
+        };
+        tracing::info!(command = %opening.command, "opening RPCS3's own window");
+        let (name, icon) = (opening.name.clone(), opening.icon.clone());
+        self.open_with_a_loading_screen(name, icon, |lattice| lattice.open_command(opening));
+    }
+
+    /// Walk the disk for the folder the games are in.
+    fn open_ps3_picker(&mut self) {
+        self.close_dialog();
+        // The walk hangs off the folder row at the head of the column — the
+        // same walk RetroArch's ROM folder is chosen by. See
+        // [`Shell::open_roms_picker`], whose order this keeps.
+        if !self.step_to_ps3_column() {
+            return;
+        }
+        let Some(at) = self.ps3_column() else {
+            return;
+        };
+        let Some(row) =
+            self.lattice.categories.get(at).and_then(|column| {
+                apps::picker_row_for(&column.entries, settings::Picking::Ps3Folder)
+            })
+        else {
+            return;
+        };
+        let lattice = &self.lattice;
+        let Some(panel) = self.panels.get_mut(self.focused_panel) else {
+            return;
+        };
+        panel.cursor.select_category(at, lattice);
+        panel.cursor.point_at_row(row, lattice);
+        self.read_selected_place();
+        if let Some(panel) = self.panels.get_mut(self.focused_panel) {
+            panel.cursor.enter(&self.lattice);
+        }
+        self.needs_redraw = true;
+    }
+
+    /// The folder the games are in has been chosen.
+    fn ps3_folder_chosen(&mut self, at: &Path) {
+        tracing::info!(at = %at.display(), "the PlayStation 3 games are in there");
+        // Out of the picker first, for RetroArch's reason: it hangs off the
+        // column that answering rebuilds.
+        self.leave_the_picker();
+        settings::choose_ps3_folder(at);
+        self.ps3.permit(at);
+        self.ps3.rescan();
+        self.rebuild_ps3();
+        self.answer_choice(ChosenFeedback::Kept, Screen::Start);
+    }
+
+    /// A panel about PlayStation 3 games with one way out.
+    fn say_about_ps3(&mut self, lines: Vec<dialog::Line>) {
+        self.say_about_ps3_game(None, lines);
+    }
+
+    fn say_about_ps3_game(&mut self, title: Option<String>, lines: Vec<dialog::Line>) {
+        let from = self.dialog_origin();
+        let mut said = vec![dialog::Line::Heading(
+            title.unwrap_or_else(|| ps3::TITLE.to_string()),
+        )];
+        said.extend(lines);
+        said.push(dialog::Line::Rule);
+        self.dialog.ask(
+            from,
+            Some(ps3::mark().to_string()),
+            said,
+            vec![menu::Entry::new(
+                menu::Command::Dismiss,
+                crate::i18n::text("shell-close"),
+            )],
+            0,
+        );
+        self.needs_redraw = true;
+    }
+
+    /// The name a game at `path` goes by in the column.
+    fn ps3_title_at(&self, path: &Path) -> Option<String> {
+        let at = self.ps3_column()?;
+        self.lattice.categories[at]
+            .entries
+            .iter()
+            .find_map(|entry| {
+                let game = entry.ps3_game()?;
+                (game.path == path).then(|| game.name.clone())
+            })
+    }
+
+    /// Take the focused display to the PlayStation 3 column.
+    fn step_to_ps3_column(&mut self) -> bool {
+        let Some(at) = self.ps3_column() else {
+            return false;
+        };
+        let lattice = &self.lattice;
+        let Some(panel) = self.panels.get_mut(self.focused_panel) else {
+            return false;
+        };
+        panel.cursor.go_to_own_column(at, lattice);
+        self.needs_redraw = true;
+        true
+    }
+
+    fn ps3_column(&self) -> Option<usize> {
+        self.lattice
+            .categories
+            .iter()
+            .position(|column| column.id == apps::ps3_column())
+    }
+
+    fn selected_ps3(&self) -> Option<&apps::Emulation> {
+        self.panels
+            .get(self.focused_panel)?
+            .cursor
+            .current_entry(&self.lattice)?
+            .ps3()
+    }
+
+    fn selected_ps3_game(&self) -> Option<&apps::Ps3Game> {
+        self.panels
+            .get(self.focused_panel)?
+            .cursor
+            .current_entry(&self.lattice)?
+            .ps3_game()
+    }
+
+    /// The menu over the PlayStation 3 row: RPCS3's own window, and the games
+    /// read again.
+    fn ps3_entry_menu(&self) -> Option<([f32; 4], Option<String>, Vec<menu::Entry>)> {
+        let panel = self.panels.get(self.focused_panel)?;
+        let mut rows = Vec::new();
+        match self.ps3.press() {
+            ps3::Press::SetUp => rows.push(menu::Entry::new(
+                menu::Command::Ps3OfferSetUp,
+                crate::i18n::text("ps3-set-up"),
+            )),
+            ps3::Press::Enter | ps3::Press::Folder => {
+                rows.push(menu::Entry::new(
+                    menu::Command::Ps3Rescan,
+                    crate::i18n::text("ps3-look-again"),
+                ));
+                rows.push(menu::Entry::new(
+                    menu::Command::Ps3Open,
+                    crate::i18n::text("ps3-open-rpcs3"),
+                ));
+            }
+            _ => {}
+        }
+        if rows.is_empty() {
+            return None;
+        }
+        let anchor = ui::launch_origin(panel.width as f32, panel.height as f32);
+        Some((anchor, Some(ps3::TITLE.to_string()), rows))
+    }
+
+    /// The menu over a PlayStation 3 game: the press, named for what it does.
+    fn ps3_game_entry_menu(&self) -> Option<([f32; 4], Option<String>, Vec<menu::Entry>)> {
+        let panel = self.panels.get(self.focused_panel)?;
+        let game = self.selected_ps3_game()?;
+        let label = match game.form {
+            ps3::Form::Package => crate::i18n::text("shell-install"),
+            _ => crate::i18n::text("ps3-play"),
+        };
+        let mut rows = vec![
+            menu::Entry::new(menu::Command::Ps3Play, label),
+            menu::Entry::new(menu::Command::Ps3Open, crate::i18n::text("ps3-open-rpcs3")),
+        ];
+        // What changes RPCS3's disk, while nothing else is changing it and no
+        // game is playing: its cache, where it has one, and a game RPCS3
+        // installed.
+        let quiet = self.ps3_playing == 0 && !self.ps3.busy();
+        if game.cache > 0 && game.serial.is_some() && quiet {
+            rows.push(
+                menu::Entry::new(
+                    menu::Command::Ps3OfferClearCache,
+                    crate::i18n::text("ps3-clear-cache"),
+                )
+                .grave(),
+            );
+        }
+        if game.form == ps3::Form::Installed && quiet {
+            rows.push(
+                menu::Entry::new(
+                    menu::Command::Ps3OfferRemove,
+                    crate::i18n::text("shell-uninstall"),
+                )
+                .glyph(icons::UNINSTALL)
+                .grave(),
+            );
+        }
+        let anchor = ui::launch_origin(panel.width as f32, panel.height as f32);
+        Some((anchor, Some(game.name.clone()), rows))
+    }
+
+    /// Ask whether to uninstall the installed PlayStation 3 game under the
+    /// cursor. It is the one press on a game that cannot be taken back, so it
+    /// is asked, and the harmless answer is drawn first and stood on — as an
+    /// Epic game's is.
+    fn offer_to_uninstall_ps3_game(&mut self) {
+        let Some(game) = self.selected_ps3_game().cloned() else {
+            return;
+        };
+        if game.form != ps3::Form::Installed {
+            return;
+        }
+        let mut lines = vec![dialog::Line::Heading(game.name.clone())];
+        if game.size > 0 {
+            lines.push(dialog::Line::Note(crate::steam::format_size(game.size)));
+        }
+        lines.push(dialog::Line::Note(
+            crate::i18n::text("ps3-uninstall-keeps").to_string(),
+        ));
+        lines.push(dialog::Line::Rule);
+        let from = self.dialog_origin();
+        self.dialog.ask(
+            from,
+            Some(ps3::mark().to_string()),
+            lines,
+            vec![
+                menu::Entry::new(menu::Command::Dismiss, crate::i18n::text("shell-keep-it")),
+                menu::Entry::new(
+                    menu::Command::Ps3Remove,
+                    crate::i18n::text("shell-uninstall"),
+                )
+                .grave(),
+            ],
+            0,
+        );
+        self.ps3_asked_remove = Some(game.path.clone());
+        self.needs_redraw = true;
+    }
+
+    /// Uninstall the game the question was about, with a panel that waits on
+    /// it. What goes and what stays is the helper's (`lxb-rpcs3 remove`).
+    fn uninstall_ps3_game(&mut self) {
+        let Some(folder) = self.ps3_asked_remove.take() else {
+            return;
+        };
+        let name = self.ps3_title_at(&folder);
+        tracing::info!(folder = %folder.display(), "uninstalling a PlayStation 3 game");
+        self.ps3.remove(&folder);
+        self.ps3_setup_panel = true;
+        let from = self.dialog_origin();
+        self.dialog.wait(
+            from,
+            Some(ps3::mark().to_string()),
+            vec![
+                dialog::Line::Heading(name.unwrap_or_else(|| ps3::TITLE.to_string())),
+                dialog::Line::Note(crate::i18n::text("ps3-uninstalling").to_string()),
+                dialog::Line::Waiting,
+            ],
+        );
+        self.needs_redraw = true;
+    }
+
+    /// Ask whether to clear what RPCS3 keeps for the game under the cursor
+    /// and can make again — how much it is, and what clearing it costs.
+    fn offer_to_clear_ps3_cache(&mut self) {
+        let Some(game) = self.selected_ps3_game().cloned() else {
+            return;
+        };
+        let Some(serial) = game.serial.clone() else {
+            return;
+        };
+        let lines = vec![
+            dialog::Line::Heading(game.name.clone()),
+            dialog::Line::Note(crate::steam::format_size(game.cache)),
+            dialog::Line::Note(crate::i18n::text("ps3-clear-cache-explanation").to_string()),
+            dialog::Line::Rule,
+        ];
+        let from = self.dialog_origin();
+        self.dialog.ask(
+            from,
+            Some(ps3::mark().to_string()),
+            lines,
+            vec![
+                menu::Entry::new(menu::Command::Dismiss, crate::i18n::text("shell-not-now")),
+                menu::Entry::new(
+                    menu::Command::Ps3ClearCache,
+                    crate::i18n::text("ps3-clear-cache"),
+                )
+                .grave(),
+            ],
+            0,
+        );
+        self.ps3_asked_clear = Some((serial, game.name));
+        self.needs_redraw = true;
+    }
+
+    /// Clear the cache the question was about, with a panel that waits on it.
+    fn clear_ps3_cache(&mut self) {
+        let Some((serial, name)) = self.ps3_asked_clear.take() else {
+            return;
+        };
+        tracing::info!(serial, "clearing a PlayStation 3 game's cache");
+        self.ps3.clear_cache(&serial);
+        self.ps3_setup_panel = true;
+        let from = self.dialog_origin();
+        self.dialog.wait(
+            from,
+            Some(ps3::mark().to_string()),
+            vec![
+                dialog::Line::Heading(name),
+                dialog::Line::Note(crate::i18n::text("ps3-clearing-cache").to_string()),
+                dialog::Line::Waiting,
+            ],
+        );
+        self.needs_redraw = true;
+    }
+
+    /// A cache has been cleared, or has not.
+    fn ps3_cache_cleared(&mut self, serial: &str, ended: Result<(), ps3::Trouble>) {
+        let panel_up = std::mem::take(&mut self.ps3_setup_panel);
+        if panel_up && self.dialog.is_open() {
+            self.dialog.close();
+        }
+        if ended.is_err() {
+            let title = self.ps3_serial_title(serial);
+            self.say_about_ps3_game(
+                title,
+                vec![dialog::Line::Note(
+                    crate::i18n::text("ps3-clear-cache-failed").to_string(),
+                )],
+            );
+        }
+        self.needs_redraw = true;
+    }
+
+    /// The name the game with `serial` goes by in the column.
+    fn ps3_serial_title(&self, serial: &str) -> Option<String> {
+        let at = self.ps3_column()?;
+        self.lattice.categories[at]
+            .entries
+            .iter()
+            .find_map(|entry| {
+                let game = entry.ps3_game()?;
+                (game.serial.as_deref() == Some(serial)).then(|| game.name.clone())
+            })
+    }
+
+    /// An uninstall has ended. The column has already lost the game where it
+    /// went; where it did not, the panel says so.
+    fn ps3_game_removed(&mut self, folder: &Path, ended: Result<(), ps3::Trouble>) {
+        let panel_up = std::mem::take(&mut self.ps3_setup_panel);
+        if panel_up && self.dialog.is_open() {
+            self.dialog.close();
+        }
+        if ended.is_err() {
+            let title = self.ps3_title_at(folder);
+            self.say_about_ps3_game(
+                title,
+                vec![dialog::Line::Note(
+                    crate::i18n::text("ps3-uninstall-failed").to_string(),
+                )],
+            );
+        }
+        self.needs_redraw = true;
+    }
+
     // --- the RetroArch integration ------------------------------------------
 
     /// Bring the RetroArch integration up to date with its helper.
@@ -25209,6 +26685,7 @@ impl Shell {
                 self.heroic.choose_folder(&pick.at);
                 self.answer_choice(ChosenFeedback::Kept, Screen::Start);
             }
+            settings::Picking::Ps3Folder => self.ps3_folder_chosen(&pick.at),
         }
     }
 
@@ -29806,57 +31283,23 @@ impl Shell {
     }
 
     fn activate_power(&mut self, item: guide::PowerItem) {
-        if item != guide::PowerItem::Cancel {
-            match lxb_updates::service::power_permit() {
-                Ok(permit) => self.update_power_permit = Some(permit),
-                Err(error) => {
-                    self.guide.close_power();
-                    let from = self.dialog_origin();
-                    self.dialog.ask(
-                        from,
-                        Some(icons::SETTING_UPDATES.into()),
-                        vec![
-                            dialog::Line::Heading(
-                                crate::i18n::text("shell-please-wait-for-updates").into(),
-                            ),
-                            dialog::Line::Note(
-                                crate::i18n::text(
-                                    "shell-your-device-needs-to-stay-on-while-updating",
-                                )
-                                .into(),
-                            ),
-                            dialog::Line::Note(
-                                crate::i18n::text("shell-you-can-keep-using-it-in-the-meantime")
-                                    .into(),
-                            ),
-                        ],
-                        vec![
-                            menu::Entry::new(menu::Command::Dismiss, "OK"),
-                            menu::Entry::new(
-                                menu::Command::UpdateOverview,
-                                crate::i18n::text("shell-view-updates"),
-                            ),
-                        ],
-                        0,
-                    );
-                    tracing::info!(%error, "power action blocked by update protection");
-                    self.needs_redraw = true;
-                    return;
-                }
-            }
+        if item != guide::PowerItem::Cancel && !self.may_power_down() {
+            return;
         }
         tracing::info!(?item, "power dialog selection");
         match item {
             // The menu closes first either way: what the user should see
             // while the machine goes down is whatever they were doing, not
             // an overlay frozen mid-animation.
+            //
+            // Past whatever this account's own programs hold, because somebody
+            // asked: a game may keep the machine awake while nobody touches it,
+            // not once somebody has told it to sleep. See
+            // [`power_bus::PowerBus::sleep_now`].
             guide::PowerItem::Suspend => {
                 self.guide.close();
-                run_detached(
-                    "systemctl suspend",
-                    ["systemctl", "suspend"],
-                    self.update_power_permit.take(),
-                );
+                self.power_bus
+                    .sleep_now(power_bus::Sleep::Suspend, self.update_power_permit.take());
             }
             // The two choices the session does not answer immediately. The
             // screen fades to black first and the machine is told to go once
@@ -29876,6 +31319,47 @@ impl Shell {
             guide::PowerItem::Cancel => self.guide.close_power(),
         }
         self.needs_redraw = true;
+    }
+
+    /// Whether the machine may be put to sleep or switched off now — not while
+    /// an update is being installed — taking the updater's permit if so, and
+    /// saying why not on screen if not.
+    fn may_power_down(&mut self) -> bool {
+        match lxb_updates::service::power_permit() {
+            Ok(permit) => self.update_power_permit = Some(permit),
+            Err(error) => {
+                self.guide.close_power();
+                let from = self.dialog_origin();
+                self.dialog.ask(
+                    from,
+                    Some(icons::SETTING_UPDATES.into()),
+                    vec![
+                        dialog::Line::Heading(
+                            crate::i18n::text("shell-please-wait-for-updates").into(),
+                        ),
+                        dialog::Line::Note(
+                            crate::i18n::text("shell-your-device-needs-to-stay-on-while-updating")
+                                .into(),
+                        ),
+                        dialog::Line::Note(
+                            crate::i18n::text("shell-you-can-keep-using-it-in-the-meantime").into(),
+                        ),
+                    ],
+                    vec![
+                        menu::Entry::new(menu::Command::Dismiss, "OK"),
+                        menu::Entry::new(
+                            menu::Command::UpdateOverview,
+                            crate::i18n::text("shell-view-updates"),
+                        ),
+                    ],
+                    0,
+                );
+                tracing::info!(%error, "power action blocked by update protection");
+                self.needs_redraw = true;
+                return false;
+            }
+        }
+        true
     }
 
     /// Leave the session and go back to the login screen.
@@ -32062,10 +33546,13 @@ impl Shell {
     /// Keep the wallpaper the user chose in step with the setting, and keep its
     /// frames arriving.
     ///
-    /// Three things, once a frame, and they belong together because each of them
+    /// Four things, once a frame, and they belong together because each of them
     /// is about the same one fact — which file, if any, is standing behind
     /// everything:
     ///
+    /// * The shell's own directory holds that file and nothing else, which is
+    ///   nothing at all while the wallpaper is one of the shell's own materials.
+    ///   See [`paper::Paper::keep_only`].
     /// * The reel follows the *applied* setting rather than the previewed one.
     ///   A cursor resting on Simple draws the ribbons without choosing them, and
     ///   a decoder stopped and restarted by somebody walking down a list of
@@ -32080,6 +33567,7 @@ impl Shell {
         let wanted = (theme::applied_style(theme::Part::Wallpaper) == custom)
             .then(settings::custom_wallpaper)
             .flatten();
+        self.paper.keep_only(wanted.as_deref());
         match (wanted, self.paper.showing()) {
             (Some(file), Some(showing)) if file == showing => {}
             (Some(file), _) => {
@@ -32122,7 +33610,12 @@ impl Shell {
         // a picture nothing was putting on the screen. See
         // [`Panel::drew_the_wallpaper`], which is that condition itself rather
         // than a second guess at it.
-        if self.panels.iter().any(|panel| panel.drew_the_wallpaper) {
+        //
+        // And in low-end hardware mode a film is held on the first frame it
+        // put up: the wallpaper is a still picture there, and a decoder running
+        // behind one is the cost the mode exists to take away.
+        let held_still = settings::low_end() && self.gpu.as_ref().is_some_and(gpu::Gpu::has_paper);
+        if self.panels.iter().any(|panel| panel.drew_the_wallpaper) && !held_still {
             self.paper.wanted();
         }
         let Some(frame) = self.paper.take(self.paper_spare.take()) else {
@@ -32706,6 +34199,381 @@ impl Shell {
         }
         self.rebuild_settings();
         self.needs_redraw = true;
+    }
+
+    /// Carry the idle policy out for this pass: keep its timers matching the
+    /// settings and the power source, dim the screens or switch them off when a
+    /// wait runs out, sleep when nothing holds it off, hear the machine wake,
+    /// answer a held power button, warn about the battery and turn the power
+    /// saver on and off. See [`idle`], which decides all of it.
+    fn sync_idle(&mut self, now: Instant, qh: &QueueHandle<Self>) {
+        for event in self.power_bus.drain() {
+            match event {
+                power_bus::Event::Sleeping(true) => {}
+                power_bus::Event::Sleeping(false) => self.woke_up(now),
+                power_bus::Event::Profiles(listing) => {
+                    if settings::note_power_profiles(listing) {
+                        self.rebuild_settings();
+                        self.needs_redraw = true;
+                    }
+                }
+                power_bus::Event::NotAsleep(why) => {
+                    tracing::info!(%why, "the machine did not go to sleep")
+                }
+                power_bus::Event::HeldByTheSystem => self.say_the_system_holds_sleep(),
+                power_bus::Event::CanHibernate(can) => {
+                    settings::note_can_hibernate(can);
+                    self.rebuild_settings();
+                    self.needs_redraw = true;
+                }
+            }
+        }
+        // The machine's power settings, where another account changed them,
+        // and where this session's own change stands — both of which the page
+        // says. See [`machine_power`].
+        if let Some(power) = machine_power::changed_elsewhere(now) {
+            settings::note_power(power);
+            self.rebuild_settings();
+            self.needs_redraw = true;
+        }
+        let standing = machine_power::standing();
+        if standing != self.power_standing {
+            self.power_standing = standing;
+            self.rebuild_settings();
+            self.needs_redraw = true;
+        }
+        // A program saying somebody is using it — a film player's own
+        // keep-alive, over the screen saver's interface.
+        if self.power_bus.poked() {
+            self.tell_the_compositor_somebody_is_here();
+        }
+
+        let on_battery = self.power.on_battery();
+        let charge = self.power.charge();
+        let waits = idle::waits(settings::power_settings(), on_battery);
+        if let Some(timers) = self.idle.timers.as_mut() {
+            for timer in timers.sync(waits, qh) {
+                self.idle.heard(timer, false);
+            }
+        }
+
+        // A program that asked over the session bus holds the screen while an
+        // application is in front — it cannot be matched to a window, and one
+        // left behind the start screen must not keep the screen lit there.
+        let hold = self.power_bus.screen_held() && self.any_app_open();
+        if hold != self.screen_held {
+            self.screen_held = hold;
+            if let Some(control) = self.power_control() {
+                control.hold_the_screen(hold as u32);
+                let _ = self.conn.flush();
+            }
+        }
+
+        let playing = !self.media_awake.is_empty()
+            || self
+                .playing
+                .as_ref()
+                .is_some_and(|watch| watch.playing().iter().any(|player| player.playing));
+        let holds = idle::Holds {
+            playing,
+            downloading: self.guide.downloading().is_some(),
+            copying: self.transfer_running(),
+            asked: self.power_bus.sleep_held(),
+        };
+        let battery = charge.map(|charge| (charge.percent, on_battery));
+        let doing = self.idle.pass(now, holds, battery, self.owns_the_machine);
+        if let Some(screens) = doing.screens {
+            self.apply_screens(screens, now);
+        }
+        if doing.power_menu {
+            self.open_the_power_menu();
+        }
+        if let Some((step, percent)) = doing.warn {
+            self.warn_about_the_battery(step, percent);
+        }
+        if doing.sleep {
+            // Through the updater's permit, which is refused while it installs
+            // anything: the machine asleep halfway through a package is the
+            // one outcome worse than a machine awake all night.
+            match lxb_updates::service::power_permit() {
+                Ok(permit) => self.power_bus.suspend(Some(permit)),
+                Err(error) => tracing::info!(%error, "idle, but an update is being installed"),
+            }
+        }
+        self.sync_battery_saver(charge, on_battery);
+    }
+
+    /// Put low-end hardware mode into force for this pass: tell the theme and
+    /// the renderer, and — once, when the renderer first exists — whether the
+    /// machine draws on its processor, which is the automatic answer. See
+    /// [`settings::low_end`].
+    fn sync_low_end(&mut self) {
+        let Some(gpu) = self.gpu.as_mut() else {
+            return;
+        };
+        let software = (!self.renderer_noted).then(|| gpu.software());
+        let low_end = settings::low_end();
+        theme::set_low_end(low_end);
+        gpu.set_low_end(low_end);
+        if let Some(software) = software {
+            self.renderer_noted = true;
+            if settings::note_software_renderer(software) {
+                tracing::info!(
+                    "drawing on the processor: low-end hardware mode is on until somebody chooses"
+                );
+                theme::set_low_end(settings::low_end());
+                self.rebuild_settings();
+            }
+        }
+        if low_end != self.low_end_was {
+            self.low_end_was = low_end;
+            tracing::info!(low_end, "low-end hardware mode");
+            self.needs_redraw = true;
+        }
+    }
+
+    /// How long the loop may sleep before it reads the pads again.
+    ///
+    /// A pad is not a Wayland object, so nothing wakes this loop for one: it is
+    /// read by looking, and it used to be looked at every eight milliseconds
+    /// for the whole of a session — a hundred and twenty-five wake-ups a
+    /// second for a machine sitting on a table, which on a handheld is a
+    /// processor that never gets to sleep. So the full rate is kept for while a
+    /// hand is on something — a press, a held direction, a stick aiming the
+    /// pointer, a key held down, and for [`HOT_FOR`] after — and a game in
+    /// front halves it; past that the loop wakes at [`QUIET_POLL`], and while
+    /// the screens are dark at [`DARK_POLL`]. Everything else this loop waits
+    /// for is a Wayland event, which wakes it whatever this says.
+    fn poll_interval(&self, now: Instant) -> Duration {
+        if !self.startup.ready || self.is_leaving() {
+            return controller::POLL_INTERVAL;
+        }
+        if self.idle.applied() == idle::Screens::Off {
+            return DARK_POLL;
+        }
+        let touched = self
+            .pad_touched
+            .is_some_and(|at| now.saturating_duration_since(at) < HOT_FOR);
+        if self.stick_pointer_aiming() || self.held_key.is_some() {
+            return controller::POLL_INTERVAL;
+        }
+        match (touched, self.any_app_in_front()) {
+            (false, _) => QUIET_POLL,
+            (true, true) => PLAYING_POLL,
+            (true, false) => controller::POLL_INTERVAL,
+        }
+    }
+
+    /// Whether an application is in front of the display being driven.
+    fn any_app_in_front(&self) -> bool {
+        self.app_label().is_some()
+    }
+
+    /// The compositor's power requests, where the compositor is new enough to
+    /// take them.
+    fn power_control(&self) -> Option<LxbShellV1> {
+        self.shell_control
+            .clone()
+            .filter(|control| control.version() >= POWER_SHELL_VERSION)
+    }
+
+    /// Say somebody is at the machine: every idle timer starts again.
+    fn tell_the_compositor_somebody_is_here(&self) {
+        if let Some(control) = self.power_control() {
+            control.user_active();
+            let _ = self.conn.flush();
+        }
+    }
+
+    /// The controller moved: pass that down, and say whether the press landed
+    /// on dark screens — in which case waking them is all it does.
+    fn controller_woke_the_screens(&mut self, now: Instant) -> bool {
+        if self.idle.controller_used(now) {
+            self.tell_the_compositor_somebody_is_here();
+        }
+        self.idle.applied() == idle::Screens::Off
+    }
+
+    /// Dim every display, switch them all off, or bring them back.
+    ///
+    /// A built-in panel is dimmed by its own backlight, which is the only way
+    /// dimming saves any power on it; every other display gets the
+    /// compositor's sheet. The backlight is only ever touched in a session on
+    /// the machine's own displays — a nested one would be dimming the
+    /// developer's laptop.
+    fn apply_screens(&mut self, screens: idle::Screens, now: Instant) {
+        tracing::info!(?screens, "the screens");
+        let control = self.power_control();
+        let owns = self.owns_the_machine;
+        for panel in &mut self.panels {
+            if screens == idle::Screens::Awake {
+                if let Some((light, level)) = panel.dimmed_light.take() {
+                    light.write(level);
+                }
+            }
+            let power = match screens {
+                idle::Screens::Awake => lxb_shell_v1::DisplayPower::On,
+                idle::Screens::Off => lxb_shell_v1::DisplayPower::Off,
+                idle::Screens::Dim => {
+                    let light = owns
+                        .then(|| system::panel_backlight(&panel.name))
+                        .flatten()
+                        .and_then(|light| light.read().map(|level| (light, level)));
+                    match light {
+                        Some((light, level)) => {
+                            let dimmed = ((level as f32) * idle::DIM_TO).round() as u32;
+                            light.write(dimmed.max(1));
+                            panel.dimmed_light = Some((light, level));
+                            lxb_shell_v1::DisplayPower::On
+                        }
+                        None => lxb_shell_v1::DisplayPower::Dim,
+                    }
+                }
+            };
+            panel.dark_since = (screens == idle::Screens::Off).then_some(now);
+            if let Some(control) = &control {
+                control.set_output_power(&panel.output, power);
+            }
+        }
+        if let Err(err) = self.conn.flush() {
+            tracing::warn!(?err, "could not dim or wake the screens");
+        }
+        self.needs_redraw = true;
+    }
+
+    /// The machine has just woken up: everything starts over, and the screens
+    /// it went to sleep with dark are lit again without waiting to be touched.
+    fn woke_up(&mut self, now: Instant) {
+        tracing::info!("the machine has woken");
+        self.idle.woke(now);
+        self.tell_the_compositor_somebody_is_here();
+        self.power.look_again();
+        self.needs_redraw = true;
+    }
+
+    /// The machine's power button went down or came up.
+    fn power_button(&mut self, pressed: bool) {
+        let now = Instant::now();
+        // A press is somebody at the machine, whatever it goes on to do.
+        self.tell_the_compositor_somebody_is_here();
+        // Where logind kept the button it is logind's to answer, and answering
+        // it here too would be one press doing two things.
+        if !self.power_bus.holds_the_button() || self.is_leaving() {
+            return;
+        }
+        // Dark screens are woken by it, as a phone's are: the machine is
+        // awake, and the one thing somebody pressing the button of a machine
+        // with a dark screen wants is to see it.
+        let dark = self.idle.applied() == idle::Screens::Off;
+        if !self.idle.power_button(pressed, now) || dark {
+            return;
+        }
+        match settings::power_settings().button {
+            settings::PowerButton::Sleep => self.activate_power(guide::PowerItem::Suspend),
+            settings::PowerButton::Hibernate => {
+                if self.may_power_down() {
+                    self.guide.close();
+                    self.power_bus
+                        .sleep_now(power_bus::Sleep::Hibernate, self.update_power_permit.take());
+                    self.needs_redraw = true;
+                }
+            }
+            settings::PowerButton::PowerOff => self.activate_power(guide::PowerItem::Shutdown),
+            settings::PowerButton::Menu => self.open_the_power_menu(),
+            settings::PowerButton::Nothing => {}
+        }
+    }
+
+    /// Say, in the corner, that a sleep somebody asked for did not happen
+    /// because the system is holding the machine awake — a firmware update,
+    /// another account's work. Which program it is goes to the journal.
+    fn say_the_system_holds_sleep(&mut self) {
+        if self.notifications.announce(
+            crate::i18n::text("power-sleep-held"),
+            crate::i18n::text("power-sleep-held-body"),
+            icons::SHUTDOWN,
+        ) {
+            self.sounds.notified();
+        }
+        self.sync_notification_panel();
+        self.needs_redraw = true;
+    }
+
+    /// Open the guide on its power menu, from wherever the session is.
+    fn open_the_power_menu(&mut self) {
+        if !self.guide.is_menu() {
+            self.open_guide();
+        }
+        self.guide.open_power();
+        self.needs_redraw = true;
+    }
+
+    /// Put a battery warning in the corner.
+    fn warn_about_the_battery(&mut self, step: idle::BatteryStep, percent: u8) {
+        let (summary, body, icon) = match step {
+            idle::BatteryStep::Low => (
+                crate::i18n::text("power-battery-low"),
+                crate::message!("power-battery-low-body", "percent" => percent),
+                icons::BATTERY_LOW,
+            ),
+            idle::BatteryStep::VeryLow => (
+                crate::i18n::text("power-battery-low"),
+                crate::message!("power-battery-very-low-body", "percent" => percent),
+                icons::BATTERY_EMPTY,
+            ),
+            idle::BatteryStep::Empty => (
+                crate::i18n::text("power-battery-empty"),
+                crate::i18n::text("power-battery-empty-body").to_string(),
+                icons::BATTERY_EMPTY,
+            ),
+        };
+        tracing::info!(?step, percent, "the battery is running low");
+        if self.notifications.announce(summary, &body, icon) {
+            self.sounds.notified();
+        }
+        self.sync_notification_panel();
+        self.needs_redraw = true;
+    }
+
+    /// Turn the power saver on while the battery is low, and put back what was
+    /// chosen before when it is not — unless somebody chose a mode by hand in
+    /// between, which is theirs to keep.
+    fn sync_battery_saver(&mut self, charge: Option<power::Charge>, on_battery: bool) {
+        const SAVER: &str = "power-saver";
+        let Some(profiles) = settings::power_profiles() else {
+            return;
+        };
+        let wanted = charge.is_some_and(|charge| {
+            idle::saver_wanted(
+                settings::power_settings().battery_saver,
+                charge.percent,
+                on_battery,
+            )
+        });
+        match (wanted, self.saved_profile) {
+            (true, None) => {
+                let Some(active) = profiles.active else {
+                    return;
+                };
+                if active == SAVER || !profiles.offered.contains(&SAVER) {
+                    return;
+                }
+                tracing::info!(
+                    from = active,
+                    "the battery is low: the power saver comes on"
+                );
+                self.saved_profile = Some(active);
+                self.power_bus.set_profile(settings::intern(SAVER));
+            }
+            (false, Some(previous)) => {
+                self.saved_profile = None;
+                if profiles.active == Some(SAVER) {
+                    tracing::info!(to = previous, "charging: the power mode goes back");
+                    self.power_bus.set_profile(previous);
+                }
+            }
+            _ => {}
+        }
     }
 
     /// Hand the Settings column what is in this machine's battery, rebuild it
@@ -39567,13 +41435,23 @@ fn previews_across_the_display(piece: retroarch::Piece) -> bool {
 /// [`thumbs::Want::Backdrop`], decoded at the size of the screen, drawn as it
 /// is. See [`crate::apps::Rom::own_background`].
 ///
+/// The backdrop a game carries of its own — a PSP game's `PIC1.PNG` — is
+/// between the two. It is the game's artwork rather than a photograph of a
+/// console's screen, and it is also 480 × 272: drawn sharp across a television
+/// it showed its pixels, and the user asked for "a bit of blur". So it is
+/// softened, by much less than a screenshot. See
+/// [`crate::apps::Rom::game_background`] and `art::softened_scenery_from`.
+///
 /// `None` for a game with no picture at all, which keeps the shell's own
 /// wallpaper exactly as a Steam title with no key art does.
 fn rom_sight(rom: &apps::Rom) -> Option<(art::Sight, thumbs::Want)> {
     let snap = rom.snap.clone()?;
-    Some(match rom.own_background {
-        true => (art::Sight::Picture(snap), thumbs::Want::Backdrop),
-        false => (art::Sight::Snapshot(snap), thumbs::Want::Snapshot),
+    Some(if rom.own_background {
+        (art::Sight::Picture(snap), thumbs::Want::Backdrop)
+    } else if rom.game_background {
+        (art::Sight::Softened(snap), thumbs::Want::Softened)
+    } else {
+        (art::Sight::Snapshot(snap), thumbs::Want::Snapshot)
     })
 }
 
@@ -40902,6 +42780,7 @@ impl CompositorHandler for Shell {
     ) {
         if let Some(panel) = self.panels.iter_mut().find(|panel| panel.owns(surface)) {
             panel.frame_callback_pending = false;
+            panel.cadence.answered(Instant::now());
         } else if let Some(panel) = self
             .panels
             .iter_mut()
@@ -41299,6 +43178,14 @@ impl KeyboardHandler for Shell {
         _serial: u32,
         event: KeyEvent,
     ) {
+        // A key pressed on screens the idle policy has switched off wakes them
+        // and does nothing else, as a controller's button does: nobody can see
+        // what it would have pressed. The compositor has already counted it as
+        // somebody being here. See [`idle`].
+        if self.idle.applied() == idle::Screens::Off {
+            self.held_key = None;
+            return;
+        }
         if !self.startup.ready {
             // Do not remember it for repeat either: a key pressed over the
             // wallpaper must be pressed again once controls exist.
@@ -41415,10 +43302,19 @@ impl OutputHandler for Shell {
         &mut self,
         _conn: &Connection,
         _qh: &QueueHandle<Self>,
-        _output: wl_output::WlOutput,
+        output: wl_output::WlOutput,
     ) {
         // A mode or scale change arrives as a layer-surface configure, which is
-        // where the swapchain is resized.
+        // where the swapchain is resized. What is kept from here is the rate,
+        // which is the beat a low-end display is drawn on.
+        let refresh = self
+            .output_state
+            .info(&output)
+            .as_ref()
+            .map_or(0, refresh_of);
+        if let Some(panel) = self.panels.iter_mut().find(|panel| panel.output == output) {
+            panel.cadence.set_refresh(refresh);
+        }
     }
 
     fn output_destroyed(
@@ -41448,6 +43344,38 @@ impl ProvidesRegistryState for Shell {
 
 smithay_client_toolkit::delegate_dispatch2!(Shell);
 
+impl Dispatch<ExtIdleNotifierV1, ()> for Shell {
+    fn event(
+        _state: &mut Self,
+        _notifier: &ExtIdleNotifierV1,
+        _event: <ExtIdleNotifierV1 as Proxy>::Event,
+        _data: &(),
+        _conn: &Connection,
+        _qh: &QueueHandle<Self>,
+    ) {
+    }
+}
+
+/// One of the idle policy's three waits running out, or somebody coming back.
+/// See [`idle`].
+impl Dispatch<ExtIdleNotificationV1, idle::Timer> for Shell {
+    fn event(
+        state: &mut Self,
+        _notification: &ExtIdleNotificationV1,
+        event: ext_idle_notification_v1::Event,
+        timer: &idle::Timer,
+        _conn: &Connection,
+        _qh: &QueueHandle<Self>,
+    ) {
+        match event {
+            ext_idle_notification_v1::Event::Idled => state.idle.heard(*timer, true),
+            ext_idle_notification_v1::Event::Resumed => state.idle.heard(*timer, false),
+            _ => {}
+        }
+        state.needs_redraw = true;
+    }
+}
+
 impl Dispatch<LxbShellV1, ()> for Shell {
     fn event(
         state: &mut Self,
@@ -41458,6 +43386,15 @@ impl Dispatch<LxbShellV1, ()> for Shell {
         _qh: &QueueHandle<Self>,
     ) {
         match event {
+            // The machine's power button, taken off the keyboard by the
+            // compositor. A press is decided on the way up and a hold by the
+            // idle pass — see [`idle::Idle::power_button`].
+            lxb_shell_v1::Event::PowerButton { state: pressed } => {
+                let pressed = pressed
+                    .into_result()
+                    .is_ok_and(|pressed| pressed == lxb_shell_v1::KeyState::Pressed);
+                state.power_button(pressed);
+            }
             lxb_shell_v1::Event::Guide => {
                 tracing::debug!("guide binding forwarded by the compositor");
                 state.on_action(Action::Guide);
@@ -46617,6 +48554,10 @@ mod file_menu_tests {
             snap: Some(PathBuf::from("/pictures/behind.png")),
             own_cover: false,
             own_background,
+            game_background: false,
+            preview: None,
+            music: None,
+            logo: None,
             shape: None,
             glyph: "lxb:console-psp".to_string(),
             disc: None,
@@ -46631,6 +48572,22 @@ mod file_menu_tests {
             rom_sight(&rom(false)),
             Some((art::Sight::Snapshot(at), thumbs::Want::Snapshot)),
             "and libretro's the way a console's screen has to"
+        );
+        // And a PSP game's own PIC1 is softened, by less than libretro's.
+        let mut its_own = rom(false);
+        its_own.game_background = true;
+        assert_eq!(
+            rom_sight(&its_own),
+            Some((
+                art::Sight::Softened(PathBuf::from("/pictures/behind.png")),
+                thumbs::Want::Softened
+            )),
+        );
+        // A picture somebody chose over it is still drawn as it is.
+        its_own.own_background = true;
+        assert_eq!(
+            rom_sight(&its_own).map(|(_, want)| want),
+            Some(thumbs::Want::Backdrop)
         );
 
         // A game with no picture at all keeps the shell's own wallpaper, which
@@ -47799,5 +49756,94 @@ mod finished_download_tests {
             a_finished_download(Some(945360), None, true, Some(504230)),
             (Some(945360), Some(945360))
         );
+    }
+}
+
+#[cfg(test)]
+mod low_end_tests {
+    use super::*;
+
+    /// Low-end hardware mode draws a still display ten times a second and a
+    /// moving one on the display's own beat — the frame that shows it stopped
+    /// included — and the first frame is never held back.
+    #[test]
+    fn a_display_is_drawn_at_the_low_end_pace() {
+        use cadence::{Cadence, Next};
+        let now = Instant::now();
+        let mut cadence = Cadence::default();
+        assert_eq!(
+            low_end_next(&cadence, None, now, false),
+            Next::Now,
+            "the first frame is drawn at once"
+        );
+        cadence.drew(now, false);
+        let last = Some(now);
+        let later = now + Duration::from_millis(50);
+        assert_eq!(
+            low_end_next(&cadence, last, later, false),
+            Next::At(now + LOW_END_STILL)
+        );
+        assert_eq!(
+            low_end_next(&cadence, last, now + LOW_END_STILL, false),
+            Next::Now
+        );
+        assert_eq!(
+            low_end_next(&cadence, last, later, true),
+            Next::Now,
+            "a press is drawn at once"
+        );
+
+        cadence.drew(later, true);
+        let last = Some(later);
+        let soon = later + Duration::from_millis(5);
+        assert_eq!(
+            low_end_next(&cadence, last, soon, true),
+            Next::Answer,
+            "a moving display waits for its last frame to be shown"
+        );
+        assert_eq!(
+            low_end_next(&cadence, last, soon, false),
+            Next::Answer,
+            "and so does the frame that shows it stopped"
+        );
+        cadence.answered(later + Duration::from_millis(16));
+        assert_eq!(
+            low_end_next(&cadence, last, later + Duration::from_millis(16), false),
+            Next::Now
+        );
+    }
+
+    /// A device drawing the default frame too slowly is said so once, after two
+    /// slow windows running — and never on the strength of one.
+    #[test]
+    fn a_slow_device_is_told_once_after_two_slow_windows() {
+        let start = Instant::now();
+        let mut pace = Pace::default();
+        // Ten frames a second for thirty seconds.
+        let mut told = 0;
+        for tenth in 0..=300u64 {
+            if pace.drew(start + Duration::from_millis(tenth * 100)) {
+                told += 1;
+            }
+        }
+        assert_eq!(told, 1, "said once, however long it goes on");
+
+        // Sixty frames a second is never slow.
+        let mut quick = Pace::default();
+        let told = (0..=1800u64)
+            .filter(|frame| quick.drew(start + Duration::from_micros(frame * 16_667)))
+            .count();
+        assert_eq!(told, 0);
+
+        // And one slow window between fast ones is not enough.
+        let mut once = Pace::default();
+        for tenth in 0..=100u64 {
+            assert!(!once.drew(start + Duration::from_millis(tenth * 100)));
+        }
+        once.interrupted();
+        let after = start + Duration::from_secs(11);
+        for frame in 0..=600u64 {
+            assert!(!once.drew(after + Duration::from_micros(frame * 16_667)));
+        }
     }
 }

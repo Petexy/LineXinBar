@@ -717,6 +717,17 @@ impl LxbState {
         if self.lxb.curtain.holds_input() {
             return;
         }
+        // Somebody is at the machine, which is what every idle timer on the
+        // session is waiting to hear — the shell's dim, off and sleep among
+        // them. Every kind of event counts; a device announcing itself does
+        // not, since plugging something in is not somebody using it. See
+        // [`crate::idle`].
+        if !matches!(
+            event,
+            InputEvent::DeviceAdded { .. } | InputEvent::DeviceRemoved { .. }
+        ) {
+            self.note_activity();
+        }
         match event {
             InputEvent::Keyboard { event } => self.on_keyboard::<B>(event),
             InputEvent::PointerMotion { event } => self.on_pointer_motion::<B>(event),
@@ -763,7 +774,19 @@ impl LxbState {
         };
         let pressed = state == KeyState::Pressed;
 
+        // The machine's power button is the machine's, not a key of whichever
+        // program has the keyboard: the shell is told, on both edges so it can
+        // tell a press from a hold, and nothing else is. See
+        // `lxb_shell_v1.power_button`.
+        let power_button = keycode.raw() == crate::idle::POWER_KEYCODE;
+        if power_button {
+            self.lxb.shell_control.send_power_button(pressed);
+        }
+
         let action = keyboard.input(self, keycode, state, serial, time, |state, mods, handle| {
+            if power_button {
+                return FilterResult::Intercept(None);
+            }
             // Which key this is, in the one place the symbols it produces are
             // known. Every key passes through here, because what makes a tap a
             // tap is as much the keys that are *not* the Windows key.
@@ -802,7 +825,9 @@ impl LxbState {
         // It cannot see this for itself while an application owns the keys,
         // which is the case the offer is made in. Sent once until the shell says
         // the pad is back — see `ShellControlState::typing_is_news`.
-        if pressed {
+        // Not the power button, which is on the machine rather than on a
+        // keyboard: pressing it says nothing about where the hands are.
+        if pressed && !power_button {
             self.pointer_put_down();
             self.lxb.shell_control.send_typed();
         }

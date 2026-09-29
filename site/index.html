@@ -1,0 +1,224 @@
+<!doctype html>
+<html lang="en-GB">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<script>
+  // The first time a visit reaches the start screen, it opens in the
+  // visitor's language: the one they chose on this site before, or else the
+  // first their browser asks for that the site speaks. Only here and only
+  // then, so a page linked to in one language stays in it, and a choice made
+  // from the menu is never overruled.
+  (function () {
+    if (document.documentElement.lang !== "en-GB") return;
+    // A search engine's or a language model's crawler reads the page it
+    // asked for: every language has its own address, named in the head.
+    if (/bot|crawl|spider|slurp|preview/i.test(navigator.userAgent)) return;
+    try {
+      // A page opened off the disk arrives with what the page before it kept
+      // in its address, and is no first arrival either.
+      var came = sessionStorage.getItem("lxb-arrived") || /[?&]lxb=/.test(location.search);
+      sessionStorage.setItem("lxb-arrived", "1");
+      if (came) return;
+      var dirs = { "de": "de", "en-US": "en-us", "es": "es", "fr": "fr", "pl": "pl", "pt-BR": "pt-br", "ru": "ru", "hi": "hi", "zh-CN": "zh-cn" };
+      var want = JSON.parse(localStorage.getItem("lxb-language") || "null");
+      var asked = want ? [] : navigator.languages || [navigator.language || ""];
+      for (var i = 0; i < asked.length && !want; i++) {
+        var tag = String(asked[i]).toLowerCase(), first = tag.split("-")[0];
+        if (tag === "en-us") want = "en-US";
+        else if (first === "en") want = "en-GB";
+        else if (first === "pt") want = "pt-BR";
+        else if (first === "zh") want = /hant|tw|hk|mo/.test(tag) ? null : "zh-CN";
+        else if (dirs[first]) want = first;
+      }
+      if (want && dirs[want]) location.replace(dirs[want] + "/index.html" + location.hash);
+    } catch (e) { /* storage refused: stay in English */ }
+  })();
+</script>
+<title>LineXinBar — an XMB-style console desktop for Linux</title>
+<meta name="description" content="LineXinBar is a console-style Linux desktop with an XMB launcher, in the manner of the XrossMediaBar, for your games, apps and media: a lightweight Wayland compositor you drive with a gamepad, a keyboard or a mouse.">
+<!-- search and sharing: written by tools/translate.py build -->
+<link rel="canonical" href="https://petexy.github.io/LineXinBar/">
+<link rel="alternate" hreflang="x-default" href="https://petexy.github.io/LineXinBar/">
+<link rel="alternate" hreflang="en" href="https://petexy.github.io/LineXinBar/">
+<link rel="alternate" hreflang="de" href="https://petexy.github.io/LineXinBar/de/">
+<link rel="alternate" hreflang="en-GB" href="https://petexy.github.io/LineXinBar/">
+<link rel="alternate" hreflang="en-US" href="https://petexy.github.io/LineXinBar/en-us/">
+<link rel="alternate" hreflang="es" href="https://petexy.github.io/LineXinBar/es/">
+<link rel="alternate" hreflang="fr" href="https://petexy.github.io/LineXinBar/fr/">
+<link rel="alternate" hreflang="pl" href="https://petexy.github.io/LineXinBar/pl/">
+<link rel="alternate" hreflang="pt-BR" href="https://petexy.github.io/LineXinBar/pt-br/">
+<link rel="alternate" hreflang="ru" href="https://petexy.github.io/LineXinBar/ru/">
+<link rel="alternate" hreflang="hi" href="https://petexy.github.io/LineXinBar/hi/">
+<link rel="alternate" hreflang="zh-CN" href="https://petexy.github.io/LineXinBar/zh-cn/">
+<meta property="og:type" content="website">
+<meta property="og:site_name" content="LineXinBar">
+<meta property="og:title" content="LineXinBar — an XMB-style console desktop for Linux">
+<meta property="og:description" content="LineXinBar is a console-style Linux desktop with an XMB launcher, in the manner of the XrossMediaBar, for your games, apps and media: a lightweight Wayland compositor you drive with a gamepad, a keyboard or a mouse.">
+<meta property="og:url" content="https://petexy.github.io/LineXinBar/">
+<meta property="og:locale" content="en_GB">
+<meta property="og:image" content="https://petexy.github.io/LineXinBar/assets/img/desktop.png">
+<meta property="og:image:width" content="1600">
+<meta property="og:image:height" content="900">
+<meta name="twitter:card" content="summary_large_image">
+<script type="application/ld+json">{"@context":"https://schema.org","@graph":[{"@type":"WebSite","@id":"https://petexy.github.io/LineXinBar/#website","url":"https://petexy.github.io/LineXinBar/","name":"LineXinBar","description":"LineXinBar is a console-style Linux desktop with an XMB launcher, in the manner of the XrossMediaBar, for your games, apps and media: a lightweight Wayland compositor you drive with a gamepad, a keyboard or a mouse.","inLanguage":"en-GB"},{"@type":"SoftwareApplication","@id":"https://petexy.github.io/LineXinBar/#software","name":"LineXinBar","alternateName":["LXB","LineXinBar XMB"],"description":"LineXinBar is a console-style Linux desktop with an XMB launcher, in the manner of the XrossMediaBar, for your games, apps and media: a lightweight Wayland compositor you drive with a gamepad, a keyboard or a mouse.","url":"https://petexy.github.io/LineXinBar/","applicationCategory":"DesktopEnhancementApplication","applicationSubCategory":"Desktop environment","operatingSystem":"Linux","softwareVersion":"0.9.3","license":"https://www.gnu.org/licenses/gpl-3.0.html","isAccessibleForFree":true,"offers":{"@type":"Offer","price":"0","priceCurrency":"USD"},"downloadUrl":"https://github.com/Petexy/LineXinBar/releases","installUrl":"https://petexy.github.io/LineXinBar/install.html","screenshot":{"@type":"ImageObject","url":"https://petexy.github.io/LineXinBar/assets/img/desktop.png","width":1600,"height":900},"inLanguage":["de","en-GB","en-US","es","fr","pl","pt-BR","ru","hi","zh-CN"],"keywords":"LineXinBar, XMB, XrossMediaBar, cross-media bar, console-style desktop, Linux desktop, Wayland compositor, gamepad, controller, couch gaming, HTPC, Steam, Epic Games, RetroArch, RPCS3, PlayStation 3","author":{"@type":"Person","name":"Petexy","url":"https://github.com/Petexy"},"sameAs":["https://github.com/Petexy/LineXinBar"]}]}</script>
+<!-- /search and sharing -->
+<meta name="theme-color" content="#060314">
+<link rel="icon" href="assets/glyphs/sm/logo.webp" type="image/webp">
+<link rel="preload" href="assets/fonts/Roboto-Regular-latin.woff2" as="font" type="font/woff2" crossorigin>
+<link rel="preload" href="assets/fonts/Roboto-Bold-latin.woff2" as="font" type="font/woff2" crossorigin>
+<link rel="stylesheet" href="assets/css/lxb.css">
+</head>
+<body class="bar-page" data-screen="bar" data-page="start">
+<canvas id="wallpaper" aria-hidden="true"></canvas>
+
+<main class="bar" id="content">
+  <h1 class="visually-hidden">LineXinBar — an XMB-style console desktop for Linux, for your games, apps and media</h1>
+  <p class="visually-hidden">Use the arrow keys, a controller, the mouse wheel or a swipe to move along the bar, and Enter, the bottom face button or a click to open what is lit.</p>
+  <nav aria-label="LineXinBar">
+    <ul class="bar-categories">
+      <li data-id="overview" data-glyph="logo">
+        <span class="cat-name">LineXinBar</span>
+        <ul class="cat-rows">
+          <li><a href="overview.html#what" data-glyph="logo"><span class="row-name">A console-style desktop</span><span class="row-note">For your games, apps and media — driven by a pad, a keyboard or a mouse</span></a></li>
+          <li><a href="overview.html#why" data-glyph="chosen"><span class="row-name">Why LineXinBar</span><span class="row-note">A desktop you can use from the couch</span></a></li>
+          <li><a href="overview.html#screenshots" data-glyph="category-images"><span class="row-name">Screenshots</span><span class="row-note">The start screen, Settings and the guide</span></a></li>
+          <li><a href="overview.html#status" data-glyph="setting-info"><span class="row-name">Project status</span><span class="row-note">Early development — what to know first</span></a></li>
+          <li><a href="https://github.com/Petexy/LineXinBar" target="_blank" rel="noopener" data-glyph="category-development"><span class="row-name">Source code</span><span class="row-note">LineXinBar on GitHub</span></a></li>
+        </ul>
+      </li>
+      <li data-id="install" data-glyph="setting-install-to">
+        <span class="cat-name">Get started</span>
+        <ul class="cat-rows">
+          <li><a href="install.html#try" data-glyph="launch"><span class="row-name">Try it in a window</span><span class="row-note">One script, from a checkout</span></a></li>
+          <li><a href="install.html#packages" data-glyph="setting-install-to"><span class="row-name">Install a package</span><span class="row-note">Arch, Debian and Ubuntu, Fedora, NixOS</span></a></li>
+          <li><a href="install.html#session" data-glyph="sign-out"><span class="row-name">Start the session</span><span class="row-note">Choose LineXinBar at your login screen</span></a></li>
+          <li><a href="install.html#optional" data-glyph="add"><span class="row-name">Optional packages</span><span class="row-note">RetroArch, Epic Games and PlayStation 3</span></a></li>
+          <li><a href="install.html#requirements" data-glyph="setting-info"><span class="row-name">What it needs</span><span class="row-note">Linux, a working GPU driver, logind or seatd</span></a></li>
+          <li><a href="install.html#hardware" data-glyph="setting-system"><span class="row-name">Hardware</span><span class="row-note">What it has run on so far</span></a></li>
+        </ul>
+      </li>
+      <li data-id="games" data-glyph="category-games">
+        <span class="cat-name">Games</span>
+        <ul class="cat-rows">
+          <li><a href="games.html#steam" data-glyph="steam"><span class="row-name">Steam</span><span class="row-note">Your whole library, signed in with your phone</span></a></li>
+          <li><a href="games.html#playing" data-glyph="launch"><span class="row-name">Playing a game</span><span class="row-note">Press it, and the game is what comes up</span></a></li>
+          <li><a href="games.html#friends" data-glyph="setting-users"><span class="row-name">Friends and chat</span><span class="row-note">Who is playing, messages and invitations</span></a></li>
+          <li><a href="games.html#epic" data-glyph="epic"><span class="row-name">Epic Games</span><span class="row-note">Your Epic library, through Heroic</span></a></li>
+          <li><a href="games.html#retroarch" data-glyph="retroarch"><span class="row-name">RetroArch</span><span class="row-note">Your own console games, as covers</span></a></li>
+          <li><a href="games.html#discs" data-glyph="console-psx"><span class="row-name">Game discs</span><span class="row-note">Put a disc in and it is on the bar</span></a></li>
+          <li><a href="games.html#ps3" data-glyph="ps3"><span class="row-name">PlayStation 3</span><span class="row-note">Through RPCS3, with each game's film and music</span></a></li>
+          <li><a href="games.html#trophies" data-glyph="category-trophies"><span class="row-name">Trophies</span><span class="row-note">Achievements from every library, in one column</span></a></li>
+        </ul>
+      </li>
+      <li data-id="media" data-glyph="category-multimedia">
+        <span class="cat-name">Apps &amp; media</span>
+        <ul class="cat-rows">
+          <li><a href="media.html#applications" data-glyph="category-other"><span class="row-name">Every application</span><span class="row-note">Sorted into the categories you already know</span></a></li>
+          <li><a href="media.html#search" data-glyph="search"><span class="row-name">Search everything</span><span class="row-note">Start typing on the start screen</span></a></li>
+          <li><a href="media.html#music" data-glyph="category-music"><span class="row-name">Music</span><span class="row-note">Your songs, gathered from your home folder</span></a></li>
+          <li><a href="media.html#video" data-glyph="category-video"><span class="row-name">Videos</span><span class="row-note">Your films, with a picture of each</span></a></li>
+          <li><a href="media.html#images" data-glyph="category-images"><span class="row-name">Pictures</span><span class="row-note">Your photos, as a column of thumbnails</span></a></li>
+          <li><a href="media.html#files" data-glyph="category-files"><span class="row-name">Files</span><span class="row-note">Copy, move, rename, compress and extract with a pad</span></a></li>
+          <li><a href="media.html#drives" data-glyph="file-drive"><span class="row-name">Drives</span><span class="row-note">Mount a disk, and keep it mounted if you like</span></a></li>
+          <li><a href="media.html#android" data-glyph="category-waydroid"><span class="row-name">Android apps</span><span class="row-note">Through Waydroid, in a column of their own</span></a></li>
+        </ul>
+      </li>
+      <li data-id="guide" data-glyph="pad-guide">
+        <span class="cat-name">The guide</span>
+        <ul class="cat-rows">
+          <li><a href="guide.html#overlay" data-glyph="pad-guide"><span class="row-name">One button away</span><span class="row-note">The guide opens over anything that is running</span></a></li>
+          <li><a href="guide.html#cards" data-glyph="select-multiple"><span class="row-name">Switching apps</span><span class="row-note">Every window as a card</span></a></li>
+          <li><a href="guide.html#quick" data-glyph="volume"><span class="row-name">Quick settings</span><span class="row-note">Volume, brightness and do not disturb</span></a></li>
+          <li><a href="guide.html#mixer" data-glyph="volume-mixer"><span class="row-name">Volume mixer</span><span class="row-note">A slider for everything making a sound</span></a></li>
+          <li><a href="guide.html#notifications" data-glyph="notifications"><span class="row-name">Notifications</span><span class="row-note">Everything announced, newest first</span></a></li>
+          <li><a href="guide.html#stick" data-glyph="pointer-stick"><span class="row-name">Stick pointer</span><span class="row-note">The right stick becomes a mouse</span></a></li>
+          <li><a href="guide.html#pip" data-glyph="setting-pip"><span class="row-name">Picture-in-picture</span><span class="row-note">Keep a video floating over a game</span></a></li>
+          <li><a href="guide.html#menu" data-glyph="mouse-right"><span class="row-name">Context menus</span><span class="row-note">Options on anything, from any control</span></a></li>
+        </ul>
+      </li>
+      <li data-id="displays" data-glyph="setting-display">
+        <span class="cat-name">Displays</span>
+        <ul class="cat-rows">
+          <li><a href="displays.html#multi" data-glyph="setting-display"><span class="row-name">Several displays</span><span class="row-note">Each screen browses on its own</span></a></li>
+          <li><a href="displays.html#modes" data-glyph="setting-refresh"><span class="row-name">Resolution and refresh</span><span class="row-note">Every display at its own pace</span></a></li>
+          <li><a href="displays.html#hdr" data-glyph="setting-hdr"><span class="row-name">HDR</span><span class="row-note">High dynamic range, per display</span></a></li>
+          <li><a href="displays.html#night" data-glyph="setting-night-light"><span class="row-name">Night light</span><span class="row-note">Warmer colours in the evening</span></a></li>
+          <li><a href="displays.html#oled" data-glyph="setting-screen-rest"><span class="row-name">OLED protection</span><span class="row-note">Rests a screen nobody is looking at</span></a></li>
+          <li><a href="displays.html#scaling" data-glyph="setting-scale"><span class="row-name">Scale and orientation</span><span class="row-note">Bigger or smaller, sideways or upright</span></a></li>
+          <li><a href="displays.html#app-resolution" data-glyph="setting-resolution"><span class="row-name">A resolution per app</span><span class="row-note">Let a heavy game draw at fewer pixels</span></a></li>
+        </ul>
+      </li>
+      <li data-id="settings" data-glyph="category-settings">
+        <span class="cat-name">Settings</span>
+        <ul class="cat-rows">
+          <li><a href="settings.html#accent" data-glyph="setting-accent"><span class="row-name">Accent colour</span><span class="row-note">Twelve palettes — try them here</span></a></li>
+          <li><a href="settings.html#theme" data-glyph="setting-theme"><span class="row-name">Theme</span><span class="row-note">Water or silk, beads or flat, sparkles or none</span></a></li>
+          <li><a href="settings.html#wallpaper" data-glyph="setting-wallpaper"><span class="row-name">Your own wallpaper</span><span class="row-note">A picture or a film of your own</span></a></li>
+          <li><a href="settings.html#language" data-glyph="setting-language"><span class="row-name">Language</span><span class="row-note">Ten languages, and the whole system follows</span></a></li>
+          <li><a href="settings.html#network" data-glyph="setting-wifi"><span class="row-name">Network and Bluetooth</span><span class="row-note">Wi-Fi, cables and pairing, with a pad</span></a></li>
+          <li><a href="settings.html#sound" data-glyph="volume"><span class="row-name">Sound</span><span class="row-note">Outputs, inputs and the shell's own voice</span></a></li>
+          <li><a href="settings.html#power" data-glyph="shutdown"><span class="row-name">Power</span><span class="row-note">Sleep, the power button and battery saver</span></a></li>
+          <li><a href="settings.html#updates" data-glyph="setting-updates"><span class="row-name">Updates</span><span class="row-note">One press to bring the machine up to date</span></a></li>
+          <li><a href="settings.html#low-end" data-glyph="setting-system"><span class="row-name">Low-end hardware mode</span><span class="row-note">For handhelds and older machines</span></a></li>
+        </ul>
+      </li>
+      <li data-id="controls" data-glyph="setting-input">
+        <span class="cat-name">Controls</span>
+        <ul class="cat-rows">
+          <li><a href="controls.html#pads" data-glyph="pad-stick"><span class="row-name">Controllers</span><span class="row-note">Plug one in and drive everything</span></a></li>
+          <li><a href="controls.html#guide-button" data-glyph="pad-guide"><span class="row-name">The guide button</span><span class="row-note">Always the way out, whatever is running</span></a></li>
+          <li><a href="controls.html#hints" data-glyph="pad-north"><span class="row-name">Button hints</span><span class="row-note">Drawn for whichever control is in your hand</span></a></li>
+          <li><a href="controls.html#keyboard" data-glyph="setting-keyboard"><span class="row-name">Keyboard</span><span class="row-note">Arrows, Enter and the Super key</span></a></li>
+          <li><a href="controls.html#osk" data-glyph="setting-typed"><span class="row-name">On-screen keyboard</span><span class="row-note">Type anything without leaving the couch</span></a></li>
+          <li><a href="controls.html#pointer" data-glyph="setting-mouse"><span class="row-name">Mouse and touch</span><span class="row-note">Clicks, taps and the wheel</span></a></li>
+          <li><a href="controls.html#bindings" data-glyph="setting-keys"><span class="row-name">Keybindings</span><span class="row-note">Every shortcut, and how to change them</span></a></li>
+        </ul>
+      </li>
+      <li data-id="desktop" data-glyph="category-utilities">
+        <span class="cat-name">Desktop</span>
+        <ul class="cat-rows">
+          <li><a href="desktop.html#screenshots" data-glyph="screenshot"><span class="row-name">Screenshots</span><span class="row-note">Guide and the right bumper</span></a></li>
+          <li><a href="desktop.html#sharing" data-glyph="setting-connect"><span class="row-name">Screen sharing</span><span class="row-note">Share a display in a call or a stream</span></a></li>
+          <li><a href="desktop.html#choosing" data-glyph="file-folder"><span class="row-name">Choosing a file</span><span class="row-note">Open and save dialogs you can drive with a pad</span></a></li>
+          <li><a href="desktop.html#prompts" data-glyph="authenticate"><span class="row-name">Password prompts</span><span class="row-note">When the system asks who you are</span></a></li>
+          <li><a href="desktop.html#awake" data-glyph="setting-schedule"><span class="row-name">Keeping it awake</span><span class="row-note">A film or a game holds the screen on</span></a></li>
+          <li><a href="desktop.html#apps" data-glyph="category-software"><span class="row-name">Works with your apps</span><span class="row-note">Wayland, X11 and Flatpak</span></a></li>
+        </ul>
+      </li>
+      <li data-id="family" data-glyph="file-home">
+        <span class="cat-name">Family</span>
+        <ul class="cat-rows">
+          <li><a href="family.html#login" data-glyph="setting-person"><span class="row-name">Login screen</span><span class="row-note">Console Experience Desktop Manager</span></a></li>
+          <li><a href="family.html#software" data-glyph="category-software"><span class="row-name">Software Hub</span><span class="row-note">A Flatpak store driven by a controller</span></a></li>
+          <li><a href="family.html#music" data-glyph="category-music"><span class="row-name">Music</span><span class="row-note">SongOnSole, the music library and player</span></a></li>
+          <li><a href="family.html#videos" data-glyph="category-video"><span class="row-name">Videos</span><span class="row-note">Videonsole, the film browser and player</span></a></li>
+          <li><a href="family.html#pictures" data-glyph="category-images"><span class="row-name">Pictures</span><span class="row-note">Imagonsole, the photo viewer</span></a></li>
+          <li><a href="family.html#toolkit" data-glyph="setting-appearance"><span class="row-name">lxb-toolkit</span><span class="row-note">Build apps out of the shell's own material</span></a></li>
+          <li><a href="family.html#one-version" data-glyph="refresh"><span class="row-name">One version</span><span class="row-note">Seven projects, released together</span></a></li>
+        </ul>
+      </li>
+      <li data-id="develop" data-glyph="category-development">
+        <span class="cat-name">Develop</span>
+        <ul class="cat-rows">
+          <li><a href="develop.html#docs" data-glyph="category-office"><span class="row-name">Documentation</span><span class="row-note">Every guide, from setup to rendering</span></a></li>
+          <li><a href="develop.html#architecture" data-glyph="category-development"><span class="row-name">How it is built</span><span class="row-note">A compositor and a shell, in Rust</span></a></li>
+          <li><a href="develop.html#translate" data-glyph="setting-language"><span class="row-name">Translations</span><span class="row-note">Ten languages, and room for yours</span></a></li>
+          <li><a href="develop.html#bugs" data-glyph="notifications"><span class="row-name">Report a bug</span><span class="row-note">What to include so it can be fixed</span></a></li>
+          <li><a href="develop.html#contribute" data-glyph="add"><span class="row-name">Contribute</span><span class="row-note">Code, hardware testing and translations</span></a></li>
+          <li><a href="develop.html#licence" data-glyph="file-page"><span class="row-name">Licence</span><span class="row-note">Free software under the GPL-3.0</span></a></li>
+        </ul>
+      </li>
+    </ul>
+  </nav>
+  <p class="bar-live-region visually-hidden" aria-live="polite"></p>
+  <div class="bar-layer" aria-hidden="false"></div>
+</main>
+
+<noscript><style>.guide-button{display:none}</style></noscript>
+<script src="assets/js/wallpaper.js" defer></script>
+<script src="assets/js/i18n.js" defer></script>
+<script src="assets/js/shell.js" defer></script>
+<script src="assets/js/xmb.js" defer></script>
+</body>
+</html>

@@ -547,6 +547,32 @@ impl ControllerInput {
     /// Controls the device itself never said it had are left out. A database
     /// names a D-pad by the buttons it would be if it were buttons, whatever
     /// the pad actually sends, so some of what comes back names nothing.
+    /// The name SDL gives this pad — which is what RPCS3 names a controller
+    /// by: the mapping database's name for a pad the database knows, and the
+    /// kernel's own name for one it does not. GilRs carries the same database
+    /// SDL is built from, so its answer is the one asked for.
+    pub fn sdl_name(&self, pad: &crate::pads::Pad) -> String {
+        let Some(gilrs) = self.gilrs.as_ref() else {
+            return pad.name.clone();
+        };
+        gilrs
+            .gamepads()
+            .find(|(_, gamepad)| {
+                gamepad.os_name() == pad.name
+                    && match (gamepad.vendor_id(), gamepad.product_id()) {
+                        (Some(vendor), Some(product)) => {
+                            vendor == pad.vendor && product == pad.product
+                        }
+                        _ => true,
+                    }
+            })
+            .filter(|(id, _)| Layout::of(gilrs, *id) == Layout::Mapped)
+            .map_or_else(
+                || pad.name.clone(),
+                |(_, gamepad)| gamepad.name().to_string(),
+            )
+    }
+
     pub fn mapping(&self, pad: &crate::pads::Pad) -> Option<crate::pads::Mapping> {
         use crate::pads::Control;
 

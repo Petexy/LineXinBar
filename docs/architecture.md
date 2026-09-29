@@ -449,7 +449,10 @@ crates/lxb-compositor/
   capture.rs      photographing one window, or one whole display, into a PNG
   flash.rs        the white a display gives when it has just been photographed
   blackout.rs     the black one display rests behind while another one is
-                  being used — see OLED protection
+                  being used — see OLED protection — and the dim and the dark
+                  the idle timers ask for
+  idle.rs         ext-idle-notify and idle-inhibit, the shell's hold on the
+                  screen, display power, and the power button handed over
   screencopy.rs   wlr-screencopy: what the portal is built on, and offered to
                   the shell and the portal alone
   hdr.rs          the connector's metadata and the CRTC's colour pipeline
@@ -506,6 +509,15 @@ crates/lxb-desktop/
   power.rs        what is left in the battery, out of the kernel's own
                   power_supply directory, and which supplies are this
                   machine's rather than a peripheral's
+  idle.rs         Settings > Power carried out: dim, dark and sleep on
+                  ext-idle-notify timers, what holds sleep off, the power
+                  button, and the battery's warnings and saver
+  power_bus.rs    logind (sleep, wake, the power button, sleep by hand),
+                  the power-profiles daemon, and the ScreenSaver and
+                  PowerManagement interfaces programs ask to stay awake on
+  machine_power.rs  Settings > Power as the machine's: /etc/lxb/power.toml,
+                  logind's HandlePowerKey, and the two root halves polkit
+                  runs for them
   volume.rs       how long the control a volume key raises stays on screen
   sound.rs        the ten effects and Start music, and the output and focus
                   transitions they go through
@@ -536,5 +548,7 @@ crates/lxb-portal/
   cast.rs         one display, going out as a PipeWire stream
   screencast.rs   org.freedesktop.impl.portal.ScreenCast, over D-Bus
   consent.rs      who may see the screen, and which one
+  inhibit.rs      org.freedesktop.impl.portal.Inhibit, carried to the
+                  shell's screen and sleep inhibitions
 ```
 

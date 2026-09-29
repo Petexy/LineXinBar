@@ -63,9 +63,9 @@
 //! A game is not the only thing that can stand behind a display. A photograph
 //! the user is standing on in Files puts itself there too, and that picture is
 //! read off their own disk by [`crate::thumbs`] rather than fetched from
-//! anybody. What the two share is the far end and only the far end: the box in
-//! [`HERO_WIDTH`], the crop, the chain of halvings, and the layer of the
-//! texture it all ends up in. So the box and [`scenery_from`] are declared
+//! anybody. What the two share is the far end and only the far end: the layer
+//! in [`HERO_WIDTH`], the picture's own shape beside it, the chain of halvings,
+//! and the layer of the texture it all ends up in. So the box and [`scenery_from`] are declared
 //! here, where the shape of a picture behind the bar is settled, and [`Sight`]
 //! is what everything downstream holds instead of an app id.
 
@@ -85,22 +85,31 @@ pub use lxb_steam::art::{Piece, Published};
 
 use crate::thumbs::Picture;
 
-/// The box the picture behind the bar is kept in, and the size Valve stores a
-/// hero at.
+/// The layer the picture behind the bar is kept in.
 ///
 /// Every layer of the array is exactly this, filled edge to edge: a picture is
-/// scaled and cropped into it rather than fitted inside it, so no part of a
-/// layer is ever left over from whatever was there before. That is not tidiness
-/// — a blurred sample near the edge of a half-used layer would drag the
-/// previous game's picture into this one's.
+/// stretched to fill it, so no part of a layer is ever left over from whatever
+/// was there before. That is not tidiness — a blurred sample near the edge of a
+/// half-used layer would drag the previous game's picture into this one's. The
+/// picture's own shape travels beside it ([`Scenery::shape`]), and the shader
+/// undoes the stretch as it crops the picture to the display. That is the one
+/// crop anything behind the bar is given: from the picture's shape to the
+/// display's, keeping the middle.
 ///
-/// Cropping here costs nothing that the screen would not crop anyway: the box
-/// is wider than any display, and the shader crops it further to whatever
-/// shape the display is. Valve's own guidance is that a hero's subject must
-/// survive being cut about at the sides, because that is what every surface
-/// showing one does.
+/// It used to be two. The layer was Valve's hero shape, 1920 × 620, and a
+/// picture was cut to that before the shader cut it again for the display. For
+/// a Steam hero, which is that shape, the first cut was nothing. For everything
+/// else it was a second, different crop: a PlayStation or PSP game's 16:9
+/// backdrop on a 16:9 television lost 43% of its height to the first and 43%
+/// of its width to the second, and a third of the picture filled the screen.
+/// The user saw it as Tekken: Dark Resurrection's logo cut off.
+///
+/// 1080 rows because that is what nearly everything that is not a hero is — a
+/// PS3 game's backdrop, an Epic game's art, a photograph — and one shown whole
+/// in fewer rows than it has would be softer than it was when it was cropped.
+/// A hero keeps more of its own rows than it did at 620.
 pub const HERO_WIDTH: u32 = 1920;
-pub const HERO_HEIGHT: u32 = 620;
+pub const HERO_HEIGHT: u32 = 1080;
 
 /// The box a game's logo is held in.
 ///
@@ -121,7 +130,7 @@ pub const LOGO_SIZE: u32 = 640;
 /// softened — behind the guide, and inside every frosted pane in the shell.
 /// The analytic wallpaper answers that by drawing itself dimmer and wider; a
 /// photograph can only answer it by having smaller copies to sample. Five
-/// rungs takes 1920 × 620 down to 120 × 38, which is well past the blur the
+/// rungs takes 1920 × 1080 down to 120 × 67, which is well past the blur the
 /// deepest frost asks for.
 pub const HERO_LEVELS: u32 = 5;
 
@@ -155,6 +164,9 @@ const WORKERS: usize = 2;
 /// level to be.
 pub struct Scenery {
     pub levels: Vec<Vec<u8>>,
+    /// The picture's own shape, width over height, before it was stretched to
+    /// fill the layer — what the shader crops it to the display from.
+    pub shape: f32,
 }
 
 impl Scenery {
@@ -197,6 +209,14 @@ pub enum Sight {
     /// it was always going to be — the colour and the shape of the game, behind
     /// the row that is the game. See [`blurred_scenery_from`].
     Snapshot(PathBuf),
+    /// A game's own backdrop, made for a small screen — a PSP game's
+    /// `PIC1.PNG`, 480 × 272 — by the file the helper kept it in.
+    ///
+    /// Its own kind for the reason [`Sight::Snapshot`] is: it is softened, and
+    /// by less. It is the game's artwork rather than a photograph of a console's
+    /// screen, and what it needs is the steps between its pixels taken out, not
+    /// its detail. See [`softened_scenery_from`].
+    Softened(PathBuf),
 }
 
 impl Sight {
@@ -204,7 +224,7 @@ impl Sight {
     pub fn game(&self) -> Option<u32> {
         match self {
             Sight::Game(app_id) => Some(*app_id),
-            Sight::Picture(_) | Sight::Snapshot(_) => None,
+            Sight::Picture(_) | Sight::Snapshot(_) | Sight::Softened(_) => None,
         }
     }
 }
@@ -1007,7 +1027,7 @@ fn icon(bytes: &[u8]) -> Option<Picture> {
     })
 }
 
-/// A hero, cropped to fill the box and reduced to its chain of halvings.
+/// A hero, stretched to fill the layer and reduced to its chain of halvings.
 fn hero(bytes: &[u8]) -> Option<Scenery> {
     Some(scenery_from(decode(bytes)?))
 }
@@ -1015,16 +1035,28 @@ fn hero(bytes: &[u8]) -> Option<Scenery> {
 /// One decoded picture, made into the picture behind a display.
 ///
 /// Split from [`hero`] so that a photograph of the user's own can become one
-/// without coming through Steam: what a picture behind the bar *is* — the box,
-/// the crop, the rungs — is settled here, and where the bytes came from is the
+/// without coming through Steam: what a picture behind the bar *is* — the
+/// layer, its shape, the rungs — is settled here, and where the bytes came from is the
 /// caller's business. [`crate::thumbs`] reads them off the disk with its own
 /// ceiling on what a decode may cost, which is a different ceiling from the one
 /// this module puts on a file arriving over the wire.
 pub fn scenery_from(image: image::DynamicImage) -> Scenery {
-    // Fill and crop rather than fit: see [`HERO_WIDTH`]. `resize_to_fill`
-    // keeps the middle, which is where Valve's guidance puts a hero's subject
-    // precisely because everything that shows one crops it.
-    let filled = image.resize_to_fill(
+    let shape = shape_of(&image);
+    stretched(image, shape)
+}
+
+/// A picture's own shape, width over height — within what a display could
+/// sensibly show a crop of, so a picture one pixel tall cannot ask the shader
+/// to divide by nearly nothing.
+fn shape_of(image: &image::DynamicImage) -> f32 {
+    let (width, height) = (image.width().max(1) as f32, image.height().max(1) as f32);
+    (width / height).clamp(0.1, 10.0)
+}
+
+/// The layer and its rungs, out of a picture whose shape before any reduction
+/// was `shape`. Stretched rather than cropped: see [`HERO_WIDTH`].
+fn stretched(image: image::DynamicImage, shape: f32) -> Scenery {
+    let filled = image.resize_exact(
         HERO_WIDTH,
         HERO_HEIGHT,
         image::imageops::FilterType::Lanczos3,
@@ -1039,7 +1071,7 @@ pub fn scenery_from(image: image::DynamicImage) -> Scenery {
         rung = image::imageops::resize(&rung, width, height, image::imageops::FilterType::Triangle);
         levels.push(rung.as_raw().clone());
     }
-    Scenery { levels }
+    Scenery { levels, shape }
 }
 
 /// The same, for a picture that is far too small for the place it is going.
@@ -1061,28 +1093,59 @@ pub fn scenery_from(image: image::DynamicImage) -> Scenery {
 /// blur happens at [`BLURRED`] of the box's width, which is a few thousand
 /// pixels rather than a million.
 pub fn blurred_scenery_from(image: image::DynamicImage) -> Scenery {
-    // Cropped to the box's shape *before* the reduction, so the crop is the
-    // same one every other picture behind the bar gets and the enlargement at
-    // the end is a plain scale with nothing else happening in it.
+    // Stretched to the layer's shape as it is reduced, like every other
+    // picture behind the bar, with its own shape kept for the shader.
+    let shape = shape_of(&image);
     let (width, height) = (HERO_WIDTH / BLURRED, HERO_HEIGHT / BLURRED);
-    let small = image.resize_to_fill(width, height, image::imageops::FilterType::Triangle);
+    let small = image.resize_exact(width, height, image::imageops::FilterType::Triangle);
     // Gaussian on a picture this size is thousands of pixels, not millions.
     // What it is for is the last of the steps between one reduced pixel and the
     // next, which a box filter leaves behind and an enlargement would then
     // spread out into visible bands.
     let softened = small.blur(BLUR);
-    scenery_from(softened)
+    stretched(softened, shape)
 }
+
+/// The same, lightly, for artwork made for a smaller screen than this one.
+///
+/// A PSP game's backdrop is 480 × 272: drawn with care, and drawn for a screen
+/// four inches across. Enlarged honestly it shows its pixels as steps along
+/// every edge, the way a screenshot does, but there is far more in it worth
+/// keeping than in a screenshot — faces, lettering — and the screenshot's
+/// treatment washed all of that out. The user asked for "a bit of blur".
+///
+/// So it is reduced to a quarter of the box, which is about the picture's own
+/// size, so nothing is lost on the way down. It is softened by less than one
+/// of its own pixels, enough to take the steps out and leave the drawing, and
+/// then enlarged.
+pub fn softened_scenery_from(image: image::DynamicImage) -> Scenery {
+    let shape = shape_of(&image);
+    let (width, height) = (HERO_WIDTH / SOFTENED, HERO_HEIGHT / SOFTENED);
+    let small = image.resize_exact(width, height, image::imageops::FilterType::Triangle);
+    stretched(small.blur(SOFTEN), shape)
+}
+
+/// How far a game's own small backdrop is reduced before it is softened: a
+/// quarter of the layer, 480 × 270, which is what a 480 × 272 picture already
+/// is.
+const SOFTENED: u32 = 4;
+
+/// How much it is softened, in its own pixels. Chosen by looking at Tekken 6's
+/// on a large television at 0.8, 1.2 and 1.6: 0.8 takes the steps out and
+/// keeps the faces, and more starts to look like the screenshot's blur.
+const SOFTEN: f32 = 0.8;
 
 /// How far a screenshot is reduced before it is softened and enlarged again.
 ///
-/// An eighth of the box, which is 240 × 77. Chosen by looking at the result
-/// rather than by argument: a sixteenth loses the composition — a forest and
-/// two fighters become a green wash — and a quarter keeps enough of the grid
-/// that the softening has to be strong enough to smear it, which costs the
-/// same composition by the other road. An eighth is smaller than the picture
-/// went in for every console libretro holds screenshots of, so the reduction
-/// really is averaging pixels together rather than inventing them.
+/// An eighth of the layer, which is 240 × 135 — the whole screenshot, now that
+/// nothing is cropped before the display is. Chosen by looking at the result
+/// rather than by argument, when it was 240 × 77 of a picture already cut to a
+/// hero's shape: a sixteenth loses the composition — a forest and two fighters
+/// become a green wash — and a quarter keeps enough of the grid that the
+/// softening has to be strong enough to smear it, which costs the same
+/// composition by the other road. An eighth is smaller than nearly every
+/// screenshot libretro holds, so the reduction really is averaging pixels
+/// together rather than inventing them.
 const BLURRED: u32 = 8;
 
 /// How much softening the reduced copy is given, in pixels of it.
@@ -1304,6 +1367,8 @@ mod tests {
         let at = PathBuf::from("/cache/snap.png");
         assert_ne!(Sight::Picture(at.clone()), Sight::Snapshot(at.clone()));
         assert_eq!(Sight::Snapshot(at.clone()).game(), None);
+        assert_ne!(Sight::Snapshot(at.clone()), Sight::Softened(at.clone()));
+        assert_eq!(Sight::Softened(at.clone()).game(), None);
         assert_eq!(Sight::Picture(at).game(), None);
         assert_eq!(Sight::Game(7).game(), Some(7));
     }
@@ -1313,9 +1378,52 @@ mod tests {
     #[test]
     fn the_halvings_are_the_sizes_a_mip_chain_has() {
         assert_eq!(Scenery::size(0), (HERO_WIDTH, HERO_HEIGHT));
-        assert_eq!(Scenery::size(1), (960, 310));
+        assert_eq!(Scenery::size(1), (960, 540));
         let (width, height) = Scenery::size(HERO_LEVELS - 1);
         assert!(width > 1 && height > 1, "{width} × {height}");
+    }
+
+    /// A picture is kept whole, whatever its shape, and says what that shape
+    /// was. It used to be cut to a hero's shape first and then cut again for
+    /// the display, which showed a third of a 16:9 backdrop — Tekken: Dark
+    /// Resurrection's PIC1 with its logo cut off.
+    #[test]
+    fn a_picture_is_kept_whole_with_its_own_shape() {
+        // 16:9, with a red corner at the top left and a blue one at the bottom
+        // right, where a crop to any wider shape would cut them away.
+        let mut source = image::RgbaImage::from_pixel(480, 270, image::Rgba([0, 255, 0, 255]));
+        for y in 0..20 {
+            for x in 0..20 {
+                source.put_pixel(x, y, image::Rgba([255, 0, 0, 255]));
+                source.put_pixel(479 - x, 269 - y, image::Rgba([0, 0, 255, 255]));
+            }
+        }
+        let source = image::DynamicImage::ImageRgba8(source);
+        for (made, what) in [
+            (scenery_from(source.clone()), "sharp"),
+            (softened_scenery_from(source.clone()), "softened"),
+            (blurred_scenery_from(source), "blurred"),
+        ] {
+            assert!(
+                (made.shape - 16.0 / 9.0).abs() < 0.01,
+                "{what}: {}",
+                made.shape
+            );
+            let top = &made.levels[0];
+            let at = |x: u32, y: u32| {
+                let i = ((y * HERO_WIDTH + x) * 4) as usize;
+                [top[i], top[i + 1], top[i + 2]]
+            };
+            let (red, blue) = (at(4, 4), at(HERO_WIDTH - 5, HERO_HEIGHT - 5));
+            assert!(
+                red[0] > red[1] && red[0] > red[2],
+                "{what}: the red corner is gone: {red:?}"
+            );
+            assert!(
+                blue[2] > blue[0] && blue[2] > blue[1],
+                "{what}: the blue corner is gone: {blue:?}"
+            );
+        }
     }
 
     /// A hero fills its layer edge to edge whatever shape it arrived in. Half

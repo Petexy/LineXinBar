@@ -20,6 +20,10 @@ pub enum Key {
     /// An Epic game, by Epic's own name for it — see [`crate::heroic`].
     EpicGame(String),
     EpicAchievement(String, String),
+    /// A PlayStation 3 game, by its trophy set's name — see [`crate::ps3`].
+    Ps3Game(String),
+    /// One trophy of that set, by its number in it.
+    Ps3Trophy(String, u32),
 }
 
 /// The machine a game is for, as the column groups by it.
@@ -456,11 +460,7 @@ impl Trophies {
                             crate::i18n::text("shell-steam-lists-no-achievements-for-this-game"),
                         ));
                     } else {
-                        for (unlocked, hidden, label) in [
-                            (true, false, crate::i18n::text("shell-unlocked")),
-                            (false, false, crate::i18n::text("shell-locked")),
-                            (false, true, "Hidden"),
-                        ] {
+                        for (unlocked, hidden) in [(true, false), (false, false), (false, true)] {
                             let group: Vec<_> = snapshot
                                 .achievements
                                 .iter()
@@ -471,7 +471,18 @@ impl Trophies {
                             if group.is_empty() {
                                 continue;
                             }
-                            let section = format!("{label} ({})", group.len());
+                            let count = group.len();
+                            let section = match (unlocked, hidden) {
+                                (true, _) => {
+                                    crate::message!("achievements-unlocked-count", "count" => count)
+                                }
+                                (false, false) => {
+                                    crate::message!("achievements-locked-count", "count" => count)
+                                }
+                                (false, true) => {
+                                    crate::message!("achievements-hidden-count", "count" => count)
+                                }
+                            };
                             for achievement in group {
                                 let concealed = achievement.hidden && !achievement.achieved;
                                 let title =

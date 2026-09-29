@@ -1,0 +1,131 @@
+<!DOCTYPE html>
+
+<html lang="ru">
+<head>
+<meta charset="utf-8"/>
+<meta content="width=device-width, initial-scale=1, viewport-fit=cover" name="viewport"/>
+<title>Обзор: LineXinBar, консольный рабочий стол для Linux в стиле XMB</title>
+<meta content="LineXinBar объединяет лёгкий композитор Wayland с удобным для контроллера лаунчером XMB: просматривайте игры, приложения и медиа и переключайтесь между экранами с геймпада, клавиатуры или мыши." name="description"/>
+<!-- search and sharing: written by tools/translate.py build -->
+<link rel="canonical" href="https://petexy.github.io/LineXinBar/ru/overview.html">
+<link rel="alternate" hreflang="x-default" href="https://petexy.github.io/LineXinBar/overview.html">
+<link rel="alternate" hreflang="en" href="https://petexy.github.io/LineXinBar/overview.html">
+<link rel="alternate" hreflang="de" href="https://petexy.github.io/LineXinBar/de/overview.html">
+<link rel="alternate" hreflang="en-GB" href="https://petexy.github.io/LineXinBar/overview.html">
+<link rel="alternate" hreflang="en-US" href="https://petexy.github.io/LineXinBar/en-us/overview.html">
+<link rel="alternate" hreflang="es" href="https://petexy.github.io/LineXinBar/es/overview.html">
+<link rel="alternate" hreflang="fr" href="https://petexy.github.io/LineXinBar/fr/overview.html">
+<link rel="alternate" hreflang="pl" href="https://petexy.github.io/LineXinBar/pl/overview.html">
+<link rel="alternate" hreflang="pt-BR" href="https://petexy.github.io/LineXinBar/pt-br/overview.html">
+<link rel="alternate" hreflang="ru" href="https://petexy.github.io/LineXinBar/ru/overview.html">
+<link rel="alternate" hreflang="hi" href="https://petexy.github.io/LineXinBar/hi/overview.html">
+<link rel="alternate" hreflang="zh-CN" href="https://petexy.github.io/LineXinBar/zh-cn/overview.html">
+<meta property="og:type" content="website">
+<meta property="og:site_name" content="LineXinBar">
+<meta property="og:title" content="Обзор: LineXinBar, консольный рабочий стол для Linux в стиле XMB">
+<meta property="og:description" content="LineXinBar объединяет лёгкий композитор Wayland с удобным для контроллера лаунчером XMB: просматривайте игры, приложения и медиа и переключайтесь между экранами с геймпада, клавиатуры или мыши.">
+<meta property="og:url" content="https://petexy.github.io/LineXinBar/ru/overview.html">
+<meta property="og:locale" content="ru_RU">
+<meta property="og:image" content="https://petexy.github.io/LineXinBar/assets/img/desktop.png">
+<meta property="og:image:width" content="1600">
+<meta property="og:image:height" content="900">
+<meta name="twitter:card" content="summary_large_image">
+<script type="application/ld+json">{"@context":"https://schema.org","@type":"WebPage","@id":"https://petexy.github.io/LineXinBar/ru/overview.html","url":"https://petexy.github.io/LineXinBar/ru/overview.html","name":"Обзор: LineXinBar, консольный рабочий стол для Linux в стиле XMB","description":"LineXinBar объединяет лёгкий композитор Wayland с удобным для контроллера лаунчером XMB: просматривайте игры, приложения и медиа и переключайтесь между экранами с геймпада, клавиатуры или мыши.","inLanguage":"ru","isPartOf":{"@id":"https://petexy.github.io/LineXinBar/#website"},"about":{"@id":"https://petexy.github.io/LineXinBar/#software"},"breadcrumb":{"@type":"BreadcrumbList","itemListElement":[{"@type":"ListItem","position":1,"name":"Стартовый экран","item":"https://petexy.github.io/LineXinBar/ru/"},{"@type":"ListItem","position":2,"name":"LineXinBar","item":"https://petexy.github.io/LineXinBar/ru/overview.html"}]}}</script>
+<!-- /search and sharing -->
+<meta content="#060314" name="theme-color"/>
+<link href="../assets/glyphs/sm/logo.webp" rel="icon" type="image/webp"/>
+<link as="font" crossorigin="" href="../assets/fonts/Roboto-Regular-latin.woff2" rel="preload" type="font/woff2"/>
+<link href="../assets/css/lxb.css" rel="stylesheet"/>
+</head>
+<body data-page="overview" data-screen="page">
+<a class="skip" href="#content">Перейти к содержимому</a>
+<canvas aria-hidden="true" id="wallpaper"></canvas>
+<header class="page-head">
+<a class="trail" data-back="" href="index.html#overview">
+<span class="trail-tile"><img alt="" class="glyph" src="../assets/glyphs/lg/logo.webp"/></span>
+<span class="trail-text"><span class="trail-back">‹ Стартовый экран</span><span class="trail-name">LineXinBar</span></span>
+</a>
+</header>
+<main class="column-page" id="content">
+<h1 class="visually-hidden">Обзор: LineXinBar, консольный рабочий стол для Linux в стиле XMB</h1>
+<nav aria-label="На этой странице" class="rows-nav">
+<ol class="rows">
+<li><a class="row" data-lxb-row="" href="#what"><span class="row-icon"><img alt="" class="glyph" src="../assets/glyphs/lg/logo.webp"/></span><span class="row-text"><span class="row-title">Рабочий стол в стиле консоли</span><span class="row-comment">Для ваших игр, приложений и медиа</span></span></a></li>
+<li><a class="row" data-lxb-row="" href="#why"><span class="row-icon"><img alt="" class="glyph" src="../assets/glyphs/lg/chosen.webp"/></span><span class="row-text"><span class="row-title">Почему LineXinBar</span><span class="row-comment">Рабочий стол, которым пользуются с дивана</span></span></a></li>
+<li><a class="row" data-lxb-row="" href="#screenshots"><span class="row-icon"><img alt="" class="glyph" src="../assets/glyphs/lg/category-images.webp"/></span><span class="row-text"><span class="row-title">Снимки экрана</span><span class="row-comment">Стартовый экран, Настройки и Гид</span></span></a></li>
+<li><a class="row" data-lxb-row="" href="#gamescope"><span class="row-icon"><img alt="" class="glyph" src="../assets/glyphs/lg/setting-display.webp"/></span><span class="row-text"><span class="row-title">Не просто Gamescope</span><span class="row-comment">Каждый экран в своём темпе</span></span></a></li>
+<li><a class="row" data-lxb-row="" href="#status"><span class="row-icon"><img alt="" class="glyph" src="../assets/glyphs/lg/setting-info.webp"/></span><span class="row-text"><span class="row-title">Состояние проекта</span><span class="row-comment">Ранняя разработка — что стоит знать заранее</span></span></a></li>
+<li><a class="row" data-lxb-row="" href="#source"><span class="row-icon"><img alt="" class="glyph" src="../assets/glyphs/lg/category-development.webp"/></span><span class="row-text"><span class="row-title">Исходный код</span><span class="row-comment">Свободное ПО на GitHub</span></span></a></li>
+</ol>
+</nav>
+<div class="panes">
+<section aria-labelledby="what-t" class="pane glass" id="what">
+<h2 id="what-t"><img alt="" class="glyph" src="../assets/glyphs/lg/logo.webp"/>Рабочий стол в стиле консоли</h2>
+<p class="lede">LineXinBar — рабочий стол Linux в стиле консоли для ваших игр, приложений и медиа. Он объединяет лёгкий композитор Wayland с лаунчером, которым вы управляете геймпадом, клавиатурой или мышью.</p>
+<p>Просматривайте библиотеку, открывайте обычные приложения рабочего стола и переключайтесь между экранами в одном интерфейсе по образцу XrossMediaBar (XMB) с PlayStation 3 — панель категорий через весь экран, колонка с содержимым каждой из них и Гид на расстоянии одной кнопки поверх всего, что запущено. Это весь сеанс, а не приложение поверх другого рабочего стола: файловый менеджер, настройки, запросы пароля и экран обновлений — всё это его части, и до всего можно дотянуться с дивана.</p>
+<figure>
+<img alt="Стартовый экран LineXinBar: ряд плиток категорий с выделенными Играми, под ним колонка Игр со Steam и RetroArch, на фиолетовых обоях с текущей полосой света" class="shot" height="900" loading="lazy" src="../assets/img/desktop.webp" width="1600"/>
+<figcaption>Стартовый экран, в колонке Игр.</figcaption>
+</figure>
+<div class="more"><a class="control lit" data-select="Начало работы" href="install.html">Начало работы</a><a class="control" href="index.html#overview">Пройтись по стартовому экрану</a></div>
+</section>
+<section aria-labelledby="why-t" class="pane glass" id="why">
+<h2 id="why-t"><img alt="" class="glyph" src="../assets/glyphs/lg/chosen.webp"/>Почему LineXinBar</h2>
+<div class="cards">
+<a class="card" href="controls.html"><img alt="" class="glyph" src="../assets/glyphs/lg/pad-stick.webp"/><b>Рабочий стол для дивана</b><span>Приложения, музыка, видео и изображения с контроллера, а когда нужно что-то напечатать — экранная клавиатура.</span></a>
+<a class="card" href="games.html"><img alt="" class="glyph" src="../assets/glyphs/lg/category-games.webp"/><b>Ваши игры в одном месте</b><span>Steam, а при желании Epic Games, ваши собственные консольные игры через RetroArch и PlayStation 3 через RPCS3.</span></a>
+<a class="card" href="displays.html"><img alt="" class="glyph" src="../assets/glyphs/lg/setting-display.webp"/><b>Несколько экранов, независимо</b><span>Каждый экран со своим разрешением и частотой обновления и со своей панелью.</span></a>
+<a class="card" href="guide.html"><img alt="" class="glyph" src="../assets/glyphs/lg/pad-guide.webp"/><b>Гид на расстоянии кнопки</b><span>Переключайте приложения, меняйте громкость и яркость или возвращайтесь в лаунчер — изнутри чего угодно.</span></a>
+<a class="card" href="settings.html"><img alt="" class="glyph" src="../assets/glyphs/lg/setting-accent.webp"/><b>Сделайте его своим</b><span>Двенадцать акцентных цветов, обои из воды или шёлка или ваш собственный фильм, десять языков.</span></a>
+<a class="card" href="desktop.html"><img alt="" class="glyph" src="../assets/glyphs/lg/category-utilities.webp"/><b>Всё нужное для рабочего стола — в комплекте</b><span>Файлы, снимки экрана, демонстрация экрана, окна выбора файлов и обновления системы — рядом с вашими приложениями.</span></a>
+</div>
+</section>
+<section aria-labelledby="screenshots-t" class="pane glass" id="screenshots">
+<h2 id="screenshots-t"><img alt="" class="glyph" src="../assets/glyphs/lg/category-images.webp"/>Снимки экрана</h2>
+<p>Сняты во вложенном сеансе собственной выпускной сборки проекта.</p>
+<figure>
+<img alt="Колонка Настроек с выделенными Обновлениями, за ними Оформление, Язык и Экран" class="shot" height="900" loading="lazy" src="../assets/img/settings.webp" width="1600"/>
+<figcaption>Настройки — собственная колонка оболочки — с Обновлениями во главе.</figcaption>
+</figure>
+<figure>
+<img alt="Гид, открытый поверх стартового экрана, с временем, быстрыми настройками, полосой громкости и кнопкой «Продолжить»" class="shot" height="900" loading="lazy" src="../assets/img/guide.webp" width="1600"/>
+<figcaption>Гид поверх всего, что запущено.</figcaption>
+</figure>
+<figure>
+<img alt="Экран входа на двух экранах рядом" class="shot" height="800" loading="lazy" src="../assets/img/cedm-two-screens.webp" width="2400"/>
+<figcaption><a href="family.html#login">Экран входа</a>, сделанный в пару к нему, на двух экранах.</figcaption>
+</figure>
+</section>
+<section aria-labelledby="gamescope-t" class="pane glass" id="gamescope">
+<h2 id="gamescope-t"><img alt="" class="glyph" src="../assets/glyphs/lg/setting-display.webp"/>Не просто Gamescope</h2>
+<p class="lede">Gamescope владеет одним выходом и масштабирует на него одно приложение. LineXinBar сохраняет ту же простую модель «одно приложение заполняет экран» — но каждый подключённый экран является настоящим выходом со своим циклом отрисовки.</p>
+<p>Поэтому экраны с разными разрешениями и частотами работают независимо, а не привязаны к общему пульсу, и у каждого свой стартовый экран. Это полноценный сеанс рабочего стола, а не рамка одной игры: в нём живут приложения, файлы, настройки и запросы.</p>
+</section>
+<section aria-labelledby="status-t" class="pane glass" id="status">
+<h2 id="status-t"><img alt="" class="glyph" src="../assets/glyphs/lg/setting-info.webp"/>Состояние проекта</h2>
+<p class="lede">LineXinBar находится на <strong>ранней стадии разработки</strong>, версия 0.9.3.</p>
+<ul>
+<li>Тестирование оборудования пока в основном шло на одной видеокарте AMD с двумя экранами; другим производителям и машинам с несколькими GPU нужно больше людей, которые их попробуют.</li>
+<li>Играм из Steam нужен клиент Steam от Valve, который работает незаметно. Epic Games, RetroArch и PlayStation 3 — дополнительные пакеты.</li>
+<li>Демонстрации отдельного окна (а не всего экрана), навигации жестами и переменной частоты обновления пока нет.</li>
+</ul>
+<p>Прочитайте об известных ограничениях, прежде чем полагаться на него каждый день, — а если попробуете на своём оборудовании, расскажите, как всё прошло.</p>
+<div class="more"><a class="control lit" data-select="Ограничения" href="https://github.com/Petexy/LineXinBar/blob/master/docs/overview.md#not-implemented" rel="noopener" target="_blank">Известные ограничения</a><a class="control" href="https://github.com/Petexy/LineXinBar/issues" rel="noopener" target="_blank">Сообщить об ошибке</a></div>
+</section>
+<section aria-labelledby="source-t" class="pane glass" id="source">
+<h2 id="source-t"><img alt="" class="glyph" src="../assets/glyphs/lg/category-development.webp"/>Исходный код</h2>
+<p class="lede">LineXinBar — свободное ПО под лицензией GPL-3.0, разрабатываемое открыто на GitHub.</p>
+<p>Сообщения об ошибках, тестирование оборудования, переводы и код — всё приветствуется; как помочь, рассказано в разделе <a href="develop.html">Разработка</a>.</p>
+<div class="more"><a class="control lit" data-select="GitHub" href="https://github.com/Petexy/LineXinBar" rel="noopener" target="_blank">LineXinBar на GitHub</a></div>
+</section>
+</div>
+</main>
+<footer class="site-foot">
+<p>Далее: <a href="install.html">Начало работы ›</a> · <a href="index.html#overview">Стартовый экран</a> · LineXinBar — свободное ПО под лицензией <a href="https://github.com/Petexy/LineXinBar/blob/master/LICENSE">GPL-3.0</a>.</p>
+</footer>
+<script defer="" src="../assets/js/wallpaper.js"></script>
+<script defer="" src="../assets/js/i18n.js"></script>
+<script defer="" src="../assets/js/shell.js"></script>
+<script defer="" src="../assets/js/page.js"></script>
+</body>
+</html>

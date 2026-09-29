@@ -461,6 +461,16 @@ pub enum Entry {
     /// and what can be done to it is Heroic's list rather than the package
     /// manager's. See [`EpicGame`].
     EpicGame(EpicGame),
+    /// PlayStation 3, under RetroArch in the Games column: the way in to the
+    /// games RPCS3 plays, and afterwards the way back out of them.
+    ///
+    /// The same kind of row as [`Entry::RetroArch`] and [`Entry::Epic`], and
+    /// the same type. It exists on a machine that has the `lxb-rpcs3` package
+    /// and on no other. See [`crate::ps3`].
+    Ps3(Emulation),
+    /// One PlayStation 3 game: a disc image, a game in a folder, one RPCS3 has
+    /// installed, or a package waiting to be installed. See [`Ps3Game`].
+    Ps3Game(Ps3Game),
     /// The row at the head of a column of folders that says "this one".
     ///
     /// The picker's answer, and the only row in that column that acts. A row
@@ -879,6 +889,55 @@ pub struct EpicGame {
     pub logo: Option<PathBuf>,
 }
 
+/// One PlayStation 3 game, as a row of the PlayStation 3 column.
+///
+/// Drawn the way the console's own menu drew it — its icon on a card of the
+/// icon's shape, its backdrop behind the display while it is chosen — and
+/// started the way a ROM is, by the command on the row. Every picture is the
+/// game's own, read out of it by the helper. See [`crate::ps3`], which is
+/// where every field comes from. Compared but not equatable, like
+/// [`EpicGame`]: the bar is a measurement.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Ps3Game {
+    /// The helper's name for it, which stays the same for as long as the game
+    /// is where it is: its path, or `hdd0/<folder>` for an installed one.
+    pub id: String,
+    /// Its name, in the shell's language where the game has one in it.
+    pub name: String,
+    /// The line under it: whether it is ready, or what its press will do.
+    pub note: String,
+    /// The same fact as a bar, while a package installs.
+    pub progress: Option<Arriving>,
+    pub form: crate::ps3::Form,
+    /// The file or folder the game is.
+    pub path: PathBuf,
+    /// `BLUS30359`, where the game says.
+    pub serial: Option<String>,
+    /// The command that starts it — RPCS3, and what to boot — or `None` for a
+    /// package, whose press installs it.
+    pub start: Option<Vec<String>>,
+    /// An encrypted disc whose key has not been fetched: its press fetches it
+    /// first.
+    pub needs_key: bool,
+    /// Its icon, `ICON0.PNG` — the card.
+    pub cover: Option<PathBuf>,
+    /// Its backdrop, `PIC1.PNG` — what the display becomes while it is chosen.
+    pub hero: Option<PathBuf>,
+    /// The picture that stands over the backdrop, `PIC0.PNG` — its loading
+    /// screen stands it in the middle of the backdrop, as a Steam game's logo.
+    pub logo: Option<PathBuf>,
+    /// Its film, `ICON1.PAM`, which plays in place of the icon while the row
+    /// is chosen.
+    pub preview: Option<PathBuf>,
+    /// Its music, `SND0.AT3`, which plays while the row is chosen.
+    pub music: Option<PathBuf>,
+    /// Bytes on the disk — what uninstalling an installed one gives back.
+    pub size: u64,
+    /// Bytes RPCS3 keeps for it that it can make again — what Clear cache
+    /// gives back.
+    pub cache: u64,
+}
+
 /// One game out of somebody's ROM folder.
 ///
 /// Compared but not equatable: [`Rom::shape`] is a measurement of a picture,
@@ -948,6 +1007,24 @@ pub struct Rom {
     /// shell smearing a photograph nobody asked it to touch. See
     /// `Shell::sight_of`, which is where the two part.
     pub own_background: bool,
+    /// Whether [`Rom::snap`] is the backdrop the game carries of its own — a
+    /// PlayStation Portable game's `PIC1.PNG`, read out of the game by the
+    /// helper. Softened by much less than a libretro screenshot, because it is
+    /// the game's artwork and only needs the steps between its 480 × 272
+    /// pixels taken out; see `crate::art::softened_scenery_from`. The game's
+    /// loading screen stands on it the way a PlayStation 3 game's stands on
+    /// its `PIC1`.
+    pub game_background: bool,
+    /// The game's own film — a PSP game's `ICON1.PMF` — which plays in place
+    /// of its icon while the row is chosen, as the handheld's menu played it.
+    /// Only where the card is the game's own icon; see `crate::preview`.
+    pub preview: Option<PathBuf>,
+    /// The game's own music — a PSP game's `SND0.AT3` — which plays while the
+    /// row is chosen.
+    pub music: Option<PathBuf>,
+    /// The picture that stands over the game's own backdrop — a PSP game's
+    /// `PIC0.PNG` — which its loading screen stands in the middle of it.
+    pub logo: Option<PathBuf>,
     /// The shape this console's covers are: the width of one over its height.
     ///
     /// Not one number for all of them, because a console's boxes are its own. A
@@ -2202,6 +2279,19 @@ pub fn epic_column() -> &'static str {
     epic_column_id().0
 }
 
+/// The column the PlayStation 3 games hang in — not in [`CATEGORY_TABLE`],
+/// for the reason the other integrations' columns are not: it comes and goes
+/// with a package.
+fn ps3_column_id() -> (&'static str, &'static str, &'static str) {
+    ("ps3", crate::ps3::TITLE, crate::ps3::mark())
+}
+
+/// What that column is called on the bar, for the press on the PlayStation 3
+/// row that takes the display to it.
+pub fn ps3_column() -> &'static str {
+    ps3_column_id().0
+}
+
 /// What that column is called on the bar, for the two things outside this
 /// module that have to find it: pressing the RetroArch row takes the display
 /// to it, and so does finishing the setup it asks for.
@@ -2696,6 +2786,113 @@ pub fn shelve_epic(categories: &mut Vec<Category>, rows: Vec<Entry>) -> Shifted 
     shifted
 }
 
+/// Take RPCS3's own `.desktop` entry off the bar — [`hide_heroic_client`]'s
+/// act, for its reason: the shell's PlayStation 3 row is the one that leads to
+/// somebody's games, and RPCS3's own window is one row of that row's menu
+/// away. `true` when there was one.
+pub fn hide_rpcs3_client(categories: &mut Vec<Category>) -> bool {
+    let mut taken = false;
+    let mut emptied = Vec::new();
+    for (at, column) in categories.iter_mut().enumerate() {
+        let before = column.entries.len();
+        column.entries.retain(|entry| {
+            let is_rpcs3 = entry.app().is_some_and(|app| {
+                crate::ps3::WINDOW_NAMES
+                    .iter()
+                    .any(|name| app.owns_window(name))
+            });
+            taken |= is_rpcs3;
+            !is_rpcs3
+        });
+        if column.entries.len() != before && !column.has_launchable() {
+            emptied.push(at);
+        }
+    }
+    for at in emptied.into_iter().rev() {
+        categories.remove(at);
+    }
+    taken
+}
+
+/// Put the PlayStation 3 row in the Games column, under Steam, Epic Games and
+/// RetroArch — the column order on the bar — or take it away. `None` takes it
+/// off.
+pub fn offer_ps3(
+    categories: &mut Vec<Category>,
+    comment: Option<String>,
+    arriving: Option<f32>,
+) -> Shifted {
+    let mut shifted = Shifted::default();
+    let standing = categories.iter().position(|column| column.id == GAMES);
+    let at = match (standing, &comment) {
+        (Some(at), _) => at,
+        (None, None) => return shifted,
+        (None, Some(_)) => {
+            let (id, title, icon, _) = CATEGORY_TABLE
+                .iter()
+                .find(|(own, ..)| *own == GAMES)
+                .expect("the Games column is in the table");
+            let at = column_place(categories, id);
+            categories.insert(
+                at,
+                Category {
+                    id,
+                    title,
+                    icon,
+                    entries: Vec::new(),
+                },
+            );
+            shifted.added = Some(at);
+            at
+        }
+    };
+    let column = &mut categories[at];
+    column
+        .entries
+        .retain(|entry| !matches!(entry, Entry::Ps3(_)));
+    if let Some(comment) = comment {
+        let under = column
+            .entries
+            .iter()
+            .take_while(|row| matches!(row, Entry::Steam(_) | Entry::Epic(_) | Entry::RetroArch(_)))
+            .count();
+        column
+            .entries
+            .insert(under, Entry::Ps3(Emulation::new(comment, arriving)));
+    }
+    shifted
+}
+
+/// Hang the PlayStation 3 games in a column of their own, or take the column
+/// away — the same shape as [`shelve_epic`].
+pub fn shelve_ps3(categories: &mut Vec<Category>, rows: Vec<Entry>) -> Shifted {
+    let mut shifted = Shifted::default();
+    let (id, title, icon) = ps3_column_id();
+    let standing = categories.iter().position(|column| column.id == id);
+    match (standing, rows.is_empty()) {
+        (None, true) => {}
+        (Some(at), true) => {
+            categories.remove(at);
+            shifted.removed = Some(at);
+        }
+        (Some(at), false) => categories[at].entries = rows,
+        (None, false) => {
+            let at = column_place(categories, id);
+            categories.insert(
+                at,
+                Category {
+                    id,
+                    title,
+                    icon,
+                    entries: rows,
+                },
+            );
+            shifted.added = Some(at);
+        }
+    }
+    shifted
+}
+
 /// Whether this row opens a column of a folder chooser.
 ///
 /// Which is what the head of the chooser is, and what every folder in it is:
@@ -2800,6 +2997,11 @@ fn column_place(categories: &[Category], id: &str) -> usize {
 /// was kept for; there is room again for the next one.
 fn rank(id: &str) -> Option<usize> {
     if id == crate::trophies::COLUMN {
+        return rank(GAMES).map(|games| games + 5);
+    }
+    // After RetroArch's: another console's games, and a package a machine may
+    // not have, so it moves nothing that is always there.
+    if id == ps3_column_id().0 {
         return rank(GAMES).map(|games| games + 4);
     }
     if id == STEAM.0 {
@@ -3091,9 +3293,11 @@ impl Entry {
             Entry::Steam(_) => "Steam",
             Entry::RetroArch(_) => "RetroArch",
             Entry::Epic(_) => crate::heroic::TITLE,
+            Entry::Ps3(_) => crate::ps3::TITLE,
             Entry::Game(game) => &game.name,
             Entry::Rom(rom) => &rom.name,
             Entry::EpicGame(game) => &game.name,
+            Entry::Ps3Game(game) => &game.name,
             Entry::Pick(_) => crate::i18n::text("shell-select-folder"),
             Entry::Make(_) => crate::i18n::text("shell-new-folder"),
             Entry::Sweep(_) => crate::i18n::text("shell-empty-trash"),
@@ -3132,9 +3336,11 @@ impl Entry {
             Entry::Steam(service) => Some(&service.comment),
             Entry::RetroArch(emulation) => Some(&emulation.comment),
             Entry::Epic(store) => Some(&store.comment),
+            Entry::Ps3(emulation) => Some(&emulation.comment),
             Entry::Game(game) => Some(&game.note),
             Entry::Rom(rom) => Some(&rom.note),
             Entry::EpicGame(game) => Some(&game.note),
+            Entry::Ps3Game(game) => Some(&game.note),
             Entry::Pick(pick) => Some(&pick.comment),
             // Where it will go, said plainly, because the row is a press away
             // from a keyboard and somebody standing on it has not read a menu.
@@ -3168,10 +3374,13 @@ impl Entry {
                 folder.comment = Some(line);
             }
             Entry::Steam(service) => service.comment = line,
-            Entry::RetroArch(emulation) | Entry::Epic(emulation) => emulation.comment = line,
+            Entry::RetroArch(emulation) | Entry::Epic(emulation) | Entry::Ps3(emulation) => {
+                emulation.comment = line
+            }
             Entry::Game(game) => game.note = line,
             Entry::Rom(rom) => rom.note = line,
             Entry::EpicGame(game) => game.note = line,
+            Entry::Ps3Game(game) => game.note = line,
             Entry::Facts(facts) => facts.comment = line,
             Entry::Typed(typed) => typed.comment = line,
             Entry::Partition(partition) => partition.facts.comment = line,
@@ -3243,6 +3452,8 @@ impl Entry {
             Entry::RetroArch(emulation) => emulation.arriving,
             Entry::Epic(store) => store.arriving,
             Entry::EpicGame(game) => game.progress,
+            Entry::Ps3(emulation) => emulation.arriving,
+            Entry::Ps3Game(game) => game.progress,
             Entry::Partition(partition) => partition.used,
             Entry::Folder(folder) => folder.used,
             Entry::Stored(stored) => stored.moving,
@@ -3276,6 +3487,9 @@ impl Entry {
             // Epic's own mark on the row and on every game of its column:
             // a game with no cover yet still says whose library it is in.
             Entry::Epic(_) | Entry::EpicGame(_) => Some(crate::heroic::mark()),
+            // The console's own mark, on the row and on every game of its
+            // column whose icon has not been read yet.
+            Entry::Ps3(_) | Entry::Ps3Game(_) => Some(crate::ps3::mark()),
             // The folder it would answer with, drawn as a folder: what is
             // being chosen is the column the row stands over.
             // The tick and not a folder: every other row in the column it
@@ -3418,6 +3632,23 @@ impl Entry {
         }
     }
 
+    /// Whether this is the PlayStation 3 row itself: what a press does is
+    /// asked of [`crate::ps3::Ps3`].
+    pub fn ps3(&self) -> Option<&Emulation> {
+        match self {
+            Entry::Ps3(row) => Some(row),
+            _ => None,
+        }
+    }
+
+    /// The PlayStation 3 game this row is, if it is one.
+    pub fn ps3_game(&self) -> Option<&Ps3Game> {
+        match self {
+            Entry::Ps3Game(game) => Some(game),
+            _ => None,
+        }
+    }
+
     /// The game out of somebody's ROM folder this row is, if it is one.
     pub fn rom(&self) -> Option<&Rom> {
         match self {
@@ -3525,6 +3756,7 @@ impl Entry {
                 | Entry::Game(_)
                 | Entry::Rom(_)
                 | Entry::EpicGame(_)
+                | Entry::Ps3Game(_)
         )
     }
 
@@ -3628,6 +3860,7 @@ impl Entry {
                     crate::trophies::Key::SteamAchievement(..)
                         | crate::trophies::Key::RetroAchievement(..)
                         | crate::trophies::Key::EpicAchievement(..)
+                        | crate::trophies::Key::Ps3Trophy(..)
                 ) =>
             {
                 Some(&row.facts)
@@ -4526,6 +4759,10 @@ mod tests {
             snap: None,
             own_cover: false,
             own_background: false,
+            game_background: false,
+            preview: None,
+            music: None,
+            logo: None,
             shape: None,
             glyph: "lxb:console-psp".to_string(),
             disc: None,

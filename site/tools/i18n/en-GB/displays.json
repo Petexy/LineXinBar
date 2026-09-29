@@ -1,0 +1,23 @@
+{
+ "05cdae5936": "Displays in LineXinBar: several screens, HDR and OLED protection",
+ "e416cd9499": "Every display runs independently in LineXinBar: its own bar, resolution and refresh rate, HDR, night light, OLED protection, scaling and orientation — and a resolution per application.",
+ "977a368b27": "Every screen gets a bar of its own — not a copy of one. Each browses independently and remembers where it was, so a television can sit on Videos while the monitor on the desk is on Games.",
+ "5e3f209c5e": "One display takes input at a time, and it is obvious which: the others dim. <kbd>L1</kbd> and <kbd>R1</kbd> on a pad, or <kbd>Tab</kbd> and <kbd>Shift</kbd>+<kbd>Tab</kbd>, hand the controls to the next screen, and a click on a display takes them there. A mouse merely crossing onto another screen does not — passing through is not a decision about which screen you are using.",
+ "2884bcef5a": "Whatever you open, opens on the screen you pressed it on, even when two screens are loading two things at once. <kbd>Super</kbd>+<kbd>Shift</kbd>+<kbd>→</kbd> moves a window to the next one.",
+ "8ecdf8ab89": "Unlike Gamescope, which owns one output and scales one application onto it, every display here is a real output with its own render loop, driven by its own refresh.",
+ "7cb0b41f8b": "A 144 Hz monitor beside a 60 Hz television runs at 144 and 60, not at one shared heartbeat. <em>Settings › Display</em> asks the two questions separately: pick a size, and the next page lists every rate that size really offers — never a mode the display has not listed.",
+ "fa9e60e47c": "Display settings",
+ "d36a2fbaf2": "Display settings in full",
+ "e77593d43d": "Turn on high dynamic range for any display that supports it, and set how bright ordinary content should be on it.",
+ "8e3f313191": "Every HDR-capable screen is listed with what it is doing and the peak brightness it reports; a new one shows up the moment it is plugged in. HDR here is a setting of the display: the desktop is shown correctly on an HDR signal, and games that hand over HDR through Proton's native Wayland path are passed through to the screen.",
+ "57179a63b0": "Everything on a screen tinted towards a warmer colour in the evening, so a display looked at late is not a daylight-white one.",
+ "b7b9663017": "On a schedule — from sunset to sunrise where you are, or between hours of your choosing — or on until you turn it off, at the warmth you set on a bar. It works together with HDR rather than against it.",
+ "8076565127": "An OLED panel keeps what it is shown, and a start screen left up on a second display through an evening's play is a bar burnt into it. One switch rests that screen behind black while another one is in use.",
+ "0a674ceb14": "Moving the pointer onto it brings it back in a quarter of a second. Once it is fully black the screen sleeps: the shell stops drawing it and everything on it is paused, costing nothing at all until you come back.",
+ "3df7b20f5b": "<strong>Application scaling</strong> makes the programs on one screen draw their interfaces larger — anything from 100% to 300%, set on a bar that reads <em>150% · Half again as large</em>.",
+ "8424f90be0": "<strong>Orientation</strong> turns a screen standing on its side or hung upside down: 0°, 90°, 180° or 270°. Both are per display, like everything on this page.",
+ "663126948b": "An application's, a Steam game's or a console game's menu carries a <strong>Resolution</strong> row: Native, or any smaller size that fits the screen.",
+ "6f62e7ce94": "Choose 1280 × 720 for a heavy game on a 4K television and it really draws at 1280 × 720, stretched over the whole screen — a cheap way to buy back frame rate on modest hardware. The choice is remembered for that game from then on; choose Native again to take it back.",
+ "86cd2172ba": "The resolution something draws at",
+ "832aef009a": "Next: <a href=\"settings.html\">Settings ›</a> · Previous: <a href=\"guide.html\">‹ The guide</a> · <a href=\"index.html#displays\">Start screen</a> · LineXinBar is free software under the <a href=\"https://github.com/Petexy/LineXinBar/blob/master/LICENSE\">GPL-3.0</a>."
+}

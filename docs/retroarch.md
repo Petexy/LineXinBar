@@ -142,6 +142,33 @@ the massing of the game, behind the row that is the game. See
 `art::blurred_scenery_from`, which reduces it until there is no grid left to
 enlarge and then softens what remains.
 
+**A PlayStation Portable game wears what it came with.** Every PSP game carries
+the things the handheld's own menu dressed it in, beside `PARAM.SFO` under
+`PSP_GAME/`: its icon (`ICON0.PNG`), a short film that played in place of the
+icon while the game was highlighted (`ICON1.PMF`), the music behind it
+(`SND0.AT3`), the backdrop the screen turned to (`PIC1.PNG`) and a picture over
+that (`PIC0.PNG`). The shell uses them the way the PSP did, and the way the
+[PlayStation 3 column](ps3.md) uses a PS3 game's own: the icon is the card, at
+its own 9-by-5 shape; rest on the row for a moment and the film plays in the card
+with the game's music under it, both stopping the moment the cursor moves or
+anything covers the start screen; the backdrop stands behind the display,
+softened a little — it is 480 by 272, made for a screen four inches across, and
+enlarged across a television it shows its pixels, but it is the game's artwork
+rather than a photograph of a screen, so it gets far less blur than libretro's
+screenshots — and the game opens on it, with `PIC0` in the middle where the game
+has one. The music plays with Settings > Sounds > Start music off, as a PS3
+game's does: it is part of the game, and only the shell's volume and mute
+silence it.
+
+They are read out of an `.iso`, a compressed `.cso` or a Store game's `.pbp`,
+once per game, into `$XDG_CACHE_HOME/lxb/retroarch-art/.own`, and read again
+only when the file changes. A game they cannot be read out of — a `.chd`, whose
+compression nothing in the shell decodes, or homebrew that carries none — keeps
+libretro's cover and screenshot, and so does any picture of either kind the game
+does not carry. A cover or background somebody chose by hand still stands over
+the game's own, and a chosen cover stops the film, which would otherwise be
+squeezed into a picture of the wrong shape; the music stays.
+
 **A game does not have to be named the way the database names it.** That is the
 whole trick and it is the reason RetroArch itself shows a hand-sorted collection
 no artwork at all. libretro's names are the names of *dumps* —

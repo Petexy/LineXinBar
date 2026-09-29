@@ -12,8 +12,9 @@ pkgbase=linexinbar
 # integration for one program, and the shell finds it on PATH or never mentions
 # RetroArch at all. It is version-locked to the shell because what the two agree
 # about is a protocol rather than a library. `lxb-heroic`, Epic Games through
-# Heroic Games Launcher's flatpak, is optional on exactly the same terms.
-pkgname=('lxb-compositor' 'lxb-desktop' 'lxb-retroarch' 'lxb-heroic')
+# Heroic Games Launcher's flatpak, is optional on exactly the same terms, and so
+# is `lxb-rpcs3`, the PlayStation 3 through RPCS3.
+pkgname=('lxb-compositor' 'lxb-desktop' 'lxb-retroarch' 'lxb-heroic' 'lxb-rpcs3')
 pkgver=@VERSION@
 pkgrel=1
 pkgdesc='Multi-display Wayland desktop with a console-style shell'
@@ -197,6 +198,7 @@ package_lxb-desktop() {
         'sudo: application removal from the shell'
         'lxb-retroarch: play your own console games from the bar'
         'lxb-heroic: play your Epic Games library from the bar'
+        'lxb-rpcs3: play PlayStation 3 games from the bar'
     )
 
     cd "$pkgbase-$pkgver"
@@ -257,6 +259,32 @@ package_lxb-heroic() {
         --prefix /usr \
         --target-dir target \
         --component heroic
+
+    _linexinbar_licenses "$pkgname"
+}
+
+package_lxb-rpcs3() {
+    pkgdesc='PlayStation 3 integration for the LineXinBar shell, through RPCS3'
+    # Version-locked to the shell for the reason lxb-retroarch is: what the two
+    # agree about is a protocol carried on a pipe. See `lxb-desktop`'s
+    # `src/ps3.rs`. Any RPCS3 will do; flatpak is how the shell installs one
+    # where there is none.
+    depends=(
+        "lxb-desktop=$pkgver-$pkgrel"
+        'glibc'
+        'libgcc'
+    )
+    optdepends=(
+        'flatpak: installing RPCS3 from the shell, and running the flatpak build'
+        'rpcs3: a distribution package of RPCS3, which is preferred over the flatpak'
+    )
+
+    cd "$pkgbase-$pkgver"
+    ./packaging/install.sh \
+        --destdir "$pkgdir" \
+        --prefix /usr \
+        --target-dir target \
+        --component rpcs3
 
     _linexinbar_licenses "$pkgname"
 }

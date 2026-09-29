@@ -30,6 +30,24 @@
 //! resync; black pixels on an OLED panel are already an unlit panel, which is
 //! the whole of what this is for.
 //!
+//! ## The same sheet, for a machine nobody is using
+//!
+//! The shell's idle timers use this sheet as well — see
+//! `lxb_shell_v1.set_output_power` and [`Power`]. **Dim** is the sheet stopped
+//! part of the way down, which leaves a screen plainly waiting; **off** is the
+//! sheet all the way down and then the connector switched off behind it, which
+//! is the one case here that *is* a display being switched off, and it is the
+//! backend that does that part — see [`Blackouts::is_off`]. Both are asked for
+//! by the shell and neither is undone by input on its own: the shell hears
+//! about activity over ext-idle-notify, and a controller the compositor never
+//! sees counts too.
+//!
+//! One sheet per display, whatever asked for it. A screen resting behind OLED
+//! protection that the idle timer then dims is a screen that is already black,
+//! and two sheets would be two blacks and two fades to reason about. The sheet
+//! heads for the darkest thing anybody wants of that display, and when one
+//! reason lets go it heads for whatever the other still wants.
+//!
 //! ## What is under it
 //!
 //! Once a sheet is all the way down, nothing on that display can be seen, and
@@ -62,7 +80,7 @@ use smithay::output::Output;
 /// this one — it only happens once a screen has been left alone — so what the
 /// length is for is the corner of the eye it *is* caught by: a second reads as
 /// a screen settling, and half of that reads as a screen switching off.
-const DOWN: Duration = Duration::from_millis(1000);
+pub(crate) const DOWN: Duration = Duration::from_millis(1000);
 
 /// And how long it takes to come back.
 ///
@@ -71,6 +89,40 @@ const DOWN: Duration = Duration::from_millis(1000);
 /// display over — and everything after the asking is delay. It is short rather
 /// than instant only so that the picture arrives rather than appears.
 const UP: Duration = Duration::from_millis(250);
+
+/// How much of a display's light a dimmed display keeps back.
+///
+/// A little over half. What dimming is for is the corner of an eye: somebody
+/// who has looked away from a screen for a minute should look back at one that
+/// is plainly waiting, and still be able to read what it is waiting on. Much
+/// darker than this reads as switched off, which is the next step and has its
+/// own sheet; much lighter reads as the picture having changed.
+pub const DIM: f32 = 0.55;
+
+/// How lit the shell wants one display kept while nobody is using the machine.
+///
+/// `lxb_shell_v1.display_power`, as this compositor holds it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum Power {
+    /// Drawn as it always is.
+    #[default]
+    On,
+    /// Under a sheet that takes [`DIM`] of its light away.
+    Dim,
+    /// Faded to black, and then switched off at the connector by the backend.
+    Off,
+}
+
+impl Power {
+    /// How far down the sheet has to be for this.
+    fn level(self) -> f32 {
+        match self {
+            Power::On => 0.0,
+            Power::Dim => DIM,
+            Power::Off => 1.0,
+        }
+    }
+}
 
 /// One display's sheet, and how far it has got.
 #[derive(Debug)]
@@ -81,9 +133,11 @@ struct Sheet {
     /// Stable for the life of the sheet, so the damage tracker sees one element
     /// changing rather than a new element every frame.
     id: Id,
-    /// When it started moving, and which way.
+    /// When it started moving, and where to: 0 is clear, 1 is black, and
+    /// anything between is a sheet stopped part of the way — which is what a
+    /// dimmed display is.
     started: Instant,
-    down: bool,
+    to: f32,
     /// How black it was when it started moving that way. A sheet turned round
     /// halfway carries on from where it is rather than jumping to the far end
     /// and running back — which, unlike the curtain, is the ordinary case here
@@ -101,10 +155,16 @@ struct Sheet {
 #[derive(Debug, Default)]
 pub struct Blackouts {
     sheets: Vec<Sheet>,
+    /// The displays OLED protection has rested, by name.
+    rested: std::collections::HashSet<String>,
+    /// The displays the shell has dimmed or switched off, by name. A display
+    /// that is on is not in here.
+    power: std::collections::HashMap<String, Power>,
 }
 
 impl Blackouts {
-    /// Take `output` down to black, or bring it back, from `now`.
+    /// Take `output` down to black, or bring it back, from `now` — OLED
+    /// protection's half of the sheet.
     ///
     /// Asking for what is already happening is ignored rather than restarted,
     /// so a shell that repeats itself does not put the fade back to the
@@ -112,13 +172,53 @@ impl Blackouts {
     /// a value the shell holds is ordinarily kept in step.
     pub fn cover(&mut self, output: &Output, covered: bool, now: Instant) {
         let name = output.name();
+        if covered {
+            self.rested.insert(name);
+        } else {
+            self.rested.remove(&name);
+        }
+        self.aim(output, now);
+    }
+
+    /// Dim `output`, switch it off, or bring it back, from `now` — the idle
+    /// timer's half of the sheet. See [`Power`].
+    pub fn set_power(&mut self, output: &Output, power: Power, now: Instant) {
+        let name = output.name();
+        if power == Power::On {
+            self.power.remove(&name);
+        } else {
+            self.power.insert(name, power);
+        }
+        self.aim(output, now);
+    }
+
+    /// What the shell has asked of `output`'s light.
+    pub fn power(&self, output: &Output) -> Power {
+        self.power.get(&output.name()).copied().unwrap_or_default()
+    }
+
+    /// Whether any display is dimmed or switched off.
+    pub fn any_powered_down(&self) -> bool {
+        !self.power.is_empty()
+    }
+
+    /// Start the sheet towards the darkest thing anybody wants of `output`, if
+    /// it is not already on its way there.
+    fn aim(&mut self, output: &Output, now: Instant) {
+        let name = output.name();
+        let rested = if self.rested.contains(&name) {
+            1.0
+        } else {
+            0.0
+        };
+        let to = f32::max(rested, self.power(output).level());
         let existing = self.sheets.iter().position(|sheet| sheet.output == name);
         match existing {
-            Some(index) if self.sheets[index].down == covered => return,
+            Some(index) if self.sheets[index].to == to => return,
             // Nothing to bring back. There is no sheet at all for a display
             // nobody is resting, which is what keeps this free when it is not
             // in use.
-            None if !covered => return,
+            None if to <= 0.0 => return,
             _ => {}
         }
         let from = self.black(output, now).map_or(0.0, |(_, black, _)| black);
@@ -134,7 +234,7 @@ impl Blackouts {
             output: name,
             id,
             started: now,
-            down: covered,
+            to,
             from,
             commits,
         });
@@ -146,7 +246,7 @@ impl Blackouts {
     pub fn black(&self, output: &Output, now: Instant) -> Option<(Id, f32, CommitCounter)> {
         let name = output.name();
         let sheet = self.sheets.iter().find(|sheet| sheet.output == name)?;
-        let black = travelled(sheet.from, sheet.down, elapsed(sheet, now));
+        let black = travelled(sheet.from, sheet.to, elapsed(sheet, now));
         if black <= 0.0 {
             return None;
         }
@@ -174,7 +274,15 @@ impl Blackouts {
         // turned round halfway — whose alpha may land a rounding short of one.
         self.sheets
             .iter()
-            .any(|sheet| sheet.output == name && sheet.down && elapsed(sheet, now) >= DOWN)
+            .any(|sheet| sheet.output == name && sheet.to >= 1.0 && elapsed(sheet, now) >= DOWN)
+    }
+
+    /// Whether `output` has been switched off and its sheet has finished coming
+    /// down: the moment the backend turns its connector off. A display on its
+    /// way down is still showing its picture through the fade, and one being
+    /// brought back has to be lit before it can be seen coming back.
+    pub fn is_off(&self, output: &Output, now: Instant) -> bool {
+        self.power(output) == Power::Off && self.is_black(output, now)
     }
 
     /// Drop the sheets that have finished coming back up, and the ones whose
@@ -189,8 +297,12 @@ impl Blackouts {
         let names: Vec<String> = live.iter().map(Output::name).collect();
         self.sheets.retain(|sheet| {
             names.contains(&sheet.output)
-                && travelled(sheet.from, sheet.down, elapsed(sheet, now)) > 0.0
+                && (sheet.to > 0.0 || travelled(sheet.from, sheet.to, elapsed(sheet, now)) > 0.0)
         });
+        // And what was asked of a display that has gone, for the same reason:
+        // the one that comes back has not been asked anything yet.
+        self.rested.retain(|name| names.contains(name));
+        self.power.retain(|name, _| names.contains(name));
     }
 }
 
@@ -205,12 +317,16 @@ fn elapsed(sheet: &Sheet, now: Instant) -> Duration {
 /// reported, no frame is queued, and the last black frame stays on the panel
 /// for as long as the game lasts.
 fn commit_of(sheet: &Sheet, now: Instant) -> usize {
-    sheet.commits + elapsed(sheet, now).min(length(sheet.down)).as_millis() as usize
+    sheet.commits
+        + elapsed(sheet, now)
+            .min(length(sheet.from, sheet.to))
+            .as_millis() as usize
 }
 
-/// How long a move in this direction takes.
-fn length(down: bool) -> Duration {
-    if down {
+/// How long a move from `from` to `to` takes: [`DOWN`] for any move darker,
+/// dimming included, and [`UP`] for any move lighter.
+fn length(from: f32, to: f32) -> Duration {
+    if to > from {
         DOWN
     } else {
         UP
@@ -218,15 +334,14 @@ fn length(down: bool) -> Duration {
 }
 
 /// How black the sheet is `since` into a move that started at `from` and is
-/// going to black (`down`) or off it, smoothstepped so neither end is a jump.
+/// going to `to`, smoothstepped so neither end is a jump.
 ///
 /// The whole of that direction's length however far it has to travel, which is
 /// the same bargain the curtain makes: a sheet turned round after a moment
 /// comes back slower than it went, and the alternative — shortening the journey
 /// to match — buys a reversal that snaps.
-fn travelled(from: f32, down: bool, since: Duration) -> f32 {
-    let to = if down { 1.0 } else { 0.0 };
-    let t = smoothstep(since.as_secs_f32() / length(down).as_secs_f32());
+fn travelled(from: f32, to: f32, since: Duration) -> f32 {
+    let t = smoothstep(since.as_secs_f32() / length(from, to).as_secs_f32());
     (from + (to - from) * t).clamp(0.0, 1.0)
 }
 
@@ -414,5 +529,78 @@ mod tests {
         black.cover(&a, false, t0 + DOWN);
         black.prune(std::slice::from_ref(&a), t0 + DOWN + UP);
         assert!(black.black(&a, t0 + DOWN + UP).is_none());
+    }
+
+    /// Dimming stops the sheet part of the way down and leaves it there, and
+    /// a dimmed display is not black: what is on it is still on screen.
+    #[test]
+    fn a_dimmed_display_stops_part_of_the_way_down() {
+        let screen = output("A");
+        let mut black = Blackouts::default();
+        let t0 = Instant::now();
+        black.set_power(&screen, Power::Dim, t0);
+        assert_eq!(black.black(&screen, t0 + DOWN).unwrap().1, DIM);
+        assert_eq!(black.black(&screen, t0 + DOWN * 30).unwrap().1, DIM);
+        assert!(!black.is_black(&screen, t0 + DOWN * 30));
+        assert!(!black.is_off(&screen, t0 + DOWN * 30));
+        // And pruning leaves a dimmed display dimmed, however long it waits.
+        black.prune(std::slice::from_ref(&screen), t0 + DOWN * 30);
+        assert_eq!(black.black(&screen, t0 + DOWN * 31).unwrap().1, DIM);
+    }
+
+    /// Off carries on from the dim to black, and is off only once it is all the
+    /// way there — the backend switches the connector off at that moment and
+    /// not before.
+    #[test]
+    fn a_display_is_off_once_it_is_black_and_not_before() {
+        let screen = output("A");
+        let mut black = Blackouts::default();
+        let t0 = Instant::now();
+        black.set_power(&screen, Power::Dim, t0);
+        let dimmed = t0 + DOWN;
+        black.set_power(&screen, Power::Off, dimmed);
+        let (_, from, _) = black.black(&screen, dimmed).unwrap();
+        assert_eq!(from, DIM, "it carries on from the dim");
+        assert!(!black.is_off(&screen, dimmed + DOWN / 2));
+        assert!(black.is_off(&screen, dimmed + DOWN));
+        assert!(black.is_black(&screen, dimmed + DOWN));
+
+        let woken = dimmed + DOWN * 10;
+        black.set_power(&screen, Power::On, woken);
+        assert!(!black.is_off(&screen, woken), "on is on at once");
+        assert!(black.black(&screen, woken + UP).is_none());
+        assert_eq!(black.power(&screen), Power::On);
+    }
+
+    /// A display resting behind OLED protection that the idle timer also dims
+    /// stays black, and bringing it back from the idle leaves it resting.
+    #[test]
+    fn the_sheet_heads_for_the_darkest_thing_anybody_wants() {
+        let screen = output("A");
+        let mut black = Blackouts::default();
+        let t0 = Instant::now();
+        black.cover(&screen, true, t0);
+        black.set_power(&screen, Power::Dim, t0 + DOWN);
+        assert!(black.is_black(&screen, t0 + DOWN * 2), "still resting");
+        black.set_power(&screen, Power::On, t0 + DOWN * 2);
+        assert!(black.is_black(&screen, t0 + DOWN * 3), "and still resting");
+        // Let go of the rest while dimmed, and it comes up to the dim.
+        black.set_power(&screen, Power::Dim, t0 + DOWN * 3);
+        black.cover(&screen, false, t0 + DOWN * 4);
+        assert_eq!(black.black(&screen, t0 + DOWN * 4 + UP).unwrap().1, DIM);
+    }
+
+    /// An unplugged display forgets what it was asked, so the one that comes
+    /// back is not born dimmed or dark.
+    #[test]
+    fn a_departed_display_forgets_its_power() {
+        let (a, b) = (output("A"), output("B"));
+        let mut black = Blackouts::default();
+        let t0 = Instant::now();
+        black.set_power(&b, Power::Off, t0);
+        assert!(black.any_powered_down());
+        black.prune(std::slice::from_ref(&a), t0 + DOWN);
+        assert_eq!(black.power(&b), Power::On);
+        assert!(!black.any_powered_down());
     }
 }
