@@ -70,6 +70,7 @@ inject key presses and pointer clicks, and end the session.
 | request `let_this_window_be_seen` | Let one window of a hidden application through without giving the application back — for a program the shell runs unseen that has stopped to ask something. See [Steam](steam.md#steam). |
 | request `set_output_overview` | Enter or leave the window overview on one display, which is what draws the cards. |
 | request `set_overview_selection` | Which card the shell is on, so the compositor scrolls the column the same way. |
+| request `set_overview_focus` | Whether the menu or the cards have the focus, so on a display too narrow for both side by side the compositor slides the windows over with the shell's half of the view — see [the guide](guide.md#on-a-display-standing-on-its-side). Written after every other request, so the requests before it keep their numbers for programs carrying an older copy of the protocol. |
 | request `activate_window` | Raise and focus one window: how the overview doubles as a window switcher. |
 | request `activate_window_from` | The same, flown in out of a rectangle — the tile an already-running application was pressed on. |
 | request `kill_window` | End one window's application. Not a request it can refuse; see [the guide](guide.md#the-guide-overlay). |

@@ -188,6 +188,36 @@ pub struct Quad {
     /// cut one reads as a pane running past an edge rather than as a smaller
     /// pane with a straight side.
     pub clip: Option<[f32; 4]>,
+    /// The outline of a pane standing in front of this one, which nothing of
+    /// this one is drawn inside — or `None` where nothing is.
+    ///
+    /// [`Self::clip`]'s other half. A clip is a straight cut, and that is the
+    /// right answer against a display's edge and wrong against a pane with
+    /// rounded corners: whatever was cut away under the pane is cut away in
+    /// the curve of its corners as well, where nothing is standing over it, and
+    /// the thing behind shows a square notch beside every rounded corner in
+    /// front of it. A hole is cut to the pane's own shape instead, so what is
+    /// behind carries on right up to the curve — which is what one slab laid
+    /// over another looks like.
+    ///
+    /// Like a clip it cuts pixels and leaves the shape, the bevel and the light
+    /// of this quad alone.
+    pub hole: Option<Hole>,
+}
+
+/// A rounded rectangle a quad is not drawn inside: see [`Quad::hole`].
+///
+/// Described exactly as the pane it belongs to is — its rectangle, its radius
+/// and its corner norm — so the two are the same shape by construction rather
+/// than by agreement.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Hole {
+    /// x, y, width and height, in the same pixels as the quad it is cut from.
+    pub rect: [f32; 4],
+    /// The pane's corner radius in pixels. See [`Quad::radius`].
+    pub radius: f32,
+    /// The pane's corner norm. See [`Quad::corner`].
+    pub corner: f32,
 }
 
 impl Default for Quad {
@@ -221,6 +251,7 @@ impl Default for Quad {
             // every `..Quad::default()` in the shell would draw nothing.
             fade: 1.0,
             clip: None,
+            hole: None,
         }
     }
 }
@@ -1381,6 +1412,12 @@ struct Instance {
     /// the conversion belongs here rather than once per fragment. A pane with
     /// nothing cutting it is given a box larger than any display.
     cut: [f32; 4],
+    /// The outline this quad is not drawn inside, as its two corners for the
+    /// same reason `cut` is. See [`Quad::hole`].
+    hole: [f32; 4],
+    /// That outline's radius and corner norm. A norm of nought is no hole at
+    /// all, since no shape has one.
+    hole_shape: [f32; 2],
 }
 
 /// All of what a quad samples: see [`Quad::crop`].
@@ -1456,6 +1493,9 @@ struct Globals {
     /// on, under Theme > Particles, and nought where they are not — see
     /// [`crate::theme::particles_flag`].
     style: [f32; 4],
+    /// A rectangle given back to the wallpaper, as x, y, w, h: see
+    /// [`Backdrop::cleared`]. All zeros is none.
+    cleared: [f32; 4],
 }
 
 /// How many card corners one pass can cover. The column shows at most three
@@ -1708,6 +1748,19 @@ pub struct Backdrop {
     /// application the compositor has not finished shrinking. The corner
     /// covers are never faded: they are repairs to what is already on screen.
     pub fade: f32,
+    /// A rectangle given back to the wallpaper outright, as x, y, w, h, or all
+    /// zeros for none: repainted with the backdrop behind it over anything the
+    /// compositor drew below this surface, the way a cover's corners are and
+    /// with the same blur, and over the start screen's miniature as well.
+    ///
+    /// For a panel standing over the guide's cards. Its glass refracts what is
+    /// behind it, and the cards behind it are live windows the shell does not
+    /// own and so cannot cut the way it cuts its own drawing; nor can it cut
+    /// what hangs past the panel into the gap at the display's edge. This is
+    /// the one way to have nothing but the wallpaper there. See
+    /// `ui::nothing_but_wallpaper_under_friends`, which is the shell's own
+    /// drawing's half of the same rule.
+    pub cleared: [f32; 4],
 }
 
 /// The picture standing behind the whole shell on one display, as it is this
@@ -1758,6 +1811,7 @@ impl Default for Backdrop {
             cover_count: 0,
             cover_blur: 0.0,
             fade: 1.0,
+            cleared: [0.0; 4],
         }
     }
 }
@@ -2409,6 +2463,8 @@ impl Gpu {
                         7 => Float32,
                         8 => Float32,
                         9 => Float32x4,
+                        10 => Float32x4,
+                        11 => Float32x2,
                     ],
                 })],
                 compilation_options: Default::default(),
@@ -3457,6 +3513,7 @@ impl Gpu {
                     self.paper_shape(),
                     crate::theme::particles_flag(),
                 ],
+                cleared: params.cleared,
             }),
         );
 
@@ -3473,6 +3530,13 @@ impl Gpu {
                 drain: q.drain,
                 mark: q.mark,
                 cut: q.clip.map_or(UNCUT, |[x, y, w, h]| [x, y, x + w, y + h]),
+                hole: q.hole.map_or(
+                    [0.0; 4],
+                    |Hole {
+                         rect: [x, y, w, h], ..
+                     }| { [x, y, x + w, y + h] },
+                ),
+                hole_shape: q.hole.map_or([0.0; 2], |hole| [hole.radius, hole.corner]),
             })
             .collect();
 
@@ -3983,6 +4047,7 @@ impl Target {
                 hero: [0.0; 4],
                 hero_shape: [1.0; 4],
                 style: [0.0; 4],
+                cleared: [0.0; 4],
             }),
             usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
         });

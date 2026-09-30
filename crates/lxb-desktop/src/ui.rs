@@ -18,7 +18,9 @@
 
 use crate::apps::{Arriving, Entry, Role, Searched};
 use crate::dialog::{Dialog, Line};
-use crate::gpu::{Cut, Quad, Text, TextAlign, GLOW_SLOT, SOLID_SLOT, SQUIRCLE_CORNER};
+use crate::gpu::{
+    Cut, Hole, Quad, Text, TextAlign, CIRCULAR_CORNER, GLOW_SLOT, SOLID_SLOT, SQUIRCLE_CORNER,
+};
 use crate::guide::{self, separator_rows, Bar, Guide, Item, Pane};
 use crate::icons;
 use crate::keyboard;
@@ -1066,7 +1068,7 @@ pub fn power_button_rect(width: f32, height: f32) -> [f32; 4] {
 pub fn sidebar_panel_rect(width: f32, height: f32) -> [f32; 4] {
     let scale = guide_scale(height);
     let inset = PANEL_INSET * scale;
-    let sidebar_w = overview::sidebar_width(width as f64) as f32;
+    let sidebar_w = overview::sidebar_width(width as f64, height as f64) as f32;
     [inset, inset, sidebar_w - inset * 2.0, height - inset * 2.0]
 }
 
@@ -1174,8 +1176,18 @@ fn guide_scale(height: f32) -> f32 {
 /// to add with it. A quarter of a second is short, but a click landing a
 /// sidebar's width away from what it looked like it was on is not something to
 /// leave to the user being slow.
-pub fn sidebar_slide_x(age: f32, width: f32) -> f32 {
-    (ease(age / GUIDE_SLIDE) - 1.0) * overview::sidebar_width(width as f64) as f32
+pub fn sidebar_slide_x(age: f32, width: f32, height: f32) -> f32 {
+    (ease(age / GUIDE_SLIDE) - 1.0) * overview::sidebar_width(width as f64, height as f64) as f32
+}
+
+/// Where the guide's column is this frame: the rectangle its glass is drawn
+/// in, still sliding in from the left edge while the menu opens and slid back
+/// by however far the view has gone over to the cards. [`build_guide`] draws
+/// the column here, and anything laid over the column asks here where it is.
+pub fn guide_column_bounds(guide: &Guide, width: f32, height: f32) -> [f32; 4] {
+    let [x, y, w, h] = sidebar_panel_rect(width, height);
+    let slid = sidebar_slide_x(guide.age(), width, height) - guide.pan();
+    [x + slid, y, w, h]
 }
 
 /// One frame's worth of drawing.
@@ -1251,6 +1263,12 @@ impl Scene {
             quad.thickness *= scale;
             let [cx, cy, cw, ch] = clip;
             quad.clip = Some([x + cx * scale, y + cy * scale, cw * scale, ch * scale]);
+            // And the pane standing over it goes into the card with it.
+            if let Some(hole) = &mut quad.hole {
+                let [hx, hy, hw, hh] = hole.rect;
+                hole.rect = [x + hx * scale, y + hy * scale, hw * scale, hh * scale];
+                hole.radius *= scale;
+            }
             true
         });
         // Text keeps any run that shows at all: its box is a generous wrapping
@@ -1311,6 +1329,16 @@ impl Scene {
                     h * factor,
                 ]
             });
+            if let Some(hole) = &mut quad.hole {
+                let [x, y, w, h] = hole.rect;
+                hole.rect = [
+                    x * factor + offset[0],
+                    y * factor + offset[1],
+                    w * factor,
+                    h * factor,
+                ];
+                hole.radius *= factor;
+            }
         }
         for text in &mut self.texts {
             text.x = text.x * factor + offset[0];
@@ -2366,8 +2394,25 @@ pub fn build(
     // the caller decides, because whether this row belongs on screen at all is
     // a question about panels, splashes and the guide that a scene builder
     // cannot see. See `Shell::start_legend`.
+    //
+    // Measured against the display it is on, which only a display standing on
+    // its side ever runs short of: there the row is as wide as the screen is,
+    // and its first word ran off the left edge. It is taken in rather than cut
+    // — see [`legend_that_fits_keeping_the_way_out`] — and what it gives up,
+    // if it must, is never its last pair: that is the Guide, the one press that
+    // works from everywhere.
     if let Some(legend) = legend {
         let hints = searching_hints(legend.pad, legend.options, legend.friends, legend.search);
+        let (hints, size) = legend_that_fits_keeping_the_way_out(
+            hints,
+            &LegendSize {
+                glyph: START_HINT_GLYPH * scale,
+                label: START_HINT_LABEL * scale,
+                gap: START_HINT_GAP * scale,
+                step: START_HINT_STEP * scale,
+            },
+            (width - CORNER_INSET * scale * 2.0).max(0.0),
+        );
         legend_row(
             &mut quads,
             &mut texts,
@@ -2375,12 +2420,7 @@ pub fn build(
             slots,
             width - CORNER_INSET * scale,
             height - mark_middle,
-            &LegendSize {
-                glyph: START_HINT_GLYPH * scale,
-                label: START_HINT_LABEL * scale,
-                gap: START_HINT_GAP * scale,
-                step: START_HINT_STEP * scale,
-            },
+            &size,
             // The corner's own ink, for the reason the inset is the corner's:
             // this is writing on the wallpaper rather than on something that
             // could hold it up, and two weights of it in two corners would read
@@ -4850,9 +4890,13 @@ pub fn build_guide(view: GuideView, width: f32, height: f32) -> Scene {
     let card_fade = card_fade(view.card_age);
 
     let theme = theme();
-    let sidebar_w = overview::sidebar_width(width as f64) as f32;
-    let sidebar_x = sidebar_slide_x(age, width);
-    let [panel_x, panel_y, panel_w, panel_h] = sidebar_panel_rect(width, height);
+    let sidebar_w = overview::sidebar_width(width as f64, height as f64) as f32;
+    // Where the column stands: sliding in from the left edge for the first
+    // quarter of a second, and — on a display too narrow for the column and the
+    // cards side by side — slid back towards it by however far the view has
+    // gone over to the cards. See [`Guide::pan`].
+    let sidebar_x = sidebar_slide_x(age, width, height) - view.guide.pan();
+    let [panel_x, _, panel_w, _] = sidebar_panel_rect(width, height);
     let padding = GUIDE_PADDING * scale;
     let text_x = panel_x + padding * 0.8;
     let text_w = panel_w - padding * 1.6;
@@ -4863,7 +4907,7 @@ pub fn build_guide(view: GuideView, width: f32, height: f32) -> Scene {
     // the light under it gives the header and foot depth without turning the
     // entire column into one bright, predetermined slab.
     quads.extend(sidebar_surface(
-        [sidebar_x + panel_x, panel_y, panel_w, panel_h],
+        guide_column_bounds(view.guide, width, height),
         scale,
         view.behind,
         slide,
@@ -5487,27 +5531,32 @@ pub fn build_guide(view: GuideView, width: f32, height: f32) -> Scene {
     // under, answered here by moving rather than by going away: a legend that
     // blinked out every time something began downloading would be missing
     // exactly while the user was reading the corner.
+    //
+    // A display too narrow for the column and the cards side by side has the
+    // column standing in that corner, and there the row is written at the
+    // column's foot instead — see [`guide_legend_line`].
     if let Some(legend) = view.legend {
         let from = (quads.len(), texts.len());
-        let glyph = START_HINT_GLYPH * scale;
-        let settled = height - corner_line(scale);
-        // Over whichever of the corner's cards reaches highest — the download
-        // alone, or an update standing on top of it. See [`corner_cards`].
-        let (taken, arrival) = corner_cards(view.guide);
-        let above_the_card = height - (ARRIVING_INSET + taken + GUIDE_MARGIN) * scale - glyph * 0.5;
+        let line = guide_legend_line(view.guide, width, height);
+        let hints = guide_hints(legend.pad, legend.options, legend.friends, legend.floating);
+        let size = LegendSize {
+            glyph: START_HINT_GLYPH * scale,
+            label: START_HINT_LABEL * scale,
+            gap: START_HINT_GAP * scale,
+            step: START_HINT_STEP * scale,
+        };
+        let (hints, size) = match line.room {
+            Some(room) => legend_that_fits_keeping_the_way_out(hints, &size, room),
+            None => (hints, size),
+        };
         legend_row(
             &mut quads,
             &mut texts,
-            &guide_hints(legend.pad, legend.options, legend.friends, legend.floating),
+            &hints,
             view.slots,
-            width - CORNER_INSET * scale,
-            lerp(settled, above_the_card.min(settled), arrival),
-            &LegendSize {
-                glyph,
-                label: START_HINT_LABEL * scale,
-                gap: START_HINT_GAP * scale,
-                step: START_HINT_STEP * scale,
-            },
+            line.right,
+            line.middle,
+            &size,
             // The corner's own ink, for the reason the line and the inset are
             // the corner's: this is writing on the same screen the clock is
             // written on, and two weights of it in two corners would read as
@@ -5962,7 +6011,7 @@ pub fn friends_again_rect(width: f32, height: f32, compose_lines: u8) -> [f32; 4
 pub fn friends_panel_rect(width: f32, height: f32) -> [f32; 4] {
     let scale = guide_scale(height);
     let inset = PANEL_INSET * scale;
-    let sidebar_w = overview::sidebar_width(width as f64) as f32;
+    let sidebar_w = overview::sidebar_width(width as f64, height as f64) as f32;
     [
         width - sidebar_w + inset,
         inset,
@@ -5981,8 +6030,8 @@ pub fn friends_panel_rect(width: f32, height: f32) -> [f32; 4] {
 /// `open` is already eased. It is passed in rather than taken from the panel's
 /// own clock because the shell holds the eased position for every panel it
 /// draws, and a second easing here would be the same movement applied twice.
-pub fn friends_slide_x(open: f32, width: f32) -> f32 {
-    (1.0 - open.clamp(0.0, 1.0)) * overview::sidebar_width(width as f64) as f32
+pub fn friends_slide_x(open: f32, width: f32, height: f32) -> f32 {
+    (1.0 - open.clamp(0.0, 1.0)) * overview::sidebar_width(width as f64, height as f64) as f32
 }
 
 /// Where the head ends and the list begins: the column of rows, inside the
@@ -6275,7 +6324,7 @@ pub fn friends_status_rect(width: f32, height: f32) -> [f32; 4] {
 /// reached.
 pub fn friends_bounds(width: f32, height: f32, open: f32) -> [f32; 4] {
     let [x, y, w, h] = friends_panel_rect(width, height);
-    [x + friends_slide_x(open, width), y, w, h]
+    [x + friends_slide_x(open, width, height), y, w, h]
 }
 
 /// What the friends panel has under a point.
@@ -6359,7 +6408,7 @@ pub fn friends_hit(panel: FriendsPanel, x: f32, y: f32, width: f32, height: f32)
         open,
         ..
     } = panel;
-    let slide = friends_slide_x(open, width);
+    let slide = friends_slide_x(open, width, height);
     let mut bounds = friends_panel_rect(width, height);
     bounds[0] += slide;
     if !covers(bounds, x, y) {
@@ -6532,18 +6581,90 @@ fn friends_chat_scroll_place(column: f32, body: f32, scroll: f32) -> Option<(f32
 /// Cut at the panel's *current* edge rather than at where it settles, so the
 /// bar is uncovered progressively as the column comes in and the seam is always
 /// under the glass that is about to be drawn over it.
-pub fn nothing_but_wallpaper_under_friends(scene: &mut Scene, width: f32, height: f32, open: f32) {
+///
+/// `column` is where the guide's own column stands this frame, when the panel
+/// has been raised over the guide — see [`guide_column_bounds`]. Side by side
+/// the two never meet and it changes nothing. On a display standing on its
+/// side the panel lands on the column, and there the straight cut is the wrong
+/// one: the column's glass runs the whole height the panel does, so cut on a
+/// line it ends in a square notch beside each of the panel's rounded corners,
+/// with the wallpaper showing in the curve where the column should carry on
+/// behind. Everything standing on the column is therefore cut to the panel's
+/// own outline instead — which leaves exactly as much wallpaper under the glass
+/// as the line did, and none beside it.
+pub fn nothing_but_wallpaper_under_friends(
+    scene: &mut Scene,
+    width: f32,
+    height: f32,
+    open: f32,
+    column: Option<[f32; 4]>,
+) {
     let open = open.clamp(0.0, 1.0);
     if open <= 0.0 {
         return;
     }
     let bounds = friends_bounds(width, height, open);
-    scene.dim_text_behind(bounds, open);
     // The panel floats clear of the screen's edges, so its own rectangle is not
     // where the cut belongs: a strip of bar left showing above and below it
     // would be two hairlines of icon beside a column of glass. The cut runs the
-    // whole height of the display from the panel's leading edge.
-    scene.cut_quads_to([0.0, 0.0, bounds[0], height]);
+    // whole height of the display from the panel's leading edge — and on to the
+    // display's own edge, for the text as much as for the quads. A run cut only
+    // where the glass is keeps whatever of it reaches past the panel's far
+    // side, which is the gap between the panel and the edge of the screen: the
+    // tail of a card's title, a letter of the start screen's miniature, written
+    // on the wallpaper beside the glass.
+    scene.dim_text_behind(friends_aside(width, height, open), open);
+    let cut = [0.0, 0.0, bounds[0], height];
+    let outline = friends_outline(width, height, open);
+    let under_the_panel = column.filter(|column| {
+        let met = intersection(*column, bounds);
+        met[2] > 0.0 && met[3] > 0.0
+    });
+    for quad in &mut scene.quads {
+        if under_the_panel.is_some_and(|column| stands_within(quad, column)) {
+            quad.hole = Some(outline);
+        } else {
+            quad.clip = Some(match quad.clip {
+                Some(already) => intersection(already, cut),
+                None => cut,
+            });
+        }
+    }
+}
+
+/// Everything from the friends panel's leading edge to the display's own, the
+/// whole height of the display: the stretch the panel stands over and the gap
+/// beside it, which is what is left with nothing but the wallpaper in it. The
+/// shell's own drawing is cut out of it by
+/// [`nothing_but_wallpaper_under_friends`]; what the compositor draws there is
+/// painted over by the backdrop pass — see [`crate::gpu::Backdrop::cleared`].
+pub fn friends_aside(width: f32, height: f32, open: f32) -> [f32; 4] {
+    let x = friends_bounds(width, height, open)[0];
+    [x, 0.0, (width - x).max(0.0), height]
+}
+
+/// Whether `quad` lies wholly inside `rect`, give or take half a pixel of
+/// rounding — which is how a quad of the guide's column is told from a quad of
+/// what the column is laid over, in a scene that has been merged into one.
+fn stands_within(quad: &Quad, rect: [f32; 4]) -> bool {
+    const GIVE: f32 = 0.5;
+    let [x, y, w, h] = rect;
+    quad.x >= x - GIVE
+        && quad.y >= y - GIVE
+        && quad.x + quad.w <= x + w + GIVE
+        && quad.y + quad.h <= y + h + GIVE
+}
+
+/// The friends panel's outline where it has reached: the shape its glass is
+/// drawn in, for whatever it stands in front of to be cut to. See
+/// [`crate::gpu::Quad::hole`], and [`sidebar_surface`], whose pane this is the
+/// outline of.
+pub fn friends_outline(width: f32, height: f32, open: f32) -> Hole {
+    Hole {
+        rect: friends_bounds(width, height, open),
+        radius: PANEL_RADIUS * guide_scale(height),
+        corner: CIRCULAR_CORNER,
+    }
 }
 
 /// Everything `build_friends` draws from.
@@ -6972,7 +7093,7 @@ pub fn build_friends(view: FriendsView, width: f32, height: f32) -> Scene {
     if panel_w <= 0.0 || panel_h <= 0.0 || open <= 0.0 {
         return scene;
     }
-    let slide = friends_slide_x(open, width);
+    let slide = friends_slide_x(open, width, height);
     let panel_x = panel_x + slide;
     let margin = GUIDE_MARGIN * scale;
     let pulse = 0.5 + 0.5 * (view.time * std::f32::consts::TAU / PULSE_PERIOD).sin();
@@ -12229,7 +12350,33 @@ fn legend_ink(hints: &[Hint], size: &LegendSize) -> f32 {
 /// so the back is where the least is lost. It never gives up the last one
 /// standing, because a legend of nothing is a foot of panel that has stopped
 /// explaining itself.
-fn legend_that_fits(mut hints: Vec<Hint>, size: &LegendSize, room: f32) -> (Vec<Hint>, LegendSize) {
+fn legend_that_fits(hints: Vec<Hint>, size: &LegendSize, room: f32) -> (Vec<Hint>, LegendSize) {
+    legend_fitted(hints, size, room, false)
+}
+
+/// The same for a row that ends in the way out, which gives up the pair
+/// *before* its last one instead.
+///
+/// The guide's row and the start screen's are built that way — the act, what
+/// else can be done to it, the other screens, and last the way out of where the
+/// reader is standing: Back out of the menu, and the Guide out of the bar. That
+/// last pair is the one a person most needs told, and measured into the foot of
+/// a column on a display standing on its side the ordinary rule dropped exactly
+/// it and kept Friends.
+fn legend_that_fits_keeping_the_way_out(
+    hints: Vec<Hint>,
+    size: &LegendSize,
+    room: f32,
+) -> (Vec<Hint>, LegendSize) {
+    legend_fitted(hints, size, room, true)
+}
+
+fn legend_fitted(
+    mut hints: Vec<Hint>,
+    size: &LegendSize,
+    room: f32,
+    way_out: bool,
+) -> (Vec<Hint>, LegendSize) {
     loop {
         let ink = legend_ink(&hints, size);
         let fit = match ink <= room || ink <= 0.0 {
@@ -12240,7 +12387,14 @@ fn legend_that_fits(mut hints: Vec<Hint>, size: &LegendSize, room: f32) -> (Vec<
         if hints.len() <= 1 || legend_ink(&hints, &cut) <= room + 0.5 {
             return (hints, cut);
         }
-        hints.pop();
+        match way_out {
+            true => {
+                hints.remove(hints.len() - 2);
+            }
+            false => {
+                hints.pop();
+            }
+        }
     }
 }
 
@@ -14230,7 +14384,7 @@ pub fn build_toasts(cards: &[ToastCard], width: f32, height: f32, behind: f32) -
 /// hole somewhere other than where it landed is worse than one that cut none.
 fn toast_layout(cards: &[ToastCard], width: f32, height: f32) -> Vec<([f32; 4], f32)> {
     let scale = guide_scale(height);
-    let card_w = TOAST_WIDTH * scale;
+    let card_w = toast_width(width, height);
     let inset = TOAST_INSET * scale;
     let gap = TOAST_GAP * scale;
     let rest_x = width - inset - card_w;
@@ -14270,9 +14424,9 @@ fn toast_layout(cards: &[ToastCard], width: f32, height: f32) -> Vec<([f32; 4], 
 /// exactly the `text_w` [`build_toasts`] lays them out in, because a
 /// measurement made against any other width is a measurement of a different
 /// card.
-pub fn toast_body_width(height: f32) -> f32 {
+pub fn toast_body_width(width: f32, height: f32) -> f32 {
     let scale = guide_scale(height);
-    let card_w = TOAST_WIDTH * scale;
+    let card_w = toast_width(width, height);
     let pad = TOAST_PAD * scale;
     let icon = TOAST_HEIGHT * scale * TOAST_ICON;
     (card_w - pad * 2.0 - icon - GUIDE_LABEL_PADDING * scale).max(1.0)
@@ -14281,6 +14435,17 @@ pub fn toast_body_width(height: f32) -> f32 {
 /// And the size they are drawn at.
 pub fn toast_body_size(height: f32) -> f32 {
     TOAST_BODY_SIZE * guide_scale(height)
+}
+
+/// How wide a bubble is on a display this size.
+///
+/// [`TOAST_WIDTH`], or — on a display standing on its side, which can be
+/// narrower than that — as much of the display as keeps the corner's standoff
+/// either side of it. A bubble wider than the room it stood in ran off the
+/// display's left edge, taking the start of every sentence with it.
+fn toast_width(width: f32, height: f32) -> f32 {
+    let scale = guide_scale(height);
+    (TOAST_WIDTH * scale).min((width - TOAST_INSET * scale * 2.0).max(0.0))
 }
 
 pub fn toast_height(lines: u8) -> f32 {
@@ -14320,20 +14485,43 @@ pub fn guide_download_rect(width: f32, height: f32, open: f32) -> ([f32; 4], f32
 /// furniture in one corner may not be spaced two different ways.
 pub fn guide_card_rect(width: f32, height: f32, open: f32, row: f32) -> ([f32; 4], f32) {
     let scale = guide_scale(height);
-    let card_w = ARRIVING_WIDTH * scale;
-    let card_h = TOAST_HEIGHT * scale;
     let inset = ARRIVING_INSET * scale;
+    // As wide as somebody else's words ask for, and never wider than the
+    // display leaves room for with the corner's standoff kept either side: a
+    // display standing on its side is narrower than the card, and one that ran
+    // off its left edge was a card whose first word nobody could read.
+    let card_w = (ARRIVING_WIDTH * scale).min((width - inset * 2.0).max(0.0));
+    let card_h = TOAST_HEIGHT * scale;
     let travel = card_w + inset * 2.0;
     let (offset, alpha, _) = toast_flight(crate::notify::Stage::In, open.clamp(0.0, 1.0), travel);
     (
         [
             width - inset - card_w + offset,
-            height - inset - card_h - (card_h + TOAST_GAP * scale) * row.max(0.0),
+            corner_foot(width, height) - card_h - (card_h + TOAST_GAP * scale) * row.max(0.0),
             card_w,
             card_h,
         ],
         alpha,
     )
+}
+
+/// The line the corner's cards stand on, measured down from the top of the
+/// display.
+///
+/// The corner itself, [`ARRIVING_INSET`] off the foot of the display, wherever
+/// the column and the cards stand side by side. On a display too narrow for
+/// that, the column reaches the foot of the display under this corner, with
+/// its power button and the button legend beside it in the last line — see
+/// [`guide_legend_line`] — and the cards stand above that line instead, over
+/// the empty foot of the column rather than over the button that turns the
+/// machine off.
+fn corner_foot(width: f32, height: f32) -> f32 {
+    let scale = guide_scale(height);
+    if overview::reach(width as f64, height as f64) > 0.0 {
+        power_button_rect(width, height)[1] - TOAST_GAP * scale
+    } else {
+        height - ARRIVING_INSET * scale
+    }
 }
 
 /// How much of the corner the cards have taken, against 1080p, and how far in
@@ -14357,6 +14545,72 @@ fn corner_cards(guide: &Guide) -> (f32, f32) {
         }
     }
     reach
+}
+
+/// Where the guide's button legend is written: the right-hand end of its row,
+/// the line it is centred on, and how far left it may run where something
+/// stands beside it.
+struct LegendLine {
+    right: f32,
+    middle: f32,
+    /// `None` in the display's own corner, which has the whole of the far side
+    /// of the display beside it — see `the_guides_longest_row_clears_the_column_beside_it`.
+    room: Option<f32>,
+}
+
+/// Where the guide writes what its buttons do, on a display this size.
+///
+/// In the display's bottom-right corner, on the start screen's own line —
+/// climbing over whichever of the corner's cards reaches highest, the download
+/// alone or an update standing on top of it. See [`corner_cards`].
+///
+/// **A display too narrow for the column and the cards side by side has the
+/// column standing in that corner**, and a row written there ran across the
+/// edge of the glass, half on the column and half off it. So there the row is
+/// the column's own last line while the column has the focus — beside the
+/// power button, inside the glass, sliding in with the column — and it goes
+/// over to the display's corner as the view slides over to the cards, where
+/// what is left of the column is a strip down the left edge. Between the two it
+/// is carried by the slide itself rather than moved on a clock of its own, so
+/// it can never be caught somewhere the column is not. The corner's cards stand
+/// above that last line on such a display, so nothing climbs — see
+/// [`corner_foot`].
+fn guide_legend_line(guide: &Guide, width: f32, height: f32) -> LegendLine {
+    let scale = guide_scale(height);
+    let corner = width - CORNER_INSET * scale;
+    let settled = height - corner_line(scale);
+    let reach = overview::reach(width as f64, height as f64) as f32;
+    if reach <= 0.0 {
+        let (taken, arrival) = corner_cards(guide);
+        let above_the_card = height
+            - (ARRIVING_INSET + taken + GUIDE_MARGIN) * scale
+            - START_HINT_GLYPH * scale * 0.5;
+        return LegendLine {
+            right: corner,
+            middle: lerp(settled, above_the_card.min(settled), arrival),
+            room: None,
+        };
+    }
+
+    let slid = (guide.pan() / reach).clamp(0.0, 1.0);
+    let margin = GUIDE_MARGIN * scale;
+    let [panel_x, _, panel_w, _] = sidebar_panel_rect(width, height);
+    let [power_x, power_y, power_w, power_h] = power_button_rect(width, height);
+    // The column's foot, measured where the column is — which on the way in is
+    // still sliding from the left edge.
+    let arriving = sidebar_slide_x(guide.age(), width, height);
+    let foot = panel_x + panel_w - margin + arriving;
+    let beside_power = power_x + power_w + margin + arriving;
+    // And the display's corner, clear of the strip of column left in view.
+    let past_the_column = panel_x + panel_w - reach + margin;
+
+    let right = lerp(foot, corner, slid);
+    let left = lerp(beside_power, past_the_column, slid);
+    LegendLine {
+        right,
+        middle: lerp(power_y + power_h * 0.5, settled, slid),
+        room: Some((right - left).max(0.0)),
+    }
 }
 
 /// Take away the words the corner's cards are standing on — both of them.
@@ -14386,9 +14640,12 @@ pub fn hide_text_under_guide_cards(scene: &mut Scene, guide: &Guide, width: f32,
 /// happening while they are somewhere else in the menu doing something else.
 ///
 /// Drawn last, over the window cards, because it is the only thing in the guide
-/// that is allowed to stand on one — see the concept it was drawn from. It
-/// never reaches the sidebar: the panel is [`ARRIVING_WIDTH`] against a display,
-/// pinned to the far corner, and the column is on the other side.
+/// that is allowed to stand on one — see the concept it was drawn from. On a
+/// display with room for the column and the cards side by side it never
+/// reaches the sidebar: the panel is [`ARRIVING_WIDTH`] against a display,
+/// pinned to the far corner, and the column is on the other side. On one
+/// without, it is as wide as the display allows and stands above the column's
+/// last line — see [`corner_foot`].
 fn push_download_card(scene: &mut Scene, view: &GuideView, width: f32, height: f32, scale: f32) {
     let open = view.guide.download().clamp(0.0, 1.0);
     let Some(coming) = view.guide.downloading().filter(|_| open > 0.0) else {
@@ -17442,15 +17699,15 @@ mod tests {
     /// not started is a whole sidebar's width off the screen.
     #[test]
     fn it_slides_in_from_the_right_edge() {
-        let width = 1280.0;
-        let sidebar = overview::sidebar_width(width as f64) as f32;
-        assert_eq!(friends_slide_x(0.0, width), sidebar);
-        assert_eq!(friends_slide_x(1.0, width), 0.0);
-        assert!(friends_slide_x(0.5, width) > 0.0);
+        let (width, height) = (1280.0, 800.0);
+        let sidebar = overview::sidebar_width(width as f64, height as f64) as f32;
+        assert_eq!(friends_slide_x(0.0, width, height), sidebar);
+        assert_eq!(friends_slide_x(1.0, width, height), 0.0);
+        assert!(friends_slide_x(0.5, width, height) > 0.0);
         // The shell eases it before it gets here, so this is a straight line
         // through an already-curved position. What must not happen is a second
         // easing, which would flatten the start of the movement to nothing.
-        assert!((friends_slide_x(0.5, width) - sidebar * 0.5).abs() < 0.01);
+        assert!((friends_slide_x(0.5, width, height) - sidebar * 0.5).abs() < 0.01);
     }
 
     /// Every band that has anybody in it gets a rule with its name and count,
@@ -18647,7 +18904,7 @@ mod tests {
             friends_hit(showing(0.5), at_x, at_y, width, height),
             FriendsSpot::Outside
         );
-        let slide = friends_slide_x(0.5, width);
+        let slide = friends_slide_x(0.5, width, height);
         assert_eq!(
             friends_hit(showing(0.5), at_x + slide, at_y, width, height),
             FriendsSpot::Row(0)
@@ -19242,6 +19499,70 @@ mod tests {
                 "{content} was drawn with no legend asked for"
             );
         }
+    }
+
+    /// On a display standing on its side the row is as wide as the screen,
+    /// and it is taken in to fit it rather than run off the left edge with
+    /// its first word — in every language, keeping the Guide at its end. On a
+    /// landscape display nothing about it changes.
+    #[test]
+    fn the_start_legend_stays_on_a_display_standing_on_its_side() {
+        let drawn = |width: f32, height: f32| {
+            let lattice = corner_lattice();
+            let cursor = Cursor::new(lattice.categories.len());
+            build(
+                &lattice,
+                &cursor,
+                width,
+                height,
+                true,
+                Corner::default(),
+                0.0,
+                &Named,
+                Typing::Nothing,
+                None,
+                Some(Legend {
+                    options: true,
+                    friends: true,
+                    pad: true,
+                    floating: Floating::None,
+                    search: Searching::Looking,
+                }),
+            )
+        };
+        let guide = || crate::i18n::text("shell-guide");
+        for language in crate::i18n::Language::CHOICES {
+            crate::i18n::set(language);
+            for (width, height) in [(620.0, 1473.0), (800.0, 1280.0), (1080.0, 1920.0)] {
+                let scene = drawn(width, height);
+                let words: Vec<&Text> = scene
+                    .texts
+                    .iter()
+                    .filter(|text| text.y > height * 0.9)
+                    .collect();
+                assert!(
+                    words.iter().any(|text| text.content == guide()),
+                    "{language:?} at {width}x{height}: the Guide went"
+                );
+                for text in words {
+                    assert!(
+                        text.x >= 0.0 && text.x + text.max_width <= width,
+                        "{language:?} at {width}x{height}: {} runs off the display",
+                        text.content
+                    );
+                }
+            }
+        }
+        crate::i18n::set(crate::i18n::Language::British);
+
+        // Landscape: the row it always was, at the size it always was.
+        let scene = drawn(1920.0, 1080.0);
+        let select = scene
+            .texts
+            .iter()
+            .find(|text| text.content == "Select")
+            .expect("the row on a landscape display");
+        assert_eq!(select.size, START_HINT_LABEL);
     }
 
     /// The selected category's name goes under its button, and under means
@@ -22849,7 +23170,20 @@ mod tests {
     /// Fill each card's rectangle from the shared layout, the way the
     /// shell's draw loop does once easing has settled.
     fn lay_out(cards: &mut [Card], selected: usize, width: f32, height: f32) {
-        let slots = overview::card_slots(width as f64, height as f64, cards.len(), selected);
+        lay_out_for(cards, selected, width, height, overview::Focus::Menu);
+    }
+
+    /// The same with the cards laid out for one half of the menu or the
+    /// other having the focus, which on a narrow display is where the view
+    /// has slid to.
+    fn lay_out_for(
+        cards: &mut [Card],
+        selected: usize,
+        width: f32,
+        height: f32,
+        focus: overview::Focus,
+    ) {
+        let slots = overview::card_slots(width as f64, height as f64, cards.len(), selected, focus);
         for (card, slot) in cards.iter_mut().zip(&slots) {
             let fitted = overview::fit(slot, card.width as f64, card.height as f64);
             card.rect = [
@@ -22921,6 +23255,47 @@ mod tests {
         elsewhere: f32,
         legend: Option<Legend>,
     ) -> Scene {
+        guide_scene_sized(
+            guide, app, screen, cards, highlight, slots, elsewhere, legend, 1920.0, 1080.0,
+        )
+    }
+
+    /// The same scene on a display of any size, for the tests about the ones
+    /// too narrow for the column and the cards side by side.
+    fn guide_scene_on(
+        guide: &Guide,
+        cards: &[Card],
+        legend: Option<Legend>,
+        width: f32,
+        height: f32,
+    ) -> Scene {
+        guide_scene_sized(
+            guide,
+            Some("Celeste"),
+            None,
+            cards,
+            None,
+            &AllSlots,
+            0.0,
+            legend,
+            width,
+            height,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn guide_scene_sized(
+        guide: &Guide,
+        app: Option<&str>,
+        screen: Option<&str>,
+        cards: &[Card],
+        highlight: Option<[f32; 4]>,
+        slots: &dyn SlotLookup,
+        elsewhere: f32,
+        legend: Option<Legend>,
+        width: f32,
+        height: f32,
+    ) -> Scene {
         // A window is selected beside the column whenever there is one to
         // select, which is what the shell passes.
         let close_target = cards.first().filter(|card| !card.start).map(|c| &*c.title);
@@ -22964,8 +23339,8 @@ mod tests {
                 legend,
                 slots,
             },
-            1920.0,
-            1080.0,
+            width,
+            height,
         )
     }
 
@@ -23221,6 +23596,528 @@ mod tests {
             }
         }
         crate::i18n::set(crate::i18n::Language::British);
+    }
+
+    /// A row that has to give up a pair for the room it is in keeps the way
+    /// out at its end, where the ordinary rule gives up the last pair.
+    #[test]
+    fn a_row_ending_in_the_way_out_keeps_it() {
+        let pair = |label| Hint {
+            label,
+            glyph: icons::PAD_SOUTH,
+        };
+        let size = LegendSize {
+            glyph: 34.0,
+            label: 19.0,
+            gap: 8.0,
+            step: 24.0,
+        };
+        let row = || {
+            vec![
+                pair("Select"),
+                pair("Options"),
+                pair("Friends"),
+                pair("Back"),
+            ]
+        };
+        // Room for two pairs at full size, which is three once the row has been
+        // taken down as far as it may go: the one that goes is Friends.
+        let two = legend_ink(&[pair("Select"), pair("Back")], &size);
+        let (kept, _) = legend_that_fits_keeping_the_way_out(row(), &size, two);
+        let labels: Vec<_> = kept.iter().map(|hint| hint.label).collect();
+        assert_eq!(labels, ["Select", "Options", "Back"]);
+        // And the ordinary rule, for the rows that end in something else.
+        let (plain, _) = legend_that_fits(row(), &size, two);
+        let labels: Vec<_> = plain.iter().map(|hint| hint.label).collect();
+        assert_eq!(labels, ["Select", "Options", "Friends"]);
+        // Where everything fits, nothing is given up either way.
+        let (all, _) = legend_that_fits_keeping_the_way_out(row(), &size, 10_000.0);
+        assert_eq!(all.len(), 4);
+    }
+
+    /// Displays too narrow for the column and the cards side by side — the
+    /// user's own, a Steam Deck's panel before it is turned, and a 1080p
+    /// monitor standing on its side.
+    const NARROW: [(f32, f32); 3] = [(620.0, 1473.0), (800.0, 1280.0), (1080.0, 1920.0)];
+
+    /// The column is drawn at the scale the shared layout sizes it for, or it
+    /// would be kept wide enough for contents of some other size. See
+    /// [`overview::layout_scale`], which the compositor lays the cards out by.
+    #[test]
+    fn the_guide_is_drawn_at_the_scale_its_column_is_sized_for() {
+        for height in [
+            300.0, 648.0, 720.0, 800.0, 1080.0, 1473.0, 2160.0, 2700.0, 4000.0,
+        ] {
+            let layout = overview::layout_scale(height as f64) as f32;
+            assert!((guide_scale(height) - layout).abs() < 1e-6, "{height}");
+        }
+    }
+
+    /// On a display standing on its side the column keeps the room its
+    /// contents were settled in, so the four tiles stand at the size they have
+    /// on a 16:10 screen and the header keeps the width it has there — rather
+    /// than the tiles taken in to half their size to share a line and the hour
+    /// printed over the day beside it, which is what the user photographed.
+    #[test]
+    fn a_display_on_its_side_draws_the_column_at_its_own_size() {
+        let mut guide = Guide::default();
+        guide.open();
+        let items = guide.items(false);
+        assert!(items[0].is_tile());
+        // Both in reference pixels, which is what the contents are laid out in.
+        let tile = |width: f32, height: f32| {
+            menu_item_rect(&items, 0, width, height, 1.0)[2] / guide_scale(height)
+        };
+        let panel =
+            |width: f32, height: f32| sidebar_panel_rect(width, height)[2] / guide_scale(height);
+        // To within half a reference pixel: the column's least is written as
+        // the round number the 16:10 column comes to, and is a sixth of a
+        // pixel short of it.
+        for (width, height) in NARROW {
+            assert!(
+                tile(width, height) >= tile(1280.0, 800.0) - 0.5,
+                "{width}x{height}: a tile {} against {}",
+                tile(width, height),
+                tile(1280.0, 800.0)
+            );
+            assert!(
+                panel(width, height) >= panel(1280.0, 800.0) - 0.5,
+                "{width}x{height}: a panel {} against {}",
+                panel(width, height),
+                panel(1280.0, 800.0)
+            );
+        }
+    }
+
+    /// And the column slides with the view: with the cards given the focus,
+    /// everything of it is drawn that much further left, and a strip of it is
+    /// left at the edge of the display to go back to.
+    #[test]
+    fn the_column_slides_over_with_the_view() {
+        for (width, height) in NARROW {
+            let reach = overview::reach(width as f64, height as f64) as f32;
+            assert!(reach > 0.0, "{width}x{height}");
+            let mut guide = Guide::default();
+            guide.open();
+            guide.backdate_open(2.0);
+            let mut cards = [card("Celeste")];
+
+            lay_out_for(&mut cards, 0, width, height, overview::Focus::Menu);
+            guide.animate_pan(0.0, 0.0);
+            let still = guide_scene_on(&guide, &cards, None, width, height);
+            lay_out_for(&mut cards, 0, width, height, overview::Focus::Cards);
+            // A second of frames on the spring is as good as there.
+            for _ in 0..60 {
+                guide.animate_pan(reach, 1.0 / 60.0);
+            }
+            assert!((guide.pan() - reach).abs() < 0.5);
+            assert!(!guide.pan_is_moving());
+            let slid = guide_scene_on(&guide, &cards, None, width, height);
+
+            // The pane, which is the one quad in the scene with a curved face.
+            let pane = |scene: &Scene| {
+                scene
+                    .quads
+                    .iter()
+                    .find(|quad| quad.face_curve > 0.0)
+                    .map(|quad| [quad.x, quad.w])
+                    .expect("the column's glass")
+            };
+            let [still_x, pane_w] = pane(&still);
+            let [slid_x, _] = pane(&slid);
+            assert!(
+                (still_x - guide.pan() - slid_x).abs() < 0.01,
+                "{width}x{height}"
+            );
+            assert!(
+                slid_x + pane_w > 0.0,
+                "{width}x{height}: none of the column left"
+            );
+            // The clock went with it.
+            let clock = |scene: &Scene| {
+                scene
+                    .texts
+                    .iter()
+                    .find(|text| text.content == "15:18")
+                    .map(|text| text.x)
+                    .expect("the hour")
+            };
+            assert!((clock(&still) - guide.pan() - clock(&slid)).abs() < 0.01);
+            // And the card stands whole on the display, which it did not.
+            let [x, _, w, _] = cards[0].rect;
+            assert!(x > 0.0 && x + w < width, "{width}x{height}");
+        }
+    }
+
+    /// The column is drawn exactly where [`guide_column_bounds`] says it is,
+    /// with the view on the column and slid over to the cards alike — because
+    /// what is laid over the column cuts itself to that answer, and a cut one
+    /// pixel off the glass is a hairline of wallpaper down the column's edge.
+    #[test]
+    fn the_column_is_drawn_where_its_bounds_say() {
+        for (width, height) in [(1920.0, 1080.0), (620.0, 1473.0), (1080.0, 1920.0)] {
+            let reach = overview::reach(width as f64, height as f64) as f32;
+            let mut guide = Guide::default();
+            guide.open();
+            guide.backdate_open(2.0);
+            let mut cards = [card("Celeste")];
+            for (focus, pan) in [
+                (overview::Focus::Menu, 0.0),
+                (overview::Focus::Cards, reach),
+            ] {
+                lay_out_for(&mut cards, 0, width, height, focus);
+                guide.animate_pan(pan, 0.0);
+                for _ in 0..60 {
+                    guide.animate_pan(pan, 1.0 / 60.0);
+                }
+                let scene = guide_scene_on(&guide, &cards, None, width, height);
+                let pane = scene
+                    .quads
+                    .iter()
+                    .find(|quad| quad.face_curve > 0.0)
+                    .expect("the column's glass");
+                assert_eq!(
+                    [pane.x, pane.y, pane.w, pane.h],
+                    guide_column_bounds(&guide, width, height),
+                    "{width}x{height}, {focus:?}"
+                );
+            }
+        }
+    }
+
+    /// The outline the column is cut to is the friends panel's own glass: the
+    /// same rectangle, the same radius and the same corner, so the cut and the
+    /// curve in front of it are one line.
+    #[test]
+    fn the_friends_outline_is_the_shape_of_its_glass() {
+        let roster = roster(vec![someone("Ann", lxb_steam::Presence::Online, None)]);
+        let panel = crate::friends::Friends::default();
+        for (width, height) in [(1920.0, 1080.0), (620.0, 1473.0), (1080.0, 1920.0)] {
+            let scene = friends_scene(&roster, &panel, width, height);
+            let pane = scene
+                .quads
+                .iter()
+                .find(|quad| quad.face_curve > 0.0)
+                .expect("the panel's glass");
+            let outline = friends_outline(width, height, 1.0);
+            assert_eq!([pane.x, pane.y, pane.w, pane.h], outline.rect);
+            assert_eq!(pane.radius, outline.radius);
+            assert_eq!(pane.corner, outline.corner);
+            // And it travels with the panel: where it is on its way in is where
+            // the glass is drawn on its way in.
+            for open in [0.0, 0.25, 0.5, 0.75] {
+                assert_eq!(
+                    friends_outline(width, height, open).rect,
+                    friends_bounds(width, height, open)
+                );
+            }
+        }
+    }
+
+    /// On a display standing on its side the friends panel lands on the
+    /// guide's column, and the column is cut to the panel's outline rather than
+    /// along its edge — so it carries on behind the panel's rounded corners
+    /// instead of stopping in a square notch beside each of them, with the
+    /// wallpaper showing in the curve. Everything else in the scene keeps the
+    /// straight cut it always had.
+    #[test]
+    fn the_friends_panel_leaves_the_column_whole_round_its_corners() {
+        for (width, height) in NARROW {
+            let mut guide = Guide::default();
+            guide.open();
+            guide.backdate_open(2.0);
+            guide.animate_pan(0.0, 0.0);
+            let mut cards = [card("Celeste")];
+            lay_out_for(&mut cards, 0, width, height, overview::Focus::Menu);
+            let column = guide_column_bounds(&guide, width, height);
+            let drawn = guide_scene_on(&guide, &cards, None, width, height);
+            let mut scene = Scene {
+                quads: drawn.quads.clone(),
+                texts: drawn.texts.clone(),
+            };
+            nothing_but_wallpaper_under_friends(&mut scene, width, height, 1.0, Some(column));
+
+            let outline = friends_outline(width, height, 1.0);
+            assert!(
+                outline.rect[0] < column[0] + column[2],
+                "{width}x{height}: the panel does not reach the column"
+            );
+            let edge = outline.rect[0];
+            let mut glass = false;
+            for (before, after) in drawn.quads.iter().zip(&scene.quads) {
+                if stands_within(before, column) {
+                    // Cut to the outline and to nothing else.
+                    assert_eq!(after.hole, Some(outline), "{width}x{height}");
+                    assert_eq!(after.clip, before.clip, "{width}x{height}");
+                    glass |= after.face_curve > 0.0;
+                } else {
+                    assert_eq!(after.hole, None, "{width}x{height}");
+                    let [x, _, w, _] = after.clip.expect("cut along the panel's edge");
+                    assert!(x + w <= edge + 0.01, "{width}x{height}");
+                }
+            }
+            // The column's own glass among them, which is where the notch was.
+            assert!(glass, "{width}x{height}: the column's glass was not kept");
+        }
+    }
+
+    /// Side by side the panel never reaches the column, and nothing about the
+    /// cut changes: every quad is cut along the panel's leading edge exactly as
+    /// it always was, and nothing is given a hole.
+    #[test]
+    fn side_by_side_the_friends_panel_cuts_as_it_always_did() {
+        for (width, height) in [
+            (1280.0, 800.0),
+            (1920.0, 1080.0),
+            (2560.0, 1440.0),
+            (3440.0, 1440.0),
+        ] {
+            let mut guide = Guide::default();
+            guide.open();
+            guide.backdate_open(2.0);
+            let mut cards = [card("Celeste")];
+            lay_out_for(&mut cards, 0, width, height, overview::Focus::Menu);
+            let column = guide_column_bounds(&guide, width, height);
+            let drawn = guide_scene_on(&guide, &cards, None, width, height);
+            for open in [0.3, 1.0] {
+                let mut scene = Scene {
+                    quads: drawn.quads.clone(),
+                    texts: drawn.texts.clone(),
+                };
+                nothing_but_wallpaper_under_friends(&mut scene, width, height, open, Some(column));
+                let cut = [0.0, 0.0, friends_bounds(width, height, open)[0], height];
+                for (before, after) in drawn.quads.iter().zip(&scene.quads) {
+                    assert_eq!(after.hole, None, "{width}x{height}");
+                    let expected = match before.clip {
+                        Some(clip) => intersection(clip, cut),
+                        None => cut,
+                    };
+                    assert_eq!(after.clip, Some(expected), "{width}x{height}");
+                }
+            }
+        }
+    }
+
+    /// What is given back to the wallpaper is everything from the panel's
+    /// leading edge to the display's own, top to bottom, wherever the panel has
+    /// slid to — and nothing at all while it is still off the edge.
+    #[test]
+    fn the_stretch_given_back_to_the_wallpaper_follows_the_panel() {
+        for (width, height) in [(620.0, 1473.0), (1280.0, 800.0), (1920.0, 1080.0)] {
+            for open in [0.25, 0.5, 1.0] {
+                let [x, y, w, h] = friends_aside(width, height, open);
+                assert_eq!(x, friends_bounds(width, height, open)[0]);
+                assert_eq!((y, h), (0.0, height));
+                assert!((x + w - width).abs() < 0.01, "{width}x{height} at {open}");
+            }
+            let [_, _, w, _] = friends_aside(width, height, 0.0);
+            assert!(
+                w <= 0.0,
+                "{width}x{height}: {w} given back before it arrives"
+            );
+        }
+    }
+
+    /// Nothing written under the friends panel is left beside it either. A run
+    /// cut only where the glass is kept whatever of it reached past the panel's
+    /// far side — the tail of a card's title, a letter of the start screen's
+    /// miniature — written on the wallpaper in the gap between the panel and the
+    /// edge of the display.
+    #[test]
+    fn nothing_of_a_run_is_left_beside_the_friends_panel() {
+        for (width, height) in [(620.0, 1473.0), (1920.0, 1080.0)] {
+            let edge = friends_bounds(width, height, 1.0)[0];
+            let mut scene = Scene::default();
+            scene.texts.push(Text {
+                content: "A title running off the edge".to_string(),
+                x: edge - 40.0,
+                y: height * 0.5,
+                size: 20.0,
+                max_width: width,
+                ..Text::default()
+            });
+            nothing_but_wallpaper_under_friends(&mut scene, width, height, 1.0, None);
+            assert!(!scene.texts.is_empty(), "the part before the panel is kept");
+            for text in &scene.texts {
+                let [x, _, w, _] = text.clip.expect("the run is cut");
+                // What runs on past the display's own edge is kept as it
+                // always was; there is nothing out there to draw it on.
+                if x >= width {
+                    continue;
+                }
+                assert!(x + w <= edge + 0.01, "{width}x{height}: {x} + {w}");
+            }
+        }
+    }
+
+    /// On such a display the column stands in the corner the legend is written
+    /// in, so there the row is the column's own last line — inside its glass,
+    /// beside the power button — and it goes over to the display's corner as
+    /// the view slides over to the cards, clear of the strip of column left in
+    /// view. The longest row there is, in every language.
+    #[test]
+    fn on_a_narrow_display_the_legend_keeps_off_the_edge_of_the_column() {
+        for language in crate::i18n::Language::CHOICES {
+            crate::i18n::set(language);
+            for (width, height) in NARROW {
+                let scale = guide_scale(height);
+                let reach = overview::reach(width as f64, height as f64) as f32;
+                let margin = GUIDE_MARGIN * scale;
+                let [panel_x, _, panel_w, _] = sidebar_panel_rect(width, height);
+                let [power_x, power_y, power_w, power_h] = power_button_rect(width, height);
+                let size = LegendSize {
+                    glyph: START_HINT_GLYPH * scale,
+                    label: START_HINT_LABEL * scale,
+                    gap: START_HINT_GAP * scale,
+                    step: START_HINT_STEP * scale,
+                };
+                for slid in [0.0, reach] {
+                    let mut guide = Guide::default();
+                    guide.open();
+                    guide.backdate_open(2.0);
+                    guide.animate_pan(slid, 0.0);
+                    let line = guide_legend_line(&guide, width, height);
+                    let room = line.room.expect("a narrow display's row is measured");
+                    // The most the row can ever carry: everything offered at once.
+                    let hints = guide_hints(true, true, true, Floating::Offered);
+                    let way_out = hints.last().map(|hint| hint.label);
+                    let (fitted, cut) = legend_that_fits_keeping_the_way_out(hints, &size, room);
+                    assert_eq!(
+                        fitted.last().map(|hint| hint.label),
+                        way_out,
+                        "{language:?} at {width}x{height}: the row lost its way out"
+                    );
+                    let left = line.right - legend_ink(&fitted, &cut);
+                    let at = format!("{language:?} at {width}x{height}, slid {slid}");
+                    if slid == 0.0 {
+                        assert!(line.right <= panel_x + panel_w - margin + 0.01, "{at}");
+                        assert!(left >= power_x + power_w + margin - 0.51, "{at}: {left}");
+                        assert!(
+                            line.middle > power_y && line.middle < power_y + power_h,
+                            "{at}: the row is not on the power button's line"
+                        );
+                    } else {
+                        assert!((line.right - (width - CORNER_INSET * scale)).abs() < 0.01);
+                        assert!(left >= panel_x + panel_w - reach + margin - 0.51, "{at}");
+                        assert!((line.middle - (height - corner_line(scale))).abs() < 0.01);
+                    }
+                }
+            }
+        }
+        crate::i18n::set(crate::i18n::Language::British);
+    }
+
+    /// And the row the scene draws is that row: on a narrow display with the
+    /// column in view, every word of it stands on the column's glass — and
+    /// where the row is too long for the column's foot, what it gives up is
+    /// not the way out. The row the user would have seen with a window's card
+    /// selected is Select, Options, Friends and Back, and it came out as the
+    /// first three.
+    #[test]
+    fn on_a_narrow_display_the_legend_is_drawn_on_the_column() {
+        let (width, height) = NARROW[0];
+        let mut guide = Guide::default();
+        guide.open();
+        guide.backdate_open(2.0);
+        let legend = Legend {
+            options: true,
+            friends: true,
+            pad: true,
+            floating: Floating::None,
+            search: Searching::No,
+        };
+        let scene = guide_scene_on(&guide, &[], Some(legend), width, height);
+        let [panel_x, _, panel_w, _] = sidebar_panel_rect(width, height);
+        for word in ["Select", "Back"] {
+            let text = scene
+                .texts
+                .iter()
+                .find(|text| text.content == word)
+                .unwrap_or_else(|| panic!("the legend says {word}"));
+            assert!(
+                text.x >= panel_x && text.x + text.max_width <= panel_x + panel_w,
+                "{word} runs off the column's glass"
+            );
+        }
+    }
+
+    /// The corner's cards stay whole on a display narrower than they are, and
+    /// on one too narrow for the column beside the cards they stand above the
+    /// column's last line, where its power button and the legend are — the
+    /// card the user photographed was cut off at the left edge and stood on
+    /// both.
+    #[test]
+    fn the_corner_cards_stay_whole_on_a_narrow_display() {
+        for (width, height) in NARROW {
+            let scale = guide_scale(height);
+            let [_, power_y, _, _] = power_button_rect(width, height);
+            for row in [0.0, 1.0] {
+                let ([x, y, w, h], alpha) = guide_card_rect(width, height, 1.0, row);
+                assert_eq!(alpha, 1.0);
+                let at = format!("{width}x{height}, row {row}");
+                assert!(x >= ARRIVING_INSET * scale - 0.01 && x + w <= width, "{at}");
+                assert!(y > 0.0, "{at}");
+                assert!(
+                    y + h <= power_y - TOAST_GAP * scale + 0.01,
+                    "{at}: over the power button"
+                );
+            }
+            // Coming in from off the edge, as it does everywhere else.
+            let (gone, _) = guide_card_rect(width, height, 0.0, 0.0);
+            assert!(gone[0] >= width, "{width}x{height}");
+        }
+    }
+
+    /// A bubble is never wider than the display it is in; on one that always
+    /// had room for it, it is the width it always was.
+    #[test]
+    fn a_bubble_stays_whole_on_a_narrow_display() {
+        let bubble = [ToastCard {
+            body_lines: 1,
+            title: "Something happened",
+            body: "and here is what",
+            icon: None,
+            glyph: None,
+            stage: crate::notify::Stage::Sitting,
+            progress: 1.0,
+        }];
+        for (width, height) in NARROW {
+            let [x, _, w, _] = toast_rects(&bubble, width, height)[0];
+            assert!(x > 0.0 && x + w < width, "{width}x{height}");
+            assert!(toast_body_width(width, height) < w);
+        }
+        let [_, _, w, _] = toast_rects(&bubble, 1920.0, 1080.0)[0];
+        assert_eq!(w, TOAST_WIDTH);
+    }
+
+    /// The busiest a narrow display's guide gets — a download standing on the
+    /// column's glass, the power dialog over all of it — still fits the
+    /// snapshots the renderer has.
+    #[test]
+    fn the_deepest_narrow_screen_fits_inside_the_snapshot_budget() {
+        let lattice = Lattice::new(vec![Category {
+            id: "a",
+            title: "Settings",
+            icon: "a",
+            entries: vec![app("first"), app("second"), app("third")],
+        }]);
+        for (width, height) in NARROW {
+            let mut guide = menu_with_a_download(Some(0.4), false);
+            guide.set_bars(BOTH_BARS);
+            guide.open_power();
+            let mut cards = [card("Celeste")];
+            lay_out_for(&mut cards, 0, width, height, overview::Focus::Menu);
+            let mut scene = build_with(&lattice, &Cursor::new(1), width, height, true, &AllSlots);
+            scene.place_into(cards[0].rect, width, height);
+            let over = guide_scene_on(&guide, &cards, None, width, height);
+            scene.quads.extend(over.quads);
+            let needed = crate::gpu::snapshots_needed(&scene.quads);
+            assert!(
+                needed <= crate::gpu::MAX_GLASS_BATCHES,
+                "{width}x{height} needs {needed} snapshots and the budget is {}",
+                crate::gpu::MAX_GLASS_BATCHES,
+            );
+        }
     }
 
     /// The menu steps back while a video has its directions; the row in the
@@ -25114,7 +26011,7 @@ mod tests {
         guide.open();
         let scene = guide_scene(&guide, Some("Celeste"), Some(TEST_SCREEN), &[], None);
 
-        let sidebar_w = overview::sidebar_width(1920.0) as f32;
+        let sidebar_w = overview::sidebar_width(1920.0, 1080.0) as f32;
         for text in &scene.texts {
             if text.content == "Nothing is running" {
                 continue; // the empty-state message lives in the card region
@@ -25296,7 +26193,7 @@ mod tests {
         // are neither capsules nor the width this is measuring.
         let closable = true;
         let cards = [card("Celeste")];
-        let sidebar_w = overview::sidebar_width(1920.0) as f32;
+        let sidebar_w = overview::sidebar_width(1920.0, 1080.0) as f32;
         let settled = guide_scene(&guide, Some("Celeste"), None, &cards, None);
         // Capsules: radius exactly half their height, which is what tells a
         // button apart from the panel it rests on.
@@ -25482,7 +26379,7 @@ mod tests {
         // Floating, not pinned: glass only reads as a layer if what it is laid
         // over runs past it.
         assert!(px > 0.0 && py > 0.0);
-        assert!(px + pw < overview::sidebar_width(1920.0) as f32);
+        assert!(px + pw < overview::sidebar_width(1920.0, 1080.0) as f32);
         assert!(py + ph < 1080.0);
     }
 
@@ -30992,7 +31889,7 @@ mod tests {
                 x + w < width && y + h < height,
                 "and off both far edges at {width}x{height}"
             );
-            let sidebar = lxb_protocol::overview::sidebar_width(width as f64) as f32;
+            let sidebar = lxb_protocol::overview::sidebar_width(width as f64, height as f64) as f32;
             assert!(
                 x > sidebar,
                 "the card must not reach the column at {width}x{height}"

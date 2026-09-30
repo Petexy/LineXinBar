@@ -501,8 +501,7 @@ const EXACT_GAMUT_SHELL_VERSION: u32 = 42;
 const APP_SCALE_PER_DISPLAY_SHELL_VERSION: u32 = 43;
 
 /// First version that can be told how many pixels one application draws its
-/// picture at: `set_application_resolution`. Being the newest this shell knows
-/// of, it is also the version it asks to bind.
+/// picture at: `set_application_resolution`.
 ///
 /// Gated on where it is sent, and the fallback is silence — not the application
 /// scale wearing this setting's name, which is the other thing that could have
@@ -518,6 +517,17 @@ const APP_RESOLUTION_SHELL_VERSION: u32 = 44;
 /// protocol — but has nothing to dim or switch off with, and no button to
 /// hear. See [`crate::idle`].
 const POWER_SHELL_VERSION: u32 = 45;
+
+/// First version that can be told which half of the overview the user is
+/// driving: `set_overview_focus`. Being the newest this shell knows of, it is
+/// also the version it asks to bind.
+///
+/// Below it the compositor cannot slide the windows across a display too
+/// narrow for the menu and the cards side by side, so the shell does not slide
+/// its half either — see [`Shell::overview_focus`]. A column slid off to the
+/// left over windows left standing where they were would be the two halves of
+/// one picture pulling apart.
+const OVERVIEW_FOCUS_SHELL_VERSION: u32 = 46;
 
 /// What `answer_pick` says when no kind of file was in force. The protocol's
 /// own number for it, quoted here so the two halves cannot disagree about which
@@ -1468,7 +1478,11 @@ fn main() -> anyhow::Result<()> {
     // LineXinBar's own protocol, which carries the guide binding and lets the
     // overlay close an application. Absent on every other compositor, where the
     // shell simply falls back to what it can do as an ordinary client.
-    let shell_control = match globals.bind::<LxbShellV1, _, _>(&qh, 1..=POWER_SHELL_VERSION, ()) {
+    let shell_control = match globals.bind::<LxbShellV1, _, _>(
+        &qh,
+        1..=OVERVIEW_FOCUS_SHELL_VERSION,
+        (),
+    ) {
         Ok(control) => Some(control),
         Err(err) => {
             tracing::info!(
@@ -1510,6 +1524,7 @@ fn main() -> anyhow::Result<()> {
         applied_keyboard_layout: None,
         applied_overview: None,
         applied_overview_selection: None,
+        applied_overview_focus: None,
         guide: Guide::default(),
         switching: false,
         context_menu: menu::Menu::default(),
@@ -4190,6 +4205,8 @@ struct Shell {
     applied_overview: Option<wl_output::WlOutput>,
     /// Card selection last reported for it, likewise.
     applied_overview_selection: Option<u32>,
+    /// And which half of the overview it was last told has the focus.
+    applied_overview_focus: Option<lxb_protocol::overview::Focus>,
     guide: Guide,
     /// Whether the deck is being walked with a modifier held down, which is
     /// what makes the modifier coming up a choice rather than a key going by.
@@ -5719,6 +5736,9 @@ impl Shell {
         // was pressed, so without this it would have no frames to open in.
         let pressing = self.guide.pressing()
             || self.guide.media_is_moving()
+            // And the column sliding over to the cards on a narrow display,
+            // which goes on well after the key that asked for it came up.
+            || self.guide.pan_is_moving()
             // And the corner's cards, which are the same kind of thing again:
             // one comes in because a download started and leaves because one
             // finished, the other because the machine began updating itself,
@@ -5893,6 +5913,10 @@ impl Shell {
         // panels are borrowed for drawing, because easing the card highlight
         // towards its target mutates the guide.
         let (guide_cards, guide_highlight, start_card_rect, close_target) = if show_menu {
+            // Which half of a narrow display the cards are laid out for — see
+            // [`Shell::overview_focus`]. The column is slid by the same answer
+            // below.
+            let focus = self.overview_focus();
             let panel = self.panels.get(focused_panel);
             let mut cards: Vec<ui::Card> = panel
                 .map(|panel| {
@@ -5943,6 +5967,7 @@ impl Shell {
                     panel.height as f64,
                     cards.len(),
                     selected,
+                    focus,
                 );
                 self.guide_card_rects.retain(|key, _| keys.contains(key));
                 for ((card, key), slot) in cards.iter_mut().zip(&keys).zip(&slots) {
@@ -6025,6 +6050,18 @@ impl Shell {
                 Some(self.guide.animate_menu_highlight(row, dt))
             })
             .flatten();
+        // And the slide across a display too narrow for the column and the
+        // cards side by side, on the spring and at the stiffness the cards
+        // ride: the compositor slides the windows in them by the same distance
+        // on its own clock, and the column only goes with them if it is the
+        // same motion. Nought on every other display, where it never moves.
+        if show_menu {
+            if let Some((width, height)) = self.focused_size() {
+                let focus = self.overview_focus();
+                let target = lxb_protocol::overview::pan(width as f64, height as f64, focus);
+                self.guide.animate_pan(target as f32, dt);
+            }
+        }
         // Advanced once for the frame, not once per display: the dialog is on
         // the display being driven, and the others must not run its clock on.
         // Shaped here rather than in the model, like the start screen's own
@@ -6800,9 +6837,12 @@ impl Shell {
             );
             if menu_here {
                 // The guide is drawn over it, so anything of the bar still
-                // crossing the sidebar has to give way to the panel.
-                let sidebar = lxb_protocol::overview::sidebar_width(width as f64) as f32;
-                scene.fade_text_before(sidebar, sidebar * 0.5);
+                // crossing the sidebar has to give way to the panel — wherever
+                // the panel has slid to on a display too narrow for it and the
+                // cards side by side.
+                let sidebar =
+                    lxb_protocol::overview::sidebar_width(width as f64, height as f64) as f32;
+                scene.fade_text_before(sidebar - self.guide.pan(), sidebar * 0.5);
                 // The bar is a separate scene, so the dialog's panel — a quad,
                 // and every quad is drawn under every text run — cannot cover
                 // the start card's labels. They have to step back themselves.
@@ -6880,12 +6920,16 @@ impl Shell {
                 // Nothing of the shell is drawn under it, so what its glass
                 // shows is the wallpaper and only the wallpaper. See
                 // [`ui::nothing_but_wallpaper_under_friends`], where the reason
-                // that is a rule rather than a preference is written down.
+                // that is a rule rather than a preference is written down —
+                // and why the guide's column, where the panel lands on it, is
+                // cut to the panel's outline rather than along its edge.
                 ui::nothing_but_wallpaper_under_friends(
                     &mut scene,
                     width as f32,
                     height as f32,
                     friends_open,
+                    menu_here
+                        .then(|| ui::guide_column_bounds(&self.guide, width as f32, height as f32)),
                 );
                 // Who is being talked to, and why nothing may be said to them
                 // where nothing may. Worked out once, here, rather than inside
@@ -7579,6 +7623,16 @@ impl Shell {
                         ui::card_fade(card_age)
                     } else {
                         1.0
+                    },
+                    // The friends panel over the guide's cards: the cards are
+                    // the compositor's, so the wallpaper the panel is to have
+                    // behind it is painted back over them here rather than
+                    // cut out of the scene. See
+                    // [`ui::nothing_but_wallpaper_under_friends`].
+                    cleared: if menu_here && friends_on_screen {
+                        ui::friends_aside(width as f32, height as f32, friends_open)
+                    } else {
+                        [0.0; 4]
                     },
                 })
             } else if game_opening || (focused && self.guide.is_over_app()) {
@@ -11105,7 +11159,7 @@ impl Shell {
         };
         let [x, y, w, h] = ui::friends_status_rect(width, height);
         let anchor = [
-            x + ui::friends_slide_x(ui::ease(self.friends.at()), width),
+            x + ui::friends_slide_x(ui::ease(self.friends.at()), width, height),
             y,
             w,
             h,
@@ -16859,7 +16913,7 @@ impl Shell {
         if known == with_bodies.count() && known == self.toast_lines.len() {
             return;
         }
-        let Some((_, height)) = self.focused_size() else {
+        let Some((width, height)) = self.focused_size() else {
             return;
         };
         let bodies: Vec<(u32, String)> = self
@@ -16871,7 +16925,7 @@ impl Shell {
             .collect();
         self.toast_lines
             .retain(|id, _| bodies.iter().any(|(held, _)| held == id));
-        let box_width = ui::toast_body_width(height);
+        let box_width = ui::toast_body_width(width, height);
         let size = ui::toast_body_size(height);
         let Some(gpu) = self.gpu.as_mut() else {
             return;
@@ -18253,6 +18307,7 @@ impl Shell {
             panel.height as f64,
             count,
             self.guide.selected_window(count),
+            self.overview_focus(),
         );
         let fitted = lxb_protocol::overview::fit(
             slots.get(index)?,
@@ -28746,8 +28801,10 @@ impl Shell {
     fn guide_spot_at(&self, index: usize, x: f32, y: f32, width: f32, height: f32) -> Spot {
         // The column is measured from where the sidebar settles, so a click
         // arriving while it is still sliding in has to be measured from there
-        // too — see [`ui::sidebar_slide_x`].
-        let slide = ui::sidebar_slide_x(self.guide.age(), width);
+        // too — see [`ui::sidebar_slide_x`] — and so does one on a narrow
+        // display the view has slid across to the cards on, where what is left
+        // of the column is a strip at the left edge. See [`guide::Guide::pan`].
+        let slide = ui::sidebar_slide_x(self.guide.age(), width, height) - self.guide.pan();
         let closable = self.closable();
         let items = self.guide.items(closable);
         let media_open = self.guide.media();
@@ -29229,7 +29286,7 @@ impl Shell {
         let items = self.guide.items(self.closable());
         let row = items.iter().position(|entry| *entry == item)?;
         let mut rect = ui::menu_item_rect(&items, row, width, height, self.guide.media());
-        rect[0] += ui::sidebar_slide_x(self.guide.age(), width);
+        rect[0] += ui::sidebar_slide_x(self.guide.age(), width, height) - self.guide.pan();
         Some(rect)
     }
 
@@ -31125,6 +31182,24 @@ impl Shell {
             }
             self.applied_overview_selection = desired_selection;
         }
+        // And the slide across a display too narrow for the menu and the cards
+        // side by side, which the compositor takes from this in the same way.
+        // Said on every change, and again every time the overview is entered,
+        // because the compositor keeps whatever it was last told.
+        if control.version() >= OVERVIEW_FOCUS_SHELL_VERSION {
+            let desired_focus = desired.as_ref().map(|_| self.overview_focus());
+            if desired_focus != self.applied_overview_focus {
+                if let (Some(output), Some(focus)) = (&desired, desired_focus) {
+                    let cards = match focus {
+                        lxb_protocol::overview::Focus::Menu => 0,
+                        lxb_protocol::overview::Focus::Cards => 1,
+                    };
+                    control.set_overview_focus(output, cards);
+                    sent = true;
+                }
+                self.applied_overview_focus = desired_focus;
+            }
+        }
 
         if sent {
             if let Err(err) = self.conn.flush() {
@@ -31149,6 +31224,26 @@ impl Shell {
             self.guide.age(),
             self.overview_available(),
         )
+    }
+
+    /// Which half of the guide the user is driving, as the shared layout needs
+    /// it to decide where a narrow display is looking — see
+    /// [`lxb_protocol::overview::pan`].
+    ///
+    /// Always the menu under a compositor that draws the windows in the cards
+    /// but cannot be told this: it would leave them standing while the column
+    /// slid away from them. Under one with no overview at all there are no
+    /// windows to leave behind, and everything that slides is the shell's.
+    fn overview_focus(&self) -> lxb_protocol::overview::Focus {
+        let can_slide = !self.overview_available()
+            || self
+                .shell_control
+                .as_ref()
+                .is_some_and(|control| control.version() >= OVERVIEW_FOCUS_SHELL_VERSION);
+        match self.guide.pane() {
+            guide::Pane::Windows if can_slide => lxb_protocol::overview::Focus::Cards,
+            _ => lxb_protocol::overview::Focus::Menu,
+        }
     }
 
     /// Whether the compositor is going to fly anything at all. Without the
@@ -37546,8 +37641,13 @@ mod chat_announcement_tests {
         );
         // And the box the words are measured in is narrower than the card, by
         // the picture beside them and the margins.
-        for height in [800.0, 1080.0, 2160.0] {
-            assert!(ui::toast_body_width(height) > 0.0);
+        for (width, height) in [
+            (1280.0, 800.0),
+            (1920.0, 1080.0),
+            (3840.0, 2160.0),
+            (620.0, 1473.0),
+        ] {
+            assert!(ui::toast_body_width(width, height) > 0.0);
             assert!(ui::toast_body_size(height) > 0.0);
         }
     }

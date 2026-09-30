@@ -19,7 +19,7 @@ use std::time::{Duration, Instant};
 use smithay::desktop::Window;
 use smithay::output::Output;
 
-use lxb_protocol::overview::{spring, Rect, CARD_SPRING};
+use lxb_protocol::overview::{spring, Focus, Rect, CARD_SPRING};
 
 /// A card's eased rectangle and the speed each of its edges is travelling at.
 ///
@@ -43,6 +43,10 @@ struct OverviewAnim {
     /// Selected card, as the shell last reported it. Drives the row's
     /// scroll position through the shared layout.
     selected: usize,
+    /// Which half the user is driving, as the shell last reported it. Drives
+    /// the slide across a display too narrow for the menu and the cards side
+    /// by side, through the same layout.
+    focus: Focus,
     /// When `open` last flipped, and the linear progress at that moment —
     /// so reversing mid-flight continues from where the windows are, rather
     /// than teleporting them to an endpoint and animating from there.
@@ -104,6 +108,7 @@ impl Overviews {
                 output: output.clone(),
                 open: true,
                 selected: 0,
+                focus: Focus::Menu,
                 changed_at: now,
                 progress_at_change: 0.0,
             }),
@@ -152,6 +157,27 @@ impl Overviews {
             .find(|anim| &anim.output == output)
             .map(|anim| anim.selected)
             .unwrap_or(0)
+    }
+
+    /// Record which half of the overview the shell says the user is driving on
+    /// `output`.
+    ///
+    /// Nothing is animated here: the focus moves the cards' slots, and every
+    /// window already glides to its slot on the spring the shell's own half of
+    /// the slide rides — see [`Overviews::glide`].
+    pub fn set_focus(&mut self, output: &Output, focus: Focus) {
+        if let Some(anim) = self.anims.iter_mut().find(|anim| &anim.output == output) {
+            anim.focus = focus;
+        }
+    }
+
+    /// The focus last reported for `output`.
+    pub fn focus(&self, output: &Output) -> Focus {
+        self.anims
+            .iter()
+            .find(|anim| &anim.output == output)
+            .map(|anim| anim.focus)
+            .unwrap_or_default()
     }
 
     /// Seconds since this output's cards last advanced. Called once per
@@ -267,6 +293,24 @@ mod tests {
         );
         // And it closes from there rather than replaying a full flight.
         assert_eq!(overviews.progress(&out, t0 + FLIGHT * 2), 0.0);
+    }
+
+    /// An overview starts on the menu, keeps the focus the shell last named
+    /// for as long as it is open, and belongs to the one display it was named
+    /// for.
+    #[test]
+    fn the_focus_starts_on_the_menu_and_follows_the_shell() {
+        let (a, b) = (output("A"), output("B"));
+        let mut overviews = Overviews::default();
+        let t0 = Instant::now();
+
+        overviews.set(&a, true, t0);
+        assert_eq!(overviews.focus(&a), Focus::Menu);
+        overviews.set_focus(&a, Focus::Cards);
+        assert_eq!(overviews.focus(&a), Focus::Cards);
+        // A display with no overview on it has nothing to be focused.
+        overviews.set_focus(&b, Focus::Cards);
+        assert_eq!(overviews.focus(&b), Focus::Menu);
     }
 
     #[test]

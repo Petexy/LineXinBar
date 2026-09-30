@@ -53,6 +53,14 @@ const HIGHLIGHT_EASE_RATE: f32 = 21.0;
 /// second press lands before the first has finished being watched.
 pub const PRESS_TIME: f32 = 0.34;
 
+/// How close to where it is going the slide across a narrow display has to be,
+/// in logical pixels and in pixels a second, before it counts as there.
+///
+/// Half a pixel, which is less than anything the eye can see move: the spring
+/// never quite arrives, and a slide still asking for frames once it is
+/// indistinguishable from standing still is a display drawn for nothing.
+const PAN_AT_REST: f32 = 0.5;
+
 /// How long the power dialog takes to grow out of its button, and to fall back
 /// into it. Short: it is a question, and the answer is already on screen — the
 /// motion is there to say *where the dialog came from*, not to be watched.
@@ -564,6 +572,24 @@ pub struct Guide {
     /// column rather than jumping from row to row, and how fast it is going.
     menu_highlight: Option<[f32; 4]>,
     menu_highlight_speed: [f32; 4],
+    /// How far the whole menu has slid to the left to bring the cards into
+    /// view, in logical pixels, where it is heading, and how fast it is going.
+    ///
+    /// Nought on a display wide enough for the column and the cards side by
+    /// side, which is every landscape one. On one standing on its side the
+    /// cards wait past the right-hand edge, and this is the slide that brings
+    /// them in when they are given the focus and takes them back out when the
+    /// column has it again — see [`lxb_protocol::overview::pan`].
+    ///
+    /// On the spring the cards ride and at their stiffness, because the
+    /// compositor slides the windows in them by the same distance on its own
+    /// clock: the column and the cards only move as one piece if they are one
+    /// motion. `None` until the first frame after opening, which snaps, so a
+    /// menu opened straight onto the cards by a walk through them arrives
+    /// there rather than sliding over from the column.
+    pan: Option<f32>,
+    pan_target: f32,
+    pan_speed: f32,
     /// Which quick-settings bars the machine has. Held here rather than passed
     /// in, because it is the one thing that changes the shape of the column
     /// without the user having done anything.
@@ -662,6 +688,10 @@ impl Guide {
         if self.mode() == Mode::Menu {
             self.opened_at = Some(Instant::now());
             self.menu_highlight = None;
+            // The display it arrives on may be a different shape, and a slide
+            // carried over from the last one would be a distance about a
+            // screen nobody is looking at any more.
+            self.pan = None;
         }
     }
 
@@ -733,6 +763,51 @@ impl Guide {
         );
         self.menu_highlight = Some(eased);
         eased
+    }
+
+    /// Slide the menu one frame towards `target` — how far left the layout
+    /// wants it for the half now in charge — and say where it is.
+    pub fn animate_pan(&mut self, target: f32, dt: f32) -> f32 {
+        let at = match self.pan {
+            None => {
+                self.pan_speed = 0.0;
+                target
+            }
+            Some(at) => {
+                let (at, speed) = lxb_protocol::overview::spring(
+                    at as f64,
+                    self.pan_speed as f64,
+                    target as f64,
+                    lxb_protocol::overview::CARD_SPRING,
+                    dt as f64,
+                );
+                self.pan_speed = speed as f32;
+                at as f32
+            }
+        };
+        self.pan = Some(at);
+        self.pan_target = target;
+        at
+    }
+
+    /// How far the menu has slid to the left to bring the cards in. Nought
+    /// wherever there is nothing to slide to.
+    pub fn pan(&self) -> f32 {
+        self.pan.unwrap_or(0.0)
+    }
+
+    /// Whether the slide is still under way, which is what keeps frames coming
+    /// for it: nothing else about the menu moves once the key has been let go.
+    ///
+    /// Only while the menu is open. A menu put away half-way through a slide
+    /// leaves it where it stopped — nothing draws it again until the menu is
+    /// opened, which starts it afresh — and a slide still counted as moving
+    /// then would be frames asked for, and drawn, for a menu nobody can see.
+    pub fn pan_is_moving(&self) -> bool {
+        self.is_menu()
+            && self.pan.is_some_and(|at| {
+                (at - self.pan_target).abs() > PAN_AT_REST || self.pan_speed.abs() > PAN_AT_REST
+            })
     }
 
     pub fn is_menu(&self) -> bool {
@@ -1531,6 +1606,7 @@ impl Guide {
         self.elsewhere_linear = 0.0;
         self.opened_at = Some(Instant::now());
         self.menu_highlight = None;
+        self.pan = None;
     }
 
     pub fn close(&mut self) {
@@ -2188,6 +2264,56 @@ mod tests {
         let next = guide.animate_menu_highlight([500.0, 100.0, 200.0, 150.0], 1.0 / 60.0);
         assert!(next[0] > 100.0 && next[0] < 500.0);
         assert!(next[2] < 400.0 && next[2] > 200.0);
+    }
+
+    /// The slide across a narrow display arrives with the menu — a walk
+    /// through the applications opens straight onto the cards — and after that
+    /// it slides, on the cards' own spring, until it is there and stops asking
+    /// for frames. Opening the menu again forgets it.
+    #[test]
+    fn the_slide_snaps_first_then_rides_the_cards_spring() {
+        let mut guide = Guide::default();
+        guide.open();
+        assert_eq!(guide.pan(), 0.0);
+        assert_eq!(guide.animate_pan(300.0, 1.0 / 60.0), 300.0);
+        assert!(!guide.pan_is_moving());
+
+        let first = guide.animate_pan(0.0, 1.0 / 60.0);
+        assert!(first > 0.0 && first < 300.0, "slid, not jumped: {first}");
+        assert!(guide.pan_is_moving());
+        // The same place the compositor's windows are at, which ride this
+        // spring from the same start.
+        let (window, _) = lxb_protocol::overview::spring(
+            300.0,
+            0.0,
+            0.0,
+            lxb_protocol::overview::CARD_SPRING,
+            1.0 / 60.0,
+        );
+        assert!((first as f64 - window).abs() < 0.01);
+
+        for _ in 0..60 {
+            guide.animate_pan(0.0, 1.0 / 60.0);
+        }
+        assert!(guide.pan().abs() < 0.5);
+        assert!(
+            !guide.pan_is_moving(),
+            "arrived, and done asking for frames"
+        );
+
+        // Put away half-way: no more frames for a menu that is not there.
+        guide.animate_pan(300.0, 1.0 / 60.0);
+        assert!(guide.pan_is_moving());
+        guide.close();
+        assert!(!guide.pan_is_moving());
+
+        guide.open();
+        assert_eq!(
+            guide.pan(),
+            0.0,
+            "a reopened menu starts from where it opens"
+        );
+        assert_eq!(guide.animate_pan(120.0, 1.0 / 60.0), 120.0);
     }
 
     const BOTH_BARS: Bars = Bars {

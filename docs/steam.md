@@ -896,7 +896,9 @@ is every one of them.
 **X** on a pad, or **Shift** on a keyboard, brings in a column down the right of
 the screen: the account at the head of it, and everybody it knows under it, in
 three bands — in a game, around, and not here. It is the guide's own sidebar
-mirrored into the other edge, and it takes every direction while it is up. The
+mirrored into the other edge, and it takes every direction while it is up.
+Nothing is seen through it but the wallpaper: the start screen's icons, and the
+guide's cards and the live windows in them, give way wherever it stands. The
 line under the account's nickname is a button: it puts up Valve's own four
 statuses, and choosing one tells this session, tells Valve's client where one is
 running, and is remembered until a client wears it.

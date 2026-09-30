@@ -1213,6 +1213,7 @@ fn push_overview_windows<R>(
         output_geo.size.h as f64,
         count,
         selected,
+        lxb.overview.focus(output),
     );
 
     let dt = lxb.overview.tick(output, std::time::Instant::now());

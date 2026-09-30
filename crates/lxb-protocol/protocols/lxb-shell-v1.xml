@@ -14,7 +14,7 @@
     all copies or substantial portions of the Software.
   </copyright>
 
-  <interface name="lxb_shell_v1" version="45">
+  <interface name="lxb_shell_v1" version="46">
     <description summary="private channel between LineXinBar and its session shell">
       Layer-shell lets a shell draw itself, but says nothing about the two
       things a console-style session needs: a hardware button that reaches the
@@ -2809,5 +2809,34 @@
       <arg name="state" type="uint" enum="key_state"
            summary="pressed or released"/>
     </event>
+
+    <request name="set_overview_focus" since="46">
+      <description summary="which half of the overview the user is driving">
+        Tells the compositor whether the menu or the cards have the focus in
+        the overview on one display.
+
+        On a display wide enough for the menu and the cards side by side this
+        changes nothing. On one that is not — a display standing on its side —
+        the layout both sides share keeps each at the size it needs and lays
+        the cards out past the display's right-hand edge, and which half is in
+        view follows this: the menu, with the cards peeking in at the edge, or
+        the cards, slid into the middle of the display with the edge of the
+        menu left showing. The compositor slides the windows on the spring the
+        shell slides everything round them on, so saying the focus is what
+        keeps the two processes sliding as one, as saying the selection is what
+        keeps them scrolling as one.
+
+        Written after every other request rather than beside
+        set_overview_selection, so that each request before it keeps the
+        number it has always had: a program carrying its own copy of this file
+        at an older version goes on being understood.
+
+        Meaningful only while the overview is on, and harmless otherwise. An
+        overview entered afresh starts on the menu until it is told otherwise.
+      </description>
+      <arg name="output" type="object" interface="wl_output" summary="the display"/>
+      <arg name="cards" type="uint"
+           summary="1 while the cards have the focus, 0 while the menu does"/>
+    </request>
   </interface>
 </protocol>

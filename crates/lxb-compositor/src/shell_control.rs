@@ -672,9 +672,19 @@ const POINTER_REPEAT: std::time::Duration = std::time::Duration::from_secs(2);
 /// manager says, since nothing in it holds the inhibitor that would stop it.
 const POWER_SINCE: u32 = 45;
 
+/// First version that says which half of the overview the user is driving:
+/// `set_overview_focus`.
+///
+/// Gated by nothing, for the reason the requests above it are gated by
+/// nothing: a shell below this cannot send it, and the overview then stays on
+/// the menu — which is all the overview ever was before a display could be too
+/// narrow for the menu and the cards side by side. See
+/// [`lxb_protocol::overview::Focus`].
+const OVERVIEW_FOCUS_SINCE: u32 = 46;
+
 /// The version advertised, and so the highest a shell can bind. Every request
 /// below it is still served, so an older shell keeps working.
-const CURRENT_VERSION: u32 = POWER_SINCE;
+const CURRENT_VERSION: u32 = OVERVIEW_FOCUS_SINCE;
 
 /// Each constant above names the one feature that arrived in its version, and
 /// the numbers only ever go up by one. Said here so that two branches each
@@ -704,6 +714,7 @@ const _: () = assert!(EXACT_GAMUT_SINCE == LAUNCH_RECORDS_SINCE + 1);
 const _: () = assert!(PER_DISPLAY_APP_SCALE_SINCE == EXACT_GAMUT_SINCE + 1);
 const _: () = assert!(APP_RESOLUTION_SINCE == PER_DISPLAY_APP_SCALE_SINCE + 1);
 const _: () = assert!(POWER_SINCE == APP_RESOLUTION_SINCE + 1);
+const _: () = assert!(OVERVIEW_FOCUS_SINCE == POWER_SINCE + 1);
 
 /// What a client allowed onto this protocol is allowed to do with it.
 ///
@@ -3921,6 +3932,15 @@ impl Dispatch<LxbShellV1, ()> for LxbState {
             lxb_shell_v1::Request::SetOverviewSelection { output, index } => {
                 if let Some(output) = Output::from_resource(&output) {
                     state.lxb.overview.set_selection(&output, index as usize);
+                }
+            }
+            lxb_shell_v1::Request::SetOverviewFocus { output, cards } => {
+                if let Some(output) = Output::from_resource(&output) {
+                    let focus = match cards {
+                        0 => lxb_protocol::overview::Focus::Menu,
+                        _ => lxb_protocol::overview::Focus::Cards,
+                    };
+                    state.lxb.overview.set_focus(&output, focus);
                 }
             }
             lxb_shell_v1::Request::ActivateWindow { id } => {

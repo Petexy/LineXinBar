@@ -43,6 +43,9 @@ struct Globals {
     // nought where they are not, so a writer that has never heard of them
     // leaves them off and only one that asks the setting draws them.
     style: vec4<f32>,
+    // A rectangle given back to the wallpaper outright, as x, y, w, h: where a
+    // panel of the shell's stands over the guide's cards. All zeros is none.
+    cleared: vec4<f32>,
 };
 
 @group(0) @binding(0) var<uniform> globals: Globals;
@@ -1282,11 +1285,12 @@ fn paper_wallpaper(uv: vec2<f32>, aspect: f32, lod: f32, soften: f32) -> vec3<f3
 
 @fragment
 fn fs_background(in: BackgroundOut) -> @location(0) vec4<f32> {
-    // This pass draws the background in one of three roles, and a pixel is
+    // This pass draws the background in one of four roles, and a pixel is
     // only ever in one of them: the whole surface; the start screen squeezed
-    // into its card (a miniature of it, not a crop); or the sliver outside a
+    // into its card (a miniature of it, not a crop); the sliver outside a
     // live window card's rounded corner, repainted with what lies behind it
-    // so the compositor's square-cornered window appears rounded.
+    // so the compositor's square-cornered window appears rounded; or the
+    // stretch a panel stands over, given back to the wallpaper outright.
     let px = in.uv * globals.resolution;
     let radius = globals.params.x;
     var uv = in.uv;
@@ -1345,6 +1349,22 @@ fn fs_background(in: BackgroundOut) -> @location(0) vec4<f32> {
         }
     }
 
+    // Where a panel stands over the cards, everything from its edge on is the
+    // backdrop again — a live window, the start screen's miniature, whatever
+    // the compositor has put below — drawn exactly as a cover's corner is, so
+    // that the panel's glass has nothing but the wallpaper to show and the gap
+    // between the panel and the display's edge has nothing but the wallpaper
+    // in it.
+    let cleared = globals.cleared;
+    if (cleared.z > 0.0 && cleared.w > 0.0
+        && all(px >= cleared.xy) && all(px <= cleared.xy + cleared.zw)) {
+        coverage = 1.0;
+        uv = in.uv;
+        footprint = 1.0 / globals.resolution;
+        soften = globals.params.y;
+        fade = 1.0;
+    }
+
     let aspect = globals.resolution.x / max(globals.resolution.y, 1.0);
     // The analytic wallpaper answers `soften` by drawing itself wide and dim;
     // a photograph can only answer it by being sampled off a smaller copy of
@@ -1385,6 +1405,11 @@ struct QuadIn {
     // The rectangle this pane is cut to, as its two corners in pixels. A pane
     // nothing is cutting carries a box larger than any display.
     @location(9) cut: vec4<f32>,
+    // The outline of a pane standing in front of this one, as its two corners
+    // in pixels, and that outline's radius and corner norm. A norm of nought is
+    // no hole at all. See `clear_of_hole`.
+    @location(10) hole: vec4<f32>,
+    @location(11) hole_shape: vec2<f32>,
 };
 
 struct QuadOut {
@@ -1402,6 +1427,8 @@ struct QuadOut {
     @location(8) drain: f32,
     @location(9) mark: f32,
     @location(10) cut: vec4<f32>,
+    @location(11) hole: vec4<f32>,
+    @location(12) hole_shape: vec2<f32>,
 };
 
 @vertex
@@ -1432,7 +1459,28 @@ fn vs_quad(@builtin(vertex_index) index: u32, quad: QuadIn) -> QuadOut {
     out.drain = quad.drain;
     out.mark = quad.mark;
     out.cut = quad.cut;
+    out.hole = quad.hole;
+    out.hole_shape = quad.hole_shape;
     return out;
+}
+
+// How much of the pixel at `px` is left of a quad once the pane standing in
+// front of it has taken its outline out: nought well inside the outline, one
+// anywhere clear of it.
+//
+// Tucked a pixel and a half inside the outline rather than cut on it. The pane
+// in front feathers its own edge over a pixel and a half, and what shows
+// through that feather has to be this quad, whole — cut on the same line, the
+// two feathers multiply and a hairline of whatever is behind both of them
+// comes through all the way round the curve. Under the tuck the pane is solid,
+// so nothing of this quad left there is ever seen.
+fn clear_of_hole(px: vec2<f32>, hole: vec4<f32>, shape: vec2<f32>) -> f32 {
+    if (shape.y <= 0.0) {
+        return 1.0;
+    }
+    let half = (hole.zw - hole.xy) * 0.5;
+    let d = rounded_box(px - (hole.xy + half), half, shape.x, shape.y);
+    return smoothstep(-2.25, -0.75, d);
 }
 
 @group(1) @binding(0) var atlas_texture: texture_2d<f32>;
@@ -1872,6 +1920,13 @@ fn fs_quad(in: QuadOut) -> @location(0) vec4<f32> {
         || in.clip.x > in.cut.z || in.clip.y > in.cut.w) {
         discard;
     }
+    // And what a pane in front took out of it in its own shape, rounded corners
+    // and all — the part of this quad the pane's corners do not reach is still
+    // drawn there. See `Quad::hole`.
+    let clear = clear_of_hole(in.clip.xy, in.hole, in.hole_shape);
+    if (clear <= 0.0) {
+        discard;
+    }
 
     // A cell that holds the shape of a glyph rather than a picture of one, to
     // be shaded as a bead of water standing on the surface below it.
@@ -1883,7 +1938,8 @@ fn fs_quad(in: QuadOut) -> @location(0) vec4<f32> {
     // and `Quad::glyph_material` is the same test, written once on the other
     // side so the two cannot drift.
     if (in.shape.x <= 0.0 && in.material.x > 0.0) {
-        return glyph_material(in);
+        let mark = glyph_material(in);
+        return vec4<f32>(mark.rgb, mark.a * clear);
     }
 
     let texel = textureSample(atlas_texture, atlas_sampler, in.uv);
@@ -2043,6 +2099,6 @@ fn fs_quad(in: QuadOut) -> @location(0) vec4<f32> {
 
     // The pane's own opacity, kept apart from the tint so a glass pane can
     // fade out without becoming clear glass on its way.
-    color.a = color.a * in.material.w;
+    color.a = color.a * in.material.w * clear;
     return color;
 }

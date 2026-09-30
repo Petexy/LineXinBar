@@ -193,6 +193,50 @@ without either sending the other any pixels; leaving flies every window back to
 where it was. Which is also why opening the guide wakes everything on the
 display up — see [What draws, and when](architecture.md#what-draws-and-when).
 
+### On a display standing on its side
+
+A display taller than it is wide has no room for the column and the cards side
+by side. The column keeps the room its contents need anyway — never narrower,
+for the size it is drawn at, than it is on a 16:10 screen, so the hour and the
+day share their line and the four tiles stand at full size — and the cards are
+laid out past the display's right-hand edge instead of being shrunk to fit
+beside it:
+
+- **While the column has the focus**, all of it is on the screen and the
+  nearest card peeks in at the right-hand edge, which is what says Right leads
+  somewhere.
+- **Right** slides the whole view over to the cards: the selected card stands
+  whole in the middle of the display, at the display's own shape, with a strip
+  of the column left at the left-hand edge to say that Left goes back. **Left**
+  slides it back. The column, the cards and the live windows in them move as
+  one, on the spring the cards already scroll on.
+
+Every card on such a display is the display's shape rather than 16:9, because
+every window on it is that shape too. A pointer does what the directions do:
+pointing at the peeking card or the strip of column crosses over to it.
+
+The button row cannot stand in the display's corner there, because the column
+does, so while the column has the focus it is written at the column's foot,
+beside the power button, and it moves to the display's corner as the view slides
+over to the cards. A row that is too long for the column's foot is made smaller
+first and shortened second, and what it gives up is never **Back**. A download
+or an update in the corner is as wide as the display allows and stands above
+that last line, never over the power button.
+
+The friends list, raised over the menu there, stands on the column itself. The
+column carries on behind the list's rounded corners, as one pane laid over
+another does, and the card peeking in at the edge is not seen through the list
+or in the gap beside it — the list has nothing but the wallpaper behind it here,
+as it has everywhere else.
+
+A square display, or one only a little taller than it is wide, keeps the card
+beside the column, smaller, as a squarer landscape display always has: the slide
+is only made where it shows a card at least a third larger. On a landscape
+display the view never moves. The column there is exactly as wide as it always
+was on 16:9, 16:10 and wider screens up to 1440 lines; a squarer one, or one
+taller than that at a scale of one, was squeezing the column the same way and
+now gives it the room a 16:10 screen does.
+
 ### Quick settings
 
 The two bars go through the interfaces that exist below a desktop, because in
