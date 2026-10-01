@@ -106,17 +106,33 @@ wrong way round; there is nothing else to ask. Select held with the left-hand
 one is still the keyboard chord. A pad the database does know is read by name
 only, and the guess never reaches it.
 
-One pad escapes the gamepad API entirely. The second-generation Steam
-Controller has no kernel driver — `hid-steam` claims the original, its receiver
-and the Deck, and this one falls through to `hid-generic` — so it has no
-joystick node at all and the gamepad API enumerates nothing. It is read from
-its hidraw report instead, which is the only source that survives both of the
-states it has: on its own it is in the firmware's lizard mode, pretending to be
+One pad escapes the gamepad API entirely. Before Linux 7.3 the
+second-generation Steam Controller has no kernel driver — `hid-steam` claims
+the original, its receiver and the Deck, and this one falls through to
+`hid-generic` — so it has no joystick node at all and the gamepad API
+enumerates nothing. From 7.3, and earlier on handheld kernels such as CachyOS's
+`deckify`, `hid-steam` drives it as it does the Deck, below: a gamepad that
+says nothing in lizard mode and goes away when anything opens the raw node. It
+is read from its hidraw report either way — unless `hid-steam` has it with
+`lizard_mode` off, where the kernel's gamepad works from the first press and is
+used instead (see [Which driver](#which-driver)). The report is the only source
+that survives both of the states the pad has: on its own it is in the
+firmware's lizard mode, pretending to be
 a keyboard and a mouse, and the moment Steam is launched Steam claims it and
 writes lizard mode off. Reading hidraw is not exclusive, so it works alongside
 Steam's own reads, and it is opened read-only — leaving lizard mode means
 *writing* feature reports, which is Steam's business. The compositor drops the
 pad's lizard keyboard so the same button cannot arrive twice.
+
+The Steam Deck's own controls are read the same way, for a different reason.
+The kernel does drive them, but it leaves the firmware in lizard mode, so the
+buttons arrive as a keyboard — which told the shell a keyboard was in the
+user's hands and kept the on-screen keyboard away — and its gamepad says
+nothing until ☰ is held for half a second. And whenever anything opens the
+Deck's raw node, as Steam does, the kernel takes its gamepad away altogether.
+So the shell reads the Deck's report, the compositor drops its typing, and
+every other program is given the kernel's own gamepad back; see
+[The Deck's own controls](#the-decks-own-controls).
 
 Every button press is logged at debug level with its mapped name, its raw code
 and which of the two namings it came under, which is the fastest way to work
@@ -162,21 +178,52 @@ buttons by walking the capability bitmap, so a stand-in that differed in any of
 that would be a pad the mapping database has never heard of, with every button
 in the wrong place.
 
-**A press the shell answered is not also the game's.** The shell reads the
-stand-in like every other program, so a button pressed in the guide reaches the
-game behind it at the same moment. Most games ignore a controller while they
-are not in front, which covers the menu, except for the press that closes it.
-Choosing Resume or the game's card gives the game its keyboard back within a
-frame or two, with the thumb still on `A`. A game that reads its controller as
-a state, as XInput and so every game under Proton does, then finds `A` down and
-takes it for a press of its own. So when the shell gives the keys away, whatever
-is held on the pad is let go of on the stand-in first, and stays up there until
-the thumb comes off. The game never sees that press, and the next one is an
-ordinary press. The Steam Controller 2's stand-in follows the same rule, but
-Valve's client reads that pad from its own raw node, so a Steam game played
-with it through Steam Input is out of the rule's reach. A game that does not
-ignore its controller while it is behind the menu sees the menu being driven;
-the shell cannot keep that from it, because it reads the same stand-in.
+**A press the shell answered is not also the game's.** While the shell holds
+the controller — the Home menu open over a game, the start screen in front, the
+on-screen keyboard up — every pad an application reads is taken from
+applications: the stand-ins the guard puts in place of the pads it holds, the
+gamepads this shell builds for the Steam Controller and the Deck, and the pads
+Steam Input makes for games. Each is taken with `EVIOCGRAB` on the descriptor
+the shell itself reads it through, so it goes on reporting to the shell and to
+nothing else. A game behind the Home menu counts as the active window — it is
+on screen under the menu's glass, and is told so on purpose, or it would stop —
+so a game listening only while it is active would otherwise hear the whole menu
+being driven. Before a pad is taken, whatever is held on it is let go of for
+every reader: buttons up, sticks and hats back in the middle, triggers back at
+rest on a pad shaped like an Xbox one. A game that saw a trigger pulled when
+the menu opened does not go on seeing it pulled. Its rumble is left alone: a
+grab keeps the pad's reports from the game, not what the game writes to the
+pad, so a game shakes the pad and stops shaking it while the menu is up exactly
+as it did before. Only the session that owns the machine takes anything. A
+shell nested inside another desktop, run to try something, holds the
+controller whenever its own start screen is up, and would otherwise leave the
+games on that desktop deaf.
+
+The press that closes the menu is the one that gives the game its keyboard back,
+within a frame or two, with the thumb still on `A`. A game that reads its
+controller as a state, as XInput and so every game under Proton does, would
+find `A` down and take it for a press of its own. So when the shell gives the
+keys away, whatever is held is let go of on the guard's stand-ins and the
+shell's own gamepads first, and stays up there until the thumb comes off, and
+those pads go back to applications at once. Steam Input's pads are not this
+shell's to write, and Valve's client puts what is held on its pad the moment
+its game is in front again, so they go back only once no button is down on any
+controller — or after a second, whatever is held, so that a second player
+resting a thumb on a button does not keep everybody waiting longer than that.
+
+**And no press is answered twice.** While a game runs, Valve's client takes over
+the controllers it can read and repeats each onto a virtual Xbox pad of its own
+(`28de:11ff`) for as long as it believes the game is in front. Every controller
+behind one of those is a controller the shell is already reading — the Deck's
+and the Steam Controller's from their raw nodes, every other one through the
+guard — so the shell does not read Steam Input's pads at all, as it does not
+read its own stand-ins. What the client believes is in front was not always
+what is on the screen, either: with the Home menu open over a game, its own log
+had the game going out of focus and back within a second, until X's focus was
+made to follow the keyboard (see [Keyboard focus](#keyboard-focus)). On a Steam
+Deck that was one press of `A` on Close closing an application twice, ten
+milliseconds apart, and one press of `A` on Start screen bringing the start
+screen up and then starting the application under its highlight.
 
 Three rules keep this from costing more than it is worth:
 
@@ -218,10 +265,10 @@ Anything already in the environment is added to rather than replaced.
 **Valve's client is handed a shorter list than everything else**, and the
 difference is one pad. A controller the guard is holding is on both lists: the
 client reads `hidraw` around a grab like any other program, and the stand-in is
-waiting for it on `/dev/input`. A controller with *no kernel driver* — the
-second-generation Steam Controller, below — is on neither the client's list nor
-anybody's road to it but this shell's, because there is no `/dev/input` node to
-fall back to. Naming it to the client does not move the client onto the
+waiting for it on `/dev/input`. A controller this shell reads from `hidraw` —
+the second-generation Steam Controller, below — is on neither the client's list
+nor anybody's road to it but this shell's, because while the shell reads it
+there is no gamepad of the kernel's on `/dev/input` to fall back to. Naming it to the client does not move the client onto the
 stand-in; nothing moves the client onto anything. It takes the pad away from
 the client altogether, and from every game the client launches. Measured on the
 pad this was written for: `SDL_hid_enumerate` returns five interfaces of
@@ -231,12 +278,16 @@ from five `Local Device Found` lines to none.
 #### The pad with no driver at all
 
 The second-generation Steam Controller reaches the same place by the opposite
-road. `hid-steam` does not claim it, so the kernel makes it no gamepad node —
-there is nothing to grab, and nothing for a game to find either. LineXinBar
-drives that pad itself: it reads the pad's report off `hidraw` and **builds the
-gamepad the kernel did not**, a `uinput` device of an Xbox controller's exact
-shape, so that SDL, GilRs, RetroArch and any game find a complete controller
-where they look for one.
+road. It comes in four ways, each with ids of its own — on a cable
+(`28de:1302`), over Bluetooth (`1303`), through its puck (`1304`) and through a
+Steam Machine's own receiver (`1305`) — and the shell knows all four. Before
+Linux 7.3 `hid-steam` does not claim any of them, so the kernel makes the pad
+no gamepad node — there is nothing to grab, and nothing for a game to find
+either. LineXinBar drives that pad itself: it reads the pad's report off
+`hidraw` and **builds the gamepad the kernel did not**, a `uinput` device of an
+Xbox controller's exact shape, with the pad's own ids and bus, so that SDL,
+GilRs, RetroArch and any game find a complete controller where they look for
+one.
 
 The Steam button never reaches that device. It is declared on it, for the same
 button-numbering reason as above, and it is the one control the driver keeps —
@@ -263,6 +314,36 @@ Picture behind the shell. Measured three presses either way: with the setting
 on, Steam goes to Big Picture on the first press; with it off, its window list
 does not move.
 
+**Steam in its Deck mode does not honour that setting.** A Steam Deck's own
+`steam` launcher (SteamOS's, and CachyOS's `steam-jupiter`) always starts the
+client with `-steamdeck`, and there the Steam button opens Big Picture with the
+setting off: read off a Deck, the setting reading false, the client's
+controller log saying `Guide button sent to JS` and Big Picture's window
+mapping a second later. So the shell watches for that too. If a window of the
+client's comes up within ten seconds of the Steam button, and nobody has asked
+for Big Picture, the shell asks the client to leave it
+(`steam://close/bigpicture`). That request changes nothing on a client that is
+not in Big Picture, so the window turning out to be something else costs
+nothing.
+
+**Nor does any setting reach the overlay inside a game.** The client hands
+every press of the Steam button to its own pages, and the overlay of each game
+that is running listens for those through
+`SteamClient.System.UI.RegisterForSystemKeyEvents` and opens or shuts itself on
+any press that arrives while its game is in front — the Steam button and the
+quick-access button alike, without asking which. The setting above is Big
+Picture's and is never consulted. Seen on a Steam Deck in Deck mode, with
+TEKKEN 8 in front, and in this shell's own desktop client, with the setting
+off, where every press with a game in front was followed by the client's
+interface taking the focus. So the shell takes the press off that road as well,
+through the same interface and on every wake: the registration call is wrapped
+so that nothing registered after it hears the Steam button, and an overlay
+already running is moved behind the wrapper. The quick-access button still
+reaches the overlay, and so does the shell's own chord below. The wrapper lives
+in the client's page, and a client started again starts without it until the
+shell's next wake — which is also when a game started from this shell is
+handed over, so a game is never started without it.
+
 **And what the shell takes, it gives back as a chord.** The guide button is the
 button Steam's overlay comes up on everywhere else a machine is shaped like a
 console, so taking it and offering nothing in its place would be this shell
@@ -273,14 +354,16 @@ and View on an Xbox pad — asks for the overlay over the game in front. The two
 middle buttons, side by side, reachable with one thumb, which matters more here
 than it does for the screenshot chord: this one is pressed while playing.
 
-There is nothing to *ask* for it. Valve's whole client interface was read off a
-live build, and the overlay is only ever something the client is told about —
-`SteamClient.Overlay` registers for activation requests and reports state, and
-nothing in it raises one. The overlay is not the client's to raise: it lives
-inside the game, in the library Steam preloads into it, and what that library is
-watching for is a keystroke. So the shell sends the keystroke, over
-`lxb_shell_v1.keyboard_key`, which puts it on the seat's own keyboard exactly
-where a real Shift+Tab would land.
+The overlay lives inside the game, in the library Steam preloads into it, and
+what that library is watching for is a keystroke. So the shell sends the
+keystroke, over `lxb_shell_v1.keyboard_key`, which puts it on the seat's own
+keyboard exactly where a real Shift+Tab would land. This was written when a
+reading of Valve's client interface had found nothing in `SteamClient.Overlay`
+that raises the overlay. A later reading, of a Steam Deck's client, found that
+the overlay's own Steam-button listener opens it with
+`SteamClient.Overlay.SetOverlayState`, so the client can raise it after all.
+The keystroke stays because it needs nothing of the client: the window into
+its interface is open only on a client this shell started.
 
 Which keystroke was read off the same live client rather than assumed:
 `overlay_key` is `Shift+Tab` — keysym 65289 is `XK_Tab` — and
@@ -323,6 +406,84 @@ report's layout was captured on the hardware, so which button is which is known
 exactly, where a mapping database asked about a pad it has never heard of gets
 two of the face buttons the wrong way round. Everything else on the machine
 reads the gamepad.
+
+#### The Deck's own controls
+
+The Steam Deck's controls go the same road for the opposite reason: the kernel
+drives them, and its driver is no use to a console shell. `hid-steam` leaves
+the firmware in lizard mode — `A` is Enter, `B` is Escape, the D-pad is the
+arrow keys, the right trackpad is a mouse — and makes a gamepad called "Steam
+Deck" that says nothing until ☰ is held for half a second. And the moment any
+program opens the Deck's raw node, which Steam does whenever it runs, the kernel
+takes that gamepad away and hands the reports to the program instead.
+
+So the shell opens the node itself and reads the Deck's report, 64 bytes
+beginning `01 00 09`, at the offsets `hid-steam` reads them from. That report
+comes in lizard mode and while Steam holds the Deck alike, so the controls work
+in both; and the compositor drops the lizard keyboard, so the buttons no longer
+arrive as keystrokes and the on-screen keyboard is offered as it is to anyone
+with a controller in their hands. The trackpad still moves the pointer as the
+firmware's own mouse.
+
+What every other program finds in the kernel's place is **the kernel's own
+gamepad**: a `uinput` device with its name, its ids, its buttons — the back
+grips, the trackpad clicks and the quick-access button included — its axes and
+their ranges, fed the same report the same way. That is on purpose. SDL, GilRs
+and RetroArch all carry a mapping for "Steam Deck", and a device wearing those
+ids in any other shape would be read through that mapping with its buttons in
+the wrong places. As with every pad, the Steam button is declared on it and
+never sent. The motion sensors, which the kernel puts on a device of their own,
+are not made; the gyro reaches games through Steam, as the trackpads' haptics
+do.
+
+The raw node is granted to the seat by the shell's own udev rule, for a Deck
+without Steam's rules installed, and CEDM's rule grants it to the login
+screen. It has to be readable: the compositor drops the lizard keyboard whether
+or not anybody is reading the report, as it does for the Steam Controller 2, so
+a Deck whose raw node cannot be opened has no controls in the session — and
+the shell says so in its log (`cannot read Steam Controller hidraw`).
+
+#### Which driver
+
+Whether the shell reads one of these pads itself or leaves it to the kernel is
+worked out for each of its raw nodes, every two seconds, from what the machine
+says rather than from a kernel version: which driver sysfs names for the node,
+`hid-steam`'s `lizard_mode` parameter, whether the kernel has a gamepad up for
+it, and whether another program has the node open. Debian, and every kernel
+before 7.3, and a kernel with the driver are told apart the same way, and
+nothing is set by hand.
+
+| The kernel | What the shell reads |
+| --- | --- |
+| No driver for the pad (`hid-generic`) | The raw node, and it builds the gamepad |
+| `hid-steam`, `lizard_mode` on (its default, and every Deck's) | The raw node, and it builds the gamepad |
+| `hid-steam`, `lizard_mode` off | The kernel's own gamepad |
+| `hid-steam`, `lizard_mode` off, another program holding the raw node | The raw node, until the shell is the only one left holding it |
+
+`lizard_mode` decides it because it decides which driver answers the first
+press. In lizard mode the kernel's gamepad says nothing until ☰ (or Start on
+the Steam Controller 2) is held for half a second, and the kernel does not hear
+that hold while any program reads the raw node — so leaving the pad to it would
+leave somebody holding a controller that does nothing, which is how this
+shell's first Steam Deck session went. With `lizard_mode` off the kernel turns
+the firmware's typing off itself and its gamepad answers at once, with the
+rumble and motion sensors a stand-in does not have. That gamepad is read like
+any other controller, its Steam button taken as every pad's is (see [The guide
+button is the shell's alone](#the-guide-button-is-the-shells-alone)).
+
+What changes it under a running session is another program opening the raw
+node. Steam does, whenever it runs, and the kernel then takes its gamepad away
+from everybody. The shell reads the raw node itself for as long as that lasts,
+and lets go of it once no other program holds it, so the kernel can make its
+gamepad again. The log says which driver each pad has, once, and again
+whenever that changes: lines from `lxb_desktop::steam_hid` beginning with the
+pad's name.
+
+`lizard_mode` is the module's own parameter. To use the kernel's gamepad, turn
+it off for good in `/etc/modprobe.d/hid-steam.conf` with `options hid_steam
+lizard_mode=0`, or for this boot by writing `N` to
+`/sys/module/hid_steam/parameters/lizard_mode`. The shell never changes it: it
+belongs to the whole machine, the login screen included.
 
 Icons are resolved through the freedesktop icon theme spec, following
 `Inherits` from `index.theme` and falling back to hicolor and
@@ -605,6 +766,18 @@ That last step is what returns focus to the shell when the application exits.
 Controller actions are paused whenever keyboard focus leaves the shell, so the
 bar cannot react behind a running game. Pass `--grab-keyboard` to retain the
 exclusive grab and controller input at all times instead.
+
+X's own idea of the keyboard follows the compositor's. While the keyboard is on
+an X11 window, X's input focus is on that window; while it is on the shell, on
+a Wayland window or on nothing, X is focused on nothing, and an X11 client that
+takes the focus for itself in the meantime has it taken back within eight
+milliseconds. That matters because Valve's client decides which game is in
+front by X's focus, and feeds the controller to that game through Steam Input.
+A game under Proton paused behind the start screen still answers the
+`WM_TAKE_FOCUS` it was sent, once it is continued — and the Home menu continues
+it, to show it as a live card — so it used to take X's focus back while the
+menu held the keyboard, and Steam went on handing it everything pressed in the
+menu.
 
 Applications launched by the shell are explicitly given the same named
 Wayland socket as the shell. It accepts an X11 display only through LineXinBar's

@@ -256,7 +256,7 @@ pub struct ShellControlState {
     /// compositor turns itself. Diffed like the rest; a display missing from
     /// it is one whose picture is not ours to turn, and no event is sent for
     /// it at all.
-    output_transform: Vec<(Output, Transform)>,
+    output_transform: Vec<(Output, Turned)>,
     /// Last place broadcast per display, for the displays this compositor
     /// arranges. Diffed like the rest, and one display moving moves at least
     /// one other — they trade — so a change here is normally two events.
@@ -682,9 +682,17 @@ const POWER_SINCE: u32 = 45;
 /// [`lxb_protocol::overview::Focus`].
 const OVERVIEW_FOCUS_SINCE: u32 = 46;
 
+/// First version that says how each display is built into the machine:
+/// `output_mounting`, sent just before a display's first `output_transform`.
+///
+/// Below it a shell has only the turn a display is drawn at, and its
+/// Orientation page counts from the display's connector rather than from the
+/// machine: a Steam Deck standing up the way it is built reads as 270°.
+const MOUNTING_SINCE: u32 = 47;
+
 /// The version advertised, and so the highest a shell can bind. Every request
 /// below it is still served, so an older shell keeps working.
-const CURRENT_VERSION: u32 = OVERVIEW_FOCUS_SINCE;
+const CURRENT_VERSION: u32 = MOUNTING_SINCE;
 
 /// Each constant above names the one feature that arrived in its version, and
 /// the numbers only ever go up by one. Said here so that two branches each
@@ -715,6 +723,7 @@ const _: () = assert!(PER_DISPLAY_APP_SCALE_SINCE == EXACT_GAMUT_SINCE + 1);
 const _: () = assert!(APP_RESOLUTION_SINCE == PER_DISPLAY_APP_SCALE_SINCE + 1);
 const _: () = assert!(POWER_SINCE == APP_RESOLUTION_SINCE + 1);
 const _: () = assert!(OVERVIEW_FOCUS_SINCE == POWER_SINCE + 1);
+const _: () = assert!(MOUNTING_SINCE == OVERVIEW_FOCUS_SINCE + 1);
 
 /// What a client allowed onto this protocol is allowed to do with it.
 ///
@@ -1663,17 +1672,17 @@ impl ShellControlState {
     ///
     /// `current` lists only the displays this compositor turns itself, so one
     /// it does not — and one that has gone away — simply stops being named.
-    fn broadcast_output_transform(&mut self, current: Vec<(Output, Transform)>) {
-        for (output, transform) in &current {
+    fn broadcast_output_transform(&mut self, current: Vec<(Output, Turned)>) {
+        for (output, turned) in &current {
             let known = self
                 .output_transform
                 .iter()
-                .any(|(seen, seen_transform)| seen == output && seen_transform == transform);
+                .any(|(seen, seen_turned)| seen == output && seen_turned == turned);
             if known {
                 continue;
             }
             for instance in &self.instances {
-                send_output_transform(instance, output, *transform);
+                send_output_transform(instance, output, *turned);
             }
         }
         self.output_transform = current;
@@ -1710,43 +1719,83 @@ impl ShellControlState {
             shell.foreground(self.foreground.clone());
             return true;
         }
+        // Not per display, so it does not need a wl_output and cannot be the
+        // thing that makes this a wasted call: its answer is deliberately not
+        // the one returned.
+        send_unseen_windows(shell, &self.unseen_windows);
+        self.send_displays(shell, |_| true)
+    }
+
+    /// Everything known about the displays `which` picks, sent to one shell.
+    ///
+    /// Returns whether any of it reached the client — see
+    /// [`Self::send_current`], whose per-display half this is.
+    fn send_displays(&self, shell: &LxbShellV1, which: impl Fn(&Output) -> bool) -> bool {
         let mut sent = false;
-        for (output, title) in &self.output_foreground {
+        for (output, title) in self.output_foreground.iter().filter(|(o, _)| which(o)) {
             sent |= send_output_foreground(shell, output, title);
         }
-        for (output, app_id) in &self.output_app_id {
+        for (output, app_id) in self.output_app_id.iter().filter(|(o, _)| which(o)) {
             sent |= send_output_app_id(shell, output, app_id);
         }
-        for (output, windows) in &self.output_windows {
+        for (output, windows) in self.output_windows.iter().filter(|(o, _)| which(o)) {
             sent |= send_output_windows(shell, output, windows);
         }
-        for (output, windows) in &self.output_pip {
+        for (output, windows) in self.output_pip.iter().filter(|(o, _)| which(o)) {
             sent |= send_output_pip(shell, output, windows);
         }
-        // Not per display, so it does not need a wl_output and cannot be the
-        // thing that makes this a wasted call: `sent` is deliberately not
-        // touched by it.
-        send_unseen_windows(shell, &self.unseen_windows);
-        for (output, status) in &self.output_hdr {
+        for (output, status) in self.output_hdr.iter().filter(|(o, _)| which(o)) {
             sent |= send_output_hdr(shell, output, status);
             sent |= send_output_night_light(shell, output, status);
         }
-        for (output, in_use) in &self.output_in_use {
+        for (output, in_use) in self.output_in_use.iter().filter(|(o, _)| which(o)) {
             sent |= send_output_in_use(shell, output, *in_use);
         }
-        for (output, drawing) in &self.output_drawing {
+        for (output, drawing) in self.output_drawing.iter().filter(|(o, _)| which(o)) {
             sent |= send_output_drawing(shell, output, *drawing);
         }
-        for (output, modes) in &self.output_modes {
+        for (output, modes) in self.output_modes.iter().filter(|(o, _)| which(o)) {
             sent |= send_output_modes(shell, output, modes);
         }
-        for (output, transform) in &self.output_transform {
-            sent |= send_output_transform(shell, output, *transform);
+        for (output, turned) in self.output_transform.iter().filter(|(o, _)| which(o)) {
+            sent |= send_output_transform(shell, output, *turned);
         }
-        for (output, place) in &self.output_place {
+        for (output, place) in self.output_place.iter().filter(|(o, _)| which(o)) {
             sent |= send_output_place(shell, output, *place);
         }
         sent
+    }
+
+    /// A client has just bound one display's `wl_output`, so a shell of that
+    /// client's is told what is known about that display.
+    ///
+    /// The broadcasts above only ever carry changes, and a display that arrives
+    /// while the session runs changes everything at once, at a moment no
+    /// client can have bound it yet: every per-display event goes out through
+    /// the client's own `wl_output`, and there is not one. The caches then
+    /// record the new display as told, and nothing about it is ever sent
+    /// again — a monitor plugged in mid-session was shown to the shell as a
+    /// display that could not do HDR, could not be turned and stood nowhere
+    /// in the arrangement, whatever it could do. [`Self::awaiting_outputs`]
+    /// covers the same gap for a shell that binds before any display exists;
+    /// this covers a display that arrives after the shell.
+    pub fn output_bound(
+        &self,
+        output: &Output,
+        wl_output: &smithay::reexports::wayland_server::protocol::wl_output::WlOutput,
+    ) {
+        let Some(client) = wl_output.client() else {
+            return;
+        };
+        for shell in &self.instances {
+            if !shell.is_alive()
+                || shell.version() < PER_OUTPUT_SINCE
+                || shell.client().as_ref() != Some(&client)
+            {
+                continue;
+            }
+            self.send_displays(shell, |candidate| candidate == output);
+        }
     }
 
     /// Retry the full state for shells that had no outputs when they bound,
@@ -1956,9 +2005,18 @@ fn send_output_modes(shell: &LxbShellV1, output: &Output, modes: &[DisplayMode])
     sent
 }
 
+/// How one display's picture is turned, and how the display is mounted —
+/// which is what the shell's page counts the turn from.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Turned {
+    pub drawn: Transform,
+    pub mounted: Transform,
+}
+
 /// Send how one display's picture is turned, resolved through the receiving
-/// client's own `wl_output` for the same reason the title is.
-fn send_output_transform(shell: &LxbShellV1, output: &Output, transform: Transform) -> bool {
+/// client's own `wl_output` for the same reason the title is — its mounting
+/// first, so a shell never has a turn for it that it counts from nothing.
+fn send_output_transform(shell: &LxbShellV1, output: &Output, turned: Turned) -> bool {
     if shell.version() < TRANSFORM_SINCE {
         return false;
     }
@@ -1967,7 +2025,10 @@ fn send_output_transform(shell: &LxbShellV1, output: &Output, transform: Transfo
     };
     let mut sent = false;
     for wl_output in output.client_outputs(&client) {
-        shell.output_transform(&wl_output, wire_transform(transform));
+        if shell.version() >= MOUNTING_SINCE {
+            shell.output_mounting(&wl_output, wire_transform(turned.mounted));
+        }
+        shell.output_transform(&wl_output, wire_transform(turned.drawn));
         sent = true;
     }
     sent
@@ -3188,8 +3249,9 @@ impl LxbState {
         let transforms = outputs
             .into_iter()
             .filter_map(|output| {
-                let transform = self.output_transform(&output)?;
-                Some((output, transform))
+                let drawn = self.output_transform(&output)?;
+                let mounted = crate::outputs::mounted(&output);
+                Some((output, Turned { drawn, mounted }))
             })
             .collect();
         self.lxb

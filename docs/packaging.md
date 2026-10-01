@@ -69,9 +69,8 @@ lxb-rpcs3        bin/lxb-rpcs3
 The udev rule grants two device nodes to whoever holds the active session on
 the seat — `uaccess`, not a group, so it is the person sitting there and never
 every account on the machine. They are the only two the shell opens itself: the
-second-generation Steam Controller's `hidraw`, which no kernel driver claims
-and which is therefore `0600 root:root` with nothing in systemd's own rules
-tagging it, and `/dev/uinput`, which is how a guarded pad and a stand-in gamepad
+second-generation Steam Controller's `hidraw` (and the Deck's controls'),
+which is `0600 root:root` with nothing in systemd's own rules tagging it, and `/dev/uinput`, which is how a guarded pad and a stand-in gamepad
 are handed back to the rest of the machine. Without the rule the controller
 handling half works and says nothing about why, which is why it ships here
 rather than being left to whatever device-rules package a distribution happens

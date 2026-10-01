@@ -483,20 +483,26 @@ pub fn init(
     Ok(state)
 }
 
-/// Valve's vendor ID, and the second-generation Steam Controller's product ID.
+/// Valve's vendor ID, the Steam Controller 2's four product IDs — on a cable,
+/// over Bluetooth, through its puck and through a Steam Machine's receiver, as
+/// `hid-steam` names them in Linux 7.3 — and the Steam Deck's.
 ///
-/// A model number rather than anything about this machine: the same pad has the
+/// Model numbers rather than anything about this machine: the same pad has the
 /// same pair on every box it is plugged into.
 const VALVE_VENDOR: u32 = 0x28de;
-const STEAM_CONTROLLER_2: u32 = 0x1304;
+const STEAM_CONTROLLER_2: [u32; 4] = [0x1302, 0x1303, 0x1304, 0x1305];
+const STEAM_DECK: u32 = 0x1205;
 
-/// Whether an event comes from the Steam Controller pretending to be a keyboard.
+/// Whether an event comes from a Valve pad pretending to be a keyboard.
 ///
-/// That pad has no kernel gamepad driver, so its firmware ships in *lizard
+/// The Steam Controller 2 and the Steam Deck's controls both ship in *lizard
 /// mode*: a real USB keyboard and mouse, where `A` is Enter, `B` is Escape and
-/// the D-pad is the arrow keys. The shell reads the very same buttons out of
-/// the pad's HID report, which is the only path that survives Steam claiming
-/// the device — so taking both would act on every press twice.
+/// the D-pad is the arrow keys. The shell — and CEDM, at the login screen —
+/// reads the very same buttons out of the pad's HID report, which is the only
+/// path that survives Steam claiming the device, so taking both would act on
+/// every press twice. On a Deck it did worse than that: a pad that types is a
+/// keyboard as far as the shell can tell, and a shell that believes somebody
+/// has a keyboard in their hands never offers the on-screen one.
 ///
 /// Only the keyboard is dropped. The mouse half is the trackpad pointing, which
 /// the report's decode does not replace, and it duplicates nothing.
@@ -505,8 +511,9 @@ fn is_lizard_keyboard_event(event: &InputEvent<LibinputInputBackend>) -> bool {
         return false;
     };
     let device = event.device();
+    let product = device.id_product();
     device.id_vendor() == VALVE_VENDOR
-        && device.id_product() == STEAM_CONTROLLER_2
+        && (product == STEAM_DECK || STEAM_CONTROLLER_2.contains(&product))
         && device.has_capability(DeviceCapability::Keyboard)
 }
 
@@ -932,6 +939,43 @@ fn connector_connected(
     output.change_current_state(Some(output_mode), None, None, None);
     OutputManager::apply_output_config(&output, &state.lxb.config);
 
+    // A built-in panel mounted on its side says so in the kernel's `panel
+    // orientation`, and is turned the way it asks — before anything is drawn
+    // on it or it is laid out, so the first frame is already the right way up.
+    // Only where the config names no turn of its own: a turn somebody chose,
+    // in the config or through the shell's page, is always the one used.
+    //
+    // The mounting is kept on the output either way: it is what the shell's
+    // Orientation page counts its turns from. See `crate::outputs::Mounted`.
+    let configured_turn = state
+        .lxb
+        .config
+        .output_for(&name)
+        .and_then(|entry| entry.transform.as_deref())
+        .is_some();
+    let mounted = match &state.backend {
+        super::Backend::Udev(udev) => udev.devices.get(&node).and_then(|device| {
+            panel_orientation(device.drm_output_manager.device(), connector.handle())
+        }),
+        _ => None,
+    };
+    if let Some(turn) = mounted {
+        output
+            .user_data()
+            .insert_if_missing_threadsafe(|| crate::outputs::Mounted(turn));
+        if !configured_turn {
+            output.change_current_state(None, Some(turn), None, None);
+            tracing::info!(output = %name, ?turn, "turned a panel the way it is mounted");
+        }
+    }
+    // The mode as the display will be seen — turned, where it is — which is
+    // the shape the first frame has to be drawn in.
+    let seen = output
+        .current_transform()
+        .transform_size(smithay::utils::Size::<i32, smithay::utils::Physical>::from(
+            (w, h),
+        ));
+
     // The wallpaper, drawn now if this is the first display to be lit, because
     // the commit below is what establishes the mode and it goes to the screen.
     // Left to itself that commit is a frame with nothing in it, cleared to
@@ -941,7 +985,7 @@ fn connector_connected(
     // [`crate::backdrop::Opening`].
     if state.lxb.backdrop.is_none() {
         if let Some(opening) = state.lxb.opening.take() {
-            state.lxb.backdrop = Some(opening.start(w as f32 / h.max(1) as f32));
+            state.lxb.backdrop = Some(opening.start(seen.w as f32 / seen.h.max(1) as f32));
         }
     }
 
@@ -968,8 +1012,8 @@ fn connector_connected(
     if let Some(backdrop) = state.lxb.backdrop.as_ref() {
         let scale = output.current_scale().fractional_scale();
         let logical = smithay::utils::Size::<i32, smithay::utils::Logical>::from((
-            (w as f64 / scale).round() as i32,
-            (h as f64 / scale).round() as i32,
+            (seen.w as f64 / scale).round() as i32,
+            (seen.h as f64 / scale).round() as i32,
         ));
         match backdrop.element(&mut renderer, logical) {
             Ok(element) => {
@@ -1124,27 +1168,63 @@ fn remove_surface(state: &mut LxbState, node: DrmNode, crtc: crtc::Handle) {
 
     let Some(surface) = surface else { return };
 
-    let config = state.lxb.config.clone();
-    state
-        .lxb
-        .outputs
-        .remove_output(&mut state.lxb.space, &surface.output, &config);
-    // What it was set to survives; what it can do does not, until it is back.
-    state.lxb.hdr.disconnected(&surface.output);
-    // And nothing can be recorded off a connector that is no longer there, so
-    // whoever was waiting on a frame of it is told rather than left waiting.
-    state.lxb.screencopy.output_gone(&surface.output);
-    // Nor can it be driven at anything, or turned, until then — which the
-    // shell's pages have to hear about the same way they heard it arrive. Its
-    // leaving renumbers every display that was laid out after it, so the
-    // arrangement is republished for the survivors as well.
-    state.refresh_modes();
-    state.refresh_transforms();
-    state.refresh_places();
+    state.display_unplugged(&surface.output);
 
     if let Some(global) = surface.global {
         state.lxb.display_handle.remove_global::<LxbState>(global);
     }
+}
+
+/// The turn a built-in panel's mounting asks for, from the kernel's `panel
+/// orientation` on its connector. `None` for a connector without one, which is
+/// every monitor and most laptops.
+///
+/// Handhelds and tablets put a panel in sideways: a Steam Deck's is an 800x1280
+/// portrait panel standing on its side, and the kernel knows it — its quirk
+/// table says "Right Side Up", read off the Deck on 2026-09-30 as value 3.
+/// Without the turn, the session and the login screen came up lying down on
+/// one, and the only way out was the Orientation page, found by tilting one's
+/// head. The property is read as the enum it is declared as — its current value
+/// looked up in its own entries — rather than as a number assumed to mean
+/// something; see `crate::hdr`'s properties for why the two are kept apart.
+fn panel_orientation(
+    device: &impl smithay::reexports::drm::control::Device,
+    connector: connector::Handle,
+) -> Option<smithay::utils::Transform> {
+    use smithay::reexports::drm::control::property;
+    let properties = device.get_properties(connector).ok()?;
+    for (handle, value) in properties.iter() {
+        let Ok(info) = device.get_property(*handle) else {
+            continue;
+        };
+        if info.name().to_bytes() != b"panel orientation" {
+            continue;
+        }
+        let property::ValueType::Enum(entries) = info.value_type() else {
+            return None;
+        };
+        let entry = entries.get_value_from_raw_value(*value)?;
+        return turn_for_panel_orientation(entry.name().to_str().ok()?);
+    }
+    None
+}
+
+/// The output transform that puts a panel mounted this way the right way up.
+///
+/// The names are the kernel's `drm_panel_orientation` strings. "Left Side Up"
+/// means the panel's left edge is at the top of the device, which the picture
+/// undoes by being turned 90°; "Right Side Up" is the other quarter, 270°. This
+/// is the mapping wlroots, KWin and Mutter use, and 270° is the turn a Steam
+/// Deck's owner chose by hand on its Orientation page before this existed.
+fn turn_for_panel_orientation(name: &str) -> Option<smithay::utils::Transform> {
+    use smithay::utils::Transform;
+    Some(match name {
+        "Normal" => Transform::Normal,
+        "Upside Down" => Transform::_180,
+        "Left Side Up" => Transform::_90,
+        "Right Side Up" => Transform::_270,
+        _ => return None,
+    })
 }
 
 /// Choose a mode: the configured one if it matches, else the connector's
@@ -1387,6 +1467,22 @@ fn schedule_render(state: &mut LxbState, node: DrmNode, crtc: crtc::Handle, dela
         };
 
         match surface.render_state {
+            // A display that is switched off keeps its own slow clock whatever
+            // its clients commit: what they are waiting for is answered on it,
+            // and answering every commit would have a client that draws
+            // whenever it is answered drawing at the display's full rate for a
+            // screen nobody can see. Asked back on, it is not off any more, and
+            // the request that lit it is drawn at once below.
+            RenderState::Scheduled
+                if surface.idle_timer.is_some()
+                    && surface.switched_off
+                    && state
+                        .lxb
+                        .blackouts
+                        .is_off(&surface.output, std::time::Instant::now()) =>
+            {
+                return;
+            }
             // Put off because nothing was changing: a real request cancels the
             // wait, but is still paced a retrace after the last render, which
             // is what keeps a client that asks for a frame and draws nothing
@@ -1503,10 +1599,15 @@ fn render_surface(state: &mut LxbState, node: DrmNode, crtc: crtc::Handle) {
 
     // A display the shell has switched off, now that its black is all the way
     // down: the connector goes off, and nothing is drawn or queued for it until
-    // it is asked back. Nothing is scheduled from here either, so a dark display
-    // costs no frames at all — the request that brings it back queues the
-    // redraw that lights it, and smithay turns the connector back on with the
-    // first frame queued after a clear. See [`crate::idle`].
+    // it is asked back — the request that brings it back queues the redraw that
+    // lights it, and smithay turns the connector back on with the first frame
+    // queued after a clear. See [`crate::idle`].
+    //
+    // What is on it is still answered, as a frame nobody saw, and looked at
+    // again on the dark display's own slow clock: a client presenting FIFO
+    // waits for the answer to its last frame with no timeout, and the frame
+    // that switched the display off used to be the last answer anybody on it
+    // ever got. See [`crate::render::WHILE_DARK`].
     if state
         .lxb
         .blackouts
@@ -1526,6 +1627,9 @@ fn render_surface(state: &mut LxbState, node: DrmNode, crtc: crtc::Handle) {
             }
             surface.switched_off = true;
         }
+        let time = state.lxb.start_time.elapsed();
+        crate::render::answer_a_dark_display(&state.lxb, &output, time);
+        schedule_idle_render(state, node, crtc, crate::render::WHILE_DARK);
         return;
     }
     if surface.switched_off {
@@ -1790,6 +1894,18 @@ fn apply_pending_hdr(state: &mut LxbState, node: DrmNode, crtc: crtc::Handle) {
         return;
     };
     let output = surface.output.clone();
+    // Not while the connector is switched off: a display that is dark is
+    // looked at four times a second to answer what is waiting on it, and a
+    // colour change asked for meanwhile — the night light's hour turning — is
+    // left for the frame that lights it, as it was before anything looked.
+    if surface.switched_off
+        && state
+            .lxb
+            .blackouts
+            .is_off(&output, std::time::Instant::now())
+    {
+        return;
+    }
     let Some((settings, night, passthrough)) = state.lxb.hdr.take_pending(&output) else {
         return;
     };
@@ -2033,8 +2149,36 @@ pub fn queue_redraw_all(state: &mut LxbState) {
 #[cfg(test)]
 mod tests {
     use super::primary_after_adding;
+    use super::turn_for_panel_orientation;
     use super::{idle_poll, IDLE_AFTER, IDLE_POLL};
+    use smithay::utils::Transform;
     use std::time::Duration;
+
+    /// Each of the kernel's four mountings gets the turn that undoes it, and
+    /// the Steam Deck's — "Right Side Up", value 3 on its eDP-1 — is 270°, the
+    /// turn its owner had chosen by hand. A name the kernel may add later is
+    /// left alone rather than guessed at.
+    #[test]
+    fn a_panel_is_turned_the_way_it_is_mounted() {
+        assert_eq!(
+            turn_for_panel_orientation("Normal"),
+            Some(Transform::Normal)
+        );
+        assert_eq!(
+            turn_for_panel_orientation("Upside Down"),
+            Some(Transform::_180)
+        );
+        assert_eq!(
+            turn_for_panel_orientation("Left Side Up"),
+            Some(Transform::_90)
+        );
+        assert_eq!(
+            turn_for_panel_orientation("Right Side Up"),
+            Some(Transform::_270),
+            "a Steam Deck"
+        );
+        assert_eq!(turn_for_panel_orientation("Sideways Somehow"), None);
+    }
 
     /// A display is looked at every retrace until half a second of frames has
     /// come out empty, and a tenth of a second apart after that — never less

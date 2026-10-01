@@ -1037,6 +1037,130 @@ pub fn leave_the_guide_button_alone() -> Result<(), Problem> {
     }
 }
 
+/// Ask Valve's overlay to leave the Steam button to this shell as well.
+///
+/// The setting [`leave_the_guide_button_alone`] turns off is about Big
+/// Picture, and only Big Picture. The overlay inside a running game answers
+/// the same button on a road of its own, and no setting reaches that one.
+/// Every press the client does not swallow as a chord is handed to its pages
+/// as a "system key" — `Guide button sent to JS` in `controller_ui.txt` — and
+/// each game's overlay registers for those through
+/// `SteamClient.System.UI.RegisterForSystemKeyEvents`, then flips itself open
+/// or shut on any key whose app is its game. It never asks which key: the
+/// Steam button is `SystemKey0` and the quick-access button `SystemKey1`
+/// (Valve's `library.js`), and either one flips it.
+///
+/// Measured on both kinds of client this shell meets. On a Steam Deck, in
+/// Valve's Deck mode, on 2026-10-01: TEKKEN 8 in front, the Steam button
+/// opened Valve's overlay over it while the shell's own menu opened over both.
+/// On this shell's own desktop machine, a client with no Deck mode and the
+/// Big Picture setting off, on 2026-09-26: every Steam-button press with The
+/// Binding of Isaac in front was followed by the client's own interface taking
+/// the focus — so the setting was never what kept the overlay shut.
+///
+/// So the press is taken off the road rather than asked about. The client's
+/// registration call is wrapped so that what registers after it never hears
+/// the Steam button, and every overlay already running is moved behind the
+/// wrapper: its registration is let go of and made again. The quick-access
+/// button is left to the overlay, which is still somewhere a hand can reach
+/// it; so is the keystroke the shell's own Guide + Select sends.
+///
+/// The wrapper lives in the client's page and goes with it, which is why this
+/// is said on every wake, as the setting is. Saying it again finds the wrapper
+/// in place and moves only an overlay that has come up since.
+pub fn take_the_steam_button_from_the_overlay() -> Result<OverlaysLeft, Problem> {
+    let socket = context()?;
+    let answer = evaluate(&socket, STEAM_BUTTON_LEAVES_THE_OVERLAY)?;
+    overlays_left(&answer)
+}
+
+/// What [`take_the_steam_button_from_the_overlay`] found and did.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Deserialize)]
+pub struct OverlaysLeft {
+    /// Whether the wrapper went in now, rather than being found in place from
+    /// an earlier wake of the same client.
+    pub newly: bool,
+    /// How many overlays already running were moved behind it.
+    pub moved: u32,
+}
+
+/// What the client answered, read.
+///
+/// A client without the registration call has renamed the interface this
+/// depends on, and that is said as the rename it is rather than as a refusal.
+fn overlays_left(answer: &str) -> Result<OverlaysLeft, Problem> {
+    if answer == "absent" {
+        return Err(Problem::Renamed(vec![
+            "System.UI.RegisterForSystemKeyEvents".to_string(),
+        ]));
+    }
+    serde_json::from_str(answer).map_err(|_| Problem::Refused(answer.to_string()))
+}
+
+/// The expression [`take_the_steam_button_from_the_overlay`] runs.
+///
+/// The handles the wrapper gave out are kept on the wrapper itself, which is
+/// both how a second run knows it is a second run and how it tells an overlay
+/// that has already been moved from one that registered before the wrapper.
+/// The overlays are found where the client keeps them, as `OverlayWindows` on
+/// its window store, each with its `m_DesktopOverlay` holding the handler and
+/// the handle it registered with.
+const STEAM_BUTTON_LEAVES_THE_OVERLAY: &str = r#"(() => {
+  const ui = SteamClient?.System?.UI;
+  if (typeof ui?.RegisterForSystemKeyEvents !== 'function') return 'absent';
+  const STEAM_BUTTON = 0;
+  let newly = false;
+  if (!ui.RegisterForSystemKeyEvents.lxbLeavesTheGuide) {
+    const register = ui.RegisterForSystemKeyEvents.bind(ui);
+    const given = new WeakSet();
+    const leaving = callback => {
+      const handle = register(event => event?.eKey === STEAM_BUTTON ? undefined : callback(event));
+      if (handle && typeof handle === 'object') given.add(handle);
+      return handle;
+    };
+    leaving.lxbLeavesTheGuide = given;
+    ui.RegisterForSystemKeyEvents = leaving;
+    newly = true;
+  }
+  const given = ui.RegisterForSystemKeyEvents.lxbLeavesTheGuide;
+  let moved = 0;
+  for (const instance of window.SteamUIStore?.WindowStore?.OverlayWindows ?? []) {
+    const overlay = instance?.m_DesktopOverlay;
+    const handle = overlay?.m_systemKeyEventsCallbackHandle;
+    if (!handle || given.has(handle) || typeof overlay.HandleGamepadGuideButtonEvents !== 'function') continue;
+    handle.unregister?.();
+    overlay.m_systemKeyEventsCallbackHandle = ui.RegisterForSystemKeyEvents(overlay.HandleGamepadGuideButtonEvents);
+    moved += 1;
+  }
+  return JSON.stringify({ newly, moved });
+})()"#;
+
+/// Whether the client is in Big Picture now.
+///
+/// Asked where the window a press is waiting on may be up already: Big Picture
+/// asked of a client that is in it raises nothing new, and the window that
+/// answers the press is the one that was there. Read off a live client on a
+/// Steam Deck on 2026-10-01: `SteamClient.UI.GetUIMode()` answered 4 while Big
+/// Picture was up and 7 once it had been left for the desktop face. See
+/// [`crate::client::LEAVE_BIG_PICTURE`].
+///
+/// On a poll's patience rather than a command's: a hand-over is waiting on it,
+/// and a client too busy to answer in that time is one this treats as not in
+/// Big Picture, which is how it was treated before anything asked.
+pub fn in_big_picture() -> Result<bool, Problem> {
+    let socket = context()?;
+    let mode = evaluate_within(
+        &socket,
+        "(async () => String(await SteamClient.UI.GetUIMode()))()",
+        WHILE_A_ROW_WAITS,
+    )?;
+    Ok(mode == BIG_PICTURE_MODE)
+}
+
+/// What `SteamClient.UI.GetUIMode` answers in Big Picture. See
+/// [`in_big_picture`].
+const BIG_PICTURE_MODE: &str = "4";
+
 /// How long a *poll* may wait for the client.
 ///
 /// Not [`PATIENCE`], which is what a command that does something is given. This
@@ -5033,6 +5157,109 @@ mod tests {
         // And a client that answers with something else is a refusal rather
         // than a panic.
         assert!(what_the_client_said("{\"app_id\":").is_err());
+    }
+
+    /// What the client answers about its overlays is read as what it is: a
+    /// count, a rename, or something this does not understand.
+    #[test]
+    fn the_overlays_answer_is_read_as_a_count_or_a_rename() {
+        assert_eq!(
+            overlays_left(r#"{"newly":true,"moved":1}"#),
+            Ok(OverlaysLeft {
+                newly: true,
+                moved: 1
+            })
+        );
+        assert_eq!(
+            overlays_left("absent"),
+            Err(Problem::Renamed(vec![
+                "System.UI.RegisterForSystemKeyEvents".to_string()
+            ]))
+        );
+        assert!(matches!(overlays_left("{"), Err(Problem::Refused(_))));
+    }
+
+    /// The expression that takes the Steam button from the overlay, run against
+    /// a client made of the two things it touches.
+    ///
+    /// The fake is the shape read off the live client on a Steam Deck on
+    /// 2026-10-01: a registration call that hands back a handle with
+    /// `unregister`, and an overlay on the window store holding its handler and
+    /// the handle it registered with before anything here ran. A press is the
+    /// client calling every callback still registered, with the key and the
+    /// game's app. Skipped where there is no `node` to run it in.
+    #[test]
+    fn the_overlay_stops_hearing_the_steam_button_and_nothing_else() {
+        let script = format!(
+            "const registered = [];
+             globalThis.window = globalThis;
+             globalThis.SteamClient = {{ System: {{ UI: {{
+               RegisterForSystemKeyEvents(callback) {{
+                 registered.push(callback);
+                 return {{ unregister() {{
+                   const at = registered.indexOf(callback);
+                   if (at >= 0) registered.splice(at, 1);
+                 }} }};
+               }},
+             }} }} }};
+             const press = key => registered.slice().forEach(callback =>
+               callback({{ eKey: key, nControllerIndex: 0, nAppID: 1778820 }}));
+             const flipped = [];
+             const overlay = {{ HandleGamepadGuideButtonEvents: event => flipped.push(event.eKey) }};
+             overlay.m_systemKeyEventsCallbackHandle =
+               SteamClient.System.UI.RegisterForSystemKeyEvents(overlay.HandleGamepadGuideButtonEvents);
+             window.SteamUIStore = {{ WindowStore: {{ OverlayWindows: [{{ m_DesktopOverlay: overlay }}] }} }};
+             press(0);
+             const first = JSON.parse(eval({expression}));
+             press(0);
+             press(1);
+             const second = JSON.parse(eval({expression}));
+             const heard = [];
+             SteamClient.System.UI.RegisterForSystemKeyEvents(event => heard.push(event.eKey));
+             press(0);
+             press(1);
+             console.log(JSON.stringify({{ first, second, flipped, heard, registered: registered.length }}));",
+            expression = json_string(STEAM_BUTTON_LEAVES_THE_OVERLAY),
+        );
+        let output = match std::process::Command::new("node")
+            .arg("-e")
+            .arg(&script)
+            .output()
+        {
+            Ok(output) => output,
+            Err(error) => {
+                eprintln!(
+                    "skipped: the_overlay_stops_hearing_the_steam_button_and_nothing_else: \
+                     no node to run the expression in ({error})"
+                );
+                return;
+            }
+        };
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        let seen: serde_json::Value =
+            serde_json::from_slice(&output.stdout).expect("the script prints what it saw");
+
+        // The overlay that was already running is moved once, and only once.
+        assert_eq!(
+            seen["first"],
+            serde_json::json!({ "newly": true, "moved": 1 })
+        );
+        assert_eq!(
+            seen["second"],
+            serde_json::json!({ "newly": false, "moved": 0 })
+        );
+        // It flipped on the Steam button before, and afterwards only on the
+        // quick-access button.
+        assert_eq!(seen["flipped"], serde_json::json!([0, 1, 1]));
+        // Whatever registers later hears the same.
+        assert_eq!(seen["heard"], serde_json::json!([1]));
+        // And the overlay's first registration is gone rather than left
+        // beside its replacement.
+        assert_eq!(seen["registered"], serde_json::json!(2));
     }
 
     /// Only Valve's own default counts as the chord a shell can send, and

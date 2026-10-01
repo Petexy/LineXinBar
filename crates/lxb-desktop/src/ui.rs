@@ -1180,6 +1180,16 @@ pub fn sidebar_slide_x(age: f32, width: f32, height: f32) -> f32 {
     (ease(age / GUIDE_SLIDE) - 1.0) * overview::sidebar_width(width as f64, height as f64) as f32
 }
 
+/// Whether the guide's column is still sliding in, `age` seconds after the menu
+/// opened.
+///
+/// Its own question because nothing else answers it when the guide opens over
+/// an application: the start screen is already in its card there, so none of
+/// the shell's other clocks has anywhere to go.
+pub fn guide_is_arriving(age: f32) -> bool {
+    age < GUIDE_SLIDE
+}
+
 /// Where the guide's column is this frame: the rectangle its glass is drawn
 /// in, still sliding in from the left edge while the menu opens and slid back
 /// by however far the view has gone over to the cards. [`build_guide`] draws

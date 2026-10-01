@@ -1600,6 +1600,12 @@ impl Osk {
         self.slide
     }
 
+    /// Whether the board is still rising or going down — between the two
+    /// ends, since the slide only ever rests at one of them.
+    pub fn is_moving(&self) -> bool {
+        self.slide > 0.0 && self.slide < 1.0
+    }
+
     /// Show it, from the middle of the board. Returns whether anything
     /// changed.
     pub fn open(&mut self) -> bool {
@@ -3263,6 +3269,27 @@ mod tests {
             osk.animate(FRAME) > halfway,
             "it fell back to the edge before rising again"
         );
+    }
+
+    /// The board is moving while it rises and while it goes down, and at rest
+    /// up or gone — which is what a display is drawn at its refresh for in
+    /// low-end hardware mode, rather than ten frames a second.
+    #[test]
+    fn a_board_moves_only_while_it_rises_or_falls() {
+        let _held = alone();
+        const FRAME: f32 = 1.0 / 60.0;
+        let mut osk = armed();
+        assert!(!osk.is_moving());
+        osk.open();
+        osk.animate(FRAME);
+        assert!(osk.is_moving(), "rising");
+        while osk.animate(FRAME) < 1.0 {}
+        assert!(!osk.is_moving(), "up");
+        osk.close();
+        osk.animate(FRAME);
+        assert!(osk.is_moving(), "going down");
+        while osk.animate(FRAME) > 0.0 {}
+        assert!(!osk.is_moving(), "gone");
     }
 
     /// Shift is applied to the keysym before the shell ever sees it, so

@@ -51,7 +51,7 @@ use evdev::{
     KeyCode, KeyEvent, SynchronizationCode, SynchronizationEvent, UinputAbsSetup,
 };
 
-use crate::steam_hid::{Buttons, Report, PUCK_PRODUCT, STICK_DEADZONE, VALVE_VENDOR};
+use crate::steam_hid::{Buttons, Report, STICK_DEADZONE, VALVE_VENDOR};
 
 /// The button in the middle of the pad with the logo on it.
 ///
@@ -136,10 +136,12 @@ pub struct StandIn {
 impl StandIn {
     /// Make the gamepad, and wait until it is one an application can open.
     ///
-    /// `name` is the pad's own, read out of sysfs by the caller, so that the
-    /// device somebody finds in a controller list is called what the hardware
-    /// calls itself.
-    pub fn new(name: &str) -> io::Result<Self> {
+    /// `name`, `product`, the bus and `version` are the pad's own, read out of
+    /// sysfs by the caller, so that the device somebody finds in a controller
+    /// list is called what the hardware calls itself and has its ids — the
+    /// controller on a cable, over Bluetooth or through its puck, whichever it
+    /// came in by.
+    pub fn new(name: &str, product: u16, bluetooth: bool, version: u16) -> io::Result<Self> {
         let mut keys: AttributeSet<KeyCode> = KEYS.iter().map(|(_, key)| *key).collect();
         keys.insert(GUIDE);
 
@@ -151,10 +153,14 @@ impl StandIn {
             // and a stand-in claiming to be somebody else's hardware would be a
             // lie the user reads in every controller list on the machine.
             .input_id(InputId::new(
-                BusType::BUS_USB,
+                if bluetooth {
+                    BusType::BUS_BLUETOOTH
+                } else {
+                    BusType::BUS_USB
+                },
                 VALVE_VENDOR,
-                PUCK_PRODUCT,
-                version(),
+                product,
+                version,
             ))
             .with_keys(&keys)?;
         for axis in axes() {
@@ -337,19 +343,472 @@ fn hat(buttons: Buttons) -> (i32, i32) {
     )
 }
 
-/// The pad's firmware revision, or nothing if it cannot be read.
+/// The Steam Deck's gamepad, as the kernel would have made it.
 ///
-/// Only the SDL device id is built out of it, and a stand-in that answered `0`
-/// would work — but it would also be a different controller to SDL after every
-/// firmware update, which is not what the hardware did. Read rather than
-/// written down, like every other fact about this machine.
-fn version() -> u16 {
-    crate::steam_hid::firmware_version().unwrap_or(0)
+/// The Deck, unlike the puck, *has* a kernel gamepad: `hid-steam` makes one
+/// called "Steam Deck". But it takes it away the moment anything opens the
+/// Deck's raw node — which is what Steam does, and what this shell now does to
+/// read the Deck at all (see [`crate::steam_hid`]) — and while it is there it
+/// says nothing until somebody holds ☰ for half a second to leave the
+/// firmware's keyboard-and-mouse mode. So applications are given this in its
+/// place.
+///
+/// And it is that device, to the code: its name, its ids, its buttons, its
+/// axes, their ranges and resolutions, and the same report read the same way —
+/// copied from `hid-steam`'s `steam_input_register` and
+/// `steam_do_deck_input_event`. That is the whole reason it works. SDL, GilRs
+/// and RetroArch all carry a mapping for the kernel's "Steam Deck", keyed on
+/// exactly these ids, and a device wearing those ids in the shape of an Xbox
+/// pad — which is what [`StandIn`] is for the puck — would be read through that
+/// mapping with every button in the wrong place. Wearing the ids *and* the
+/// shape is not pretending to be another controller: it is this controller,
+/// described the way its own driver describes it.
+///
+/// One difference, the usual one: `BTN_MODE` is declared and never sent, so
+/// the Steam button reaches this shell and nothing else. And the motion
+/// sensors, which the kernel puts on a second device, are not made at all.
+pub struct DeckStandIn {
+    device: VirtualDevice,
+    /// What the device has been told, as the keys down and the axes' values.
+    sent: DeckState,
+    /// Keys let go of by a hand-back while still held, kept off the device
+    /// until they come up. See [`StandIn::hand_back`], whose rule this is.
+    withheld: u32,
+    node: PathBuf,
+}
+
+/// The kernel's own name for the device.
+pub const DECK_NAME: &str = "Steam Deck";
+
+/// Every key `hid-steam` declares for the Deck but the one never sent, with
+/// where the report carries it: `(byte, mask, key)`, straight from its
+/// `steam_deck_button_mappings`. The kernel's `BTN_A`, `BTN_B`, `BTN_X` and
+/// `BTN_Y` are `BTN_SOUTH`, `BTN_EAST`, `BTN_NORTH` and `BTN_WEST` — the same
+/// swap [`KEYS`] explains, sent here the way the kernel sends it.
+const DECK_KEYS: &[(usize, u8, KeyCode)] = &[
+    (8, 0x01, KeyCode::BTN_TR2),
+    (8, 0x02, KeyCode::BTN_TL2),
+    (8, 0x04, KeyCode::BTN_TR),
+    (8, 0x08, KeyCode::BTN_TL),
+    (8, 0x10, KeyCode::BTN_WEST),
+    (8, 0x20, KeyCode::BTN_EAST),
+    (8, 0x40, KeyCode::BTN_NORTH),
+    (8, 0x80, KeyCode::BTN_SOUTH),
+    (9, 0x10, KeyCode::BTN_SELECT),
+    (9, 0x40, KeyCode::BTN_START),
+    (9, 0x80, BTN_GRIPL2),
+    (10, 0x01, BTN_GRIPR2),
+    (10, 0x40, KeyCode::BTN_THUMBL),
+    (11, 0x04, KeyCode::BTN_THUMBR),
+    (9, 0x01, KeyCode::BTN_DPAD_UP),
+    (9, 0x02, KeyCode::BTN_DPAD_RIGHT),
+    (9, 0x04, KeyCode::BTN_DPAD_LEFT),
+    (9, 0x08, KeyCode::BTN_DPAD_DOWN),
+    (10, 0x02, KeyCode::BTN_THUMB),
+    (10, 0x04, KeyCode::BTN_THUMB2),
+    (13, 0x02, BTN_GRIPL),
+    (13, 0x04, BTN_GRIPR),
+    (14, 0x04, KeyCode::BTN_BASE),
+];
+
+/// The back grips, which `evdev` has no names for yet: the kernel's
+/// `input-event-codes.h` since the Deck's driver learned them.
+const BTN_GRIPL: KeyCode = KeyCode::new(0x224);
+const BTN_GRIPR: KeyCode = KeyCode::new(0x225);
+const BTN_GRIPL2: KeyCode = KeyCode::new(0x226);
+const BTN_GRIPR2: KeyCode = KeyCode::new(0x227);
+
+/// Where the report says the trackpads are touched, and so whether their
+/// positions mean anything: byte 10, left and right.
+const DECK_LEFT_PAD_TOUCHED: (usize, u8) = (10, 0x08);
+const DECK_RIGHT_PAD_TOUCHED: (usize, u8) = (10, 0x10);
+
+/// Every axis, as `hid-steam` declares it for the Deck — range, fuzz and
+/// resolution — with the report offset it reads it from and the sign it gives
+/// it. The trackpads are read only while touched, and are zero otherwise.
+const DECK_AXES: &[DeckAxis] = &[
+    DeckAxis::stick(AbsoluteAxisCode::ABS_X, 48, 1),
+    DeckAxis::stick(AbsoluteAxisCode::ABS_Y, 50, -1),
+    DeckAxis::stick(AbsoluteAxisCode::ABS_RX, 52, 1),
+    DeckAxis::stick(AbsoluteAxisCode::ABS_RY, 54, -1),
+    DeckAxis::pad(AbsoluteAxisCode::ABS_HAT0X, 16, DECK_LEFT_PAD_TOUCHED),
+    DeckAxis::pad(AbsoluteAxisCode::ABS_HAT0Y, 18, DECK_LEFT_PAD_TOUCHED),
+    DeckAxis::pad(AbsoluteAxisCode::ABS_HAT1X, 20, DECK_RIGHT_PAD_TOUCHED),
+    DeckAxis::pad(AbsoluteAxisCode::ABS_HAT1Y, 22, DECK_RIGHT_PAD_TOUCHED),
+    DeckAxis::trigger(AbsoluteAxisCode::ABS_HAT2Y, 44),
+    DeckAxis::trigger(AbsoluteAxisCode::ABS_HAT2X, 46),
+];
+
+/// One of the Deck's axes. See [`DECK_AXES`].
+struct DeckAxis {
+    code: AbsoluteAxisCode,
+    /// Where the report carries it, as a little-endian `s16`.
+    at: usize,
+    sign: i32,
+    /// The byte and mask that say whether it means anything, for a trackpad.
+    only_while: Option<(usize, u8)>,
+    min: i32,
+    max: i32,
+    fuzz: i32,
+    resolution: i32,
+}
+
+impl DeckAxis {
+    /// `STEAM_DECK_JOYSTICK_RESOLUTION`.
+    const fn stick(code: AbsoluteAxisCode, at: usize, sign: i32) -> Self {
+        Self {
+            code,
+            at,
+            sign,
+            only_while: None,
+            min: -32767,
+            max: 32767,
+            fuzz: 0,
+            resolution: 6553,
+        }
+    }
+
+    /// `STEAM_PAD_FUZZ` and `STEAM_PAD_RESOLUTION`.
+    const fn pad(code: AbsoluteAxisCode, at: usize, touched: (usize, u8)) -> Self {
+        Self {
+            code,
+            at,
+            sign: 1,
+            only_while: Some(touched),
+            min: -32767,
+            max: 32767,
+            fuzz: 256,
+            resolution: 1638,
+        }
+    }
+
+    /// `STEAM_DECK_TRIGGER_RESOLUTION`.
+    const fn trigger(code: AbsoluteAxisCode, at: usize) -> Self {
+        Self {
+            code,
+            at,
+            sign: 1,
+            only_while: None,
+            min: 0,
+            max: 32767,
+            fuzz: 0,
+            resolution: 5461,
+        }
+    }
+
+    /// Its value in one report, as the kernel would report it.
+    fn read(&self, report: &[u8]) -> i32 {
+        if let Some((byte, mask)) = self.only_while {
+            if report[byte] & mask == 0 {
+                return 0;
+            }
+        }
+        let raw = i16::from_le_bytes([report[self.at], report[self.at + 1]]);
+        (self.sign * i32::from(raw)).clamp(self.min, self.max)
+    }
+}
+
+/// The Deck's gamepad as the device has been told it is: which of
+/// [`DECK_KEYS`] are down, as bits in that order, and each of [`DECK_AXES`].
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+struct DeckState {
+    keys: u32,
+    axes: [i32; 10],
+}
+
+const _: () = assert!(DECK_KEYS.len() <= 32 && DECK_AXES.len() == 10);
+
+impl DeckState {
+    /// One raw Deck report, read the way `steam_do_deck_input_event` reads it.
+    /// The caller has already checked it is one.
+    fn of(report: &[u8]) -> Self {
+        let mut keys = 0u32;
+        for (index, (byte, mask, _)) in DECK_KEYS.iter().enumerate() {
+            if report[*byte] & mask != 0 {
+                keys |= 1 << index;
+            }
+        }
+        let mut axes = [0i32; 10];
+        for (value, axis) in axes.iter_mut().zip(DECK_AXES) {
+            *value = axis.read(report);
+        }
+        Self { keys, axes }
+    }
+}
+
+impl DeckStandIn {
+    /// Make the gamepad, and wait until it is one an application can open.
+    pub fn new() -> io::Result<Self> {
+        let mut keys: AttributeSet<KeyCode> = DECK_KEYS.iter().map(|(_, _, key)| *key).collect();
+        keys.insert(GUIDE);
+        let mut device = VirtualDevice::builder()?
+            .name(DECK_NAME)
+            .input_id(InputId::new(
+                BusType::BUS_USB,
+                crate::steam_hid::VALVE_VENDOR,
+                crate::steam_hid::DECK_PRODUCT,
+                crate::steam_hid::firmware_version(crate::steam_hid::Pad::Deck).unwrap_or(0),
+            ))
+            .with_keys(&keys)?;
+        for axis in DECK_AXES {
+            let info = AbsInfo::new(0, axis.min, axis.max, axis.fuzz, 0, axis.resolution);
+            device = device.with_absolute_axis(&UinputAbsSetup::new(axis.code, info))?;
+        }
+        let mut device = device.build()?;
+        let node = crate::pad_guard::wait_for_node(&mut device)?;
+        Ok(Self {
+            device,
+            sent: DeckState::default(),
+            withheld: 0,
+            node,
+        })
+    }
+
+    /// Where an application will find this pad.
+    pub fn node(&self) -> &std::path::Path {
+        &self.node
+    }
+
+    /// What it is called in a controller list: the kernel's name for it.
+    pub fn name(&self) -> &str {
+        DECK_NAME
+    }
+
+    /// Say what the Deck has just said, less the one button. `report` is a
+    /// Deck input report, already checked to be one.
+    pub fn send(&mut self, report: &[u8]) -> io::Result<()> {
+        let mut state = DeckState::of(report);
+        self.withheld &= state.keys;
+        state.keys &= !self.withheld;
+        let events = deck_changes(&self.sent, &state);
+        if events.is_empty() {
+            return Ok(());
+        }
+        self.sent = state;
+        self.device.emit(&events)
+    }
+
+    /// The shell is letting go of the pad, which is at `report`. See
+    /// [`StandIn::hand_back`].
+    pub fn hand_back(&mut self, report: &[u8]) -> io::Result<()> {
+        self.withheld |= DeckState::of(report).keys;
+        self.send(report)
+    }
+}
+
+/// What the Deck's gamepad has to say to go from one state to the next, in one
+/// packet. Empty when nothing changed.
+fn deck_changes(before: &DeckState, after: &DeckState) -> Vec<InputEvent> {
+    let mut events: Vec<InputEvent> = Vec::new();
+    for (index, (_, _, key)) in DECK_KEYS.iter().enumerate() {
+        let was = before.keys & (1 << index) != 0;
+        let now = after.keys & (1 << index) != 0;
+        if was != now {
+            events.push(KeyEvent::new(*key, i32::from(now)).into());
+        }
+    }
+    for ((axis, was), now) in DECK_AXES.iter().zip(before.axes).zip(after.axes) {
+        if was != now {
+            events.push(AbsoluteAxisEvent::new(axis.code, now).into());
+        }
+    }
+    if !events.is_empty() {
+        events.push(SynchronizationEvent::new(SynchronizationCode::SYN_REPORT, 0).into());
+    }
+    events
+}
+
+#[cfg(test)]
+mod deck_tests {
+    use super::*;
+
+    /// A Deck report with only `(byte, mask)` set.
+    fn report(set: &[(usize, u8)]) -> [u8; 64] {
+        let mut report = [0u8; 64];
+        report[..3].copy_from_slice(&[0x01, 0x00, 0x09]);
+        for (byte, mask) in set {
+            report[*byte] |= mask;
+        }
+        report
+    }
+
+    fn keys(events: &[InputEvent]) -> Vec<(u16, i32)> {
+        events
+            .iter()
+            .filter(|event| event.event_type() == evdev::EventType::KEY)
+            .map(|event| (event.code(), event.value()))
+            .collect()
+    }
+
+    fn axis(events: &[InputEvent], code: AbsoluteAxisCode) -> Option<i32> {
+        events
+            .iter()
+            .find(|event| {
+                event.event_type() == evdev::EventType::ABSOLUTE && event.code() == code.0
+            })
+            .map(|event| event.value())
+    }
+
+    /// The Steam button is in the Deck's report and never reaches the
+    /// stand-in: it stays with the shell, as every other pad's does.
+    #[test]
+    fn the_steam_button_is_never_sent() {
+        let pressed = DeckState::of(&report(&[(9, 0x20)]));
+        assert!(deck_changes(&DeckState::default(), &pressed).is_empty());
+        assert!(!DECK_KEYS.iter().any(|(_, _, key)| *key == GUIDE));
+    }
+
+    /// The face buttons as the kernel sends them: A is `BTN_SOUTH`, B
+    /// `BTN_EAST`, X `BTN_NORTH` and Y `BTN_WEST`, the `xpad` pair for X and Y.
+    #[test]
+    fn the_face_buttons_are_the_kernels_codes() {
+        for (bit, key) in [
+            ((8, 0x80), KeyCode::BTN_SOUTH),
+            ((8, 0x20), KeyCode::BTN_EAST),
+            ((8, 0x40), KeyCode::BTN_NORTH),
+            ((8, 0x10), KeyCode::BTN_WEST),
+        ] {
+            let events = deck_changes(&DeckState::default(), &DeckState::of(&report(&[bit])));
+            assert_eq!(keys(&events), vec![(key.0, 1)], "{bit:?}");
+        }
+    }
+
+    /// Every key the kernel declares for the Deck is declared here, the one
+    /// that is never sent among them — SDL numbers a pad's buttons by walking
+    /// the whole set, so one missing would put every button above it one place
+    /// down in a game.
+    #[test]
+    fn every_key_the_kernel_declares_is_declared() {
+        let mut declared: Vec<u16> = DECK_KEYS.iter().map(|(_, _, key)| key.0).collect();
+        declared.push(GUIDE.0);
+        declared.sort_unstable();
+        let mut kernel: Vec<u16> = vec![
+            0x139, 0x138, 0x137, 0x136, 0x134, 0x131, 0x133, 0x130, // TR2 TL2 TR TL Y B X A
+            0x220, 0x223, 0x222, 0x221, // D-pad
+            0x13a, 0x13c, 0x13b, // SELECT MODE START
+            0x13e, 0x13d, 0x121, 0x122, // THUMBR THUMBL THUMB THUMB2
+            0x224, 0x225, 0x126, 0x226, 0x227, // GRIPL GRIPR BASE GRIPL2 GRIPR2
+        ];
+        kernel.sort_unstable();
+        assert_eq!(declared, kernel);
+    }
+
+    /// The sticks' vertical axes counted down, as the kernel counts them, and
+    /// the triggers on the two hats `hid-steam` puts them on.
+    #[test]
+    fn the_axes_are_the_kernels() {
+        let mut raw = report(&[]);
+        raw[48..50].copy_from_slice(&1000i16.to_le_bytes());
+        raw[50..52].copy_from_slice(&2000i16.to_le_bytes());
+        raw[54..56].copy_from_slice(&(-3000i16).to_le_bytes());
+        raw[44..46].copy_from_slice(&0x1234u16.to_le_bytes());
+        raw[46..48].copy_from_slice(&0x7fffu16.to_le_bytes());
+        let events = deck_changes(&DeckState::default(), &DeckState::of(&raw));
+        assert_eq!(axis(&events, AbsoluteAxisCode::ABS_X), Some(1000));
+        assert_eq!(axis(&events, AbsoluteAxisCode::ABS_Y), Some(-2000));
+        assert_eq!(axis(&events, AbsoluteAxisCode::ABS_RY), Some(3000));
+        assert_eq!(axis(&events, AbsoluteAxisCode::ABS_HAT2Y), Some(0x1234));
+        assert_eq!(axis(&events, AbsoluteAxisCode::ABS_HAT2X), Some(0x7fff));
+    }
+
+    /// A trackpad's position means something only while a finger is on it.
+    #[test]
+    fn a_trackpad_reads_only_while_it_is_touched() {
+        let mut raw = report(&[]);
+        raw[16..18].copy_from_slice(&500i16.to_le_bytes());
+        let untouched = DeckState::of(&raw);
+        assert_eq!(
+            axis(
+                &deck_changes(&DeckState::default(), &untouched),
+                AbsoluteAxisCode::ABS_HAT0X
+            ),
+            None
+        );
+        raw[10] |= 0x08;
+        let touched = DeckState::of(&raw);
+        assert_eq!(
+            axis(
+                &deck_changes(&DeckState::default(), &touched),
+                AbsoluteAxisCode::ABS_HAT0X
+            ),
+            Some(500)
+        );
+    }
+
+    /// Nothing moved, nothing said.
+    #[test]
+    fn a_report_that_changes_nothing_says_nothing() {
+        let state = DeckState::of(&report(&[(8, 0x80)]));
+        assert!(deck_changes(&state, &state).is_empty());
+    }
+
+    /// Made for real, and read back the way an application reads it: the
+    /// kernel's name and ids, the kernel's axis ranges, and a press of A and of
+    /// the Steam button at once coming out as A alone.
+    #[test]
+    fn the_kernel_sees_the_decks_own_gamepad_less_the_steam_button() {
+        use std::time::{Duration, Instant};
+        if std::fs::OpenOptions::new()
+            .write(true)
+            .open("/dev/uinput")
+            .is_err()
+        {
+            crate::skipped("/dev/uinput cannot be opened here");
+            return;
+        }
+        let _serial = crate::steam_hid::serial();
+        let mut stand_in = DeckStandIn::new().expect("the stand-in was not made");
+        let mut reading =
+            evdev::Device::open(stand_in.node()).expect("its node could not be opened");
+        reading.set_nonblocking(true).expect("non-blocking");
+
+        assert_eq!(reading.name(), Some(DECK_NAME));
+        let id = reading.input_id();
+        assert_eq!(
+            (id.vendor(), id.product()),
+            (
+                crate::steam_hid::VALVE_VENDOR,
+                crate::steam_hid::DECK_PRODUCT
+            )
+        );
+        let absinfo: Vec<(u16, i32, i32, i32)> = reading
+            .get_absinfo()
+            .expect("its axes could not be read")
+            .map(|(code, info)| (code.0, info.minimum(), info.maximum(), info.resolution()))
+            .collect();
+        assert!(absinfo.contains(&(AbsoluteAxisCode::ABS_X.0, -32767, 32767, 6553)));
+        assert!(absinfo.contains(&(AbsoluteAxisCode::ABS_HAT2Y.0, 0, 32767, 5461)));
+        assert!(absinfo.contains(&(AbsoluteAxisCode::ABS_HAT1X.0, -32767, 32767, 1638)));
+
+        stand_in
+            .send(&report(&[(8, 0x80), (9, 0x20)]))
+            .expect("the stand-in would not speak");
+        let deadline = Instant::now() + Duration::from_secs(2);
+        let mut pressed = Vec::new();
+        while Instant::now() < deadline && pressed.is_empty() {
+            if let Ok(events) = reading.fetch_events() {
+                pressed.extend(
+                    events
+                        .filter(|event| {
+                            event.event_type() == evdev::EventType::KEY && event.value() == 1
+                        })
+                        .map(|event| event.code()),
+                );
+            }
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        assert_eq!(
+            pressed,
+            vec![KeyCode::BTN_SOUTH.0],
+            "A, and not the Steam button"
+        );
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::steam_hid::PUCK_PRODUCT;
 
     fn pressed(buttons: Buttons) -> Report {
         Report {
@@ -749,7 +1208,8 @@ mod tests {
                 return;
             }
 
-            let mut stand_in = StandIn::new("lxb test pad").expect("the stand-in was not made");
+            let mut stand_in = StandIn::new("lxb test pad", PUCK_PRODUCT, false, 0)
+                .expect("the stand-in was not made");
             let node = stand_in.node().to_path_buf();
             let mut reading = evdev::Device::open(&node).expect("its node could not be opened");
             reading
@@ -816,7 +1276,8 @@ mod tests {
                 return;
             }
 
-            let stand_in = StandIn::new("lxb test pad").expect("the stand-in was not made");
+            let stand_in = StandIn::new("lxb test pad", PUCK_PRODUCT, false, 0)
+                .expect("the stand-in was not made");
             let device =
                 evdev::Device::open(stand_in.node()).expect("its node could not be opened");
 

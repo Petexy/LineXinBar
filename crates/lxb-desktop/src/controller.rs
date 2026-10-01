@@ -20,7 +20,8 @@
 //! the machine, and the shell must not read that one: it would be every press
 //! arriving twice, once exactly and once through a mapping database that has
 //! never heard of this pad. So GilRs is asked to skip it wherever GilRs is
-//! read — see [`is_a_stand_in`].
+//! read — see [`is_a_copy`], which skips the pad Steam Input makes for a game
+//! on the same terms.
 //!
 //! Reading a pad this way means every application on the machine can read the
 //! same pad, because a controller never passes through the compositor at all.
@@ -30,9 +31,10 @@
 //! — the shell reads the guide button from the guard, and GilRs reads a
 //! stand-in device with everything else on it.
 
-use std::time::Duration;
+use std::path::{Path, PathBuf};
+use std::time::{Duration, Instant};
 
-use gilrs::{Axis, Button, EventType, Gilrs, GilrsBuilder, MappingSource};
+use gilrs::{Axis, Button, EventType, Gilrs, GilrsBuilder, LinuxGamepadExt, MappingSource};
 
 use crate::model::Action;
 use crate::pad_guard::PadGuard;
@@ -157,7 +159,38 @@ pub struct ControllerInput {
     /// an emulator gives one pad to player one, and the pad in somebody's hands
     /// is the one that should be it. See [`ControllerInput::in_hand`].
     last_touched: Option<Touched>,
+    /// The pads applications read that the shell has taken for itself, for as
+    /// long as it holds the controller. See [`ControllerInput::keep`].
+    taken: Taken,
+    /// Whether a thumb was on any button of the Steam Controller or the Deck at
+    /// its last report, which is the one pad GilRs never sees.
+    raw_buttons_held: bool,
+    /// Whether this session may take pads from applications at all, which only
+    /// the session that owns the machine may. See
+    /// [`ControllerInput::taking_from_applications`].
+    takes_from_applications: bool,
 }
+
+/// What the shell has taken from applications, and whether it is waiting to
+/// give it back. See [`ControllerInput::keep`].
+#[derive(Debug, Default)]
+struct Taken {
+    /// Whether the shell holds the controller now.
+    keeping: bool,
+    /// The pads taken, by GilRs id.
+    pads: Vec<gilrs::GamepadId>,
+    /// Pads that would not be taken, so they are not asked again every poll.
+    refused: Vec<gilrs::GamepadId>,
+    /// When the shell let the controller go, while Steam Input's pads wait for
+    /// every button on every controller to come up before they are given back.
+    giving_back_since: Option<Instant>,
+}
+
+/// The longest Steam Input's pads wait to be given back once the shell has let
+/// the controller go. A button held down for longer than this is a thumb
+/// resting on it in the game, or a second player's, or a button that is stuck,
+/// and the game should have its pad back in every one of those cases.
+const GIVE_BACK_AT_THE_LATEST: Duration = Duration::from_secs(1);
 
 /// Which controller the last thumb was on.
 ///
@@ -183,6 +216,9 @@ impl ControllerInput {
                 triggers_held: (false, false),
                 guide_chorded: false,
                 last_touched: None,
+                taken: Taken::default(),
+                raw_buttons_held: false,
+                takes_from_applications: false,
                 pad: SteamPad::new(false),
                 guard: PadGuard::new(false),
             };
@@ -199,6 +235,9 @@ impl ControllerInput {
                     triggers_held: (false, false),
                     guide_chorded: false,
                     last_touched: None,
+                    taken: Taken::default(),
+                    raw_buttons_held: false,
+                    takes_from_applications: false,
                     pad: SteamPad::new(true),
                     guard: PadGuard::new(true),
                 }
@@ -212,6 +251,9 @@ impl ControllerInput {
                     triggers_held: (false, false),
                     guide_chorded: false,
                     last_touched: None,
+                    taken: Taken::default(),
+                    raw_buttons_held: false,
+                    takes_from_applications: false,
                     // Still worth watching: this pad's Steam button never came
                     // through GilRs in the first place, so whatever stopped
                     // GilRs from starting has not cost us this.
@@ -234,6 +276,182 @@ impl ControllerInput {
     pub fn hand_back(&self) {
         self.guard.hand_back();
         self.pad.hand_back();
+    }
+
+    /// The shell is taking the controller for itself (`true`), or letting it
+    /// go: every pad an application reads is taken from applications for as
+    /// long as the shell holds the controller, and given back once it does
+    /// not.
+    ///
+    /// What is pressed in the Home menu is the shell's, and nothing reading the
+    /// pad from `/dev/input` could be kept from seeing it, because a controller
+    /// never passes through the compositor. The game behind the menu still
+    /// counts as the active window there — it is on screen under the menu's
+    /// glass, and is told so on purpose, or it would stop — so a game that only
+    /// listens while it is active listens to the menu being driven. The pads it
+    /// can read are the shell's own stand-ins, the guard's replacements and
+    /// Steam Input's pads (see [`read_by_applications`]), and each of those is
+    /// now taken with `EVIOCGRAB` on the descriptor GilRs reads it through, so
+    /// it goes on reporting to the shell and to nobody else. Whatever was held
+    /// on one is let go of first — see [`let_go_of_everything`] — or a game
+    /// that saw a trigger go down would keep it down for the whole menu, and
+    /// after.
+    ///
+    /// The stand-ins and the replacements are given back the moment the shell
+    /// lets go, after the hand-back has let go on them of whatever is held and
+    /// is keeping it up until the thumb comes off — see
+    /// [`ControllerInput::hand_back`]. Steam Input's pads are this shell's to
+    /// take and not to write, so they wait instead: until no button is down on
+    /// any controller, with [`GIVE_BACK_AT_THE_LATEST`] as the limit. The press
+    /// that closed the menu is still under the thumb when it closes, and
+    /// Valve's client puts what is held on its pad the moment its game is in
+    /// front again; given back at once, a Steam game would be handed that
+    /// press.
+    ///
+    /// The hand-back happens in every session; the taking only where
+    /// [`ControllerInput::taking_from_applications`] allows it.
+    pub fn keep(&mut self, keep: bool) {
+        if keep == self.taken.keeping {
+            return;
+        }
+        self.taken.keeping = keep;
+        if keep {
+            self.taken.giving_back_since = None;
+            self.taken.refused.clear();
+            if self.takes_from_applications {
+                self.take_what_applications_read();
+            }
+        } else {
+            self.hand_back();
+            self.give_back(|gamepad| {
+                !crate::pads::made_by_steam_input(gamepad.vendor_id(), gamepad.product_id())
+            });
+            self.taken.giving_back_since = Some(Instant::now());
+            self.give_back_once_nothing_is_held();
+        }
+    }
+
+    /// Whether this session may take pads from applications while the shell
+    /// holds the controller, given whether it owns the machine.
+    ///
+    /// Only the session on the machine's own displays may. A nested session —
+    /// a shell inside another desktop, run to try something — reads the same
+    /// controllers as everything else on that desktop, and holds the
+    /// controller whenever its own start screen is up, in a window that may be
+    /// sitting behind everything: taking pads there would leave the games on
+    /// the desktop around it deaf.
+    pub fn taking_from_applications(mut self, owns_the_machine: bool) -> Self {
+        self.takes_from_applications = owns_the_machine;
+        self
+    }
+
+    /// Take every pad applications read that is not taken yet.
+    ///
+    /// Asked on every poll while the shell holds the controller, and not only
+    /// when GilRs says a pad has arrived: the guard names its replacement only
+    /// once it has made it, and GilRs may have found it first.
+    fn take_what_applications_read(&mut self) {
+        let ids: Vec<gilrs::GamepadId> = match self.gilrs.as_ref() {
+            Some(gilrs) => {
+                let replacements = crate::pad_guard::replacement_nodes();
+                gilrs
+                    .gamepads()
+                    .filter(|(id, gamepad)| {
+                        !self.taken.pads.contains(id)
+                            && !self.taken.refused.contains(id)
+                            && read_by_applications(gamepad, &replacements)
+                    })
+                    .map(|(id, _)| id)
+                    .collect()
+            }
+            None => Vec::new(),
+        };
+        for id in ids {
+            self.take(id);
+        }
+    }
+
+    /// Take one pad from applications. See [`ControllerInput::keep`].
+    fn take(&mut self, id: gilrs::GamepadId) {
+        let Some(gamepad) = self
+            .gilrs
+            .as_ref()
+            .and_then(|gilrs| gilrs.connected_gamepad(id))
+        else {
+            return;
+        };
+        let node = gamepad.devpath().to_path_buf();
+        if let Err(err) = let_go_of_everything(&node) {
+            tracing::debug!(node = %node.display(), %err, "could not let go of what was held on a pad before taking it");
+        }
+        match gamepad.set_grabbed(true) {
+            Ok(()) => {
+                tracing::debug!(node = %node.display(), pad = gamepad.os_name(), "took a pad from applications");
+                self.taken.pads.push(id);
+            }
+            Err(err) => {
+                tracing::debug!(node = %node.display(), %err, "could not take a pad from applications");
+                self.taken.refused.push(id);
+            }
+        }
+    }
+
+    /// Give back what is still taken, if the shell has let the controller go
+    /// and nothing is held any more. See [`ControllerInput::keep`].
+    fn give_back_once_nothing_is_held(&mut self) {
+        let Some(since) = self.taken.giving_back_since else {
+            return;
+        };
+        if !self.taken.pads.is_empty()
+            && self.a_button_is_held()
+            && since.elapsed() < GIVE_BACK_AT_THE_LATEST
+        {
+            return;
+        }
+        self.taken.giving_back_since = None;
+        self.taken.refused.clear();
+        self.give_back(|_| true);
+    }
+
+    /// Give back to applications every taken pad `which` picks.
+    fn give_back(&mut self, which: impl Fn(&gilrs::Gamepad<'_>) -> bool) {
+        let Some(gilrs) = self.gilrs.as_ref() else {
+            self.taken.pads.clear();
+            return;
+        };
+        self.taken.pads.retain(|id| {
+            let Some(gamepad) = gilrs.connected_gamepad(*id) else {
+                return false;
+            };
+            if !which(&gamepad) {
+                return true;
+            }
+            if let Err(err) = gamepad.set_grabbed(false) {
+                tracing::debug!(node = %gamepad.devpath().display(), %err, "could not give a pad back to applications");
+            }
+            false
+        });
+    }
+
+    /// Whether a thumb is on any button of any controller this shell reads.
+    ///
+    /// Asked of the controllers themselves and not of the pads applications
+    /// read: those are the copies, and a hand-back has just let go of a held
+    /// button on them while the thumb is still on it.
+    fn a_button_is_held(&self) -> bool {
+        if self.raw_buttons_held || self.guard.buttons_held() {
+            return true;
+        }
+        let Some(gilrs) = self.gilrs.as_ref() else {
+            return false;
+        };
+        let replacements = crate::pad_guard::replacement_nodes();
+        let grabbed = crate::pad_guard::grabbed_nodes();
+        gilrs.gamepads().any(|(_, gamepad)| {
+            !read_by_applications(&gamepad, &replacements)
+                && !grabbed.iter().any(|node| node == gamepad.devpath())
+                && gamepad.state().buttons().any(|(_, data)| data.is_pressed())
+        })
     }
 
     /// Drain device events and return every action due at `now`.
@@ -292,6 +510,7 @@ impl ControllerInput {
         let pad = self.pad.poll();
         if let Some(frame) = &pad {
             stirred |= !frame.held.is_empty();
+            self.raw_buttons_held = !frame.held.is_empty();
             // Which controller the hand is on, for the same reason a GilRs
             // press says so below: the pad somebody has picked up is the pad an
             // emulator should give player one. Held rather than pressed, and
@@ -309,14 +528,42 @@ impl ControllerInput {
             }
         }
 
+        // Pads that came and went in this poll, for what the shell has taken
+        // from applications — see [`ControllerInput::keep`]. Acted on once
+        // GilRs has been let go of below.
+        let mut arrived = Vec::new();
+        let mut gone = Vec::new();
         if let Some(gilrs) = self.gilrs.as_mut() {
             while let Some(event) = gilrs.next_event() {
-                // The stand-in this shell makes for the Steam Controller, which
-                // it has already read above and exactly. Drained rather than
-                // skipped outright: GilRs' cached state and hot-plug list have
-                // to stay current for a device it will keep being offered.
-                if is_a_stand_in(&gilrs.gamepad(event.id)) {
-                    continue;
+                match event.event {
+                    EventType::Connected => arrived.push(event.id),
+                    EventType::Disconnected => gone.push(event.id),
+                    _ => {}
+                }
+                // A copy of a pad read elsewhere: the stand-in this shell makes
+                // for the Steam Controller, which it has already read above
+                // and exactly, or Steam Input's pad for a game, which is a
+                // controller this reads anyway, a second time. Drained rather
+                // than skipped outright: GilRs' cached state and hot-plug list
+                // have to stay current for a device it will keep being offered.
+                {
+                    let gamepad = gilrs.gamepad(event.id);
+                    if is_a_copy(&gamepad) {
+                        if matches!(event.event, EventType::Connected)
+                            && crate::pads::made_by_steam_input(
+                                gamepad.vendor_id(),
+                                gamepad.product_id(),
+                            )
+                        {
+                            tracing::info!(
+                                id = %event.id,
+                                name = gamepad.name(),
+                                "Steam Input's pad for a game connected; \
+                                 the shell reads the controller behind it instead"
+                            );
+                        }
+                        continue;
+                    }
                 }
                 match event.event {
                     EventType::Connected => {
@@ -399,6 +646,23 @@ impl ControllerInput {
                 }
             }
         }
+
+        // A pad that went away took its grab with it, and one that arrives
+        // while the shell holds the controller is taken like the rest: Steam
+        // makes its pad for a game when the game starts, and the guard makes a
+        // replacement for every pad switched on. GilRs may hand a pad that has
+        // just arrived the id of one that has gone, so a pad that arrived is
+        // forgotten too and looked at afresh.
+        self.taken
+            .pads
+            .retain(|id| !gone.contains(id) && !arrived.contains(id));
+        self.taken
+            .refused
+            .retain(|id| !gone.contains(id) && !arrived.contains(id));
+        if self.taken.keeping && self.takes_from_applications {
+            self.take_what_applications_read();
+        }
+        self.give_back_once_nothing_is_held();
 
         // The guarded guide button's other half, last of everything: by here a
         // chord spelled in this same poll has already claimed the hold, and a
@@ -718,7 +982,7 @@ struct Sticks {
 /// one answer for as long as it has asked at all.
 fn pushed_pad(gilrs: &Gilrs) -> Option<gilrs::GamepadId> {
     gilrs.gamepads().find_map(|(id, gamepad)| {
-        if is_a_stand_in(&gamepad) {
+        if is_a_copy(&gamepad) {
             return None;
         }
         let pushed = stick_is_pushed((
@@ -774,8 +1038,9 @@ impl Sticks {
         // repeats while held.
         for (_, gamepad) in gilrs.gamepads() {
             // Read from its report instead, and merged in by
-            // [`Sticks::merge_pad`]. See the module note.
-            if is_a_stand_in(&gamepad) {
+            // [`Sticks::merge_pad`], or read where Steam Input copied it
+            // from. See the module note.
+            if is_a_copy(&gamepad) {
                 continue;
             }
             dpad[Direction::Left.index()] |= gamepad.is_pressed(Button::DPadLeft);
@@ -842,14 +1107,132 @@ fn trigger_travel(gamepad: &gilrs::Gamepad<'_>, button: Button, axis: Axis) -> f
     }
 }
 
-/// Whether a controller GilRs is offering is the gamepad this shell makes for
-/// the Steam Controller, which the shell reads from that pad's report instead.
+/// Whether a controller GilRs is offering is a copy of one the shell already
+/// reads where it comes from.
 ///
 /// Not a rule about ignoring a controller — the pad works, and everything else
 /// on the machine reads exactly this device. It is a rule about reading one pad
-/// once. See [`crate::steam_hid::is_a_stand_in`], which owns the answer.
-fn is_a_stand_in(gamepad: &gilrs::Gamepad<'_>) -> bool {
-    crate::steam_hid::is_a_stand_in(gamepad.vendor_id(), gamepad.product_id())
+/// once, and there are two copies it covers.
+///
+/// The gamepad this shell makes for the Steam Controller and the Deck's own
+/// controls, which the shell reads from the pad's report instead. See
+/// [`crate::steam_hid::is_a_stand_in`], which owns that answer.
+///
+/// And the pad Steam Input makes up for a game. Valve's client takes over a
+/// controller it can read — the Deck's controls and the Steam Controller from
+/// their raw nodes, most other pads through theirs — and repeats it onto a
+/// virtual Xbox pad of its own for as long as it believes a game is in front.
+/// The controllers behind it are ones this shell reads itself — the Deck's and
+/// the Steam Controller's from their raw nodes, every other pad through the
+/// guard's copy — so the pad is the same presses a second time, milliseconds
+/// later. What the client believes is in front is not what the shell shows,
+/// either: with the Home menu open over a game, the game is still on screen
+/// under its glass, and the client's own log has it going from the game to the
+/// desktop and back again within a single second. Measured on a Steam Deck on
+/// 2026-10-01, with TEKKEN 8 under the menu: one press of A on Close closed
+/// System Monitor twice, ten milliseconds apart, and one press of A on Start
+/// screen brought the start screen up and then started the tile under its
+/// highlight — the application that had just been closed. Valve's log had the
+/// game in front both times.
+fn is_a_copy(gamepad: &gilrs::Gamepad<'_>) -> bool {
+    let (vendor, product) = (gamepad.vendor_id(), gamepad.product_id());
+    crate::steam_hid::is_a_stand_in(vendor, product)
+        || crate::pads::made_by_steam_input(vendor, product)
+}
+
+/// Whether a pad GilRs is offering is one that applications read in place of
+/// a controller: this shell's own stand-in, Steam Input's pad for a game, or
+/// one of the guard's replacements, which only its node tells from the pad it
+/// stands in for.
+///
+/// Every one of them is a gamepad and nothing else — none of them can type —
+/// so taking one from applications takes nothing from the compositor's
+/// keyboard. A pad the guard left alone is not one of them: the guard leaves a
+/// pad that can type, and one somebody else has taken. See
+/// [`ControllerInput::keep`].
+fn read_by_applications(gamepad: &gilrs::Gamepad<'_>, replacements: &[PathBuf]) -> bool {
+    is_a_copy(gamepad) || replacements.iter().any(|node| node == gamepad.devpath())
+}
+
+/// Let go, for every reader of the pad at `node`, of whatever is held on it:
+/// every button up, every stick and hat back in the middle, every trigger back
+/// at rest.
+///
+/// Written into the pad's own event node, which hands a write to every program
+/// reading it as though the pad had said it. Asked just before the pad is
+/// taken, so the game behind the Home menu finds its controller lying still
+/// rather than with whatever was down when the menu opened stuck down for as
+/// long as the menu is up. See [`at_rest`] for which axes this is sure of.
+///
+/// Buttons and axes only, and never rumble. A game goes on driving its rumble
+/// while the pad is taken — a grab keeps the pad's reports from every other
+/// reader, not their writes, which pass through the same handle — so the shell
+/// has nothing of rumble to set right. And it must not try: every pad taken
+/// here is a `uinput` device, and a rumble event written into one is queued for
+/// its owner — the guard, or Valve's client — on the same sixteen-event ring
+/// the game's rumble uploads wait on. Measured on a test pad, a stop for every
+/// slot in one write filled that ring and reached the owner as nothing at all,
+/// and an upload lost that way leaves the game that sent it waiting thirty
+/// seconds.
+fn let_go_of_everything(node: &Path) -> std::io::Result<()> {
+    use ::evdev::{EventType, InputEvent};
+
+    let mut device = ::evdev::Device::open(node)?;
+    let mut events: Vec<InputEvent> = device
+        .get_key_state()?
+        .iter()
+        .map(|key| InputEvent::new(EventType::KEY.0, key.0, 0))
+        .collect();
+    let axes: Vec<(::evdev::AbsoluteAxisCode, ::evdev::AbsInfo)> = device.get_absinfo()?.collect();
+    let right_stick = axes
+        .iter()
+        .any(|(axis, _)| *axis == ::evdev::AbsoluteAxisCode::ABS_RX);
+    for (axis, info) in &axes {
+        let Some(rest) = at_rest(*axis, info.minimum(), info.maximum(), right_stick) else {
+            continue;
+        };
+        if info.value() != rest {
+            events.push(InputEvent::new(EventType::ABSOLUTE.0, axis.0, rest));
+        }
+    }
+    if events.is_empty() {
+        return Ok(());
+    }
+    events.push(InputEvent::new(EventType::SYNCHRONIZATION.0, 0, 0));
+    device.send_events(&events)
+}
+
+/// Where an axis rests when nothing is touching it, for the axes where that can
+/// be known from what the pad says about itself.
+///
+/// A stick rests in the middle of its range and a hat at nought — the Deck's
+/// triggers, which `hid-steam` reports as hats running from nought, rest there
+/// too. `ABS_Z` and `ABS_RZ` are the triggers on a pad that has its right
+/// stick on `ABS_RX` and `ABS_RY`, every pad shaped like an Xbox one, and rest
+/// at the bottom of their travel; on a pad without those they are its right
+/// stick, and which of the two a pad means cannot be read off it, so they are
+/// left where they are. So is everything else.
+fn at_rest(
+    axis: ::evdev::AbsoluteAxisCode,
+    minimum: i32,
+    maximum: i32,
+    right_stick: bool,
+) -> Option<i32> {
+    use ::evdev::AbsoluteAxisCode as A;
+    let middle = ((i64::from(minimum) + i64::from(maximum)) / 2) as i32;
+    match axis {
+        A::ABS_X | A::ABS_Y | A::ABS_RX | A::ABS_RY => Some(middle),
+        A::ABS_Z | A::ABS_RZ if right_stick => Some(minimum),
+        A::ABS_GAS | A::ABS_BRAKE => Some(minimum),
+        _ if (A::ABS_HAT0X.0..=A::ABS_HAT3Y.0).contains(&axis.0) => {
+            Some(if minimum < 0 && maximum > 0 {
+                0
+            } else {
+                minimum
+            })
+        }
+        _ => None,
+    }
 }
 
 /// How far a D-pad reported as an axis has to be pushed to count as pressed.
@@ -2597,7 +2980,7 @@ mod hardware_tests {
     use ::evdev::uinput::VirtualDevice;
     use ::evdev::{
         AbsInfo, AbsoluteAxisCode, AbsoluteAxisEvent, AttributeSet, BusType, InputId, KeyCode,
-        UinputAbsSetup,
+        KeyEvent, UinputAbsSetup,
     };
     use std::io::ErrorKind;
     use std::path::PathBuf;
@@ -2658,6 +3041,51 @@ mod hardware_tests {
                 std::io::Error::new(ErrorKind::NotFound, "the test pad never got a device node")
             })?;
         Ok((pad, node))
+    }
+
+    /// A pad with only a stick and the two face buttons, under ids of the
+    /// caller's choosing — which is the whole of what the shell knows Steam
+    /// Input's pad by.
+    fn make_pad_as(name: &str, id: InputId) -> std::io::Result<(VirtualDevice, PathBuf)> {
+        let keys: AttributeSet<KeyCode> = [KeyCode::BTN_SOUTH, KeyCode::BTN_EAST]
+            .into_iter()
+            .collect();
+        let mut pad = VirtualDevice::builder()?
+            .name(name)
+            .input_id(id)
+            .with_keys(&keys)?
+            .with_absolute_axis(&stick(AbsoluteAxisCode::ABS_X))?
+            .with_absolute_axis(&stick(AbsoluteAxisCode::ABS_Y))?
+            .build()?;
+        let node = pad
+            .enumerate_dev_nodes_blocking()?
+            .flatten()
+            .find(|node| {
+                node.file_name()
+                    .is_some_and(|name| name.as_encoded_bytes().starts_with(b"event"))
+            })
+            .ok_or_else(|| {
+                std::io::Error::new(ErrorKind::NotFound, "the test pad never got a device node")
+            })?;
+        Ok((pad, node))
+    }
+
+    /// The shell's controller input on this GilRs and nothing else: no Steam
+    /// Controller driver and no guard, which would go looking for real pads.
+    fn reading_only(gilrs: Gilrs) -> ControllerInput {
+        ControllerInput {
+            gilrs: Some(gilrs),
+            navigation: Navigation::default(),
+            dpad_held: [false; Direction::COUNT],
+            triggers_held: (false, false),
+            pad: SteamPad::new(false),
+            guard: PadGuard::new(false),
+            guide_chorded: false,
+            last_touched: None,
+            taken: Taken::default(),
+            raw_buttons_held: false,
+            takes_from_applications: true,
+        }
     }
 
     /// Drain GilRs until its cached state is current, which is what every
@@ -2743,5 +3171,631 @@ mod hardware_tests {
             input.trigger_edges(sticks.triggers),
             vec![(BTN_RIGHT, false)]
         );
+    }
+
+    /// A press on the pad Steam Input makes for a game does nothing in the
+    /// shell, and the same press on any other pad does what it always did.
+    ///
+    /// The first half is the Steam Deck of 2026-10-01: Valve's client repeated
+    /// the Deck's own A onto its virtual pad while the Home menu was open over
+    /// a game, and the shell, which had already read that A off the Deck,
+    /// answered it a second time — closing an application twice, and starting
+    /// the tile under the start screen's highlight right after the menu had
+    /// brought the start screen up. The second half keeps the test honest: a
+    /// pad GilRs never delivered would pass the first half too.
+    ///
+    /// The button pressed is B, not the A of the report. The other hardware
+    /// tests press A on pads of their own, alongside this one, and the shell
+    /// reads every pad on the machine.
+    #[test]
+    fn a_press_steam_input_repeated_is_not_answered_twice() {
+        if !uinput_is_available() {
+            crate::skipped("/dev/uinput cannot be opened here");
+            return;
+        }
+        // The tests below take every pad with Steam Input's ids while they
+        // hold the controller, this one's included.
+        let _guard = crate::pad_guard::serial();
+        let _driver = crate::steam_hid::serial();
+        const REPEATED: &str = "LineXinBar Test Steam Input";
+        const ORDINARY: &str = "LineXinBar Test Ordinary Pad";
+        let (mut repeated, repeated_node) = make_pad_as(
+            REPEATED,
+            InputId::new(BusType::BUS_USB, 0x28de, 0x11ff, 0x0001),
+        )
+        .expect("a pad with Steam Input's ids can be made");
+        let (mut ordinary, ordinary_node) =
+            make_pad_as(ORDINARY, test_id()).expect("an ordinary test pad can be made");
+
+        let deadline = Instant::now() + PATIENCE;
+        let mut gilrs = loop {
+            if std::fs::File::open(&repeated_node).is_ok()
+                && std::fs::File::open(&ordinary_node).is_ok()
+            {
+                if let Ok(gilrs) = Gilrs::new() {
+                    let seen = |name: &str| gilrs.gamepads().any(|(_, pad)| pad.os_name() == name);
+                    if seen(REPEATED) && seen(ORDINARY) {
+                        break gilrs;
+                    }
+                }
+            }
+            if Instant::now() >= deadline {
+                crate::skipped("the test pads never reached GilRs");
+                return;
+            }
+            std::thread::sleep(Duration::from_millis(50));
+        };
+        settle(&mut gilrs);
+
+        let mut input = reading_only(gilrs);
+        let started = Instant::now();
+        let mut press = |pad: &mut VirtualDevice| {
+            pad.emit(&[*KeyEvent::new(KeyCode::BTN_EAST, 1)])
+                .expect("the test pad can press B");
+            pad.emit(&[*KeyEvent::new(KeyCode::BTN_EAST, 0)])
+                .expect("and let go of it");
+            let mut actions = Vec::new();
+            let until = Instant::now() + Duration::from_millis(300);
+            while Instant::now() < until {
+                actions.extend(input.poll(started.elapsed(), true).actions);
+                std::thread::sleep(POLL_INTERVAL);
+            }
+            actions
+        };
+
+        let from_steam_input = press(&mut repeated);
+        assert!(
+            !from_steam_input.contains(&Action::Back),
+            "Steam Input's copy of a press is not answered: {from_steam_input:?}"
+        );
+        let from_the_pad = press(&mut ordinary);
+        assert!(
+            from_the_pad.contains(&Action::Back),
+            "the same press on any other pad is: {from_the_pad:?}"
+        );
+    }
+    /// A pad shaped like an Xbox one — two sticks, two triggers as axes — under
+    /// ids of the caller's choosing.
+    fn make_xbox_shaped(name: &str, id: InputId) -> std::io::Result<(VirtualDevice, PathBuf)> {
+        let keys: AttributeSet<KeyCode> = [KeyCode::BTN_SOUTH, KeyCode::BTN_EAST]
+            .into_iter()
+            .collect();
+        let mut pad = VirtualDevice::builder()?
+            .name(name)
+            .input_id(id)
+            .with_keys(&keys)?
+            .with_absolute_axis(&stick(AbsoluteAxisCode::ABS_X))?
+            .with_absolute_axis(&stick(AbsoluteAxisCode::ABS_Y))?
+            .with_absolute_axis(&stick(AbsoluteAxisCode::ABS_RX))?
+            .with_absolute_axis(&stick(AbsoluteAxisCode::ABS_RY))?
+            .with_absolute_axis(&trigger(AbsoluteAxisCode::ABS_Z))?
+            .with_absolute_axis(&trigger(AbsoluteAxisCode::ABS_RZ))?
+            .build()?;
+        let node = pad
+            .enumerate_dev_nodes_blocking()?
+            .flatten()
+            .find(|node| {
+                node.file_name()
+                    .is_some_and(|name| name.as_encoded_bytes().starts_with(b"event"))
+            })
+            .ok_or_else(|| {
+                std::io::Error::new(ErrorKind::NotFound, "the test pad never got a device node")
+            })?;
+        Ok((pad, node))
+    }
+
+    /// Everything a reader of a pad has been told since it last asked, as
+    /// `(type, code, value)`, reports left out.
+    fn heard(reader: &mut ::evdev::Device) -> Vec<(u16, u16, i32)> {
+        let mut said = Vec::new();
+        while let Ok(events) = reader.fetch_events() {
+            let events: Vec<_> = events.collect();
+            if events.is_empty() {
+                break;
+            }
+            said.extend(
+                events
+                    .into_iter()
+                    .filter(|event| event.event_type() != ::evdev::EventType::SYNCHRONIZATION)
+                    .map(|event| (event.event_type().0, event.code(), event.value())),
+            );
+        }
+        said
+    }
+
+    /// While the shell holds the controller, a game reading the pad hears
+    /// nothing of it, and finds it let go of; once the shell lets the
+    /// controller go and every button is up, the game hears it again.
+    ///
+    /// The game here is a second reader of a pad with Steam Input's ids, which
+    /// is what TEKKEN 8 reads on a Steam Deck, opened the way a game opens it.
+    /// The other pad is a controller with a button still held when the menu
+    /// closes — the thumb on the `A` that closed it.
+    #[test]
+    fn a_game_hears_nothing_of_the_pad_while_the_shell_holds_the_controller() {
+        if !uinput_is_available() {
+            crate::skipped("/dev/uinput cannot be opened here");
+            return;
+        }
+        // Every pad on the machine is taken here, so nothing else that reads a
+        // pad of its own may run beside it.
+        let _guard = crate::pad_guard::serial();
+        let _driver = crate::steam_hid::serial();
+        const STEAMS: &str = "LineXinBar Test Taken Pad";
+        const OTHER: &str = "LineXinBar Test Held Elsewhere";
+        let (mut steams, steams_node) = make_xbox_shaped(
+            STEAMS,
+            InputId::new(BusType::BUS_USB, 0x28de, 0x11ff, 0x0001),
+        )
+        .expect("a pad with Steam Input's ids can be made");
+        let (mut other, other_node) = make_pad_as(
+            OTHER,
+            InputId::new(BusType::BUS_USB, 0x9a7e, 0x4d22, 0x0001),
+        )
+        .expect("another pad can be made");
+
+        let deadline = Instant::now() + PATIENCE;
+        let gilrs = loop {
+            if std::fs::File::open(&steams_node).is_ok() && std::fs::File::open(&other_node).is_ok()
+            {
+                if let Ok(gilrs) = Gilrs::new() {
+                    let seen = |name: &str| gilrs.gamepads().any(|(_, pad)| pad.os_name() == name);
+                    if seen(STEAMS) && seen(OTHER) {
+                        break gilrs;
+                    }
+                }
+            }
+            if Instant::now() >= deadline {
+                crate::skipped("the test pads never reached GilRs");
+                return;
+            }
+            std::thread::sleep(Duration::from_millis(50));
+        };
+        let mut game = ::evdev::Device::open(&steams_node).expect("the game can open the pad");
+        game.set_nonblocking(true)
+            .expect("and read it without waiting");
+        let mut input = reading_only(gilrs);
+        let started = Instant::now();
+        let tick = |input: &mut ControllerInput, times: usize| {
+            for _ in 0..times {
+                input.poll(started.elapsed(), true);
+                std::thread::sleep(POLL_INTERVAL);
+            }
+        };
+        let key = |code: KeyCode, value| *KeyEvent::new(code, value);
+        let axis = |code: AbsoluteAxisCode, value| *AbsoluteAxisEvent::new(code, value);
+        tick(&mut input, 10);
+        heard(&mut game);
+
+        // In the game: A down, the right trigger pulled, the left stick pushed.
+        steams
+            .emit(&[
+                key(KeyCode::BTN_SOUTH, 1),
+                axis(AbsoluteAxisCode::ABS_RZ, 255),
+                axis(AbsoluteAxisCode::ABS_X, 20_000),
+            ])
+            .expect("the pad can be played");
+        tick(&mut input, 3);
+        assert!(
+            heard(&mut game).contains(&(0x01, 0x130, 1)),
+            "the game is playing"
+        );
+
+        // The Home menu opens, and the game finds its controller let go of.
+        input.keep(true);
+        let let_go = heard(&mut game);
+        for said in [(0x01, 0x130, 0), (0x03, 0x05, 0), (0x03, 0x00, 0)] {
+            assert!(let_go.contains(&said), "{said:?} is not among {let_go:?}");
+        }
+
+        // The menu is driven, and the game hears none of it — while the shell,
+        // which reads the pad through the very descriptor holding it, does.
+        steams
+            .emit(&[key(KeyCode::BTN_EAST, 1)])
+            .expect("the pad can be pressed");
+        tick(&mut input, 6);
+        assert_eq!(
+            heard(&mut game),
+            vec![],
+            "the game hears nothing of the menu"
+        );
+        {
+            let gilrs = input.gilrs.as_ref().expect("GilRs is there");
+            let (id, _) = gilrs
+                .gamepads()
+                .find(|(_, pad)| pad.os_name() == STEAMS)
+                .expect("the pad is still there");
+            assert!(
+                gilrs
+                    .gamepad(id)
+                    .state()
+                    .buttons()
+                    .any(|(code, data)| data.is_pressed() && code.into_u32() == evdev::BTN_EAST),
+                "the shell still hears the pad it took"
+            );
+        }
+        steams
+            .emit(&[key(KeyCode::BTN_EAST, 0)])
+            .expect("and let go of");
+
+        // The menu closes with a thumb still on a button of another controller,
+        // and the pad stays the shell's until it comes up.
+        other
+            .emit(&[key(KeyCode::BTN_SOUTH, 1)])
+            .expect("the other pad can be held");
+        tick(&mut input, 6);
+        input.keep(false);
+        tick(&mut input, 6);
+        steams
+            .emit(&[key(KeyCode::BTN_EAST, 1), key(KeyCode::BTN_EAST, 0)])
+            .expect("the pad can be pressed");
+        tick(&mut input, 6);
+        assert_eq!(
+            heard(&mut game),
+            vec![],
+            "nothing is given back while a button is still held"
+        );
+
+        other
+            .emit(&[key(KeyCode::BTN_SOUTH, 0)])
+            .expect("and let go of");
+        let deadline = Instant::now() + GIVE_BACK_AT_THE_LATEST + PATIENCE;
+        while !input.taken.pads.is_empty() && Instant::now() < deadline {
+            tick(&mut input, 1);
+        }
+        assert!(input.taken.pads.is_empty(), "the pad was given back");
+        steams
+            .emit(&[key(KeyCode::BTN_EAST, 1), key(KeyCode::BTN_EAST, 0)])
+            .expect("the pad can be pressed");
+        std::thread::sleep(Duration::from_millis(50));
+        assert!(
+            heard(&mut game).contains(&(0x01, 0x131, 1)),
+            "the game hears the pad again"
+        );
+    }
+    /// A session that does not own the machine — a shell nested inside another
+    /// desktop — takes nothing from the applications around it, however long
+    /// its own start screen holds the controller.
+    #[test]
+    fn a_nested_session_takes_no_pad_from_applications() {
+        if !uinput_is_available() {
+            crate::skipped("/dev/uinput cannot be opened here");
+            return;
+        }
+        let _guard = crate::pad_guard::serial();
+        let _driver = crate::steam_hid::serial();
+        const STEAMS: &str = "LineXinBar Test Nested Steam Pad";
+        let (mut steams, node) = make_xbox_shaped(
+            STEAMS,
+            InputId::new(BusType::BUS_USB, 0x28de, 0x11ff, 0x0001),
+        )
+        .expect("a pad with Steam Input's ids can be made");
+        let deadline = Instant::now() + PATIENCE;
+        let gilrs = loop {
+            if std::fs::File::open(&node).is_ok() {
+                if let Ok(gilrs) = Gilrs::new() {
+                    if gilrs.gamepads().any(|(_, pad)| pad.os_name() == STEAMS) {
+                        break gilrs;
+                    }
+                }
+            }
+            if Instant::now() >= deadline {
+                crate::skipped("the test pad never reached GilRs");
+                return;
+            }
+            std::thread::sleep(Duration::from_millis(50));
+        };
+        let mut game = ::evdev::Device::open(&node).expect("the game can open the pad");
+        game.set_nonblocking(true)
+            .expect("and read it without waiting");
+        let mut input = reading_only(gilrs).taking_from_applications(false);
+        let started = Instant::now();
+        input.keep(true);
+        for _ in 0..6 {
+            input.poll(started.elapsed(), true);
+            std::thread::sleep(POLL_INTERVAL);
+        }
+        assert!(input.taken.pads.is_empty(), "nothing was taken");
+        heard(&mut game);
+        steams
+            .emit(&[*KeyEvent::new(KeyCode::BTN_EAST, 1)])
+            .expect("the pad can be pressed");
+        std::thread::sleep(Duration::from_millis(30));
+        assert!(
+            heard(&mut game).contains(&(0x01, 0x131, 1)),
+            "the game beside the nested session still hears its pad"
+        );
+    }
+
+    /// A pad with rumble, under ids of the caller's choosing, that answers no
+    /// upload until somebody reads its descriptor — see
+    /// [`a_guarded_pad_the_shell_has_taken_still_drives_the_shell`].
+    fn make_rumbling_pad(name: &str, id: InputId) -> std::io::Result<(VirtualDevice, PathBuf)> {
+        let keys: AttributeSet<KeyCode> = [KeyCode::BTN_SOUTH, KeyCode::BTN_EAST]
+            .into_iter()
+            .collect();
+        let rumble: AttributeSet<::evdev::FFEffectCode> =
+            [::evdev::FFEffectCode::FF_RUMBLE].into_iter().collect();
+        let mut pad = VirtualDevice::builder()?
+            .name(name)
+            .input_id(id)
+            .with_keys(&keys)?
+            .with_absolute_axis(&stick(AbsoluteAxisCode::ABS_X))?
+            .with_absolute_axis(&stick(AbsoluteAxisCode::ABS_Y))?
+            .with_ff(&rumble)?
+            .with_ff_effects_max(16)
+            .build()?;
+        let node = pad
+            .enumerate_dev_nodes_blocking()?
+            .flatten()
+            .find(|node| {
+                node.file_name()
+                    .is_some_and(|name| name.as_encoded_bytes().starts_with(b"event"))
+            })
+            .ok_or_else(|| {
+                std::io::Error::new(ErrorKind::NotFound, "the test pad never got a device node")
+            })?;
+        // SAFETY: the descriptor is the pad's own and stays open for the call.
+        unsafe {
+            let fd = std::os::fd::AsRawFd::as_raw_fd(&pad);
+            let flags = libc::fcntl(fd, libc::F_GETFL);
+            libc::fcntl(fd, libc::F_SETFL, flags | libc::O_NONBLOCK);
+        }
+        Ok((pad, node))
+    }
+
+    /// The road every controller that is not Valve's takes: the guard's
+    /// replacement, which the shell reads like a game does.
+    ///
+    /// Taken while the shell holds the controller, it still drives the shell —
+    /// the grab is on the descriptor the shell reads it through — and the game
+    /// hears none of it. Its rumble is untouched: taking the pad writes nothing
+    /// to the pad's owner, whose sixteen-event ring is where the game's rumble
+    /// uploads wait, and what the game writes to the pad — uploads, plays and
+    /// stops — still reaches it while the pad is taken.
+    ///
+    /// The pad here stands in for a replacement on the guard's published list,
+    /// with no guard and no pad behind it: this is about what the shell does
+    /// with a replacement, and the guard's repeating is tested beside it.
+    #[test]
+    fn a_guarded_pad_the_shell_has_taken_still_drives_the_shell() {
+        use ::evdev::{EventSummary, FFEffectData, FFEffectKind, FFReplay, InputEvent, UInputCode};
+        use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+        use std::sync::{Arc, Mutex};
+
+        if !uinput_is_available() {
+            crate::skipped("/dev/uinput cannot be opened here");
+            return;
+        }
+        let _guard = crate::pad_guard::serial();
+        let _driver = crate::steam_hid::serial();
+        const NAME: &str = "LineXinBar Test Replacement";
+        let (pad, node) =
+            make_rumbling_pad(NAME, InputId::new(BusType::BUS_USB, 0x9a7e, 0x4d23, 0x0001))
+                .expect("a test pad with rumble can be made");
+        crate::pad_guard::pretend_guarded(
+            0x9a7e,
+            0x4d23,
+            Path::new("/dev/input/lxb-test-original"),
+            &node,
+        );
+
+        // The pad answers rumble the way the guard answers it for a real pad,
+        // on a thread of its own: an upload waits until it is answered.
+        let pad = Arc::new(Mutex::new(pad));
+        let stop = Arc::new(AtomicBool::new(false));
+        let plays = Arc::new(AtomicUsize::new(0));
+        let stops = Arc::new(AtomicUsize::new(0));
+        let answering = {
+            let (pad, stop) = (Arc::clone(&pad), Arc::clone(&stop));
+            let (plays, stops) = (Arc::clone(&plays), Arc::clone(&stops));
+            std::thread::spawn(move || {
+                while !stop.load(Ordering::Relaxed) {
+                    {
+                        let mut pad = pad.lock().unwrap_or_else(|err| err.into_inner());
+                        let events: Vec<InputEvent> = match pad.fetch_events() {
+                            Ok(events) => events.collect(),
+                            Err(_) => Vec::new(),
+                        };
+                        for event in events {
+                            match event.destructure() {
+                                EventSummary::UInput(event, UInputCode::UI_FF_UPLOAD, _) => {
+                                    if let Ok(mut upload) = pad.process_ff_upload(event) {
+                                        upload.set_retval(0);
+                                    }
+                                }
+                                EventSummary::UInput(event, UInputCode::UI_FF_ERASE, _) => {
+                                    if let Ok(mut erase) = pad.process_ff_erase(event) {
+                                        erase.set_retval(0);
+                                    }
+                                }
+                                EventSummary::ForceFeedback(_, _, 0) => {
+                                    stops.fetch_add(1, Ordering::Relaxed);
+                                }
+                                EventSummary::ForceFeedback(..) => {
+                                    plays.fetch_add(1, Ordering::Relaxed);
+                                }
+                                _ => {}
+                            }
+                        }
+                    }
+                    std::thread::sleep(Duration::from_micros(500));
+                }
+            })
+        };
+        let wait_for = |count: &AtomicUsize, at_least: usize| {
+            let deadline = Instant::now() + PATIENCE;
+            while count.load(Ordering::Relaxed) < at_least && Instant::now() < deadline {
+                std::thread::sleep(Duration::from_millis(2));
+            }
+            count.load(Ordering::Relaxed)
+        };
+
+        let deadline = Instant::now() + PATIENCE;
+        let gilrs = loop {
+            if std::fs::File::open(&node).is_ok() {
+                if let Ok(gilrs) = Gilrs::new() {
+                    if gilrs
+                        .gamepads()
+                        .any(|(_, pad)| pad.devpath() == node.as_path())
+                    {
+                        break gilrs;
+                    }
+                }
+            }
+            if Instant::now() >= deadline {
+                stop.store(true, Ordering::Relaxed);
+                let _ = answering.join();
+                crate::skipped("the test pad never reached GilRs");
+                return;
+            }
+            std::thread::sleep(Duration::from_millis(50));
+        };
+        let mut game = ::evdev::Device::open(&node).expect("the game can open the pad");
+        game.set_nonblocking(true)
+            .expect("and read it without waiting");
+        let mut input = reading_only(gilrs);
+        let started = Instant::now();
+        let tick = |input: &mut ControllerInput, times: usize| {
+            let mut actions = Vec::new();
+            for _ in 0..times {
+                actions.extend(input.poll(started.elapsed(), true).actions);
+                std::thread::sleep(POLL_INTERVAL);
+            }
+            actions
+        };
+        let press = |pad: &Arc<Mutex<VirtualDevice>>, value| {
+            pad.lock()
+                .unwrap_or_else(|err| err.into_inner())
+                .emit(&[*KeyEvent::new(KeyCode::BTN_SOUTH, value)])
+                .expect("the pad can press A");
+        };
+        tick(&mut input, 10);
+
+        // The game shakes the pad.
+        let mut effect = game
+            .upload_ff_effect(FFEffectData {
+                direction: 0,
+                trigger: Default::default(),
+                replay: FFReplay {
+                    length: 0xffff,
+                    delay: 0,
+                },
+                kind: FFEffectKind::Rumble {
+                    strong_magnitude: 0xffff,
+                    weak_magnitude: 0x7fff,
+                },
+            })
+            .expect("the game can upload rumble");
+        effect.play(1).expect("and play it");
+        assert_eq!(wait_for(&plays, 1), 1, "the game's rumble reached the pad");
+
+        // The Home menu opens and the pad is taken, with nothing written to
+        // the pad's owner on the way: whatever the shell put on that ring could
+        // only crowd out what the game is waiting on there.
+        input.keep(true);
+        std::thread::sleep(Duration::from_millis(30));
+        assert_eq!(
+            (plays.load(Ordering::Relaxed), stops.load(Ordering::Relaxed)),
+            (1, 0),
+            "taking the pad says nothing to its owner"
+        );
+        // And a game changing its rumble while the pad is taken is answered
+        // at once.
+        let asked = Instant::now();
+        effect
+            .update(FFEffectData {
+                direction: 0,
+                trigger: Default::default(),
+                replay: FFReplay {
+                    length: 0xffff,
+                    delay: 0,
+                },
+                kind: FFEffectKind::Rumble {
+                    strong_magnitude: 0,
+                    weak_magnitude: 0,
+                },
+            })
+            .expect("the game can change its rumble while the pad is taken");
+        assert!(
+            asked.elapsed() < Duration::from_secs(1),
+            "the upload is answered rather than lost: {:?}",
+            asked.elapsed()
+        );
+
+        // A pressed on the pad, as the guard repeats it from the real one: the
+        // shell answers it, the game does not hear it.
+        heard(&mut game);
+        press(&pad, 1);
+        let actions = tick(&mut input, 6);
+        press(&pad, 0);
+        tick(&mut input, 3);
+        assert!(
+            actions.contains(&Action::Launch),
+            "the shell still drives its menu with the pad it took: {actions:?}"
+        );
+        let in_the_menu = heard(&mut game);
+        assert!(
+            !in_the_menu
+                .iter()
+                .any(|&(kind, code, _)| (kind, code) == (0x01, 0x130)),
+            "the game hears nothing of the menu: {in_the_menu:?}"
+        );
+
+        // And the game still drives its rumble: a play and a stop written while
+        // the pad is taken both reach the pad.
+        effect.play(1).expect("the game can play its rumble");
+        assert!(
+            wait_for(&plays, 2) >= 2,
+            "a play while the pad is taken shakes it"
+        );
+        effect.stop().expect("and stop it");
+        assert!(
+            wait_for(&stops, 1) >= 1,
+            "and a stop while the pad is taken stops it"
+        );
+
+        // Given back the moment the shell lets go, even with a thumb on
+        // another controller — a second player's, say. The guard's hand-back
+        // is what keeps a held button from the game here; only Steam Input's
+        // pads, which this shell cannot write, wait for the thumb.
+        let (mut other, other_node) = make_pad_as(
+            "LineXinBar Test Second Player",
+            InputId::new(BusType::BUS_USB, 0x9a7e, 0x4d24, 0x0001),
+        )
+        .expect("a second pad can be made");
+        let deadline = Instant::now() + PATIENCE;
+        while !input.gilrs.as_ref().is_some_and(|gilrs| {
+            gilrs
+                .gamepads()
+                .any(|(_, pad)| pad.devpath() == other_node.as_path())
+        }) && Instant::now() < deadline
+        {
+            tick(&mut input, 1);
+        }
+        other
+            .emit(&[*KeyEvent::new(KeyCode::BTN_SOUTH, 1)])
+            .expect("the second player holds A");
+        tick(&mut input, 3);
+        input.keep(false);
+        let still_taken = {
+            let gilrs = input.gilrs.as_ref().expect("GilRs is there");
+            input.taken.pads.iter().any(|id| {
+                gilrs
+                    .connected_gamepad(*id)
+                    .is_some_and(|pad| pad.devpath() == node.as_path())
+            })
+        };
+        assert!(!still_taken, "the replacement is given back at once");
+        other
+            .emit(&[*KeyEvent::new(KeyCode::BTN_SOUTH, 0)])
+            .expect("and lets go");
+
+        // Erasing is a question the pad's thread answers, so it goes first.
+        drop(effect);
+        drop(game);
+        std::thread::sleep(Duration::from_millis(20));
+        stop.store(true, Ordering::Relaxed);
+        let _ = answering.join();
     }
 }

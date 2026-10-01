@@ -38,12 +38,49 @@ struct VirtualOutput {
     surface: X11Surface,
     output: Output,
     damage_tracker: OutputDamageTracker,
-    _global: GlobalId,
+    /// Removed with the display when [`UNPLUG_ON_CLOSE`] unplugs it.
+    global: GlobalId,
     full_redraw: bool,
+    /// When this display was last answered while it is switched off — see
+    /// [`render_output`] — and `None` while it is on.
+    dark: Option<std::time::Instant>,
 }
+
+/// Set to `1` to make closing one of several virtual displays unplug it, the
+/// way pulling a monitor's cable does, rather than end the session.
+///
+/// A development aid, and the only way to reach the unplug path without a
+/// monitor to pull: everything a real disconnect does to the session runs from
+/// here too — see [`LxbState::display_unplugged`]. Off unless asked for, because
+/// closing a nested window has always meant quitting, and a developer who closes
+/// one expecting that should get it. The last display left always quits.
+const UNPLUG_ON_CLOSE: &str = "LXB_NESTED_UNPLUG";
+
+/// With [`UNPLUG_ON_CLOSE`], a number of seconds after which a display that was
+/// unplugged is plugged back in: a fresh display under the same name, the way
+/// a monitor whose cable went back in comes back as the same connector.
+///
+/// The other half of the same development aid. A display arriving while the
+/// session runs is its own path — nothing about it has been told to anybody
+/// yet — and pulling a cable and pushing it back in is how people meet it.
+const REPLUG_AFTER: &str = "LXB_NESTED_REPLUG_AFTER";
+
+/// Set to `90`, `180` or `270` to have every virtual display say it is a panel
+/// built into its machine turned that way — `270` is a Steam Deck's — and be
+/// drawn standing up in it, as a built-in panel that says so is, unless the
+/// config names a turn of its own.
+///
+/// A development aid for the Orientation page, which counts from how a display
+/// is built in: without it every display on this backend is built in level,
+/// and the counting could not be tried without the hardware. See
+/// [`crate::outputs::Mounted`].
+const MOUNTED: &str = "LXB_NESTED_MOUNTED";
 
 pub struct X11Backend {
     renderer: GlesRenderer,
+    /// What a virtual display is made from, kept so one can be made again
+    /// after it has been unplugged — see [`REPLUG_AFTER`].
+    maker: Maker,
     /// Keyed by X11 window id, which is how the backend tags its events.
     outputs: HashMap<u32, VirtualOutput>,
     /// Host windows currently holding X11 focus (normally zero or one).
@@ -94,6 +131,121 @@ impl X11Backend {
     }
 }
 
+/// Everything a virtual display is made from.
+struct Maker {
+    handle: smithay::backend::x11::X11Handle,
+    gbm: GbmDevice<DeviceFd>,
+    modifiers: Vec<smithay::backend::allocator::Modifier>,
+    size: (i32, i32),
+}
+
+impl Maker {
+    /// Open virtual display number `number` (counted from 1): its window, the
+    /// surface drawn into it, and the output clients see.
+    fn make(
+        &self,
+        number: usize,
+        dh: &smithay::reexports::wayland_server::DisplayHandle,
+    ) -> anyhow::Result<(u32, VirtualOutput)> {
+        let size = self.size;
+        let window = WindowBuilder::new()
+            .title(&format!("LineXinBar (virtual output {number})"))
+            .size((size.0 as u16, size.1 as u16).into())
+            .build(&self.handle)
+            .map_err(|e| anyhow::anyhow!("failed to create window {number}: {e}"))?;
+
+        let surface = self
+            .handle
+            .create_surface(
+                &window,
+                // The X11 backend presents dmabufs, so wrap the gbm allocator.
+                DmabufAllocator(GbmAllocator::new(
+                    self.gbm.clone(),
+                    GbmBufferFlags::RENDERING,
+                )),
+                self.modifiers.iter().copied(),
+            )
+            .map_err(|e| anyhow::anyhow!("failed to create surface for window {number}: {e}"))?;
+
+        let mode = Mode {
+            size: (size.0, size.1).into(),
+            refresh: 60_000,
+        };
+        let output = Output::new(
+            format!("X11-{number}"),
+            PhysicalProperties {
+                size: (0, 0).into(),
+                subpixel: Subpixel::Unknown,
+                make: "LineXinBar".into(),
+                model: "Virtual".into(),
+            },
+        );
+        let global = output.create_global::<LxbState>(dh);
+        let mounted = std::env::var(MOUNTED)
+            .ok()
+            .and_then(|turn| crate::outputs::parse_transform(&turn));
+        if let Some(turn) = mounted {
+            output
+                .user_data()
+                .insert_if_missing_threadsafe(|| crate::outputs::Mounted(turn));
+        }
+        output.change_current_state(
+            Some(mode),
+            Some(mounted.unwrap_or(Transform::Normal)),
+            None,
+            None,
+        );
+        output.set_preferred(mode);
+
+        Ok((
+            window.id(),
+            VirtualOutput {
+                window,
+                surface,
+                damage_tracker: OutputDamageTracker::from_output(&output),
+                output,
+                global,
+                full_redraw: true,
+                dark: None,
+            },
+        ))
+    }
+}
+
+/// Plug virtual display `number` back in, the way a monitor comes back when
+/// its cable does: a new output under the old name, placed and announced as
+/// one that arrives on hardware is.
+fn replug(state: &mut LxbState, number: usize) {
+    let made = {
+        let super::Backend::X11(x11) = &mut state.backend else {
+            return;
+        };
+        match x11.maker.make(number, &state.lxb.display_handle) {
+            Ok((window_id, virtual_output)) => {
+                let output = virtual_output.output.clone();
+                x11.outputs.insert(window_id, virtual_output);
+                output
+            }
+            Err(err) => {
+                tracing::warn!(?err, number, "could not plug the virtual output back in");
+                return;
+            }
+        }
+    };
+    tracing::info!(output = %made.name(), "virtual output plugged back in");
+    let config = state.lxb.config.clone();
+    crate::outputs::OutputManager::apply_output_config(&made, &config);
+    state
+        .lxb
+        .outputs
+        .add_output(&mut state.lxb.space, &made, &config);
+    // What a display arriving on hardware announces — see the udev backend's
+    // `connector_connected` — so the shell hears about this one the same way.
+    state.refresh_modes();
+    state.refresh_transforms();
+    state.refresh_places();
+}
+
 /// Bring up the compositor with `count` nested windows.
 pub fn init(
     event_loop: &mut EventLoop<'static, LxbState>,
@@ -126,52 +278,17 @@ pub fn init(
         .collect();
 
     let dh = display.handle();
+    let maker = Maker {
+        handle,
+        gbm,
+        modifiers,
+        size,
+    };
     let mut outputs = HashMap::new();
 
     for index in 0..count {
-        let window = WindowBuilder::new()
-            .title(&format!("LineXinBar (virtual output {})", index + 1))
-            .size((size.0 as u16, size.1 as u16).into())
-            .build(&handle)
-            .map_err(|e| anyhow::anyhow!("failed to create window {index}: {e}"))?;
-
-        let surface = handle
-            .create_surface(
-                &window,
-                // The X11 backend presents dmabufs, so wrap the gbm allocator.
-                DmabufAllocator(GbmAllocator::new(gbm.clone(), GbmBufferFlags::RENDERING)),
-                modifiers.iter().copied(),
-            )
-            .map_err(|e| anyhow::anyhow!("failed to create surface for window {index}: {e}"))?;
-
-        let mode = Mode {
-            size: (size.0, size.1).into(),
-            refresh: 60_000,
-        };
-        let output = Output::new(
-            format!("X11-{}", index + 1),
-            PhysicalProperties {
-                size: (0, 0).into(),
-                subpixel: Subpixel::Unknown,
-                make: "LineXinBar".into(),
-                model: "Virtual".into(),
-            },
-        );
-        let global = output.create_global::<LxbState>(&dh);
-        output.change_current_state(Some(mode), Some(Transform::Normal), None, None);
-        output.set_preferred(mode);
-
-        outputs.insert(
-            window.id(),
-            VirtualOutput {
-                window,
-                surface,
-                damage_tracker: OutputDamageTracker::from_output(&output),
-                output,
-                _global: global,
-                full_redraw: true,
-            },
-        );
+        let (window_id, virtual_output) = maker.make(index + 1, &dh)?;
+        outputs.insert(window_id, virtual_output);
     }
 
     let dmabuf_formats: Vec<_> = renderer.dmabuf_formats().iter().copied().collect();
@@ -182,6 +299,7 @@ pub fn init(
         event_loop.get_signal(),
         super::Backend::X11(Box::new(X11Backend {
             renderer,
+            maker,
             outputs,
             focused_windows: HashSet::new(),
             cursor: CursorState::new(),
@@ -300,6 +418,56 @@ fn handle_event(state: &mut LxbState, event: X11Event) {
             }
         }
         X11Event::CloseRequested { window_id } => {
+            if std::env::var(UNPLUG_ON_CLOSE).is_ok_and(|value| value == "1") {
+                let unplugged = {
+                    let super::Backend::X11(x11) = &mut state.backend else {
+                        return;
+                    };
+                    if x11.outputs.len() > 1 {
+                        x11.focused_windows.remove(&window_id);
+                        x11.outputs.remove(&window_id)
+                    } else {
+                        None
+                    }
+                };
+                if let Some(virtual_output) = unplugged {
+                    tracing::info!(
+                        window_id,
+                        output = %virtual_output.output.name(),
+                        "virtual output unplugged"
+                    );
+                    state.display_unplugged(&virtual_output.output);
+                    state
+                        .lxb
+                        .display_handle
+                        .remove_global::<LxbState>(virtual_output.global.clone());
+                    let number = virtual_output
+                        .output
+                        .name()
+                        .strip_prefix("X11-")
+                        .and_then(|number| number.parse::<usize>().ok());
+                    // Dropped here, which unmaps the window: the display is
+                    // gone from the host as well as from the session.
+                    drop(virtual_output);
+                    let after = std::env::var(REPLUG_AFTER)
+                        .ok()
+                        .and_then(|seconds| seconds.parse::<f64>().ok())
+                        .filter(|seconds| seconds.is_finite() && *seconds >= 0.0);
+                    if let (Some(number), Some(after)) = (number, after) {
+                        let replugged = state.lxb.loop_handle.insert_source(
+                            Timer::from_duration(Duration::from_secs_f64(after)),
+                            move |_, _, state| {
+                                replug(state, number);
+                                TimeoutAction::Drop
+                            },
+                        );
+                        if let Err(err) = replugged {
+                            tracing::warn!(?err, "could not schedule the replug");
+                        }
+                    }
+                    return;
+                }
+            }
             // Closing any one virtual display shuts the whole compositor down,
             // which matches what closing the single winit window does.
             tracing::info!(window_id, "virtual output closed");
@@ -367,6 +535,32 @@ fn render_output(state: &mut LxbState, window_id: u32) -> anyhow::Result<()> {
         return Ok(());
     };
     let output = virtual_output.output.clone();
+
+    // Switched off, the way the udev backend switches a connector off: nothing
+    // is drawn, and what is on the display is answered on the dark display's
+    // slow clock instead of this one. Kept the same here so that a nested
+    // session going dark runs the path a handheld's does, which is the only way
+    // that path is ever run without one — it is how a shell left waiting on a
+    // dark display was reproduced. See [`crate::render::WHILE_DARK`].
+    let now = std::time::Instant::now();
+    if state.lxb.blackouts.is_off(&output, now) {
+        if virtual_output.dark.is_none() {
+            tracing::info!(display = %output.name(), "switched the display off");
+        }
+        let due = virtual_output.dark.is_none_or(|answered| {
+            now.saturating_duration_since(answered) >= crate::render::WHILE_DARK
+        });
+        if due {
+            virtual_output.dark = Some(now);
+            let time = state.lxb.start_time.elapsed();
+            crate::render::answer_a_dark_display(&state.lxb, &output, time);
+        }
+        return Ok(());
+    }
+    if virtual_output.dark.take().is_some() {
+        virtual_output.full_redraw = true;
+        tracing::info!(display = %output.name(), "switching the display back on");
+    }
 
     let (mut buffer, age) = virtual_output
         .surface

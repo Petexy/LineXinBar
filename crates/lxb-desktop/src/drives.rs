@@ -1226,7 +1226,7 @@ fn ask_root_for_startup(volume: &Volume, on: bool) -> Result<(), Refusal> {
         tracing::warn!("no pkexec on this machine, so Mount at startup cannot be written");
         return Err(Refusal::Failed);
     };
-    let exe = std::env::current_exe().map_err(|err| {
+    let exe = crate::locale::this_program().map_err(|err| {
         tracing::warn!(?err, "this program cannot find itself to run as root");
         Refusal::Failed
     })?;

@@ -920,6 +920,12 @@ impl Gamepad<'_> {
         self.inner.is_ff_supported()
     }
 
+    /// LineXinBar: take the device for this reader alone, or give it back. See
+    /// `gilrs_core::Gamepad::set_grabbed`.
+    pub fn set_grabbed(&self, grabbed: bool) -> std::io::Result<()> {
+        self.inner.set_grabbed(grabbed)
+    }
+
     /// Change gamepad position used by force feedback effects.
     pub fn set_listener_position<Vec3: Into<[f32; 3]>>(
         &self,

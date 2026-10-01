@@ -34,6 +34,15 @@ machine with no client running starts one, with the request already in hand —
 so what comes up is Steam's own startup, on whichever account it signs itself
 in as, rather than the shell's.
 
+The client is one program with two faces, and it is only ever on one of them.
+**Open Steam (Client)** pressed while it is in Big Picture first takes it out of
+Big Picture (`steam://close/bigpicture`, which changes nothing on a client
+already on its desktop face), waits until the client says it has left, and then
+asks for the desktop window. Open Downloads in Steam does the same, since that
+is a page of the same window. **Open Steam** pressed while Big Picture is up
+already, out of sight behind the shell, shows the Big Picture that is there and
+takes it for the window the press was for.
+
 Signing in is a panel, and it offers both ways Steam has:
 
 - **Scan a code with your phone.** A QR code on screen, photographed in the

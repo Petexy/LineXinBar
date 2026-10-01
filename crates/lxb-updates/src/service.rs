@@ -127,8 +127,23 @@ struct State {
     reply_log: Option<crate::journal::Chunk>,
     events: Vec<crate::JobEvent>,
     prompt: crate::prompt::Tracker,
+    /// The threads a job or a restart runs on. A job's phase stops being busy
+    /// a moment before its thread has written the job into the history, so
+    /// the phase alone does not say that nothing is left to finish.
+    workers: Vec<std::thread::JoinHandle<()>>,
 }
 type Shared = Arc<Mutex<State>>;
+
+impl State {
+    /// Whether this coordinator could stop now and lose nothing: no job
+    /// running or being written down, and no restart under way. What a
+    /// finished job leaves behind — its result, a staged restart — is on
+    /// disk, and the next coordinator reads it back.
+    fn between_jobs(&mut self) -> bool {
+        self.workers.retain(|worker| !worker.is_finished());
+        self.workers.is_empty() && self.activity.is_none() && !self.snapshot.busy()
+    }
+}
 
 fn record(shared: &Shared, bytes: &[u8]) {
     let mut state = shared.lock().unwrap_or_else(|p| p.into_inner());
@@ -241,18 +256,27 @@ fn checkpoint(shared: &Shared) -> Result<()> {
 
 fn launch(shared: &Shared, name: &str, work: fn(&Shared)) -> Result<()> {
     let worker = shared.clone();
-    if let Err(error) = std::thread::Builder::new()
+    match std::thread::Builder::new()
         .name(name.into())
         .spawn(move || work(&worker))
     {
-        change(shared, |s| {
-            s.phase = Phase::Failed;
-            s.message = format!("Cannot start update worker: {error}");
-        });
-        shared.lock().unwrap_or_else(|p| p.into_inner()).activity = None;
-        return Err(error.into());
+        Ok(worker) => {
+            shared
+                .lock()
+                .unwrap_or_else(|p| p.into_inner())
+                .workers
+                .push(worker);
+            Ok(())
+        }
+        Err(error) => {
+            change(shared, |s| {
+                s.phase = Phase::Failed;
+                s.message = format!("Cannot start update worker: {error}");
+            });
+            shared.lock().unwrap_or_else(|p| p.into_inner()).activity = None;
+            Err(error.into())
+        }
     }
-    Ok(())
 }
 
 fn archive(shared: &Shared) {
@@ -472,6 +496,7 @@ pub fn serve_with(runtime: Arc<dyn Runtime>) -> Result<()> {
         reply_log: None,
         events: read_json(&directory()?.join("events.json")).unwrap_or_default(),
         prompt: crate::prompt::Tracker::default(),
+        workers: Vec::new(),
     }));
     change(&shared, |_| {});
     if interrupted_install {
@@ -489,7 +514,28 @@ pub fn serve_with(runtime: Arc<dyn Runtime>) -> Result<()> {
         .unwrap_or(IDLE_SECONDS);
     listener.set_nonblocking(true)?;
     let mut last_request = std::time::Instant::now();
+    // Nor does it outlive its own program. Installing a newer LineXinBar —
+    // which Settings > Updates itself does — replaces this file under it, and
+    // the shell asks something every few seconds, so it is never idle and
+    // would stay the old program until the machine restarted. The next job
+    // then failed before it started, with "No such file or directory": running
+    // this program as root means naming its file, and the kernel names a
+    // replaced one "… (deleted)". Between jobs it steps aside instead, and the
+    // shell's next request starts the new one.
+    let installed = crate::process::Installed::this_program();
     loop {
+        if installed
+            .as_ref()
+            .is_some_and(crate::process::Installed::replaced)
+            && !knocking(&listener)
+            && shared
+                .lock()
+                .unwrap_or_else(|p| p.into_inner())
+                .between_jobs()
+        {
+            let _ = fs::remove_file(&socket);
+            return Ok(());
+        }
         let mut ready = libc::pollfd {
             fd: listener.as_raw_fd(),
             events: libc::POLLIN,
@@ -544,6 +590,19 @@ pub fn serve_with(runtime: Arc<dyn Runtime>) -> Result<()> {
         let _ = stream.write_all(b"\n");
     }
     Ok(())
+}
+
+/// Whether somebody is already waiting at the door. A coordinator that
+/// leaves answers them first: a request dropped on the floor reads to the
+/// shell as a coordinator it cannot reach, and it waits a while before it
+/// asks again.
+fn knocking(listener: &UnixListener) -> bool {
+    let mut waiting = libc::pollfd {
+        fd: listener.as_raw_fd(),
+        events: libc::POLLIN,
+        revents: 0,
+    };
+    unsafe { libc::poll(&mut waiting, 1, 0) > 0 }
 }
 
 #[derive(serde::Deserialize)]
@@ -653,8 +712,9 @@ fn receive(shared: &Shared, stream: &mut UnixStream) -> Result<bool> {
                 }
                 restart
             };
-            let shared = shared.clone();
-            std::thread::spawn(move || {
+            let worker = shared.clone();
+            let restarting = std::thread::spawn(move || {
+                let shared = worker;
                 let _permit = permit;
                 let result: Result<()> = match restart {
                     crate::Restart::Dnf5Offline => transaction(
@@ -680,6 +740,11 @@ fn receive(shared: &Shared, stream: &mut UnixStream) -> Result<bool> {
                     });
                 }
             });
+            shared
+                .lock()
+                .unwrap_or_else(|p| p.into_inner())
+                .workers
+                .push(restarting);
         }
         Request::SetDailyCheck(value) => {
             let mut state = shared.lock().unwrap_or_else(|p| p.into_inner());

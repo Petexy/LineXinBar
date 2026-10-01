@@ -1000,6 +1000,15 @@ impl Gamepad {
         self.ff_supported
     }
 
+    /// LineXinBar: take the device for this descriptor alone (`EVIOCGRAB`), or
+    /// give it back. A taken device goes on reporting to this descriptor and
+    /// to no other reader on the machine.
+    pub fn set_grabbed(&self, grabbed: bool) -> std::io::Result<()> {
+        unsafe { ioctl::eviocgrab(self.fd, c::c_ulong::from(grabbed) as _) }
+            .map(drop)
+            .map_err(|errno| std::io::Error::from_raw_os_error(errno as i32))
+    }
+
     pub fn name(&self) -> &str {
         &self.name
     }

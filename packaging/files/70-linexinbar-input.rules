@@ -31,14 +31,18 @@
 
 ACTION!="add|change", GOTO="linexinbar_input_end"
 
-# The second-generation Steam Controller, which no kernel driver claims.
+# The second-generation Steam Controller: `1302` on a cable, `1303` over
+# Bluetooth, `1304` through its puck, `1305` through a Steam Machine's own
+# receiver.
 #
-# `hid-steam` claims the older controllers and the Deck, so this one falls
-# through to `hid-generic` and never grows a joystick node: nothing on the
-# machine enumerates it as a gamepad, and the shell reads its input report
-# straight from hidraw instead. See `crates/lxb-desktop/src/steam_hid.rs` for
-# why that is the only source that survives both lizard mode and Steam having
-# claimed the pad.
+# Before Linux 7.3 `hid-steam` claims only the older controllers and the Deck,
+# so this one falls through to `hid-generic` and never grows a joystick node;
+# from 7.3, and earlier on handheld kernels, `hid-steam` drives it the way it
+# drives the Deck, with a gamepad that stays silent in lizard mode and goes
+# away when anything opens the raw node. So the shell reads its input report
+# straight from hidraw, unless `hid-steam` drives it with `lizard_mode` off,
+# where the kernel's own gamepad answers from the first press and is used
+# instead. See "Which driver" in `crates/lxb-desktop/src/steam_hid.rs`.
 #
 # hidraw nodes are 0600 root:root by default and systemd's own uaccess rules
 # tag none of them, so this is the whole of what makes that pad readable. The
@@ -54,12 +58,30 @@ ACTION!="add|change", GOTO="linexinbar_input_end"
 # to withhold it is a group with a mode, which is broader in the dimension that
 # was worth narrowing. The mode below is the conventional one for a pad; the ACL
 # is what actually grants the node.
-KERNEL=="hidraw*", SUBSYSTEM=="hidraw", ATTRS{idVendor}=="28de", ATTRS{idProduct}=="1304", MODE="0660", TAG+="uaccess"
+KERNEL=="hidraw*", SUBSYSTEM=="hidraw", ATTRS{idVendor}=="28de", ATTRS{idProduct}=="130[2-5]", MODE="0660", TAG+="uaccess"
 
 # The same pad over Bluetooth, which has no USB parent to carry those
 # attributes. The pair is in the HID device's own kernel name, uppercase,
 # between the bus number and the interface.
-KERNEL=="hidraw*", SUBSYSTEM=="hidraw", KERNELS=="*28DE:*1304*", MODE="0660", TAG+="uaccess"
+KERNEL=="hidraw*", SUBSYSTEM=="hidraw", KERNELS=="*28DE:*130[2-5]*", MODE="0660", TAG+="uaccess"
+
+# The Steam Deck's controls, which the kernel does drive, and which the shell
+# reads from hidraw all the same.
+#
+# `hid-steam` leaves the Deck's firmware typing — the buttons arrive as a
+# keyboard, which is how the shell came to believe every Deck owner had one in
+# their hands — and takes its own gamepad away the moment anything opens the
+# Deck's raw node, which Steam does whenever it runs. The report on that node
+# is the one thing that answers in both states, so the shell reads it, gives
+# every other program the kernel's gamepad back as a stand-in, and the
+# compositor drops the typing. See `steam_hid.rs`.
+#
+# Steam's own udev rules grant every Valve node too, where they are installed;
+# this is for a Deck without them, where the node is root's alone and the
+# Deck would have no controls at all once the compositor stopped listening to
+# its keyboard. The controls are on an internal USB bus, so the device's own
+# attributes match them.
+KERNEL=="hidraw*", SUBSYSTEM=="hidraw", ATTRS{idVendor}=="28de", ATTRS{idProduct}=="1205", MODE="0660", TAG+="uaccess"
 
 # And `/dev/uinput`, which is how the shell hands controllers back to the rest
 # of the machine.
@@ -67,8 +89,8 @@ KERNEL=="hidraw*", SUBSYSTEM=="hidraw", KERNELS=="*28DE:*1304*", MODE="0660", TA
 # Two things need it and they are the same trade from opposite ends. A pad the
 # kernel does drive is taken away from every application, has its Guide button
 # read off, and is republished as a device one button short — see `pad_guard`.
-# A pad the kernel does not drive is read from hidraw and published as the
-# gamepad that was missing — see `steam_stand_in`. Without this node neither
+# A pad read from hidraw — the Steam Controller 2 and the Deck — is published as
+# the gamepad applications would otherwise not have — see `steam_stand_in`. Without this node neither
 # happens: in the first case the guard gives up and leaves the pad alone, which
 # is a working controller with the guide button reaching games as well as the
 # shell, and in the second there is no controller at all.

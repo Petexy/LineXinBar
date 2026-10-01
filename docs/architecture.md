@@ -195,6 +195,13 @@ of its own to compensate for the way it draws. A display absent from these
 events is one the Orientation page leaves out rather than offers and cannot
 honour.
 
+`output_mounting` (version 47) comes just before a display's first
+`output_transform` and says how the display is built into its machine: the
+turn its connector's `panel orientation` asks for, and normal where there is
+none. The page counts its four turns from it, so a handheld standing up the way
+it is built reads as 0° whatever its panel needs; `output_transform` and
+`set_output_transform` stay the turn as drawn.
+
 `set_launch_output` exists because keyboard focus is the wrong thing to infer
 the launch display from. Starting a second application from the guide hands
 focus back to the *first* one long before the new window maps, so the new
@@ -416,6 +423,16 @@ idling, never hears the guide button, and takes the session with it. It
 already stops drawing by itself once something covers it, so there was nothing
 to reclaim there. Applications are different: one blocked in its present is
 one costing nothing, and it wakes the moment it is back in front.
+
+A display the power settings have switched off draws nothing, and it still
+answers. Four times a second (`render::WHILE_DARK`), everything on it is told
+that its frame went out (the layer surfaces, and the windows the shell is
+driving out of sight) or that it never will (every other window). Answering
+nothing was what a dark display used to do, and a shell that had presented the
+last frame of its fade a moment before the connector went off then waited for
+that answer for good: it never read another button press, so the screens never
+came back. The nested backend switches a display off the same way, which is
+how that was reproduced without a handheld.
 
 The shell starts drawing again for the four things it puts in front of an
 application: a launch splash, the on-screen keyboard, a bubble in the corner

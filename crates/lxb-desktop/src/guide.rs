@@ -44,10 +44,6 @@ pub enum Move {
     Right,
 }
 
-/// How stiff the spring a highlight glides on is, in radians per second.
-/// Matches the bar's easing so the two feel related.
-const HIGHLIGHT_EASE_RATE: f32 = 21.0;
-
 /// How long a switch takes to go over, in seconds: down, and back up with a
 /// little bounce. Long enough to be seen from a couch, short enough that a
 /// second press lands before the first has finished being watched.
@@ -75,41 +71,6 @@ const POWER_FLIGHT: f32 = 0.22;
 /// there before the next press is. Long enough to read as a movement, which is
 /// the whole of what a hard cut would not be.
 const ELSEWHERE_FLIGHT: f32 = 0.18;
-
-/// One frame of a highlight's glide towards `target`, on the same critically
-/// damped spring the cards ride: it leans into a move rather than leaving at
-/// full speed, and a second press part-way carries the first one's momentum
-/// on instead of starting the chip off again from rest.
-///
-/// `current` of `None` is the first frame after opening: it snaps, so the
-/// glide is only ever between two real positions rather than in from nowhere.
-fn ease_rect(
-    current: Option<[f32; 4]>,
-    speed: &mut [f32; 4],
-    target: [f32; 4],
-    dt: f32,
-) -> [f32; 4] {
-    let Some(current) = current else {
-        *speed = [0.0; 4];
-        return target;
-    };
-    let mut next = [0.0; 4];
-    for ((slot, velocity), (from, to)) in next
-        .iter_mut()
-        .zip(speed.iter_mut())
-        .zip(current.iter().zip(&target))
-    {
-        let (at, moving) = lxb_protocol::overview::spring(
-            *from as f64,
-            *velocity as f64,
-            *to as f64,
-            HIGHLIGHT_EASE_RATE as f64,
-            dt as f64,
-        );
-        (*slot, *velocity) = (at as f32, moving as f32);
-    }
-    next
-}
 
 /// One entry in the guide menu.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -570,8 +531,7 @@ pub struct Guide {
     opened_at: Option<Instant>,
     /// Eased position of the selected menu entry's chip, which slides down the
     /// column rather than jumping from row to row, and how fast it is going.
-    menu_highlight: Option<[f32; 4]>,
-    menu_highlight_speed: [f32; 4],
+    menu_highlight: crate::menu::Glide,
     /// How far the whole menu has slid to the left to bring the cards into
     /// view, in logical pixels, where it is heading, and how fast it is going.
     ///
@@ -687,7 +647,7 @@ impl Guide {
     pub fn replay_entrance(&mut self) {
         if self.mode() == Mode::Menu {
             self.opened_at = Some(Instant::now());
-            self.menu_highlight = None;
+            self.menu_highlight = crate::menu::Glide::default();
             // The display it arrives on may be a different shape, and a slide
             // carried over from the last one would be a distance about a
             // screen nobody is looking at any more.
@@ -755,14 +715,15 @@ impl Guide {
     /// cards are already gliding to their slots, and a frame easing towards a
     /// moving card chases it across the screen instead of marking it.
     pub fn animate_menu_highlight(&mut self, target: [f32; 4], dt: f32) -> [f32; 4] {
-        let eased = ease_rect(
-            self.menu_highlight,
-            &mut self.menu_highlight_speed,
-            target,
-            dt,
-        );
-        self.menu_highlight = Some(eased);
-        eased
+        self.menu_highlight.towards(target, dt)
+    }
+
+    /// Whether the chip is still sliding between rows — only while the menu
+    /// is open, since it is stepped only then, and a chip put away mid-slide
+    /// is not sliding anywhere. See [`crate::menu::Glide::is_moving`] for why
+    /// this has to be said at all.
+    pub fn highlight_is_moving(&self) -> bool {
+        self.is_menu() && self.menu_highlight.is_moving()
     }
 
     /// Slide the menu one frame towards `target` — how far left the layout
@@ -1538,6 +1499,13 @@ impl Guide {
         self.power_linear
     }
 
+    /// Whether the dialog is still growing out of its button or falling back
+    /// into it. A position only ever rests at one end or the other, so being
+    /// anywhere between them is being on the way.
+    pub fn power_is_moving(&self) -> bool {
+        self.power_linear > 0.0 && self.power_linear < 1.0
+    }
+
     /// Advance the menu's step back by `dt` and return where it is now.
     ///
     /// `away` is whether the directions are on one of the videos floating over
@@ -1556,6 +1524,12 @@ impl Guide {
             (self.elsewhere_linear - step).max(target)
         };
         self.elsewhere_linear
+    }
+
+    /// Whether the menu is still stepping back from its directions or coming
+    /// forward to them again — between the two ends, as the dialog's is.
+    pub fn elsewhere_is_moving(&self) -> bool {
+        self.elsewhere_linear > 0.0 && self.elsewhere_linear < 1.0
     }
 
     pub fn power_index(&self) -> usize {
@@ -1605,7 +1579,7 @@ impl Guide {
         // put away while a video had its directions opens with them back.
         self.elsewhere_linear = 0.0;
         self.opened_at = Some(Instant::now());
-        self.menu_highlight = None;
+        self.menu_highlight = crate::menu::Glide::default();
         self.pan = None;
     }
 
@@ -2249,6 +2223,75 @@ mod tests {
         // pointing past the end.
         assert_eq!(guide.selected_window(2), 1);
         assert_eq!(guide.selected_window(0), 0);
+    }
+
+    /// The chip says it is moving from the step that sends it somewhere until
+    /// it is there, and not on the frame it snaps to its first row. Low-end
+    /// hardware mode draws the display at its refresh for exactly that long,
+    /// and a chip that never said so slid between rows ten frames a second.
+    #[test]
+    fn the_menu_chip_says_it_is_moving_until_it_is_there() {
+        let mut guide = Guide::default();
+        guide.open();
+        let frame = 1.0 / 60.0;
+        let first = [100.0, 100.0, 400.0, 60.0];
+        guide.animate_menu_highlight(first, frame);
+        assert!(!guide.highlight_is_moving(), "a snap is not a slide");
+
+        let below = [100.0, 170.0, 400.0, 60.0];
+        guide.animate_menu_highlight(below, frame);
+        assert!(guide.highlight_is_moving(), "on its way to the next row");
+
+        let mut frames = 1;
+        while guide.highlight_is_moving() {
+            guide.animate_menu_highlight(below, frame);
+            frames += 1;
+            assert!(frames < 120, "it has to arrive");
+        }
+        let at = guide.animate_menu_highlight(below, frame);
+        assert!(
+            at.iter()
+                .zip(&below)
+                .all(|(at, to)| (at - to).abs() <= crate::menu::GLIDE_AT_REST),
+            "and it stops saying so only once it is there: {at:?}"
+        );
+        assert!(
+            frames <= 40,
+            "about half a second, not the spring's whole tail: {frames}"
+        );
+
+        // Sent again and put away mid-slide: nothing is sliding any more.
+        guide.animate_menu_highlight(first, frame);
+        assert!(guide.highlight_is_moving());
+        guide.close();
+        assert!(!guide.highlight_is_moving());
+    }
+
+    /// The power dialog and the step back from a video's directions are
+    /// moving between their two ends and at rest on either.
+    #[test]
+    fn the_dialog_and_the_step_back_move_between_their_ends() {
+        let mut guide = Guide::default();
+        guide.open();
+        assert!(!guide.power_is_moving());
+        guide.open_power();
+        guide.animate_power(POWER_FLIGHT * 0.5);
+        assert!(guide.power_is_moving(), "growing out of its button");
+        guide.animate_power(POWER_FLIGHT);
+        assert!(!guide.power_is_moving(), "open");
+        guide.close_power();
+        guide.animate_power(POWER_FLIGHT * 0.5);
+        assert!(guide.power_is_moving(), "falling back into it");
+        guide.animate_power(POWER_FLIGHT);
+        assert!(!guide.power_is_moving(), "shut");
+
+        assert!(!guide.elsewhere_is_moving());
+        guide.animate_elsewhere(true, ELSEWHERE_FLIGHT * 0.5);
+        assert!(guide.elsewhere_is_moving(), "stepping back");
+        guide.animate_elsewhere(true, ELSEWHERE_FLIGHT);
+        assert!(!guide.elsewhere_is_moving(), "stepped back");
+        guide.animate_elsewhere(false, ELSEWHERE_FLIGHT * 0.5);
+        assert!(guide.elsewhere_is_moving(), "coming forward");
     }
 
     #[test]

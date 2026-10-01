@@ -3443,6 +3443,12 @@ impl Steam {
         self.client.tell(app_id, doing)
     }
 
+    /// Take this session's client out of a Big Picture nobody asked for. See
+    /// [`lxb_steam::Steam::leave_big_picture`].
+    pub fn leave_big_picture(&self) {
+        self.client.leave_big_picture();
+    }
+
     // --- the sign-in ------------------------------------------------------
 
     /// Raise the panel, on the first question — or on the wait that has to
@@ -5023,6 +5029,7 @@ mod tests {
         let landed = lxb_steam::HandedOver {
             after_signing_in: false,
             asked: lxb_steam::Doing::Open,
+            already_up: false,
         };
         assert_eq!(
             steam.apply(Event::HandedOver(landed)).handed_over,

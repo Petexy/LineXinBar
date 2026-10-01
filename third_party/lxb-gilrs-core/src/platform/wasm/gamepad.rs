@@ -352,6 +352,11 @@ impl Gamepad {
         false
     }
 
+    /// LineXinBar: there is nothing to take on this platform.
+    pub fn set_grabbed(&self, _grabbed: bool) -> std::io::Result<()> {
+        Err(std::io::ErrorKind::Unsupported.into())
+    }
+
     pub fn ff_device(&self) -> Option<FfDevice> {
         None
     }

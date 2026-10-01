@@ -17,7 +17,9 @@ use smithay::input::touch::{DownEvent, MotionEvent as TouchMotionEvent, UpEvent}
 use smithay::output::Output;
 use smithay::reexports::calloop::timer::{TimeoutAction, Timer};
 use smithay::reexports::wayland_server::protocol::wl_surface::WlSurface;
-use smithay::utils::{IsAlive, Logical, Physical, Point, Rectangle, Size, SERIAL_COUNTER};
+use smithay::utils::{
+    IsAlive, Logical, Physical, Point, Rectangle, Size, Transform, SERIAL_COUNTER,
+};
 use smithay::wayland::compositor::RegionAttributes;
 use smithay::wayland::pointer_constraints::{with_pointer_constraint, PointerConstraint};
 use smithay::wayland::seat::WaylandFocus;
@@ -2291,6 +2293,37 @@ impl LxbState {
 
     // -- touch -----------------------------------------------------------
 
+    /// Which display a touchscreen's fingers land on, where the backend does
+    /// not say.
+    ///
+    /// On hardware nothing ties a touchscreen to a display: libinput reports
+    /// fractions of the device, not of a screen. A touchscreen inside the
+    /// machine belongs to its built-in panel — a handheld's, a tablet's, a
+    /// laptop's — and every finger used to go to whichever display was first
+    /// in the layout instead, which on a Steam Deck with a monitor on its hub
+    /// could be the monitor. One on a cable, over USB, is a monitor of its own
+    /// that nothing names, and keeps the first display, as before.
+    fn touch_display(&self, device: &impl smithay::backend::input::Device) -> Option<Output> {
+        let on_a_cable = device.syspath().is_some_and(|path| {
+            path.components().any(|part| {
+                part.as_os_str()
+                    .to_str()
+                    .is_some_and(|part| part.starts_with("usb"))
+            })
+        });
+        if !on_a_cable {
+            if let Some(panel) = self
+                .lxb
+                .space
+                .outputs()
+                .find(|output| is_built_in_panel(&output.name()))
+            {
+                return Some(panel.clone());
+            }
+        }
+        self.lxb.space.outputs().next().cloned()
+    }
+
     fn on_touch_down<B: InputBackend>(
         &mut self,
         event: B::TouchDownEvent,
@@ -2302,7 +2335,7 @@ impl LxbState {
         };
         let Some(output) = target_output
             .cloned()
-            .or_else(|| self.lxb.space.outputs().next().cloned())
+            .or_else(|| self.touch_display(&event.device()))
         else {
             return;
         };
@@ -2310,8 +2343,8 @@ impl LxbState {
             return;
         };
 
-        let location =
-            geometry.loc.to_f64() + absolute_position::<B, _>(&event, geometry.size, source_size);
+        let location = geometry.loc.to_f64()
+            + touch_position::<B, _>(&event, &output, geometry.size, source_size);
         let serial = SERIAL_COUNTER.next_serial();
         let hit = self.surface_under(location);
         // In the surface's own coordinates, as a pointer's motion is — and here
@@ -2374,7 +2407,7 @@ impl LxbState {
         };
         let Some(output) = target_output
             .cloned()
-            .or_else(|| self.lxb.space.outputs().next().cloned())
+            .or_else(|| self.touch_display(&event.device()))
         else {
             return;
         };
@@ -2382,8 +2415,8 @@ impl LxbState {
             return;
         };
 
-        let location =
-            geometry.loc.to_f64() + absolute_position::<B, _>(&event, geometry.size, source_size);
+        let location = geometry.loc.to_f64()
+            + touch_position::<B, _>(&event, &output, geometry.size, source_size);
         let hit = self.surface_under(location);
         // The finger's own space again, and the seat measures this against the
         // origin the slot went down at — so both have to be in it. See
@@ -3916,6 +3949,61 @@ where
     ))
 }
 
+/// Where a finger on a touchscreen lands, in the logical space of the display
+/// it belongs to.
+///
+/// A touchscreen reports in its panel's own frame: the width and height of the
+/// panel's scan-out, before any turn. The picture on a turned display is drawn
+/// turned, so the point has to be turned the same way to land on what is under
+/// the finger. On a Steam Deck — an 800x1280 panel on its side, turned 270° —
+/// this is the difference between touch working and every tap landing in the
+/// mirrored corner, which is how "the touchscreen does not work at all" was
+/// reported. The turn is smithay's own [`Transform::transform_point_in`], the
+/// arithmetic the picture is turned with, applied to the unit square; for the
+/// four rotations it is also exactly KWin's, and what the kernel's definitions
+/// of its panel orientations work out to by hand.
+///
+/// A nested session's host window is the picture as it is drawn — turned
+/// already — so what it reports goes through [`absolute_position`] unchanged.
+fn touch_position<B, E>(
+    event: &E,
+    output: &Output,
+    target_size: Size<i32, Logical>,
+    source_size: Option<Size<i32, Physical>>,
+) -> Point<f64, Logical>
+where
+    B: InputBackend,
+    E: AbsolutePositionEvent<B>,
+{
+    if source_size.is_some_and(|size| size.w > 0 && size.h > 0) {
+        return absolute_position::<B, E>(event, target_size, source_size);
+    }
+    let (x, y) = turned_touch_point(
+        event.x_transformed(1),
+        event.y_transformed(1),
+        output.current_transform(),
+    );
+    Point::from((x * target_size.w as f64, y * target_size.h as f64))
+}
+
+/// A touchscreen's point, from 0 to 1 across its panel's own frame, turned into
+/// the same fraction of the display as it is seen. See [`touch_position`].
+fn turned_touch_point(x: f64, y: f64, transform: Transform) -> (f64, f64) {
+    let unit = Size::<f64, Physical>::from((1.0, 1.0));
+    let point = Point::<f64, Physical>::from((x.clamp(0.0, 1.0), y.clamp(0.0, 1.0)));
+    let turned = transform.transform_point_in(point, &unit);
+    (turned.x, turned.y)
+}
+
+/// Whether a connector name is a panel built into the machine: an embedded
+/// DisplayPort, LVDS or DSI panel, which is what a laptop, a tablet or a
+/// handheld has, as against a monitor on a cable.
+fn is_built_in_panel(name: &str) -> bool {
+    ["eDP", "LVDS", "DSI"]
+        .iter()
+        .any(|kind| name.starts_with(kind))
+}
+
 fn map_window_coordinate(value: f64, source_extent: i32, target_extent: i32) -> f64 {
     if source_extent <= 0 || target_extent <= 0 {
         return 0.0;
@@ -4763,5 +4851,86 @@ mod tests {
         assert_eq!(notches(-1.0, 0.1), -1);
         // And a frame that really carried no notch keeps none.
         assert_eq!(notches(0.0, 2.0), 0);
+    }
+}
+
+#[cfg(test)]
+mod touch_tests {
+    use super::{is_built_in_panel, turned_touch_point};
+    use smithay::utils::Transform;
+
+    fn close(got: (f64, f64), want: (f64, f64)) -> bool {
+        (got.0 - want.0).abs() < 1e-9 && (got.1 - want.1).abs() < 1e-9
+    }
+
+    /// A Steam Deck: its panel is 800 wide and 1280 tall in its own frame,
+    /// mounted "Right Side Up" and turned 270° to stand the right way. The
+    /// panel's right edge is the top of the device, so the corners of the
+    /// panel's frame are the corners of what the user sees, turned: its
+    /// top-right is the picture's top-left, its top-left the bottom-left.
+    #[test]
+    fn a_finger_on_a_steam_deck_lands_where_it_is_put() {
+        let turn = Transform::_270;
+        // (panel's own frame) -> (the picture as seen)
+        assert!(
+            close(turned_touch_point(1.0, 0.0, turn), (0.0, 0.0)),
+            "top-left"
+        );
+        assert!(
+            close(turned_touch_point(1.0, 1.0, turn), (1.0, 0.0)),
+            "top-right"
+        );
+        assert!(
+            close(turned_touch_point(0.0, 1.0, turn), (1.0, 1.0)),
+            "bottom-right"
+        );
+        assert!(
+            close(turned_touch_point(0.0, 0.0, turn), (0.0, 1.0)),
+            "bottom-left"
+        );
+        // The middle stays the middle whatever the turn.
+        assert!(close(turned_touch_point(0.5, 0.5, turn), (0.5, 0.5)));
+    }
+
+    /// The other turns, as the kernel's definitions and KWin work them out:
+    /// a panel mounted "Left Side Up" and turned 90°, one upside down, and one
+    /// the right way up, which is left alone.
+    #[test]
+    fn every_quarter_turn_is_undone() {
+        // A point a quarter of the way across the panel's frame and a tenth
+        // down it.
+        let (x, y) = (0.25, 0.1);
+        assert!(close(turned_touch_point(x, y, Transform::Normal), (x, y)));
+        assert!(close(
+            turned_touch_point(x, y, Transform::_90),
+            (1.0 - y, x)
+        ));
+        assert!(close(
+            turned_touch_point(x, y, Transform::_180),
+            (1.0 - x, 1.0 - y)
+        ));
+        assert!(close(
+            turned_touch_point(x, y, Transform::_270),
+            (y, 1.0 - x)
+        ));
+    }
+
+    /// Past the panel's edge is the edge, never a point off the display.
+    #[test]
+    fn a_finger_past_the_edge_is_held_to_it() {
+        assert!(close(
+            turned_touch_point(1.5, -0.5, Transform::Normal),
+            (1.0, 0.0)
+        ));
+    }
+
+    #[test]
+    fn built_in_panels_are_told_from_monitors() {
+        for built_in in ["eDP-1", "LVDS-1", "DSI-1"] {
+            assert!(is_built_in_panel(built_in), "{built_in}");
+        }
+        for monitor in ["DP-1", "HDMI-A-1", "DVI-D-1", "X11-1", "winit"] {
+            assert!(!is_built_in_panel(monitor), "{monitor}");
+        }
     }
 }

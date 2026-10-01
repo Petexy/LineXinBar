@@ -180,6 +180,14 @@ impl Overlay {
     pub fn on_screen(&self) -> bool {
         self.shown.is_some()
     }
+
+    /// Whether it is fading in or out, as against standing on screen at full
+    /// strength — which is what a display is drawn at its refresh for.
+    pub fn is_moving(&self) -> bool {
+        self.shown
+            .as_ref()
+            .is_some_and(|shown| !matches!(shown.stage, Stage::Holding))
+    }
 }
 
 #[cfg(test)]
@@ -232,6 +240,31 @@ mod tests {
         assert!(!overlay.advance(start + secs(RISE + DWELL + FALL + BEAT)));
         assert!(!overlay.on_screen());
         assert_eq!(overlay.fade(), 0.0);
+    }
+
+    /// Moving only on its way in and out. Standing at full strength through
+    /// its wait it is on screen and asking for frames, but not moving — which
+    /// is the difference low-end hardware mode draws ten frames a second for
+    /// rather than the display's refresh.
+    #[test]
+    fn it_moves_only_while_it_fades() {
+        let start = Instant::now();
+        let mut overlay = Overlay::default();
+        assert!(!overlay.is_moving());
+
+        overlay.raise(start);
+        overlay.advance(start + secs(RISE * 0.5));
+        assert!(overlay.is_moving(), "fading in");
+
+        overlay.advance(start + secs(RISE + DWELL * 0.5));
+        assert!(overlay.on_screen());
+        assert!(!overlay.is_moving(), "standing still through its wait");
+
+        overlay.advance(start + secs(RISE + DWELL + FALL * 0.5));
+        assert!(overlay.is_moving(), "fading out");
+
+        overlay.advance(start + secs(RISE + DWELL + FALL + BEAT));
+        assert!(!overlay.is_moving(), "gone");
     }
 
     /// A pass of the loop that arrives a whole showing late must not leave the

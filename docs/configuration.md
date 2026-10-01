@@ -1236,6 +1236,13 @@ files and mean the same thing. The page offers the four rotations; the four
 `flipped-*` values are here only, and a display set to one of them is named on
 that page with none of its four rows marked.
 
+The value is the turn as drawn, counted from the panel. A built-in panel whose
+connector says it is mounted on its side — a Steam Deck's says 270° — is drawn
+standing up in its machine when no `transform` is set, and a turn written here
+replaces that rather than adding to it: the Deck standing up is `"270"` in this
+file while the Orientation page, which counts from how the screen is built in,
+calls it 0°.
+
 Turning is the compositor's own drawing rather than anything the connector
 does: the picture is composited turned and scanned out at the mode's own
 pixels, so it needs no hardware support and works on any display this

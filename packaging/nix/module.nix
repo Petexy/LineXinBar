@@ -37,7 +37,7 @@ in
     };
     services.displayManager.sessionPackages = [ cfg.package ];
     # The two device nodes the shell opens itself: the second-generation Steam
-    # Controller's hidraw, which no kernel driver claims, and `/dev/uinput`,
+    # Controller's hidraw, which nothing grants by default, and `/dev/uinput`,
     # which is how a guarded pad and a stand-in gamepad are handed back to the
     # rest of the machine. Neither is granted to anybody by default, and
     # without them the controller handling half works and says nothing.

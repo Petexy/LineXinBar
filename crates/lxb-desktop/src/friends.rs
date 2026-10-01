@@ -373,9 +373,12 @@ impl Friends {
     ///
     /// The slide *or* the scroll: a panel that has settled with a list still
     /// gliding under it is a panel that stops mid-scroll and finishes the next
-    /// time something else asks for a frame.
+    /// time something else asks for a frame. And the highlight sliding between
+    /// rows, for the same reason, while the panel is up to be stepped.
     pub fn is_moving(&self) -> bool {
-        (self.linear > 0.0 && self.linear < 1.0) || self.scroll != self.wanted as f32
+        (self.linear > 0.0 && self.linear < 1.0)
+            || self.scroll != self.wanted as f32
+            || (self.is_on_screen() && self.highlight.is_moving())
     }
 
     /// Raise it. Returns whether it was not already up.

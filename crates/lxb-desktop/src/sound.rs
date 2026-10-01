@@ -380,6 +380,8 @@ pub struct Sounds {
     /// The earliest another attempt at opening the device may be made. See
     /// [`RETRY_AFTER`].
     retry_at: Instant,
+    /// When the output in hand was opened. See [`reopen_at`].
+    opened_at: Instant,
 }
 
 impl Sounds {
@@ -394,6 +396,7 @@ impl Sounds {
             music_wanted: false,
             music_broken: false,
             retry_at: Instant::now(),
+            opened_at: Instant::now(),
         };
         // Eagerly, so that the first click of the session is as prompt as
         // every one after it: opening a device takes long enough to hear.
@@ -747,7 +750,16 @@ impl Sounds {
     /// and nothing is looping on it, so the sound server can put the machine's
     /// audio hardware to sleep. The next sound opens it again. Asked once a
     /// pass of the loop.
+    ///
+    /// And an output that has failed is let go of here, the pass it fails,
+    /// rather than at the next sound. A dead stream is not a quiet one: cpal's
+    /// output thread goes on polling it, is answered at once with the same
+    /// error, and polls again, a core kept busy for as long as it is held.
+    /// Dropping it is what stops that thread.
     pub fn rest(&mut self, now: Instant) {
+        if self.device.is_some() && self.device_failed.load(Ordering::Acquire) {
+            self.refresh_failed_output(now);
+        }
         if self.device.is_none() || self.music.is_some() || self.game_music.is_some() {
             return;
         }
@@ -780,7 +792,7 @@ impl Sounds {
                 playback.player.stop();
             }
             self.device = None;
-            self.retry_at = now;
+            self.retry_at = reopen_at(self.opened_at, now);
         }
     }
 
@@ -795,6 +807,7 @@ impl Sounds {
                 tracing::info!("shell audio ready");
                 self.device_failed = device_failed;
                 self.device = Some(device);
+                self.opened_at = Instant::now();
             }
             Err(err) => {
                 // Logged at every attempt rather than only the first: the
@@ -910,19 +923,54 @@ fn open_output(device_failed: Arc<AtomicBool>) -> Result<MixerDeviceSink, Device
 ///
 /// Underruns are glitches the stream itself can survive. A vanished device or
 /// invalid configuration cannot recover in place; those are the two errors
-/// rodio documents as requiring the stream to be destroyed and rebuilt.
+/// rodio documents as requiring the stream to be destroyed and rebuilt — and
+/// there is a third, which rodio does not name: see [`needs_reopen`].
+///
+/// A stream that cannot recover says so once. cpal's output thread reports the
+/// same failure every time it wakes, which for a dead stream is continuously:
+/// CEDM's copy of this callback wrote it 29,985 times in 56 seconds on a Steam
+/// Deck that had just woken from sleep.
 fn output_error_callback(
     device_failed: Arc<AtomicBool>,
 ) -> impl FnMut(StreamError) + Clone + Send + 'static {
     move |err| {
-        let needs_reopen = matches!(
-            err,
-            StreamError::DeviceNotAvailable | StreamError::StreamInvalidated
-        );
-        if needs_reopen {
-            device_failed.store(true, Ordering::Release);
+        if needs_reopen(&err) {
+            if !device_failed.swap(true, Ordering::AcqRel) {
+                tracing::warn!(%err, "audio output stream failed; it will be reopened");
+            }
+            return;
         }
-        tracing::error!(%err, needs_reopen, "audio output stream error");
+        tracing::error!(%err, "audio output stream error");
+    }
+}
+
+/// When an output that was lost may be opened again.
+///
+/// At once, the first time: a stream the machine slept under is fine opened
+/// afresh. One lost again within [`RETRY_AFTER`] of being opened is failing
+/// for a reason a new stream does not cure, and the Start music asks for the
+/// output on every frame — so it waits as long as an output that would not
+/// open, rather than being opened, lost and logged sixty times a second.
+fn reopen_at(opened: Instant, lost: Instant) -> Instant {
+    if lost.saturating_duration_since(opened) < RETRY_AFTER {
+        lost + RETRY_AFTER
+    } else {
+        lost
+    }
+}
+
+/// Whether a stream error is one the stream cannot come back from in place.
+///
+/// The two rodio documents, and `POLLERR`: what cpal's ALSA thread reports for
+/// a stream whose device went to sleep under it — the machine suspended — and
+/// reports again the moment it is answered, because nothing on that thread
+/// resumes or re-prepares the stream. Measured on a Steam Deck. Opened afresh,
+/// the device is there again.
+fn needs_reopen(err: &StreamError) -> bool {
+    match err {
+        StreamError::DeviceNotAvailable | StreamError::StreamInvalidated => true,
+        StreamError::BackendSpecific { err } => err.description.contains("POLLERR"),
+        _ => false,
     }
 }
 
@@ -1113,5 +1161,41 @@ mod tests {
 
         callback(StreamError::StreamInvalidated);
         assert!(failed.load(Ordering::Acquire));
+    }
+
+    /// What cpal's ALSA thread says, over and over, for a stream whose device
+    /// went to sleep under it — its own words, off a Steam Deck's journal.
+    /// That stream is reopened; any other backend complaint is not taken for a
+    /// dead one.
+    #[test]
+    fn a_stream_the_machine_slept_under_is_reopened() {
+        let backend = |description: &str| StreamError::BackendSpecific {
+            err: rodio::cpal::BackendSpecificError {
+                description: description.to_string(),
+            },
+        };
+        assert!(needs_reopen(&backend("`alsa::poll()` returned POLLERR")));
+        assert!(!needs_reopen(&backend("some passing complaint")));
+
+        let failed = Arc::new(AtomicBool::new(false));
+        let mut callback = output_error_callback(Arc::clone(&failed));
+        for _ in 0..1000 {
+            callback(backend("`alsa::poll()` returned POLLERR"));
+        }
+        assert!(failed.load(Ordering::Acquire));
+    }
+
+    /// A lost output is opened again at once, unless it was lost straight
+    /// after it was opened: then reopening is not curing it, and it waits.
+    #[test]
+    fn an_output_lost_again_straight_after_opening_waits_before_the_next() {
+        let opened = Instant::now();
+        let long_after = opened + Duration::from_secs(600);
+        assert_eq!(reopen_at(opened, long_after), long_after);
+        let straight_after = opened + Duration::from_millis(40);
+        assert_eq!(
+            reopen_at(opened, straight_after),
+            straight_after + RETRY_AFTER
+        );
     }
 }

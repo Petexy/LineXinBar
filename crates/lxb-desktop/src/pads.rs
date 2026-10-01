@@ -59,6 +59,13 @@ pub struct Pad {
 const STEAM_INPUT_VENDOR: u16 = 0x28de;
 const STEAM_INPUT_PRODUCT: u16 = 0x11ff;
 
+/// Whether a device with these ids is one of the controllers Steam Input makes
+/// up. See [`Pad::is_steam_input`]; this is the same answer for whoever has the
+/// ids and not a [`Pad`], which is how GilRs offers a controller.
+pub fn made_by_steam_input(vendor: Option<u16>, product: Option<u16>) -> bool {
+    vendor == Some(STEAM_INPUT_VENDOR) && product == Some(STEAM_INPUT_PRODUCT)
+}
+
 /// The first code the kernel calls a button rather than a key.
 const BTN_MISC: u16 = 0x100;
 /// The first and last of the four hats, which are absolute axes with two
@@ -129,7 +136,7 @@ impl Pad {
     /// vendor id and this single product id, whatever the pad behind it is and
     /// whatever it calls itself.
     pub fn is_steam_input(&self) -> bool {
-        self.vendor == STEAM_INPUT_VENDOR && self.product == STEAM_INPUT_PRODUCT
+        made_by_steam_input(Some(self.vendor), Some(self.product))
     }
 
     /// Whether the device really has this control at all.
@@ -527,9 +534,10 @@ fn before(a: &str, b: &str) -> Ordering {
 /// a keyboard instead of a pad. An emulator binding one device per player has
 /// no way to prefer the real one, and the shell does, so it does.
 ///
-/// The exception is the controller Steam Input is the *only* driver for. A
-/// Steam Controller has no kernel driver at all — nothing but Steam can read
-/// it, and its virtual pad is not a duplicate of anything but the whole of it.
+/// The exception is the controller Steam Input is the *only* driver for: one
+/// with no gamepad of the kernel's, such as a Steam Controller 2 on a kernel
+/// older than 7.3 with nothing standing in for it. Its virtual pad is not a
+/// duplicate of anything but the whole of it.
 /// So the inventions are kept when there is no real pad behind them, and when
 /// the pad somebody is actually holding is one of them; dropping those would
 /// hand a game no controller rather than the wrong one.
@@ -827,8 +835,8 @@ B: ABS=3003f
     /// A controller only Steam can read is still handed over, because leaving
     /// it out would hand the game nothing.
     ///
-    /// A Steam Controller has no kernel driver: the invented pad is not a
-    /// duplicate of a real one, it is the only thing there is. The rule is
+    /// A pad with no gamepad of the kernel's has the invented pad and nothing
+    /// else: it is not a duplicate of a real one, it is the only thing there is. The rule is
     /// about preferring the real pad, so with no real pad there is nothing to
     /// prefer.
     #[test]

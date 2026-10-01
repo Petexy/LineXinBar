@@ -392,6 +392,53 @@ impl Doing {
     pub fn answered_by_the_storefront(self) -> bool {
         matches!(self, Doing::Open | Doing::Downloads)
     }
+
+    /// Whether the client has to be taken out of Big Picture before it is
+    /// asked for this.
+    ///
+    /// The two that are answered by the storefront, because a client in Big
+    /// Picture has no storefront: `open/main` asked of one maps nothing new and
+    /// the press waits out its whole patience for a window that is never
+    /// coming. Read off the journal of 2026-10-01 on a Steam Deck: "Open Steam
+    /// (Client)" pressed over a Big Picture the Steam button had opened in the
+    /// background, a loading screen for thirty seconds, then "Steam never
+    /// opened the window it was waited on for". See [`LEAVE_BIG_PICTURE`].
+    pub fn leaves_big_picture_first(self) -> bool {
+        self.answered_by_the_storefront()
+    }
+}
+
+/// The request that takes the client out of Big Picture and back to its
+/// desktop face.
+///
+/// Not in the routes the interface itself answers — those are chosen by the
+/// mode the client is in, and asked from inside Big Picture every route leads
+/// back into it — but carried by the client proper (`steamclient.so` handles
+/// `steam://close/`). Read off a live client on a Steam Deck on 2026-10-01:
+/// Big Picture up, `SteamClient.UI.GetUIMode()` 4; this handed over the pipe;
+/// four seconds later 7, with the storefront mapped and Big Picture gone.
+/// Handed to a client already on its desktop face it changes nothing: the
+/// same window, the same mode.
+pub const LEAVE_BIG_PICTURE: &str = "steam://close/bigpicture";
+
+/// Take this session's client out of Big Picture, where there is one running.
+///
+/// Never starts one — a client that is not running is not in Big Picture —
+/// and never reaches a client that belongs to another session on this
+/// machine. Waits for the courier, which takes milliseconds with a client up,
+/// so it belongs on a thread that is not drawing anything. Answers whether the
+/// client was asked.
+pub fn leave_big_picture(client: &Where, options: &Options) -> bool {
+    if !is_running(Some(client), options) || !in_this_session(options) {
+        return false;
+    }
+    match tell(client, LEAVE_BIG_PICTURE) {
+        Ok(()) => true,
+        Err(error) => {
+            tracing::info!(%error, "Valve's client could not be asked to leave Big Picture");
+            false
+        }
+    }
 }
 
 /// The two directories the client keeps itself in.
@@ -1442,11 +1489,37 @@ fn ask_about_the_guide_button() {
         // does not answer them would otherwise be waited out *twice* before the
         // press it was for got anywhere. One question already establishes
         // whether there is anybody there.
-        Ok(()) => the_overlay_is_still_where_the_shell_thinks_it_is(),
+        Ok(()) => {
+            take_the_steam_button_from_the_overlay();
+            the_overlay_is_still_where_the_shell_thinks_it_is();
+        }
         Err(why) => tracing::warn!(
             %why,
             "could not ask Valve's client to leave the guide button alone; \
              it may open Big Picture when the guide is pressed"
+        ),
+    }
+}
+
+/// Ask the overlay inside a running game to leave the Steam button alone too.
+///
+/// The setting above is Big Picture's, and the overlay answers the button
+/// without consulting it. See [`crate::webui::take_the_steam_button_from_the_overlay`].
+///
+/// Said in the log when something changed — the first wake of a client, or an
+/// overlay that came up since the last one — and not on every wake after that.
+fn take_the_steam_button_from_the_overlay() {
+    match crate::webui::take_the_steam_button_from_the_overlay() {
+        Ok(left) if left.newly || left.moved > 0 => tracing::info!(
+            newly = left.newly,
+            moved = left.moved,
+            "Valve's overlay will leave the Steam button to this shell"
+        ),
+        Ok(_) => {}
+        Err(why) => tracing::warn!(
+            %why,
+            "could not take the Steam button from Valve's overlay; \
+             it may open over a game when the guide is pressed"
         ),
     }
 }
@@ -3910,6 +3983,19 @@ mod tests {
         assert!(!Doing::Verify.answered_by_the_storefront());
     }
 
+    /// The client's own window, and its downloads page, are not to be had from
+    /// inside Big Picture, so both leave it first; nothing else does, Big
+    /// Picture least of all. See [`LEAVE_BIG_PICTURE`].
+    #[test]
+    fn only_the_storefronts_requests_leave_big_picture_first() {
+        assert!(Doing::Open.leaves_big_picture_first());
+        assert!(Doing::Downloads.leaves_big_picture_first());
+        assert!(!Doing::BigPicture.leaves_big_picture_first());
+        assert!(!Doing::Install.leaves_big_picture_first());
+        assert!(!Doing::Verify.leaves_big_picture_first());
+        assert_eq!(LEAVE_BIG_PICTURE, "steam://close/bigpicture");
+    }
+
     /// The toasts are told by the name the client gives them, and nothing else
     /// of the client's is.
     #[test]
@@ -4001,7 +4087,15 @@ mod tests {
         );
         // Read-only and non-blocking, which is exactly what a client holds it
         // as and what `holder_of` looks for — so this process is now the client.
-        let held = unsafe { libc::open(name.as_ptr(), libc::O_RDONLY | libc::O_NONBLOCK) };
+        // Close-on-exec as well: a test running beside this one may start a
+        // process, which would otherwise inherit the pipe and go on holding
+        // it after this test has let go.
+        let held = unsafe {
+            libc::open(
+                name.as_ptr(),
+                libc::O_RDONLY | libc::O_NONBLOCK | libc::O_CLOEXEC,
+            )
+        };
         assert!(held >= 0, "the FIFO could be held");
 
         let log = options.root.join("logs").join(CONNECTION_LOG);
@@ -4124,7 +4218,12 @@ mod tests {
             0,
             "a scratch FIFO"
         );
-        let held = unsafe { libc::open(name.as_ptr(), libc::O_RDONLY | libc::O_NONBLOCK) };
+        let held = unsafe {
+            libc::open(
+                name.as_ptr(),
+                libc::O_RDONLY | libc::O_NONBLOCK | libc::O_CLOEXEC,
+            )
+        };
         assert!(held >= 0, "the FIFO could be held");
 
         // Up, and it has not said who it is. Not this session's to use, and not
@@ -4230,7 +4329,12 @@ mod tests {
             0,
             "a scratch FIFO"
         );
-        let held = unsafe { libc::open(name.as_ptr(), libc::O_RDONLY | libc::O_NONBLOCK) };
+        let held = unsafe {
+            libc::open(
+                name.as_ptr(),
+                libc::O_RDONLY | libc::O_NONBLOCK | libc::O_CLOEXEC,
+            )
+        };
         assert!(held >= 0, "the FIFO could be held");
         let log = options.root.join("logs").join(CONNECTION_LOG);
         // The client standing in here is this process, and whether a log is its

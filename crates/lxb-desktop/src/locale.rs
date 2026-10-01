@@ -901,7 +901,7 @@ fn ask_root_to_apply(locale: &str) -> Root {
     let Some(pkexec) = pkexec() else {
         return Root::Unavailable("no pkexec on this machine".into());
     };
-    let exe = match std::env::current_exe() {
+    let exe = match this_program() {
         Ok(exe) => exe,
         Err(err) => return Root::Unavailable(format!("{err}")),
     };
@@ -943,6 +943,25 @@ pub(crate) fn pkexec() -> Option<std::path::PathBuf> {
     std::env::split_paths(&std::env::var_os("PATH")?)
         .map(|directory| directory.join("pkexec"))
         .find(|candidate| candidate.is_file())
+}
+
+/// Where this program is installed, for asking polkit to run it as root.
+///
+/// A session outlives a package upgrade, and once a package has replaced this
+/// program the kernel names the running file "… (deleted)", a path with
+/// nothing at it — pkexec then refused every one of these requests until the
+/// next sign-in. The path is still where the installation keeps the program,
+/// and the file there now is the newer one the same installation put down.
+pub(crate) fn this_program() -> std::io::Result<std::path::PathBuf> {
+    std::env::current_exe().map(installed_path)
+}
+
+fn installed_path(running: std::path::PathBuf) -> std::path::PathBuf {
+    use std::os::unix::ffi::OsStrExt;
+    match running.as_os_str().as_bytes().strip_suffix(b" (deleted)") {
+        Some(kept) => std::path::PathBuf::from(std::ffi::OsStr::from_bytes(kept)),
+        None => running,
+    }
 }
 
 /// The privileged half of a language change: the system locale, and every
@@ -1008,6 +1027,21 @@ fn is_a_locale_name(locale: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// After an upgrade the running file is "… (deleted)"; polkit is asked to
+    /// run the installed one, which is the newer program at the same path.
+    #[test]
+    fn a_program_an_upgrade_replaced_is_run_from_where_it_is_installed() {
+        use std::path::PathBuf;
+        assert_eq!(
+            installed_path(PathBuf::from("/usr/bin/lxb-desktop (deleted)")),
+            PathBuf::from("/usr/bin/lxb-desktop")
+        );
+        assert_eq!(
+            installed_path(PathBuf::from("/usr/bin/lxb-desktop")),
+            PathBuf::from("/usr/bin/lxb-desktop")
+        );
+    }
 
     #[test]
     fn a_language_keeps_the_locale_the_session_started_in_when_it_already_speaks_it() {

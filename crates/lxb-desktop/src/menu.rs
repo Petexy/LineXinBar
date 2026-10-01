@@ -1338,14 +1338,26 @@ impl Entry {
 /// first frame snaps, so the glide is only ever between two real positions
 /// rather than in from nowhere.
 ///
-/// Its own type because two things in this shell carry one — a menu's rows, and
-/// the rows of the panel an application's file question is answered in — and two
-/// springs written out twice would be two places for the rate to drift apart.
+/// Its own type because every highlight in this shell that slides between rows
+/// carries one — a menu's rows, the guide's column and the friends list — and
+/// one spring written out several times would be several places for the rate
+/// to drift apart.
 #[derive(Debug, Default, Clone, Copy)]
 pub struct Glide {
     at: Option<[f32; 4]>,
     speed: [f32; 4],
+    /// Whether the last step left it still on its way — see
+    /// [`Self::is_moving`].
+    moving: bool,
 }
+
+/// How close to where it is going a glide has to be, in pixels and in pixels a
+/// second, before it counts as there.
+///
+/// Half a pixel, which is less than anything the eye can see move: the spring
+/// never quite arrives, and a glide still asking for frames once it is
+/// indistinguishable from standing still is a display drawn for nothing.
+pub const GLIDE_AT_REST: f32 = 0.5;
 
 impl Glide {
     /// One frame of the glide towards `target`.
@@ -1353,6 +1365,7 @@ impl Glide {
         let Some(current) = self.at else {
             self.speed = [0.0; 4];
             self.at = Some(target);
+            self.moving = false;
             return target;
         };
         let mut next = [0.0; 4];
@@ -1371,8 +1384,29 @@ impl Glide {
             (*slot, *velocity) = (at as f32, moving as f32);
         }
         self.at = Some(next);
+        self.moving = !glide_at_rest(next, self.speed, target);
         next
     }
+
+    /// Whether it is still on its way to where it was last sent.
+    ///
+    /// This is what keeps frames coming for it, and in low-end hardware mode
+    /// nothing else does: a display is drawn at its refresh only while
+    /// something on it says it is moving, and ten times a second otherwise —
+    /// see `low_end_next` in `main.rs`. A highlight that did not say so slid
+    /// between rows in jumps a tenth of a second apart.
+    pub fn is_moving(&self) -> bool {
+        self.moving
+    }
+}
+
+/// Whether a rectangle on a spring is where it is going: every edge within
+/// [`GLIDE_AT_REST`] of `target` and none of them travelling faster than it.
+pub fn glide_at_rest(at: [f32; 4], speed: [f32; 4], target: [f32; 4]) -> bool {
+    at.iter()
+        .zip(&speed)
+        .zip(&target)
+        .all(|((at, speed), to)| (at - to).abs() <= GLIDE_AT_REST && speed.abs() <= GLIDE_AT_REST)
 }
 
 /// The header at the top of a panel: what the menu is about, and how many
@@ -1501,8 +1535,7 @@ pub struct Menu {
     linear: f32,
     /// Eased rectangle of the selected row's chip, which slides down the
     /// column rather than jumping from row to row, and how fast it is going.
-    highlight: Option<[f32; 4]>,
-    highlight_speed: [f32; 4],
+    highlight: Glide,
     /// How far the selected row has opened out to show a label too long for
     /// one line: 0 closed, 1 fully open.
     ///
@@ -1607,8 +1640,7 @@ impl Menu {
         self.next = None;
         self.returning = None;
         self.stack.clear();
-        self.highlight = None;
-        self.highlight_speed = [0.0; 4];
+        self.highlight = Glide::default();
         self.keep_selection_in_view();
         true
     }
@@ -1642,8 +1674,7 @@ impl Menu {
         self.next = None;
         self.returning = None;
         self.stack.clear();
-        self.highlight = None;
-        self.highlight_speed = [0.0; 4];
+        self.highlight = Glide::default();
     }
 
     // -- one list leading to another ---------------------------------------
@@ -1873,9 +1904,15 @@ impl Menu {
     }
 
     /// Whether something is still moving, so the display it is on keeps
-    /// drawing frames until it has settled.
+    /// drawing frames until it has settled: the panel growing or folding, a
+    /// press, a row opening out or closing, and the highlight sliding between
+    /// rows. The highlight only while the panel is on screen — it is stepped
+    /// only while it is, and one put away mid-slide is not sliding anywhere.
     pub fn is_animating(&self) -> bool {
-        (self.linear > 0.0 && self.linear < 1.0) || self.pressed.is_some()
+        (self.linear > 0.0 && self.linear < 1.0)
+            || self.pressed.is_some()
+            || (self.expansion > 0.0 && self.expansion < 1.0)
+            || (self.is_on_screen() && self.highlight.is_moving())
     }
 
     pub fn entries(&self) -> &[Entry] {
@@ -2295,14 +2332,7 @@ impl Menu {
     /// One frame of the highlight's glide towards `target`. See [`Glide`],
     /// which is the spring and the whole of the rule.
     pub fn animate_highlight(&mut self, target: [f32; 4], dt: f32) -> [f32; 4] {
-        let mut glide = Glide {
-            at: self.highlight,
-            speed: self.highlight_speed,
-        };
-        let next = glide.towards(target, dt);
-        self.highlight = glide.at;
-        self.highlight_speed = glide.speed;
-        next
+        self.highlight.towards(target, dt)
     }
 
     /// Pretend the press started `seconds` ago, so tests can assert on the
@@ -2512,6 +2542,37 @@ mod tests {
             stepped[1] > first[1] && stepped[1] < second[1],
             "{stepped:?} should be on its way between the two rows"
         );
+    }
+
+    /// A menu that has finished growing is still animating while its
+    /// highlight slides between rows, and only until the highlight is there —
+    /// which is what keeps a display drawing at its refresh for the slide in
+    /// low-end hardware mode, and lets it go back to ten frames a second after.
+    #[test]
+    fn the_highlight_sliding_is_the_menu_animating() {
+        let mut menu = open(&["one", "two"]);
+        let frame = 1.0 / 60.0;
+        while menu.animate(frame) < 1.0 {}
+        let first = [0.0, 0.0, 100.0, 40.0];
+        menu.animate_highlight(first, frame);
+        assert!(!menu.is_animating(), "grown, and the highlight snapped");
+
+        let second = [0.0, 60.0, 100.0, 40.0];
+        menu.animate_highlight(second, frame);
+        assert!(menu.is_animating(), "the highlight is on its way");
+        let mut frames = 1;
+        while menu.is_animating() {
+            menu.animate_highlight(second, frame);
+            frames += 1;
+            assert!(frames < 120, "it has to arrive");
+        }
+
+        // And put away mid-slide, nothing of the slide is left to draw.
+        menu.animate_highlight(first, frame);
+        assert!(menu.is_animating());
+        menu.close();
+        while menu.animate(frame) > 0.0 {}
+        assert!(!menu.is_animating());
     }
 
     fn level(value: f32) -> Level {

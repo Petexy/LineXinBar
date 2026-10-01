@@ -185,6 +185,11 @@ struct Shared {
     /// while the button is held, and the press that began the hold was drained
     /// by an earlier poll.
     held: AtomicBool,
+    /// Whether any button at all is down on a guarded pad — on the pad, which
+    /// is not always what its replacement says: a hand-back lets go of a held
+    /// button on the replacement while the thumb is still on it. See
+    /// [`PadGuard::buttons_held`].
+    buttons_held: AtomicBool,
     edges: Mutex<Edges>,
     /// Set by [`PadGuard::hand_back`] and taken by the thread, which lets go
     /// on every replacement of whatever is down on it.
@@ -251,12 +256,14 @@ impl Knock {
 /// many parts of the shell want to know about them.
 static GUARDED: Mutex<Vec<Held>> = Mutex::new(Vec::new());
 
-/// One pad the guard has, as the two things anything else needs to know about
-/// it: which pad it is, and which node is the one it has gone quiet on.
+/// One pad the guard has, as the three things anything else needs to know
+/// about it: which pad it is, which node is the one it has gone quiet on, and
+/// which node is the replacement applications read instead.
 #[derive(Debug, Clone)]
 struct Held {
     id: PadId,
     node: PathBuf,
+    replacement: PathBuf,
 }
 
 /// A pad as USB names it. Two of them make one entry in SDL's ignore list.
@@ -306,6 +313,19 @@ impl PadGuard {
         self.shared
             .as_ref()
             .is_some_and(|shared| shared.held.load(Ordering::Relaxed))
+    }
+
+    /// Whether a thumb is on any button of a guarded pad.
+    ///
+    /// Asked of the pad and not of its replacement, which is the point: after
+    /// a hand-back the replacement says a button the thumb is still on is up,
+    /// and keeps saying so until the thumb comes off. See
+    /// [`crate::controller::ControllerInput::keep`], which waits for this
+    /// before it gives the pads it took back to applications.
+    pub fn buttons_held(&self) -> bool {
+        self.shared
+            .as_ref()
+            .is_some_and(|shared| shared.buttons_held.load(Ordering::Relaxed))
     }
 
     /// The shell is letting go of the pad: let go on every replacement of
@@ -373,6 +393,23 @@ pub fn grabbed_nodes() -> Vec<PathBuf> {
         .collect()
 }
 
+/// The device nodes of the guard's replacements — the pads applications read
+/// in place of the ones the guard holds.
+///
+/// What wants them is the shell taking from applications every pad they read,
+/// for as long as it holds the controller itself. The replacement is one of
+/// those, and to GilRs it looks like any other pad, name and ids and all; its
+/// node is the one thing that says which it is. See
+/// [`crate::controller::ControllerInput::keep`].
+pub fn replacement_nodes() -> Vec<PathBuf> {
+    GUARDED
+        .lock()
+        .unwrap_or_else(|err| err.into_inner())
+        .iter()
+        .map(|held| held.replacement.clone())
+        .collect()
+}
+
 /// Every pad this shell stands in front of, as `SDL_HIDAPI_IGNORE_DEVICES`
 /// spells it — `None` when it stands in front of none.
 ///
@@ -402,9 +439,11 @@ pub fn hidapi_ignore_list() -> Option<String> {
 /// Everything above holds for the client too — it walks around a grab over
 /// `hidraw` like any other program, which is why it is told about the pads the
 /// guard holds. It does *not* hold for the one pad this shell drives itself.
-/// That pad has no kernel driver, so Valve's client is not one more program
-/// looking for a controller: it is the controller's *other* driver, and the
-/// only road a Steam game has to it. Naming it here does not move the client
+/// That pad has no gamepad of the kernel's while this shell runs — none at all
+/// under `hid-generic`, and `hid-steam`'s, from Linux 7.3, goes the moment the
+/// raw node is opened — so Valve's client is not one more program looking for
+/// a controller: it is the controller's *other* driver, and the only road a
+/// Steam game has to it. Naming it here does not move the client
 /// onto the stand-in — nothing moves the client onto anything — it takes the
 /// pad off the client altogether, and every game the client launches with it.
 ///
@@ -438,8 +477,8 @@ enum Reader {
 /// Which of the pads this shell stands in front of `reader` is asked to ignore.
 ///
 /// `guarded` are the pads taken from `/dev/input` and given back without their
-/// guide button; `driven` are the ones with no kernel driver, which this shell
-/// reads from `hidraw` and gives a gamepad to. The difference between the two
+/// guide button; `driven` are the ones this shell reads from `hidraw` and gives
+/// a gamepad to, which have no gamepad of the kernel's while it does. The difference between the two
 /// readers is the second list, and only the second list.
 fn pads_to_ignore(reader: Reader, guarded: &[PadId], driven: &[PadId]) -> Vec<PadId> {
     let mut ids: Vec<PadId> = Vec::new();
@@ -687,6 +726,9 @@ struct Pad {
     device: Device,
     /// What every other reader on the machine finds instead.
     replacement: VirtualDevice,
+    /// The node the replacement was given, which is how anything that sees
+    /// pads by node tells it from the pad. See [`replacement_nodes`].
+    replacement_node: PathBuf,
     id: PadId,
     /// The packet being read, up to but not including the `SYN_REPORT` that
     /// will end it.
@@ -819,6 +861,7 @@ impl Worker {
             _ => false,
         });
         self.shared.held.store(held, Ordering::Relaxed);
+        self.note_buttons_held();
 
         if !edges.is_empty() {
             let mut shared = self
@@ -839,6 +882,17 @@ impl Worker {
                 pad.hand_back();
             }
         }
+        self.note_buttons_held();
+    }
+
+    /// Say whether a thumb is on any button of any guarded pad. See
+    /// [`PadGuard::buttons_held`].
+    fn note_buttons_held(&self) {
+        let held = self.known.values().any(|slot| match slot {
+            Slot::Guarded(pad) => pad.a_button_is_down(),
+            _ => false,
+        });
+        self.shared.buttons_held.store(held, Ordering::Relaxed);
     }
 
     /// Look for pads that were not here last time, and forget the ones that
@@ -958,6 +1012,7 @@ impl Worker {
             held.push(Held {
                 id: pad.id,
                 node: pad.path.clone(),
+                replacement: pad.replacement_node.clone(),
             });
         }
         *GUARDED.lock().unwrap_or_else(|err| err.into_inner()) = held;
@@ -1015,6 +1070,13 @@ impl Pad {
 
         self.rumble();
         Ok(())
+    }
+
+    /// Whether a thumb is on any button of this pad: one the replacement says
+    /// is down, one a hand-back has let go of there while it is still held,
+    /// or the guide button, which the replacement never hears.
+    fn a_button_is_down(&self) -> bool {
+        !self.down.is_empty() || !self.withheld.is_empty() || self.guide_down
     }
 
     /// Let go on the replacement of every button it is saying is down, and
@@ -1171,13 +1233,14 @@ fn take(mut device: Device, path: &Path) -> std::io::Result<Pad> {
     device.set_nonblocking(true)?;
 
     let mut replacement = build_replacement(&device)?;
-    wait_for_node(&mut replacement)?;
+    let replacement_node = wait_for_node(&mut replacement)?;
     set_nonblocking(replacement.as_raw_fd())?;
 
     Ok(Pad {
         path: path.to_path_buf(),
         device,
         replacement,
+        replacement_node,
         id,
         packet: Vec::new(),
         guide_down: false,
@@ -1416,7 +1479,7 @@ static SERIAL: Mutex<()> = Mutex::new(());
 /// list goes back to empty on the way out of every test that is allowed to
 /// write it, panic or no panic, and while [`SERIAL`] is still held.
 #[cfg(test)]
-struct Serial(#[allow(dead_code)] std::sync::MutexGuard<'static, ()>);
+pub(crate) struct Serial(#[allow(dead_code)] std::sync::MutexGuard<'static, ()>);
 
 #[cfg(test)]
 impl Drop for Serial {
@@ -1429,8 +1492,25 @@ impl Drop for Serial {
 }
 
 #[cfg(test)]
-fn serial() -> Serial {
+pub(crate) fn serial() -> Serial {
     Serial(SERIAL.lock().unwrap_or_else(|err| err.into_inner()))
+}
+
+/// Put a guarded pad on the published list without a pad or a guard: `node`
+/// as the pad held, `replacement` as the one applications read.
+///
+/// For [`crate::controller`]'s tests of what the shell does with a
+/// replacement. The caller holds [`serial`], which empties the list again.
+#[cfg(test)]
+pub(crate) fn pretend_guarded(vendor: u16, product: u16, node: &Path, replacement: &Path) {
+    GUARDED
+        .lock()
+        .unwrap_or_else(|err| err.into_inner())
+        .push(Held {
+            id: PadId { vendor, product },
+            node: node.to_path_buf(),
+            replacement: replacement.to_path_buf(),
+        });
 }
 
 #[cfg(test)]
@@ -1694,6 +1774,7 @@ mod tests {
         let held = |vendor, product, node: &str| Held {
             id: PadId { vendor, product },
             node: PathBuf::from(node),
+            replacement: PathBuf::from(format!("{node}-replacement")),
         };
         *GUARDED.lock().unwrap() = vec![
             held(0x28de, 0x1205, "/dev/input/event20"),

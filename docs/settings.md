@@ -295,6 +295,15 @@ rather than a way up. The compositor's own config can still set one, and a
 screen in one is named in the row above the list with none of the four marked,
 because it is in none of them.
 
+The turns are counted from the way the screen is built into its machine,
+which the compositor reports for each display beside the turn it draws at. A
+Steam Deck's screen is a portrait panel laid on its side in a landscape case,
+and its connector says so: the Deck standing up the way it is built is at
+**0°**, and **90°** is the Deck turned clockwise. Counted from the panel, the
+page used to say the Deck was turned 270° while it stood the right way up.
+What is written to the settings file, and asked of the compositor, is still
+the turn as drawn — see `transform` in [configuration](configuration.md).
+
 Which screens are listed is the compositor's answer rather than a guess: it
 reports an orientation for every display it turns itself, and for no others. A
 nested session is the ordinary "no others" — the way up of its window belongs
@@ -1748,9 +1757,14 @@ cheap way:
   still says what was chosen, and turning the mode off brings it back;
 - a pane of glass takes at most one picture of what is behind it per frame;
 - a [film wallpaper](#custom-wallpaper) is held on its first frame;
-- the start screen is drawn ten times a second while nothing on it moves, and
-  at the display's own refresh while something does, so the bar glides as
-  smoothly as it does outside the mode. A device that cannot keep that up —
+- the start screen — and the Home menu, and everything else the shell puts on
+  the screen — is drawn ten times a second while nothing on it moves, and at
+  the display's own refresh while something does: a highlight sliding, the
+  Home menu's cards, a panel opening, the on-screen keyboard, a bubble, a
+  loading screen. So it glides as smoothly as it does outside the mode, and
+  what a press changes is on the screen at the next refresh rather than the
+  next tenth of a second. Light that changes in place, such as the selection's
+  slow glow, stays at ten frames a second. A device that cannot keep that up —
   more than a fifth of its frames late — is drawn at every other refresh
   instead, which is a slower glide but an even one, and is given the full rate
   back once it has shown for long enough that it can.

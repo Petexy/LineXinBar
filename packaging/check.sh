@@ -440,6 +440,8 @@ grep -q 'OPTIONS+="static_node=uinput"' "$rules" \
     || package_die "the uinput rule would not apply before the module is loaded"
 grep -q '28de.*1304.*TAG+="uaccess"' "$rules" \
     || package_die "the rules no longer grant the Steam Controller's hidraw to the seat"
+grep -q '28de.*1205.*TAG+="uaccess"' "$rules" \
+    || package_die "the rules no longer grant the Steam Deck's hidraw to the seat"
 if command -v udevadm >/dev/null 2>&1; then
     # Syntax only. `verify` reads the file and says what it could not parse,
     # which is the one kind of mistake in here that is otherwise invisible

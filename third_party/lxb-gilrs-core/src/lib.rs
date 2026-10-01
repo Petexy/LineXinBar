@@ -192,6 +192,15 @@ impl Gamepad {
         self.inner.is_ff_supported()
     }
 
+    /// LineXinBar: take the device for this reader alone, or give it back.
+    ///
+    /// On Linux this is `EVIOCGRAB` on the descriptor this gamepad is read
+    /// through, so a taken device goes on reporting here and to no other
+    /// program. `Unsupported` everywhere else.
+    pub fn set_grabbed(&self, grabbed: bool) -> std::io::Result<()> {
+        self.inner.set_grabbed(grabbed)
+    }
+
     /// Creates `FfDevice` corresponding to this gamepad.
     pub fn ff_device(&self) -> Option<FfDevice> {
         self.inner.ff_device().map(|inner| FfDevice { inner })

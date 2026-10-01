@@ -16,12 +16,22 @@ struct Fixture {
     /// Seconds of idleness before the coordinator quits; the default is a
     /// quarter of an hour, which no test waits for.
     idle: Option<u64>,
+    /// What the coordinator runs: this test executable, or a copy of it that
+    /// a test replaces the way a package replaces an installed program.
+    program: PathBuf,
 }
 impl Fixture {
     fn new() -> Self {
         Self::with_idle(None)
     }
     fn with_idle(idle: Option<u64>) -> Self {
+        Self::made(idle, false)
+    }
+    /// A coordinator running a copy of this test executable.
+    fn copied() -> Self {
+        Self::made(None, true)
+    }
+    fn made(idle: Option<u64>, copied: bool) -> Self {
         let root = std::env::temp_dir().join(format!(
             "lxb-update-test-{}-{}",
             std::process::id(),
@@ -59,13 +69,25 @@ esac
 "#,
         );
         script(&root.join("bin/pacman"), "#!/bin/sh\nexit 0\n");
-        let daemon = Self::spawn(&root, idle);
-        let fixture = Self { root, daemon, idle };
+        let program = if copied {
+            let program = root.join("coordinator");
+            fs::copy(std::env::current_exe().unwrap(), &program).unwrap();
+            program
+        } else {
+            std::env::current_exe().unwrap()
+        };
+        let daemon = Self::spawn(&root, idle, &program);
+        let fixture = Self {
+            root,
+            daemon,
+            idle,
+            program,
+        };
         fixture.wait(|_| true);
         fixture
     }
-    fn spawn(root: &Path, idle: Option<u64>) -> Child {
-        let mut command = Command::new(std::env::current_exe().unwrap());
+    fn spawn(root: &Path, idle: Option<u64>, program: &Path) -> Child {
+        let mut command = Command::new(program);
         if let Some(idle) = idle {
             command.env("LXB_UPDATES_IDLE_SECONDS", idle.to_string());
         }
@@ -85,16 +107,48 @@ esac
             .env("LXB_UPDATES_RELEASE_FIXTURES", root.join("releases"))
             .stdin(Stdio::null())
             .stdout(Stdio::null())
-            .stderr(Stdio::inherit())
-            .spawn()
-            .unwrap()
+            .stderr(Stdio::inherit());
+        // A file this process has just written can be busy for a moment: a
+        // test on another thread that forks in between holds the descriptor
+        // until its child execs.
+        let start = Instant::now();
+        loop {
+            match command.spawn() {
+                Err(error)
+                    if error.raw_os_error() == Some(libc::ETXTBSY)
+                        && start.elapsed() < Duration::from_secs(5) =>
+                {
+                    std::thread::sleep(Duration::from_millis(20));
+                }
+                spawned => return spawned.unwrap(),
+            }
+        }
     }
     fn restart(&mut self) {
         let _ = self.daemon.kill();
         let _ = self.daemon.wait();
         let _ = fs::remove_file(self.socket());
-        self.daemon = Self::spawn(&self.root, self.idle);
+        self.daemon = Self::spawn(&self.root, self.idle, &self.program);
         self.wait(|_| true);
+    }
+    /// Put a new file where the coordinator's program is, as a package does:
+    /// written beside it and renamed over its name.
+    fn replace_program(&self) {
+        let next = self.root.join("coordinator.new");
+        fs::copy(&self.program, &next).unwrap();
+        fs::rename(&next, &self.program).unwrap();
+    }
+    /// Wait for the coordinator to quit of its own accord.
+    fn wait_for_exit(&mut self, what: &str) {
+        let start = Instant::now();
+        loop {
+            if let Some(status) = self.daemon.try_wait().unwrap() {
+                assert!(status.success(), "{status:?}");
+                return;
+            }
+            assert!(start.elapsed() < Duration::from_secs(10), "{what}");
+            std::thread::sleep(Duration::from_millis(50));
+        }
     }
     fn state(&self) -> PathBuf {
         self.root.join("state/lxb/updates")
@@ -598,6 +652,46 @@ fn an_idle_coordinator_quits_and_a_staged_restart_keeps_it() {
         "a coordinator with a staged restart quit"
     );
     assert!(fixture.request(Request::Status).snapshot.restart.is_some());
+}
+
+/// Installing a newer LineXinBar replaces the coordinator's program under it,
+/// and the shell asks it something every few seconds, so one that waited to
+/// be idle stayed the old program until the machine restarted — and its next
+/// job failed before it started, with "No such file or directory", because
+/// running this program as root means naming its file. Between jobs it steps
+/// aside for the new one; in the middle of a job it does not.
+#[test]
+fn a_coordinator_whose_program_was_replaced_steps_aside_between_jobs() {
+    let mut fixture = Fixture::copied();
+    fixture.request(Request::Check {
+        selected: vec![SourceId::Firmware],
+    });
+    let job = fixture
+        .wait(|r| r.snapshot.phase == Phase::Reviewing)
+        .snapshot
+        .job;
+    fixture.request(Request::Install { job });
+    fixture.wait(|r| r.snapshot.output.iter().any(|l| l.contains("[y/N]")));
+    fixture.replace_program();
+    std::thread::sleep(Duration::from_secs(2));
+    assert!(
+        fixture.daemon.try_wait().unwrap().is_none(),
+        "the coordinator left in the middle of a job"
+    );
+    assert!(fixture.input(job, "y").error.is_none());
+    fixture.wait(|r| r.snapshot.secret);
+    fixture.input(job, "fixture-private");
+    fixture.wait_for_exit("the replaced coordinator stayed after its job");
+    assert!(!fixture.socket().exists(), "the socket was left behind");
+    // The new program reads back what the old one finished.
+    fixture.restart();
+    let after = fixture.request(Request::Status);
+    assert_eq!(after.snapshot.job, job);
+    assert_eq!(after.snapshot.phase, Phase::Completed);
+    assert_eq!(fixture.request(Request::History).history.len(), 1);
+    // And a coordinator with nothing to do steps aside at once.
+    fixture.replace_program();
+    fixture.wait_for_exit("the replaced idle coordinator stayed");
 }
 
 // This entry point exists only in the test executable. The shipped helper has

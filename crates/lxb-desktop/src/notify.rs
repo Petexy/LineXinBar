@@ -858,6 +858,18 @@ impl Center {
         &self.toasts
     }
 
+    /// Pretend every bubble reached the part of its life it is in `seconds`
+    /// ago, so a test can step through a bubble's life without waiting it out.
+    #[cfg(test)]
+    fn backdate_toasts(&mut self, seconds: f32) {
+        for toast in &mut self.toasts {
+            toast.since = toast
+                .since
+                .checked_sub(std::time::Duration::from_secs_f32(seconds))
+                .unwrap_or(toast.since);
+        }
+    }
+
     /// Whether anything has been announced that nobody has looked at.
     ///
     /// What the bell wears a mark for. Deliberately *unread* rather than
@@ -1174,6 +1186,18 @@ impl Center {
         true
     }
 
+    /// Whether a bubble is on its way in or out of the corner.
+    ///
+    /// Narrower than what [`Self::animate`] answers, which counts a bubble
+    /// sitting out its dwell too: that one keeps the loop coming back so the
+    /// bubble leaves on time, and this one is what a display is drawn at its
+    /// refresh for. A bubble standing still in the corner is not moving.
+    pub fn is_moving(&self) -> bool {
+        self.toasts
+            .iter()
+            .any(|toast| toast.stage != Stage::Sitting && toast.progress() < 1.0)
+    }
+
     /// Advance the corner. Returns whether anything is still moving, which is
     /// what keeps the shell drawing.
     pub fn animate(&mut self) -> bool {
@@ -1304,6 +1328,31 @@ impl Center {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A bubble moves on its way in and on its way out, and not while it sits
+    /// in the corner — though the corner goes on asking to be advanced then,
+    /// so that it leaves on time. Low-end hardware mode draws the first at the
+    /// display's refresh and the second ten times a second.
+    #[test]
+    fn a_bubble_moves_only_on_its_way_in_and_out() {
+        let mut center = Center::default();
+        assert!(!center.is_moving());
+        assert!(center.announce("Ears is connected", "Paired.", "lxb:x"));
+        assert!(center.is_moving(), "flying in");
+
+        center.backdate_toasts(FLY_IN + 0.01);
+        assert!(center.animate(), "the dwell is still worth coming back for");
+        assert!(!center.is_moving(), "but nothing is moving through it");
+
+        center.backdate_toasts(DWELL + 0.01);
+        center.animate();
+        assert!(center.is_moving(), "flying out");
+
+        center.backdate_toasts(FLY_OUT + 0.01);
+        center.animate();
+        assert!(center.toasts().is_empty());
+        assert!(!center.is_moving());
+    }
 
     /// The shell can say something itself, and what it says is an announcement
     /// like any other: filed, bubbled, and counted against the bell.

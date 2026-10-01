@@ -323,7 +323,10 @@ impl Session {
         if unsafe { libc::prctl(libc::PR_SET_DUMPABLE, 0) } != 0 {
             bail!("Cannot protect the update authorization channel");
         }
-        let helper = process::trusted(std::env::current_exe()?)?;
+        // The installed path rather than the running image's: in the moment
+        // between a package replacing this program and the coordinator
+        // stepping aside for the new one, the image's is "… (deleted)".
+        let helper = process::trusted(process::helper()?)?;
         let pkexec = if std::path::Path::new("/run/wrappers/bin/pkexec").is_file() {
             std::path::PathBuf::from("/run/wrappers/bin/pkexec")
         } else {

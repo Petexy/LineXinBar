@@ -63,7 +63,13 @@ pub enum Next {
 #[derive(Debug, Clone)]
 pub struct Cadence {
     period: Duration,
+    /// Whether this device has been found missing the display's refresh while
+    /// something moves. Only in low-end hardware mode does that halve the
+    /// rate; otherwise it is only said.
     halved: bool,
+    /// Whether low-end hardware mode is on, which is what makes [`Self::halved`]
+    /// a pace rather than a finding.
+    low_end: bool,
     /// When the last frame was drawn, and whether something was moving then.
     drawn: Option<Instant>,
     moved: bool,
@@ -87,6 +93,7 @@ impl Default for Cadence {
         Self {
             period: SIXTY_HERTZ,
             halved: false,
+            low_end: false,
             drawn: None,
             moved: false,
             timed: false,
@@ -108,9 +115,16 @@ impl Cadence {
         }
     }
 
-    /// Whether frames go out at every other refresh.
+    /// Whether this device has been found missing the display's refresh —
+    /// in low-end hardware mode, whether frames go out at every other one.
     pub fn halved(&self) -> bool {
         self.halved
+    }
+
+    /// Say whether low-end hardware mode is on, so what is said about a device
+    /// missing its refresh is what is being done about it.
+    pub fn set_low_end(&mut self, on: bool) {
+        self.low_end = on;
     }
 
     /// Whether the last frame was drawn while something moved. The frame
@@ -184,10 +198,17 @@ impl Cadence {
                 self.halved = false;
                 self.misses = 0;
                 self.trust = (self.trust * 2).min(TRUST_AT_MOST);
-                tracing::info!(
-                    after = self.kept,
-                    "low-end drawing: trying the display's full refresh again"
-                );
+                if self.low_end {
+                    tracing::info!(
+                        after = self.kept,
+                        "low-end drawing: trying the display's full refresh again"
+                    );
+                } else {
+                    tracing::debug!(
+                        after = self.kept,
+                        "this device keeps up with the display's refresh again"
+                    );
+                }
             }
             return;
         }
@@ -195,11 +216,23 @@ impl Cadence {
         if self.misses.count_ones() > MISSES_ALLOWED {
             self.halved = true;
             self.kept = 0;
-            tracing::info!(
-                refresh_ms = self.period.as_secs_f32() * 1000.0,
-                "low-end drawing: this device misses the display's refresh, so frames go out \
-                 on every other one"
-            );
+            // Only low-end hardware mode halves the rate. This line used to
+            // say it did in every mode, which read on a Steam Deck as a shell
+            // drawing at thirty a second while it went on at sixty.
+            if self.low_end {
+                tracing::info!(
+                    refresh_ms = self.period.as_secs_f32() * 1000.0,
+                    "low-end drawing: this device misses the display's refresh, so frames go \
+                     out on every other one"
+                );
+            } else {
+                tracing::info!(
+                    refresh_ms = self.period.as_secs_f32() * 1000.0,
+                    missed = self.misses.count_ones(),
+                    of = LOOKED_AT,
+                    "this device misses the display's refresh while something moves"
+                );
+            }
         }
     }
 }

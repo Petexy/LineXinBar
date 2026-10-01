@@ -31,10 +31,28 @@
 //! dropped on the machines this feature exists for and on no others. So the
 //! shell reads the last answer and the worker keeps it true, on the terms the
 //! corner's wireless mark is kept true: only while the corner is on screen.
+//!
+//! ## Told, and not only asked
+//!
+//! A clock alone was not enough, and a Steam Deck is where that showed: the
+//! charger went in and the corner went on drawing a battery emptying for up to
+//! twenty seconds, until the next tick — or until the user left for another
+//! application and came back, which is the other thing that reads it. A cable
+//! going in is exactly the moment somebody looks at the corner to see whether
+//! it took.
+//!
+//! The kernel says so the instant it happens: every supply in that directory
+//! sends a `change` uevent when it changes, on a netlink socket anyone may
+//! listen to. So a second thread listens — see [`listen_for_supplies`] — and
+//! each `power_supply` event is a read now, and then one a second for a while,
+//! because the event is not the end of it: see [`SETTLING`]. The clock stays,
+//! for the machines whose drivers do not send them and for the per cent that
+//! moves on its own.
 
+use std::os::fd::{AsRawFd, FromRawFd, OwnedFd};
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, Condvar, Mutex};
-use std::time::Duration;
+use std::sync::{Arc, Condvar, Mutex, Weak};
+use std::time::{Duration, Instant};
 
 /// Where the kernel lists everything that supplies this machine with power.
 ///
@@ -63,6 +81,21 @@ const REFRESH: Duration = Duration::from_secs(20);
 /// could be told about it too late, and a slow embedded controller asked once
 /// a minute is not a cost anybody can measure.
 const IN_THE_BACKGROUND: Duration = Duration::from_secs(60);
+
+/// How long after the kernel reports a supply changing the battery is watched
+/// closely, and how often in that time it is read.
+///
+/// The event is the mains coming up, not the battery starting to fill. Measured
+/// on a Steam Deck whose charger comes through a USB-C hub: the kernel sent the
+/// mains and the battery within a millisecond of each other and the battery
+/// once more two and a half seconds later — both times saying `Not charging` —
+/// and the battery turned to `Charging` some time after that with no event of
+/// its own. A read on each event would have drawn a battery that was not
+/// filling until the clock came round. So after an event the battery is read
+/// every second for half a minute, which follows the charger however long it
+/// takes to negotiate, at a cost of thirty small reads per cable.
+const SETTLING: Duration = Duration::from_secs(30);
+const SETTLING_EVERY: Duration = Duration::from_secs(1);
 
 /// What is in the battery, as the worker last read it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -159,6 +192,9 @@ struct State {
     /// worth keeping true at all.
     corner: bool,
     dirty: bool,
+    /// Until when the battery is being watched closely, after the kernel said
+    /// a supply changed. See [`SETTLING`].
+    settling_until: Option<Instant>,
     done: bool,
 }
 
@@ -185,6 +221,19 @@ impl Power {
             .spawn(move || Worker { shared: worker }.run())
         {
             tracing::warn!(?err, "no worker thread; the battery mark is off");
+        }
+        // Weak, so that the listener is not what keeps the worker's state
+        // alive: when the shell lets go of this, the listener notices within a
+        // second and goes too.
+        let listener = Arc::downgrade(&shared);
+        if let Err(err) = std::thread::Builder::new()
+            .name("lxb-power-events".to_string())
+            .spawn(move || listen_for_supplies(listener))
+        {
+            tracing::warn!(
+                ?err,
+                "no uevent thread; the battery is read on its clock alone"
+            );
         }
         Self { shared }
     }
@@ -259,11 +308,30 @@ impl Worker {
                     return;
                 }
                 state.dirty = false;
+                if state
+                    .settling_until
+                    .is_some_and(|until| until <= Instant::now())
+                {
+                    state.settling_until = None;
+                }
             }
             let charge = read_charge(&self.shared.root);
             let on_battery = charge.is_some() && discharging(&self.shared.root);
             {
                 let mut state = self.shared.state.lock().unwrap_or_else(|e| e.into_inner());
+                // Said when the battery starts or stops filling, which is the
+                // one change of reading worth a line: it is what somebody
+                // plugging a cable in is looking for, and the journal is where
+                // "it did not show" gets checked.
+                let was = state.charge.map(|charge| charge.charging);
+                let now = charge.map(|charge| charge.charging);
+                if was.is_some() && was != now {
+                    tracing::info!(
+                        charging = now,
+                        percent = charge.map(|charge| charge.percent),
+                        "the battery's charging changed"
+                    );
+                }
                 state.charge = charge;
                 state.on_battery = on_battery;
             }
@@ -289,8 +357,150 @@ impl Worker {
         } else {
             IN_THE_BACKGROUND
         };
+        let every = until_the_next_read(every, state.settling_until, Instant::now());
         let _held = self.shared.signal.wait_timeout(state, every);
     }
+}
+
+/// How long the worker sleeps: its own clock, or [`SETTLING_EVERY`] while a
+/// supply has just changed.
+fn until_the_next_read(every: Duration, settling_until: Option<Instant>, now: Instant) -> Duration {
+    match settling_until {
+        Some(until) if until > now => every.min(SETTLING_EVERY),
+        _ => every,
+    }
+}
+
+/// A supply changed, as far as the kernel is concerned: read now, and closely
+/// for a while after. See [`SETTLING`].
+fn supply_changed(shared: &Shared) {
+    let mut state = shared.state.lock().unwrap_or_else(|e| e.into_inner());
+    state.dirty = true;
+    state.settling_until = Some(Instant::now() + SETTLING);
+    shared.signal.notify_one();
+}
+
+/// Listen for the kernel saying a power supply changed, for as long as the
+/// shell holds the reading.
+///
+/// A netlink socket in the kernel's own uevent group, which any process may
+/// open and which needs neither udev nor a daemon — the same bargain the rest
+/// of this module makes. A receive timeout of a second is what lets the thread
+/// notice the shell has let go of the reading; a socket that cannot be opened
+/// leaves the battery on its clock, exactly as it was before this existed.
+fn listen_for_supplies(shared: Weak<Shared>) {
+    let Some(socket) = uevent_socket() else {
+        tracing::info!("no kernel uevents here; the battery is read on its clock alone");
+        return;
+    };
+    let mut message = vec![0u8; 16 * 1024];
+    loop {
+        // SAFETY: receiving into a buffer this function owns, of the length
+        // given, from a socket it owns.
+        let received = unsafe {
+            libc::recv(
+                socket.as_raw_fd(),
+                message.as_mut_ptr().cast(),
+                message.len(),
+                0,
+            )
+        };
+        let Some(held) = shared.upgrade() else {
+            return;
+        };
+        if held.state.lock().unwrap_or_else(|e| e.into_inner()).done {
+            return;
+        }
+        if received < 0 {
+            match std::io::Error::last_os_error().raw_os_error() {
+                // The timeout, and a signal: nothing arrived.
+                Some(libc::EAGAIN) | Some(libc::EINTR) => continue,
+                // More arrived than the socket could hold, so whatever was lost
+                // may have been a supply: read, rather than guess it was not.
+                Some(libc::ENOBUFS) => {
+                    supply_changed(&held);
+                    continue;
+                }
+                _ => {
+                    tracing::warn!(
+                        err = %std::io::Error::last_os_error(),
+                        "the kernel's uevents stopped; the battery is read on its clock alone"
+                    );
+                    return;
+                }
+            }
+        }
+        if is_power_supply_event(&message[..received as usize]) {
+            supply_changed(&held);
+        }
+    }
+}
+
+/// A netlink socket bound to the kernel's uevent group, with a receive timeout.
+fn uevent_socket() -> Option<OwnedFd> {
+    // SAFETY: plain socket creation; the descriptor is owned below.
+    let raw = unsafe {
+        libc::socket(
+            libc::AF_NETLINK,
+            libc::SOCK_DGRAM | libc::SOCK_CLOEXEC,
+            libc::NETLINK_KOBJECT_UEVENT,
+        )
+    };
+    if raw < 0 {
+        return None;
+    }
+    // SAFETY: `raw` is a fresh descriptor nothing else owns.
+    let socket = unsafe { OwnedFd::from_raw_fd(raw) };
+
+    // SAFETY: a zeroed `sockaddr_nl` is a valid value of it.
+    let mut address: libc::sockaddr_nl = unsafe { std::mem::zeroed() };
+    address.nl_family = libc::AF_NETLINK as libc::sa_family_t;
+    // Group 1 is the kernel's own announcements; group 2 is udev's
+    // rebroadcast, which comes with a header of its own and is not needed.
+    address.nl_groups = 1;
+    // SAFETY: binding a socket this function owns to an address it built.
+    let bound = unsafe {
+        libc::bind(
+            socket.as_raw_fd(),
+            std::ptr::addr_of!(address).cast(),
+            std::mem::size_of::<libc::sockaddr_nl>() as libc::socklen_t,
+        )
+    };
+    if bound < 0 {
+        return None;
+    }
+
+    let timeout = libc::timeval {
+        tv_sec: 1,
+        tv_usec: 0,
+    };
+    // SAFETY: setting an option on a socket this function owns, from a value
+    // that outlives the call.
+    let set = unsafe {
+        libc::setsockopt(
+            socket.as_raw_fd(),
+            libc::SOL_SOCKET,
+            libc::SO_RCVTIMEO,
+            std::ptr::addr_of!(timeout).cast(),
+            std::mem::size_of::<libc::timeval>() as libc::socklen_t,
+        )
+    };
+    if set < 0 {
+        return None;
+    }
+    Some(socket)
+}
+
+/// Whether one kernel uevent is about a power supply.
+///
+/// The message is `action@devpath` followed by `KEY=value` pairs, each ended
+/// by a NUL. The subsystem is asked for by name rather than read off the path,
+/// because the path names the device and the device can be called anything.
+fn is_power_supply_event(message: &[u8]) -> bool {
+    message
+        .split(|byte| *byte == 0)
+        .skip(1)
+        .any(|field| field == b"SUBSYSTEM=power_supply")
 }
 
 /// Read the machine's charge out of a `power_supply` directory.
@@ -623,6 +833,71 @@ mod tests {
         let root = std::env::temp_dir().join(format!("lxb-power-none-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&root);
         assert_eq!(read_charge(&root), None);
+    }
+
+    /// What the kernel sent when a Steam Deck's charger went in, shaped as it
+    /// arrives: the mains and the battery each announce themselves, and a
+    /// device of another subsystem on the same socket does not count.
+    #[test]
+    fn a_supply_changing_is_told_apart_from_everything_else_on_the_socket() {
+        let mains = b"change@/devices/LNXSYSTM:00/LNXSYBUS:00/ACPI0003:00/power_supply/ACAD\0\
+ACTION=change\0DEVPATH=/devices/LNXSYSTM:00/LNXSYBUS:00/ACPI0003:00/power_supply/ACAD\0\
+SUBSYSTEM=power_supply\0POWER_SUPPLY_NAME=ACAD\0POWER_SUPPLY_TYPE=Mains\0\
+POWER_SUPPLY_ONLINE=1\0SEQNUM=5063\0";
+        let battery = b"change@/devices/LNXSYSTM:00/LNXSYBUS:00/PNP0C0A:00/power_supply/BAT1\0\
+ACTION=change\0SUBSYSTEM=power_supply\0POWER_SUPPLY_NAME=BAT1\0\
+POWER_SUPPLY_STATUS=Charging\0SEQNUM=5064\0";
+        let display = b"change@/devices/pci0000:00/0000:00:08.1/0000:04:00.0/drm/card1\0\
+ACTION=change\0SUBSYSTEM=drm\0HOTPLUG=1\0SEQNUM=5065\0";
+        // A device whose *name* mentions it is still not one.
+        let impostor = b"add@/devices/virtual/misc/power_supply\0ACTION=add\0\
+SUBSYSTEM=misc\0SEQNUM=5066\0";
+
+        assert!(is_power_supply_event(mains));
+        assert!(is_power_supply_event(battery));
+        assert!(!is_power_supply_event(display));
+        assert!(!is_power_supply_event(impostor));
+        assert!(!is_power_supply_event(b""));
+    }
+
+    /// A change is a read now and one a second for half a minute after — the
+    /// Deck's battery said `Not charging` in both of the events its charger
+    /// sent and turned to `Charging` later, with none — and then the clock
+    /// again. The watch shortens the sleep and never lengthens it.
+    #[test]
+    fn a_supply_that_changed_is_watched_closely_for_a_while() {
+        let now = Instant::now();
+        assert_eq!(until_the_next_read(REFRESH, None, now), REFRESH);
+        assert_eq!(
+            until_the_next_read(REFRESH, Some(now + SETTLING), now),
+            SETTLING_EVERY,
+            "watched every second while it settles"
+        );
+        assert_eq!(
+            until_the_next_read(REFRESH, Some(now + SETTLING), now + SETTLING),
+            REFRESH,
+            "and on the clock again once it has"
+        );
+        assert_eq!(
+            until_the_next_read(Duration::from_millis(200), Some(now + SETTLING), now),
+            Duration::from_millis(200),
+            "a clock already quicker than the watch is left alone"
+        );
+
+        let shared = Shared {
+            state: Mutex::new(State::default()),
+            signal: Condvar::new(),
+            root: PathBuf::new(),
+        };
+        supply_changed(&shared);
+        let state = shared.state.lock().unwrap();
+        assert!(state.dirty, "read now");
+        assert!(
+            state
+                .settling_until
+                .is_some_and(|until| until >= now + SETTLING - Duration::from_secs(1)),
+            "and closely for half a minute after"
+        );
     }
 
     /// The edges, each side of each of them.

@@ -386,6 +386,9 @@ pub enum Ask {
     CloseClient {
         request: u64,
     },
+    /// Take this session's client out of Big Picture, where one is running in
+    /// it. Says nothing back: see [`Steam::leave_big_picture`].
+    LeaveBigPicture,
 }
 
 /// What one asynchronous answer belongs to.
@@ -806,6 +809,16 @@ pub struct HandedOver {
     /// one the press is waiting on depends on it. See
     /// [`Doing::answered_by_the_storefront`].
     pub asked: Doing,
+    /// Whether the window the press is waiting on was up before the request
+    /// was made: Big Picture asked of a client that was already in it, which
+    /// raises nothing new. Every window of the client's that is there is then
+    /// the answer, and none of them is one to wait past. See
+    /// [`webui::in_big_picture`].
+    ///
+    /// The journal of 2026-10-01 on a Steam Deck is what it is for: Big Picture
+    /// up behind the shell, "Open Steam" pressed, the window shown — and taken
+    /// away again thirty seconds later as a window Steam had never opened.
+    pub already_up: bool,
 }
 
 /// Why a request that would have raised a window of Steam's own was not made.
@@ -1797,6 +1810,26 @@ impl Steam {
     /// carries that number back on its [`Ticket`], and whoever is waiting is
     /// expected to check it: the answer to somebody else's abandoned wake is
     /// not the answer to this press.
+    /// Take Valve's client out of Big Picture, where one of this session's is
+    /// running in it, and leave it alone otherwise.
+    ///
+    /// For a Big Picture nobody asked for. Steam started in its Deck mode —
+    /// which a Steam Deck's own `steam` launcher always asks for — opens Big
+    /// Picture behind the shell whenever the Steam button is pressed, whatever
+    /// "Guide button focuses Steam" says: read off a Deck on 2026-10-01, the
+    /// setting reading false, "Guide button sent to JS" in the client's
+    /// controller log at 02:02:16 and Big Picture's window mapped at 02:02:17.
+    /// The shell takes the button and opens its own menu, so all that press
+    /// left behind was Big Picture running out of sight, which is what the
+    /// client's own Open Steam (Client) then found in its way. See
+    /// [`client::LEAVE_BIG_PICTURE`].
+    ///
+    /// Never starts a client and never reaches another session's. On the
+    /// worker, because the courier is a process.
+    pub fn leave_big_picture(&self) {
+        self.ask(Ask::LeaveBigPicture);
+    }
+
     pub fn wake_client(&self) -> u64 {
         let request = self.next_request();
         self.ask(Ask::WakeClient {
@@ -3342,6 +3375,25 @@ fn answer(
             });
             state
         }
+        Ask::LeaveBigPicture => {
+            // On a thread of its own, for the reason a hand-over has one: the
+            // courier is a process and is waited on, and the worker has a
+            // library to go on reading meanwhile.
+            std::thread::spawn(|| {
+                let Some(where_it_is) = client::Where::find() else {
+                    return;
+                };
+                let Some(options) = client::Options::for_client(&where_it_is) else {
+                    return;
+                };
+                let doing = "leave Big Picture";
+                if client::leave_big_picture(&where_it_is, &options) {
+                    audit::asked(doing);
+                    audit::went(doing, audit::How::Done);
+                }
+            });
+            state
+        }
         Ask::StopLaunch { app_id } => {
             // Cancelling a launch is the other half of answering one, and takes
             // the same proof for the same reason.
@@ -4030,16 +4082,29 @@ fn hand_over(stored: Option<session::Stored>, asked: Doing, url: String, events:
             }
         }
 
+        // Out of Big Picture first where the window asked for is the client's
+        // own, which Big Picture does not have. A client that is not running is
+        // not in it, so nothing is started for this. See
+        // [`Doing::leaves_big_picture_first`].
+        if asked.leaves_big_picture_first() {
+            if let Some(options) = options.as_ref() {
+                client::leave_big_picture(&where_it_is, options);
+            }
+        }
+
         match client::open(&where_it_is, options.as_ref(), &url) {
             Ok(()) => {
                 audit::went(&doing, audit::How::Done);
                 // Nothing here signs anybody in: this is the route for a
                 // session with no credential, handing the URL to whatever
                 // client is there. Its login screen, if that is what comes
-                // up, is the window the row is for.
+                // up, is the window the row is for. Nor is its interface open
+                // to be asked whether Big Picture is up already, so the window
+                // is waited for as one that is coming.
                 let _ = events.send(Event::HandedOver(HandedOver {
                     after_signing_in: false,
                     asked,
+                    already_up: false,
                 }));
             }
             Err(why) => {
@@ -4107,6 +4172,17 @@ fn hand_over_to_a_proven_client(
                 return refuse(refusal);
             }
         };
+        // Out of Big Picture first where the window asked for is the client's
+        // own, which Big Picture does not have. See
+        // [`Doing::leaves_big_picture_first`].
+        if asked.leaves_big_picture_first() {
+            leave_big_picture_first(&standing);
+        }
+        // And Big Picture asked of a client already in it raises nothing new:
+        // the window that answers the press is the one there now, which the
+        // shell has to be told or it waits past it. Asked of the interface the
+        // wake has just been talking to, and not known where that is shut.
+        let already_up = asked == Doing::BigPicture && webui::in_big_picture().unwrap_or(false);
         // The last look before it goes: the ground here, and the client inside
         // `deliver`, which will not hand a URL to one it has not just checked.
         let handed = standing
@@ -4118,9 +4194,15 @@ fn hand_over_to_a_proven_client(
         match handed {
             Ok(()) => {
                 audit::went(&doing, audit::How::Done);
+                if already_up {
+                    tracing::info!(
+                        "Big Picture was up already, so the window it is in is the answer"
+                    );
+                }
                 let _ = events.send(Event::HandedOver(HandedOver {
                     after_signing_in: standing.proven.just_signed_in,
                     asked,
+                    already_up,
                 }));
             }
             Err(refusal) => {
@@ -4129,6 +4211,53 @@ fn hand_over_to_a_proven_client(
             }
         }
     });
+}
+
+/// How long a request for the client's own window waits for the client to
+/// finish leaving Big Picture. Seconds where it can be asked how far it has
+/// got; a request sent while it is still in Big Picture would be answered by
+/// Big Picture's own routes, which lead back into it.
+const UNTIL_BIG_PICTURE_IS_LEFT: Duration = Duration::from_secs(10);
+
+/// Take the client just proved out of Big Picture before it is asked for a
+/// window Big Picture does not have, and wait until it is out.
+///
+/// Where its interface can be asked, only a client that is in Big Picture is
+/// asked to leave it, and the request it was holding up waits until the client
+/// says it has. Where it cannot, the client is asked anyway and nothing waits:
+/// asked of a client on its desktop face, leaving Big Picture changes nothing,
+/// and asked of one in it, the storefront it comes back to is the window the
+/// press was for. A refusal here is not reported: the request itself goes to
+/// the same client next, and says so if it cannot.
+fn leave_big_picture_first(standing: &Standing) {
+    let leave = || {
+        client::deliver(
+            &standing.client,
+            &standing.options,
+            &standing.proven,
+            client::LEAVE_BIG_PICTURE,
+        )
+    };
+    match webui::in_big_picture() {
+        Ok(false) => {}
+        Ok(true) => {
+            if leave().is_err() {
+                return;
+            }
+            let deadline = Instant::now() + UNTIL_BIG_PICTURE_IS_LEFT;
+            while Instant::now() < deadline {
+                std::thread::sleep(Duration::from_millis(250));
+                if matches!(webui::in_big_picture(), Ok(false)) {
+                    tracing::info!("Valve's client has left Big Picture for its own window");
+                    return;
+                }
+            }
+            tracing::info!("Valve's client was still in Big Picture when the request went");
+        }
+        Err(_) => {
+            let _ = leave();
+        }
+    }
 }
 
 /// The same refusal, said the way the shell answers it.

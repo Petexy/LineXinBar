@@ -12,9 +12,10 @@ file, `cargo tree`, a vendored source archive, a packager reading the spec —
 can take this for the published crate.** The library it builds is still
 `gilrs`, so `use gilrs::` means what it has always meant.
 
-**Nothing in it is changed.** It is carried for one reason: the fix this shell
-needs is in `gilrs-core`, and a fork renamed `lxb-gilrs-core` cannot stand in
-for the registry's `gilrs-core` underneath the registry's `gilrs`. So this copy
-exists to depend on `../lxb-gilrs-core` — the one line in `Cargo.toml` beside
-the renamed package — and on nothing else of its own. See
-`../lxb-gilrs-core/README.LXB.md` for the fix itself.
+**Almost nothing in it is changed.** It is carried for one reason: the fix
+this shell needs is in `gilrs-core`, and a fork renamed `lxb-gilrs-core`
+cannot stand in for the registry's `gilrs-core` underneath the registry's
+`gilrs`. So this copy exists to depend on `../lxb-gilrs-core` — the one line in
+`Cargo.toml` beside the renamed package — and adds one thing of its own:
+`Gamepad::set_grabbed` in `src/gamepad.rs`, marked `LineXinBar:`, which passes
+straight through to the core's. See `../lxb-gilrs-core/README.LXB.md` for both.

@@ -1076,6 +1076,15 @@ impl Launch {
         (now.duration_since(self.started).as_secs_f32() / OPEN).clamp(0.0, 1.0)
     }
 
+    /// Whether any of it is on its way somewhere: growing out of its tile, or
+    /// — once the application has answered — fading off it or dipping through
+    /// black. The wait in between is not: what says *working* there is light
+    /// going round in place, and is drawn at whatever pace the display is. Nor
+    /// is the watch afterwards, with nothing of it left on the screen.
+    pub fn is_moving(&self, now: Instant) -> bool {
+        self.open(now) < 1.0 || (!self.waiting() && self.drawing(now))
+    }
+
     /// How long ago a game began dipping through black, if that is what is
     /// happening.
     ///
@@ -1861,6 +1870,32 @@ mod tests {
         // An application dissolves off its window; it does not dip.
         assert_eq!(splash.blackout(at(t0, 1.0 + SETTLE)), 0.0);
         assert!(!splash.uncovering(at(t0, 1.0 + SETTLE)));
+    }
+
+    /// The splash is moving while it grows and while it hands over, and not
+    /// through the wait between or the watch after — which is what a display
+    /// is drawn at its refresh for in low-end hardware mode. The watch has
+    /// nothing on the screen at all, and a display that went on drawing for it
+    /// would be drawing behind the application it handed over to.
+    #[test]
+    fn a_splash_moves_while_it_grows_and_while_it_hands_over() {
+        let t0 = Instant::now();
+        let mut splash = launch(t0);
+        assert!(splash.is_moving(at(t0, OPEN * 0.5)), "growing");
+        assert!(!splash.is_moving(at(t0, OPEN + 0.5)), "waiting");
+
+        splash.advance(at(t0, 1.0), &[7, 9], "", true);
+        assert!(splash.is_moving(at(t0, 1.0 + SETTLE + HANDOVER * 0.5)));
+        assert!(
+            !splash.is_moving(at(t0, 1.0 + SETTLE + HANDOVER)),
+            "faded off, and only watching"
+        );
+
+        // A game's dip through black is moving all the way down and back up.
+        let mut splash = game(t0);
+        splash.advance(at(t0, 1.0), &[7, 9], "", true);
+        assert!(splash.is_moving(at(t0, 1.0 + BLACK_IN * 0.5)));
+        assert!(splash.is_moving(at(t0, 1.0 + BLACK_IN + BLACK_HOLD + BLACK_OUT * 0.5)));
     }
 
     /// A game does not dissolve off its window — it dips through black, and

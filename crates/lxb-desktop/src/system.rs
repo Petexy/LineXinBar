@@ -1576,7 +1576,7 @@ impl Own {
     fn of_this_process() -> Self {
         Own {
             pid: std::process::id(),
-            program: std::env::current_exe().ok().and_then(|path| {
+            program: crate::locale::this_program().ok().and_then(|path| {
                 path.file_name()
                     .map(|name| name.to_string_lossy().into_owned())
             }),
@@ -2056,6 +2056,24 @@ struct Backlight {
     /// Named by [`BACKLIGHT_OVERRIDE`], and so used for any display rather
     /// than only for one that looks built in.
     forced: bool,
+    /// How it is moved.
+    writer: Writer,
+}
+
+/// How a backlight is moved: by writing its file, where this session may, or
+/// by asking logind to, where it may not.
+///
+/// The file is `root:root 0644` unless the distribution ships a rule handing
+/// it to the `video` group, and many do not: on a Steam Deck running CachyOS
+/// it is root's alone, and the shell, finding no backlight it could write,
+/// took the panel's own DDC lines for a monitor's and offered a brightness bar
+/// that moved nothing. logind's `Session.SetBrightness` is there for exactly
+/// this — it lets the session on a seat set that seat's backlights without
+/// being root — and it is what the other desktops use.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Writer {
+    File,
+    Logind,
 }
 
 /// A screen, and the way it is dimmed.
@@ -2133,9 +2151,8 @@ impl Screen {
         match self {
             Screen::Panel(panel) => {
                 let raw = (value.clamp(0.0, 1.0) * panel.max as f32).round() as u32;
-                let file = panel.dir.join("brightness");
-                if let Err(err) = std::fs::write(&file, raw.to_string()) {
-                    tracing::warn!(path = %file.display(), ?err, "could not set the brightness");
+                if let Err(err) = write_backlight(&panel.dir, panel.writer, raw) {
+                    tracing::warn!(path = %panel.dir.display(), %err, "could not set the brightness");
                 }
             }
             Screen::Monitor { bus, max } => {
@@ -2280,6 +2297,7 @@ pub fn panel_backlight(display: &str) -> Option<PanelLight> {
     (light.forced || is_internal(display)).then_some(PanelLight {
         dir: light.dir,
         max: light.max,
+        writer: light.writer,
     })
 }
 
@@ -2288,6 +2306,7 @@ pub fn panel_backlight(display: &str) -> Option<PanelLight> {
 pub struct PanelLight {
     dir: PathBuf,
     max: u32,
+    writer: Writer,
 }
 
 impl PanelLight {
@@ -2298,9 +2317,8 @@ impl PanelLight {
 
     /// Set it, in the kernel's steps, clamped to the scale.
     pub fn write(&self, raw: u32) {
-        let file = self.dir.join("brightness");
-        if let Err(err) = std::fs::write(&file, raw.min(self.max).to_string()) {
-            tracing::warn!(path = %file.display(), ?err, "could not dim the panel");
+        if let Err(err) = write_backlight(&self.dir, self.writer, raw.min(self.max)) {
+            tracing::warn!(path = %self.dir.display(), %err, "could not dim the panel");
         }
     }
 }
@@ -2347,18 +2365,86 @@ fn open_backlight(dir: &Path, forced: bool) -> Option<Backlight> {
     if max == 0 {
         return None;
     }
-    // Offered only if it can be written to. The usual udev rule hands that to
-    // the `video` group; without it the sidebar would carry a bar that does
-    // nothing, which is worse than carrying no bar.
-    std::fs::OpenOptions::new()
+    // Offered only if it can be moved: its file written, where the usual
+    // udev rule hands that to the `video` group, or logind asked to, where it
+    // does not. Without either the sidebar would carry a bar that does nothing,
+    // which is worse than carrying no bar.
+    let writable = std::fs::OpenOptions::new()
         .write(true)
         .open(dir.join("brightness"))
-        .ok()?;
+        .is_ok();
+    let writer = if writable {
+        Writer::File
+    } else if logind_moves(dir) {
+        Writer::Logind
+    } else {
+        return None;
+    };
     Some(Backlight {
         dir: dir.to_path_buf(),
         max,
         forced,
+        writer,
     })
+}
+
+/// Move a backlight to `raw`, in the kernel's steps. See [`Writer`].
+fn write_backlight(dir: &Path, writer: Writer, raw: u32) -> Result<(), String> {
+    match writer {
+        Writer::File => {
+            std::fs::write(dir.join("brightness"), raw.to_string()).map_err(|err| err.to_string())
+        }
+        Writer::Logind => {
+            let name = dir
+                .file_name()
+                .and_then(|name| name.to_str())
+                .ok_or_else(|| "a backlight with no name".to_string())?;
+            set_through_logind(name, raw).map_err(|err| err.to_string())
+        }
+    }
+}
+
+/// Whether logind will move this backlight for this session.
+///
+/// Asked the only way it can be: by setting it to where it already is, which
+/// is a question that moves nothing. A session that is not on a seat — a
+/// nested one, one over SSH — is refused, and gets no bar.
+fn logind_moves(dir: &Path) -> bool {
+    let (Some(name), Some(now)) = (
+        dir.file_name().and_then(|name| name.to_str()),
+        read_number(&dir.join("brightness")),
+    ) else {
+        return false;
+    };
+    match set_through_logind(name, now) {
+        Ok(()) => {
+            tracing::info!(backlight = name, "the backlight is moved through logind");
+            true
+        }
+        Err(err) => {
+            tracing::debug!(backlight = name, %err, "logind will not move this backlight");
+            false
+        }
+    }
+}
+
+/// `org.freedesktop.login1.Session.SetBrightness`, on this process's own
+/// session, over one system-bus connection kept for the session: a dragged
+/// bar sets the backlight many times a second, and a connection is a
+/// handshake.
+fn set_through_logind(name: &str, raw: u32) -> zbus::Result<()> {
+    static BUS: OnceLock<Option<zbus::blocking::Connection>> = OnceLock::new();
+    let Some(bus) = BUS.get_or_init(|| zbus::blocking::Connection::system().ok()) else {
+        return Err(zbus::Error::Failure("no system bus".into()));
+    };
+    bus.call_method(
+        Some("org.freedesktop.login1"),
+        "/org/freedesktop/login1/session/auto",
+        Some("org.freedesktop.login1.Session"),
+        "SetBrightness",
+        &("backlight", name, raw),
+    )?;
+    Ok(())
 }
 
 fn read_number(path: &Path) -> Option<u32> {
@@ -3476,6 +3562,9 @@ Display 2
         std::fs::write(root.join("max_brightness"), "255\n").unwrap();
         std::fs::write(root.join("brightness"), "128\n").unwrap();
         assert!(open_backlight(&root, true).is_some());
+        // And one this session may write to is written to, rather than asked
+        // of logind — which is kept for the backlights it may not.
+        assert_eq!(open_backlight(&root, true).unwrap().writer, Writer::File);
 
         // Nothing to write to at all.
         std::fs::remove_file(root.join("brightness")).unwrap();

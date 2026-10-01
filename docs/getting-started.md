@@ -296,6 +296,21 @@ which clients see through `wl_output` and `xdg-output`. `--outputs` is the one
 flag here that is x11-only; the other backends say so rather than quietly
 opening one window.
 
+Closing one of those windows ends the whole session, as closing the winit
+window does. Start the session with `LXB_NESTED_UNPLUG=1` and closing one of
+several windows *unplugs* that display instead — the same path a monitor's
+cable coming out takes on hardware — which is the way to test what the
+session does when a display goes away without a monitor to pull. The last
+window left still ends the session. Add `LXB_NESTED_REPLUG_AFTER=3` and the
+display comes back three seconds later, under the same name, the way a
+monitor does when its cable goes back in.
+
+`LXB_NESTED_MOUNTED=270` makes every window a panel built into its machine
+turned 270°, the way a Steam Deck's portrait panel sits in its landscape
+case: the display is drawn standing up in it, and says how it is built, so
+Settings > Display > Orientation counts from there. `90` and `180` are the
+other two ways a panel is built in.
+
 ### Native, on hardware
 
 From a TTY, with `seatd` running (or logind):

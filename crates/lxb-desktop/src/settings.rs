@@ -992,6 +992,44 @@ pub const ROTATIONS: [Orientation; 4] = [
     Orientation::PortraitFlipped,
 ];
 
+/// How one display's picture is turned, as the compositor reports it: the turn
+/// it is drawn at, and the turn that stands it up the way its machine is built.
+///
+/// The page counts from the second. A Steam Deck's screen is a portrait panel
+/// laid on its side, drawn at 270° to stand up in the Deck's landscape case,
+/// and a page that counted from the panel said the Deck, standing up exactly
+/// as it is built, was turned 270°. Counted from the mounting it is at 0°, and
+/// its other three rows turn it from there as they would any screen. The turn
+/// stored and asked for stays the one drawn, which is the compositor's own
+/// spelling, so nothing written before this was counted is read differently.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Turn {
+    pub drawn: Orientation,
+    pub mounted: Orientation,
+}
+
+impl Turn {
+    /// A display built the ordinary way round, drawn at `drawn`: what every
+    /// display is to a compositor that does not say how one is mounted.
+    #[cfg(test)]
+    fn built_level(drawn: Orientation) -> Turn {
+        Turn {
+            drawn,
+            mounted: Orientation::Landscape,
+        }
+    }
+
+    /// What the page says the display is at.
+    fn shown(self) -> Orientation {
+        self.drawn.counted_from(self.mounted)
+    }
+
+    /// What choosing a row that says `shown` asks the compositor to draw at.
+    fn drawn_for(self, shown: Orientation) -> Orientation {
+        shown.counted_on(self.mounted)
+    }
+}
+
 impl Orientation {
     /// What a row of the list is titled with, and what the row above it says a
     /// screen is at.
@@ -1088,6 +1126,25 @@ impl Orientation {
             7 => Orientation::MirroredPortraitFlipped,
             _ => return None,
         })
+    }
+
+    /// This turn with `mounted`'s taken off it: the turn as counted from a
+    /// display mounted that way. See [`Turn`].
+    ///
+    /// Only `mounted`'s rotation counts. A panel is never built in mirrored,
+    /// and a mirrored picture stays mirrored however far it is counted round:
+    /// `wl_output` spells each mirrored turn as the mirror first and then the
+    /// rotation, so a mounting's quarter turn only ever adds to the rotation.
+    fn counted_from(self, mounted: Orientation) -> Orientation {
+        let code = self.code();
+        Orientation::from_code((code & 4) | ((code + 4 - (mounted.code() & 3)) & 3)).unwrap_or(self)
+    }
+
+    /// The other way: this turn, counted from a display mounted as `mounted`,
+    /// as the display is actually drawn.
+    fn counted_on(self, mounted: Orientation) -> Orientation {
+        let code = self.code();
+        Orientation::from_code((code & 4) | ((code + (mounted.code() & 3)) & 3)).unwrap_or(self)
     }
 
     /// How the settings file spells it — which is how the compositor's own
@@ -1412,7 +1469,7 @@ static MODE: Mutex<BTreeMap<String, Mode>> = Mutex::new(BTreeMap::new());
 /// which is why this is a list of what was reported rather than a value read
 /// off every screen. It is the Orientation page's screen list, exactly as
 /// [`SUPPORT`] is the HDR page's.
-static TURNED: Mutex<Vec<(String, Orientation)>> = Mutex::new(Vec::new());
+static TURNED: Mutex<Vec<(String, Turn)>> = Mutex::new(Vec::new());
 
 /// The orientation chosen for a display, for the displays one was chosen for.
 ///
@@ -3064,13 +3121,13 @@ pub fn mode_for(display: &str) -> Option<Mode> {
 
 /// How every display the compositor turns itself is currently turned, in the
 /// order they were announced.
-pub fn turned() -> Vec<(String, Orientation)> {
+pub fn turned() -> Vec<(String, Turn)> {
     TURNED.lock().unwrap().clone()
 }
 
 /// Record what the compositor said about the orientations. `true` when it is a
 /// change, as [`note_support`].
-pub fn note_turned(reported: Vec<(String, Orientation)>) -> bool {
+pub fn note_turned(reported: Vec<(String, Turn)>) -> bool {
     let mut held = TURNED.lock().unwrap();
     if *held == reported {
         return false;
@@ -4156,7 +4213,7 @@ fn orientation() -> Entry {
         ),
         [(name, turn)] => folder(
             crate::i18n::text("shell-orientation"),
-            &format!("{name} — {}", turn.title()),
+            &format!("{name} — {}", turn.shown().title()),
             icons::SETTING_ORIENTATION,
             turn_values(name, *turn),
         ),
@@ -4169,7 +4226,7 @@ fn orientation() -> Entry {
                 .map(|(name, turn)| {
                     folder(
                         name,
-                        turn.title(),
+                        turn.shown().title(),
                         icons::SETTING_DISPLAY,
                         turn_values(name, *turn),
                     )
@@ -4179,7 +4236,9 @@ fn orientation() -> Entry {
     }
 }
 
-/// The four turns, for one screen.
+/// The four turns, for one screen, counted from how the screen is built into
+/// its machine — see [`Turn`]. Each row asks for the turn it names *as drawn*,
+/// which is what is stored and sent.
 ///
 /// The mark is on what the compositor says it is drawing, not on what was last
 /// asked for — the rule the Resolution page follows, and here the answer comes
@@ -4187,8 +4246,9 @@ fn orientation() -> Entry {
 /// the mirrored orientations therefore has no row marked, which is the truth:
 /// it is not in any of these, and the row above the list says which one it is
 /// in.
-fn turn_values(name: &str, turned: Orientation) -> Vec<Entry> {
+fn turn_values(name: &str, turned: Turn) -> Vec<Entry> {
     let display = intern(name);
+    let shown = turned.shown();
     ROTATIONS
         .iter()
         .map(|turn| {
@@ -4199,8 +4259,8 @@ fn turn_values(name: &str, turned: Orientation) -> Vec<Entry> {
                 // the one setting in this tree whose value has a shape, and
                 // four identical beads would throw that away.
                 turn.icon().unwrap_or(icons::SWATCH),
-                *turn == turned,
-                setting(display, DisplayValue::Orientation(*turn)),
+                *turn == shown,
+                setting(display, DisplayValue::Orientation(turned.drawn_for(*turn))),
             )
         })
         .collect()
@@ -14089,7 +14149,7 @@ mod tests {
         support: Vec<(String, Support)>,
         offered: Vec<(String, Vec<Offered>)>,
         mode: BTreeMap<String, Mode>,
-        reported_turns: Vec<(String, Orientation)>,
+        reported_turns: Vec<(String, Turn)>,
         turn: BTreeMap<String, Orientation>,
         reported_places: Vec<(String, u32)>,
         place: BTreeMap<String, u32>,
@@ -14428,15 +14488,21 @@ mod tests {
     /// The same again for the orientations: `displays` reported as being drawn
     /// this way up, and nothing else touched.
     fn with_turns(displays: &[(&str, Orientation)], body: impl FnOnce()) {
+        with_reported_turns(
+            displays
+                .iter()
+                .map(|(name, turn)| (name.to_string(), Turn::built_level(*turn)))
+                .collect(),
+            body,
+        );
+    }
+
+    /// The same, with how each display is built into its machine as well.
+    fn with_reported_turns(reported: Vec<(String, Turn)>, body: impl FnOnce()) {
         let _held = LOCK.lock().unwrap_or_else(|held| held.into_inner());
 
         let saved = take_settings();
-        note_turned(
-            displays
-                .iter()
-                .map(|(name, turn)| (name.to_string(), *turn))
-                .collect(),
-        );
+        note_turned(reported);
 
         let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(body));
 
@@ -17616,7 +17682,10 @@ hdr = true
             );
 
             // The compositor answering is what moves the mark.
-            note_turned(vec![(FIRST.to_string(), Orientation::Portrait)]);
+            note_turned(vec![(
+                FIRST.to_string(),
+                Turn::built_level(Orientation::Portrait),
+            )]);
             assert!(page("Orientation")[1].chosen());
         });
 
@@ -17630,6 +17699,54 @@ hdr = true
                 "it is in none of the four, and nothing may say otherwise"
             );
         });
+    }
+
+    /// A screen built into its machine on its side — a Steam Deck's, a
+    /// portrait panel drawn at 270° to stand up in a landscape case — reads as
+    /// not turned while it stands up the way the machine is built, and each
+    /// row turns it from there. What is stored and sent is the turn as drawn.
+    #[test]
+    fn a_screen_built_in_on_its_side_counts_from_the_way_it_is_built() {
+        let deck = Turn {
+            drawn: Orientation::PortraitFlipped,
+            mounted: Orientation::PortraitFlipped,
+        };
+        with_reported_turns(vec![(FIRST.to_string(), deck)], || {
+            assert_eq!(
+                display_row("Orientation").comment(),
+                Some(format!("{FIRST} — {}", Orientation::Landscape.title()).as_str())
+            );
+            let rows = page("Orientation");
+            assert!(rows[0].chosen());
+            assert!(rows[1..].iter().all(|row| !row.chosen()));
+
+            assert!(apply_with(rows[1].setting().unwrap(), |_| {}));
+            assert_eq!(turn_for(FIRST), Some(Orientation::Landscape));
+            assert!(apply_with(rows[2].setting().unwrap(), |_| {}));
+            assert_eq!(turn_for(FIRST), Some(Orientation::Portrait));
+            assert!(apply_with(rows[0].setting().unwrap(), |_| {}));
+            assert_eq!(turn_for(FIRST), Some(Orientation::PortraitFlipped));
+        });
+    }
+
+    /// Counting a turn from how its display is mounted, and back, gives the
+    /// turn again — for all eight a display can be drawn at and the four ways
+    /// one can be built in — and a mirrored picture stays mirrored.
+    #[test]
+    fn a_turn_counted_from_its_mounting_and_back_is_itself() {
+        for drawn in (0..8).filter_map(Orientation::from_code) {
+            for mounted in ROTATIONS {
+                let turn = Turn { drawn, mounted };
+                assert_eq!(turn.drawn_for(turn.shown()), drawn, "{turn:?}");
+            }
+        }
+        let level = Turn::built_level(Orientation::Portrait);
+        assert_eq!(level.shown(), Orientation::Portrait);
+        let mirrored = Turn {
+            drawn: Orientation::MirroredPortrait,
+            mounted: Orientation::Portrait,
+        };
+        assert_eq!(mirrored.shown(), Orientation::Mirrored);
     }
 
     /// Highlighting a turn must not make it: every display on the page

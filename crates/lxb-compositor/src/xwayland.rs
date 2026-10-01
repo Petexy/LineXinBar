@@ -362,6 +362,9 @@ impl LxbState {
     /// Logged only when the pair changes, because it is polled several times a
     /// second and a session sitting in a steady disagreement would otherwise
     /// fill the journal with one line per tick.
+    ///
+    /// And where the keyboard is on no X11 window at all, X is kept focused on
+    /// nothing — see [`LxbState::keep_x_focused_on_nothing`].
     pub(crate) fn check_xwayland_focus(&mut self) {
         let Some(actual) = self
             .lxb
@@ -380,11 +383,8 @@ impl LxbState {
                 KeyboardFocusTarget::X11(surface) => Some(surface),
                 KeyboardFocusTarget::Wayland(_) => None,
             });
-        // Nothing to disagree about: the keyboard is on a Wayland window, and
-        // where X points its own focus while no X client holds it is X's
-        // business.
         let Some(believed) = believed else {
-            self.lxb.last_x11_focus_drift = None;
+            self.keep_x_focused_on_nothing(actual);
             return;
         };
         if believed.window_id() == actual
@@ -439,6 +439,87 @@ impl LxbState {
             "an X11 window other than the focused one holds the X input focus; \
              keys are reaching it rather than the window on screen"
         );
+    }
+
+    /// Keep X focused on nothing while the keyboard is on no X11 window.
+    ///
+    /// Smithay already says so when the keyboard leaves an X11 window: its
+    /// leave sets X's focus to `None`. Nothing stops an X client from taking
+    /// the focus back afterwards, and one does. A game under Proton is the
+    /// globally active kind and is sent `WM_TAKE_FOCUS` instead of being given
+    /// the focus, and that message carries `CurrentTime`. A game the session
+    /// has stopped because nothing of it is on screen cannot answer it, so it
+    /// answers when it is continued — which the Home menu does, to show it as
+    /// a live card — and `CurrentTime` lets that late answer win over the
+    /// leave. X then says the game has the keyboard while the shell does.
+    ///
+    /// That is not X's business alone, because Valve's client reads it. Which
+    /// game is in front, to Steam, is whichever window X says has the keyboard:
+    /// measured on a Steam Deck on 2026-10-01, opening the Home menu over
+    /// TEKKEN 8 set X's focus to nothing and Steam's controller log said the
+    /// desktop was in front within the second, while `_NET_ACTIVE_WINDOW`
+    /// still named the game. Closing it put both back. And Steam feeds the
+    /// controller to the game it believes is in front, through its own virtual
+    /// pad. So in the session where the menu had continued a stopped TEKKEN,
+    /// Steam's log had the game in front for four seconds while the menu and
+    /// then System Monitor held the keyboard, and the game was being handed
+    /// whatever was pressed in them.
+    ///
+    /// Taken back on the same eight-millisecond poll as the rest of this, and
+    /// said once for each window that takes it.
+    fn keep_x_focused_on_nothing(&mut self, actual: u32) {
+        if actual == x11rb::NONE {
+            return;
+        }
+        let Some(taken) = self
+            .lxb
+            .x11_focus_probe
+            .as_ref()
+            .map(|probe| probe.take_input_focus(x11rb::NONE))
+        else {
+            return;
+        };
+        let drift = (x11rb::NONE, actual);
+        if self.lxb.last_x11_focus_drift == Some(drift) {
+            return;
+        }
+        self.lxb.last_x11_focus_drift = Some(drift);
+        let holder = self.x11_window_holding(actual);
+        let title = holder
+            .as_ref()
+            .map(|surface| surface.title())
+            .unwrap_or_default();
+        let class = holder
+            .as_ref()
+            .map(|surface| surface.class())
+            .unwrap_or_default();
+        match taken {
+            Ok(()) => tracing::info!(
+                window = actual,
+                title,
+                class,
+                "an X11 window took X's keyboard focus while the keyboard was elsewhere; \
+                 took it back"
+            ),
+            Err(err) => tracing::warn!(
+                window = actual,
+                title,
+                class,
+                %err,
+                "an X11 window holds X's keyboard focus while the keyboard is elsewhere, \
+                 and it could not be taken back"
+            ),
+        }
+    }
+
+    /// The X11 window `window` is, or is inside of, for saying which one it was.
+    fn x11_window_holding(&self, window: u32) -> Option<X11Surface> {
+        let probe = self.lxb.x11_focus_probe.as_ref()?;
+        self.lxb.space.elements().find_map(|element| {
+            let surface = element.x11_surface()?;
+            (surface.window_id() == window || probe.contains(surface.window_id(), window))
+                .then(|| surface.clone())
+        })
     }
 
     pub(crate) fn raise_window(&mut self, window: &Window, activate: bool) {

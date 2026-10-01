@@ -519,8 +519,7 @@ const APP_RESOLUTION_SHELL_VERSION: u32 = 44;
 const POWER_SHELL_VERSION: u32 = 45;
 
 /// First version that can be told which half of the overview the user is
-/// driving: `set_overview_focus`. Being the newest this shell knows of, it is
-/// also the version it asks to bind.
+/// driving: `set_overview_focus`.
 ///
 /// Below it the compositor cannot slide the windows across a display too
 /// narrow for the menu and the cards side by side, so the shell does not slide
@@ -528,6 +527,16 @@ const POWER_SHELL_VERSION: u32 = 45;
 /// left over windows left standing where they were would be the two halves of
 /// one picture pulling apart.
 const OVERVIEW_FOCUS_SHELL_VERSION: u32 = 46;
+
+/// First version that says how each display is built into its machine:
+/// `output_mounting`. Being the newest this shell knows of, it is also the
+/// version it asks to bind.
+///
+/// Below it every display counts as built the ordinary way round, and the
+/// Orientation page counts a Steam Deck standing up the way it is built as
+/// turned 270° — the turn its portrait panel is drawn at. See
+/// [`settings::Turn`].
+const MOUNTING_SHELL_VERSION: u32 = 47;
 
 /// What `answer_pick` says when no kind of file was in force. The protocol's
 /// own number for it, quoted here so the two halves cannot disagree about which
@@ -1478,11 +1487,8 @@ fn main() -> anyhow::Result<()> {
     // LineXinBar's own protocol, which carries the guide binding and lets the
     // overlay close an application. Absent on every other compositor, where the
     // shell simply falls back to what it can do as an ordinary client.
-    let shell_control = match globals.bind::<LxbShellV1, _, _>(
-        &qh,
-        1..=OVERVIEW_FOCUS_SHELL_VERSION,
-        (),
-    ) {
+    let shell_control = match globals.bind::<LxbShellV1, _, _>(&qh, 1..=MOUNTING_SHELL_VERSION, ())
+    {
         Ok(control) => Some(control),
         Err(err) => {
             tracing::info!(
@@ -1550,6 +1556,7 @@ fn main() -> anyhow::Result<()> {
         authenticating: None,
         sharing: None,
         pending_share: None,
+        held_for_panels: Vec::new(),
         pending_capture: None,
         removal_plan: None,
         uninstalling: None,
@@ -1602,6 +1609,7 @@ fn main() -> anyhow::Result<()> {
         saved_profile: None,
         renderer_noted: false,
         low_end_was: false,
+        answering: false,
         pace: Pace::default(),
         pad_touched: None,
         storage: storage::Storage::start(),
@@ -1689,6 +1697,7 @@ fn main() -> anyhow::Result<()> {
         steam_times_asked: 0,
         steam_becoming: None,
         steam_sight: SteamSight::Background,
+        steam_button: None,
         hiding_steams_setup: false,
         restoring: None,
         guide_card_rects: std::collections::HashMap::new(),
@@ -1707,8 +1716,8 @@ fn main() -> anyhow::Result<()> {
         cursor_shape: CursorShapeManager::bind(&globals, &qh).ok(),
         focused_surface: None,
         keep_keyboard_grabbed: cli.grab_keyboard,
-        controller: ControllerInput::new(!cli.no_gamepad),
-        kept_the_pad: false,
+        controller: ControllerInput::new(!cli.no_gamepad)
+            .taking_from_applications(owns_the_machine),
         stick: Stick::pointer(),
         scroll: Stick::scroll(),
         prefs: Prefs::load(),
@@ -2079,6 +2088,10 @@ fn main() -> anyhow::Result<()> {
         // the same shape of answer again: nothing announces it, so it is looked
         // at once a pass against what the compositor has already said.
         shell.sync_steam_sight(now);
+        // And whether the client answered the Steam button with a Big Picture
+        // of its own, which is looked for on the same terms: nothing announces
+        // it but a window in a list the compositor has already sent.
+        shell.take_down_a_big_picture_nobody_asked_for(now);
         // And whether anything Valve's client is being kept from showing has
         // stopped being work and become a question. Same shape again: nothing
         // announces it, and it is decided against a list the compositor has
@@ -2939,6 +2952,11 @@ struct Panel {
     /// session, or a compositor too old to be asked — which is what keeps the
     /// display off the Orientation page rather than on it and inert.
     turned: Option<settings::Orientation>,
+    /// Which way up the compositor says this display is built into its
+    /// machine — the turn that stands its picture up as the machine stands.
+    /// `None` until it says, which a compositor too old to say never does:
+    /// then the display counts as built the ordinary way round.
+    mounted: Option<settings::Orientation>,
     /// The orientation this display was last asked for, so a choice is not
     /// resent, for the reason `applied_mode` is not.
     applied_turn: Option<settings::Orientation>,
@@ -3510,6 +3528,89 @@ struct LaunchQuestion {
     question: lxb_steam::webui::Question,
 }
 
+/// The Steam button, pressed while Valve's client was running.
+///
+/// Remembered for a moment because the client may answer the same press: see
+/// [`Shell::take_down_a_big_picture_nobody_asked_for`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct SteamButtonPress {
+    at: Instant,
+    /// The client's windows when the button went down, on the screen or kept
+    /// off it, less its toasts.
+    windows: HashSet<u32>,
+}
+
+/// How long after the Steam button a window of the client's own is still taken
+/// for its answer to the button.
+///
+/// Measured at 1.5 s on a Steam Deck that was downloading at the time, from the
+/// press to Big Picture's window. Generous, because the one thing done with a
+/// window counted wrongly is a request that changes nothing on a client that
+/// is not in Big Picture.
+const STEAM_ANSWERS_ITS_BUTTON_WITHIN: std::time::Duration = std::time::Duration::from_secs(10);
+
+/// What one look at the client's windows decided about a press of the Steam
+/// button. See [`after_the_steam_button`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum AfterTheButton {
+    /// Nothing has come up yet.
+    Wait,
+    /// The press is no longer worth watching: too long ago, or what comes up
+    /// now may be what somebody asked for.
+    Forget,
+    /// A window of the client's own came up on it.
+    LeaveBigPicture,
+}
+
+/// Whether a window that has come up since the Steam button is the client's
+/// answer to it. `theirs` is whether the person has asked for Big Picture, or
+/// has a press for the client still waiting; `windows` is every window of the
+/// client's now, less its toasts. Pure, so the rule can be tested without a
+/// client. See [`Shell::take_down_a_big_picture_nobody_asked_for`].
+fn after_the_steam_button(
+    press: &SteamButtonPress,
+    now: Instant,
+    theirs: bool,
+    windows: &HashSet<u32>,
+) -> AfterTheButton {
+    if theirs || now.saturating_duration_since(press.at) > STEAM_ANSWERS_ITS_BUTTON_WITHIN {
+        return AfterTheButton::Forget;
+    }
+    if windows.iter().any(|id| !press.windows.contains(id)) {
+        AfterTheButton::LeaveBigPicture
+    } else {
+        AfterTheButton::Wait
+    }
+}
+
+/// The client's windows that are not the answer to a hand-over, from every one
+/// it has now, by id and title — see [`Wanted::already`].
+///
+/// All of them, ordinarily: the press is for a window that does not exist yet.
+/// Less the storefront for the two requests it answers. And none of them where
+/// the window the press is for was up before it was made — Big Picture asked of
+/// a client already in it, which raises nothing new — since everything there is
+/// then the answer and nothing is to be waited past. See
+/// [`lxb_steam::HandedOver::already_up`].
+fn not_the_answer<'a>(
+    handed: lxb_steam::HandedOver,
+    windows: impl Iterator<Item = (u32, &'a str)>,
+) -> HashSet<u32> {
+    if handed.already_up {
+        return HashSet::new();
+    }
+    let discount = handed.asked.answered_by_the_storefront();
+    windows
+        .filter(|(_, title)| {
+            !discount
+                || !title
+                    .trim()
+                    .eq_ignore_ascii_case(lxb_steam::client::STOREFRONT)
+        })
+        .map(|(id, _)| id)
+        .collect()
+}
+
 /// Whether Valve's client may be seen, and why.
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum SteamSight {
@@ -3567,6 +3668,10 @@ struct Wanted {
     /// Since when no window of the request's has been on the screen, once one
     /// had arrived. See [`UNTIL_STEAM_IS_GONE`].
     gone_since: Option<Instant>,
+    /// Whether what was asked for is Big Picture, which makes a Big Picture
+    /// that comes up after the Steam button the person's own rather than one
+    /// to take down. See [`Shell::take_down_a_big_picture_nobody_asked_for`].
+    big_picture: bool,
 }
 
 /// What one look at the client's windows decided about a [`Wanted`].
@@ -4378,6 +4483,16 @@ struct Shell {
     /// screen. Held rather than refused: icon decode is bounded local work,
     /// and the application has already chosen to wait for the user's answer.
     pending_share: Option<(u32, String)>,
+    /// What the compositor said about a display before this shell had a panel
+    /// for it, in the order it said it, to be heard once the panel exists.
+    ///
+    /// A display plugged in while the session runs is described the moment it
+    /// is bound — its HDR, its night light, its modes, how it is turned and
+    /// where it stands — and the panel is made later, once the toolkit has
+    /// the display's own description too. Dropping what arrived in between is
+    /// how a monitor plugged in mid-session came to be shown as one that could
+    /// not do HDR. See [`display_state_of`] for which events are kept.
+    held_for_panels: Vec<(wl_output::WlOutput, lxb_shell_v1::Event)>,
     /// A screenshot the compositor is taking: the menu row it was asked for on,
     /// and the name of the application it is of.
     ///
@@ -4675,6 +4790,13 @@ struct Shell {
     renderer_noted: bool,
     /// Low-end hardware mode as the last pass had it, so a change is said once.
     low_end_was: bool,
+    /// Whether a press has been acted on since the last frame, which low-end
+    /// hardware mode answers on the display's next refresh rather than at its
+    /// next tenth of a second. Most of what a press does sets something moving
+    /// and is drawn on the beat for that; this is the rest — the light going
+    /// over to the cards, a row coming up ticked — which is a cut, and a cut a
+    /// tenth of a second behind the thumb reads as a press that was not heard.
+    answering: bool,
     /// Whether this device keeps up with the default frame. See [`Pace`].
     pace: Pace,
     /// When a hand was last on a pad, which is what keeps the loop waking at
@@ -5155,6 +5277,10 @@ struct Shell {
     /// [`Shell::show_steam_for`], [`Shell::show_steam_now`] and
     /// [`Shell::steam_goes_back_out_of_sight`].
     steam_sight: SteamSight,
+    /// The Steam button, pressed while Valve's client was running, and the
+    /// client's windows at that moment. See
+    /// [`Shell::take_down_a_big_picture_nobody_asked_for`].
+    steam_button: Option<SteamButtonPress>,
     /// Whether the compositor has been asked to hide the dialogs Valve's
     /// launcher puts up while it installs the client.
     ///
@@ -5225,14 +5351,13 @@ struct Shell {
     /// this doubles as "is the shell being driven right now".
     focused_surface: Option<wl_surface::WlSurface>,
     keep_keyboard_grabbed: bool,
+    /// Every controller the shell reads, and whether the shell holds them —
+    /// which it is told by [`Shell::sync_surface_state`] from the surfaces
+    /// about to be committed, and not by [`controller_is_driving`] on
+    /// `focused_surface`. That is the same question asked of the compositor's
+    /// answer, which arrives with the game's in the same breath, and by then
+    /// the game has already read its pad.
     controller: ControllerInput,
-    /// Whether the surfaces as last synced keep the controller the shell's, so
-    /// the sync that gives it away can tell. See [`Shell::sync_surface_state`].
-    ///
-    /// Not [`controller_is_driving`] on `focused_surface`, which is the same
-    /// question asked of the compositor's answer: that arrives with the game's,
-    /// in the same breath, and by then the game has already read its pad.
-    kept_the_pad: bool,
     /// The right stick's pointer and the left one's scrolling: the curves that
     /// turn deflection into movement, the per-application answers to whether
     /// they are turned on at all, and the mouse buttons currently held down.
@@ -5491,6 +5616,7 @@ impl Shell {
             pending_modes: Vec::new(),
             applied_mode: None,
             turned: None,
+            mounted: None,
             applied_turn: None,
             place: None,
             applied_place: None,
@@ -5522,9 +5648,42 @@ impl Shell {
             scenery: Scenery::default(),
         });
         self.needs_redraw = true;
+        // And what the compositor said about this display before there was a
+        // panel to say it to — its HDR, its modes, how it is turned and where
+        // it stands — which for a display plugged in mid-session is all of it.
+        let output = self.panels[self.panels.len() - 1].output.clone();
+        self.hear_what_was_held_for(&output, qh);
+    }
+
+    /// Hear what the compositor said about a display before its panel existed,
+    /// now that it does, in the order it was said. See
+    /// [`Shell::held_for_panels`].
+    fn hear_what_was_held_for(&mut self, output: &wl_output::WlOutput, qh: &QueueHandle<Self>) {
+        if !self.held_for_panels.iter().any(|(held, _)| held == output) {
+            return;
+        }
+        let (held, kept): (Vec<_>, Vec<_>) = std::mem::take(&mut self.held_for_panels)
+            .into_iter()
+            .partition(|(held, _)| held == output);
+        self.held_for_panels = kept;
+        // They came from the one object that sends them, so it is there.
+        let Some(control) = self.shell_control.clone() else {
+            return;
+        };
+        let conn = self.conn.clone();
+        tracing::debug!(
+            display = ?self.panels.iter().find(|p| &p.output == output).map(|p| &p.name),
+            events = held.len(),
+            "heard what was said about a display before its panel existed"
+        );
+        for (_, event) in held {
+            <Shell as Dispatch<LxbShellV1, ()>>::event(self, &control, event, &(), &conn, qh);
+        }
     }
 
     fn remove_panel(&mut self, output: &wl_output::WlOutput) {
+        // Nothing held for a display is worth anything once it has gone.
+        self.held_for_panels.retain(|(held, _)| held != output);
         let Some(index) = self.panels.iter().position(|p| &p.output == output) else {
             return;
         };
@@ -5686,7 +5845,7 @@ impl Shell {
         // on every display must read the same point of the same transition.
         // A visible backdrop already requests the next frame continuously;
         // hidden fullscreen-covered outputs remain idle as before.
-        theme::animate(dt);
+        let palette_moving = theme::animate(dt);
 
         // The outer loop syncs surface state before it asks us to draw. A
         // launch can finish only here, after the handover fade reaches zero;
@@ -5727,45 +5886,6 @@ impl Shell {
         // has to be able to tell the bar being over an application on purpose
         // from the bar being over one by accident.
         let show_start_screen_over_app = self.guide.mode() == Mode::BarOverApp;
-        // A switch going over outlives the keystroke that threw it, so the
-        // frames have to keep coming until it has settled. The context menu's
-        // growth is the same kind of thing: a menu dismissed with one press
-        // still has to be watched falling back into the control it came from.
-        // The media card is the same kind of thing arrived at from the other
-        // end: it opens because a track started rather than because anything
-        // was pressed, so without this it would have no frames to open in.
-        let pressing = self.guide.pressing()
-            || self.guide.media_is_moving()
-            // And the column sliding over to the cards on a narrow display,
-            // which goes on well after the key that asked for it came up.
-            || self.guide.pan_is_moving()
-            // And the corner's cards, which are the same kind of thing again:
-            // one comes in because a download started and leaves because one
-            // finished, the other because the machine began updating itself,
-            // and none of those is a press.
-            || self.guide.download_is_moving()
-            || self.guide.working_is_moving()
-            || self.context_menu.is_animating()
-            // And the friends list, which comes in from the right edge and
-            // leaves the same way: dismissed with one press, it still has to be
-            // watched going, and without frames it would simply cease to be
-            // there.
-            || self.friends.is_moving()
-            || self.friends.conversation_is_moving()
-            || self.dialog.is_animating()
-            // The picker is the same kind of thing again: it comes in from the
-            // right on its own ramp and its columns ride the bar's own springs,
-            // so it needs frames of its own to arrive and to settle in.
-            || self
-                .carrying
-                .as_ref()
-                .is_some_and(|carrying| carrying.picker.is_animating())
-            // And an application's file question, which grows out of the middle
-            // of the display and folds back into it.
-            || self
-                .file_question
-                .as_ref()
-                .is_some_and(picker::Picker::is_animating);
         let keyboard_visible = self.keyboard_visible();
         // Whether the board on screen is typing into a panel this surface is
         // drawing rather than into whatever is in front of it.
@@ -5912,6 +6032,10 @@ impl Shell {
         // The guide view belongs to the focused display. Assembled before the
         // panels are borrowed for drawing, because easing the card highlight
         // towards its target mutates the guide.
+        //
+        // And whether any card is still travelling to its slot, which is a
+        // motion the frames have to follow like any other — see `moving_here`.
+        let mut cards_moving = false;
         let (guide_cards, guide_highlight, start_card_rect, close_target) = if show_menu {
             // Which half of a narrow display the cards are laid out for — see
             // [`Shell::overview_focus`]. The column is slid by the same answer
@@ -5987,6 +6111,7 @@ impl Shell {
                         velocity: [0.0; 4],
                     });
                     card.rect = spring_rect(glide, target, dt);
+                    cards_moving |= !menu::glide_at_rest(glide.at, glide.velocity, target);
                 }
             }
 
@@ -6382,6 +6507,86 @@ impl Shell {
         // driven, and the others must not run its clock on.
         let away = self.floating_focus.is_some();
         let directions_elsewhere = ui::ease(self.guide.animate_elsewhere(away, dt));
+
+        // Whether anything the shell has raised on the display being driven is
+        // still on its way somewhere. Asked here, with every one of them
+        // stepped for this frame, so that a press which set something moving
+        // is drawn on this pass: asked before the steps, the first frame of a
+        // slide could not know the slide had begun.
+        //
+        // **In low-end hardware mode this is all that decides** between the
+        // display's refresh and ten frames a second — see [`low_end_next`] —
+        // so anything that glides, slides, grows or fades and is missing here
+        // is drawn in jumps a tenth of a second apart. The guide was, for
+        // every step of its highlight and every move between its cards, and
+        // the whole of its arrival over a game, until each said so below.
+        // Outside the mode it matters only to a display an application covers,
+        // which goes on drawing until what was moving on it has settled.
+        //
+        // Light changing in place — the selection's breath, the ring on a
+        // loading screen — is not on its way anywhere, and is drawn at
+        // whatever pace the display is.
+        let moving_here = show_menu
+            && (self.guide.highlight_is_moving()
+                || cards_moving
+                // The column sliding in. Over an application nothing else
+                // moves while it does: the start screen is in its card already.
+                || ui::guide_is_arriving(self.guide.age())
+                // And what is drawn on the cards, which fades up once the
+                // compositor has landed the windows under them.
+                || ui::card_fade(card_age) < 1.0
+                || self.guide.power_is_moving()
+                || self.guide.elsewhere_is_moving())
+            // A switch going over outlives the keystroke that threw it.
+            || self.guide.pressing()
+            // The media card opens because a track started rather than because
+            // anything was pressed, so nothing else would ask for its frames.
+            || self.guide.media_is_moving()
+            // The column sliding over to the cards on a narrow display, which
+            // goes on well after the key that asked for it came up.
+            || self.guide.pan_is_moving()
+            // The corner's cards: one comes in because a download started and
+            // leaves because one finished, the other because the machine began
+            // updating itself, and none of those is a press.
+            || self.guide.download_is_moving()
+            || self.guide.working_is_moving()
+            // A menu dismissed with one press still has to be watched falling
+            // back into the control it came from; and the same for the friends
+            // list leaving by the right edge, and for a centred panel.
+            || self.context_menu.is_animating()
+            || self.friends.is_moving()
+            || self.friends.conversation_is_moving()
+            || self.dialog.is_animating()
+            // The picker comes in from the right on its own ramp and its
+            // columns ride the bar's own springs.
+            || self
+                .carrying
+                .as_ref()
+                .is_some_and(|carrying| carrying.picker.is_animating())
+            // An application's file question, which grows out of the middle of
+            // the display and folds back into it.
+            || self
+                .file_question
+                .as_ref()
+                .is_some_and(picker::Picker::is_animating)
+            // And the three things that come and go over whatever is in front:
+            // the board, a bubble, and the control the volume keys raise.
+            || self.osk.is_moving()
+            || self.notifications.is_moving()
+            || self.volume.is_moving();
+        // And the two that belong to a display rather than to the one being
+        // driven: a loading screen growing out of its tile or handing over, and
+        // a window flying back out of its card.
+        let launch_moving: Vec<bool> = (0..self.panels.len())
+            .map(|index| {
+                self.launch_on(index)
+                    .is_some_and(|splash| splash.is_moving(now))
+                    || self.restoring_on(index)
+            })
+            .collect();
+        // And whether there is a press to answer — see [`Shell::answering`].
+        let answering = std::mem::take(&mut self.answering);
+
         let Some(gpu) = self.gpu.as_mut() else {
             self.next_frame_deadline = now + FRAME_CALLBACK_WATCHDOG;
             return;
@@ -6522,6 +6727,12 @@ impl Shell {
             // committed is what a translucent application in front shows, and
             // what the display goes back to if it is uncovered. Settle first,
             // then go quiet.
+            //
+            // Everything on this display that is on its way somewhere, which
+            // in low-end hardware mode is what the frames follow — see
+            // `moving_here`. The accent changing only where the display is on
+            // screen: it changes behind a game as well, and a covered display
+            // has nothing to show it on.
             let settling = panel.home_linear != home_target
                 || panel.blur_linear != home_target
                 || panel.depth_linear != depth_target
@@ -6530,15 +6741,19 @@ impl Shell {
                 || (arriving && panel.scenery.moving())
                 || covers_settling
                 || cursor_moving[index]
-                || (pressing && index == focused_panel);
+                || launch_moving[index]
+                || (palette_moving && visible)
+                || (moving_here && index == focused_panel);
             let draw_now = should_draw(rested, visible, settling, panel.was_visible);
             // Low-end hardware mode draws a still display far less often, and
-            // a moving one on the display's own beat — see [`low_end_next`]. A
-            // frame held back here is drawn on a later pass of the loop, which
-            // is asked to come back for it below: when the display answers the
-            // last frame, or at the moment it names.
+            // a moving one, or one with a press to answer, on the display's own
+            // beat — see [`low_end_next`]. A frame held back here is drawn on a
+            // later pass of the loop, which is asked to come back for it below:
+            // when the display answers the last frame, or at the moment it
+            // names.
+            panel.cadence.set_low_end(low_end);
             let next = if low_end && draw_now {
-                low_end_next(&panel.cadence, panel.last_drawn, now, settling)
+                low_end_next(&panel.cadence, panel.last_drawn, now, settling || answering)
             } else {
                 cadence::Next::Now
             };
@@ -8992,6 +9207,7 @@ impl Shell {
         if self.is_leaving() {
             return;
         }
+        self.answering = true;
         // Start is Accept, and is only ever anything else while the board is
         // up. Folded here rather than at each of the half-dozen places Accept
         // is answered — the bar, a menu, a panel, a window card, the guide —
@@ -9225,6 +9441,9 @@ impl Shell {
         }
         match action {
             Action::Guide => {
+                // First, whatever the shell then makes of it: the client reads
+                // the same button, and may be answering it too.
+                self.note_the_steam_button(Instant::now());
                 // A launch is not something the menu opens over. See
                 // [`guide_answers`]: the press is spent here and nothing is
                 // said about it, because nothing happened.
@@ -21693,23 +21912,15 @@ impl Shell {
     /// unseen in the meantime. A client that was signed in already has no such
     /// screen, and is shown at once — the same instant as before.
     fn show_steam_for(&mut self, handed: lxb_steam::HandedOver) {
-        let discount = handed.asked.answered_by_the_storefront();
-        let mine = |title: &str| {
-            !discount
-                || !title
-                    .trim()
-                    .eq_ignore_ascii_case(lxb_steam::client::STOREFRONT)
-        };
-        let already: HashSet<u32> = self
-            .valves_windows_on_screen()
-            .filter(|window| mine(&window.title))
-            .map(|window| window.id)
-            .chain(
-                self.valves_windows_kept_off()
-                    .filter(|window| mine(&window.title))
-                    .map(|window| window.id),
-            )
-            .collect();
+        let already = not_the_answer(
+            handed,
+            self.valves_windows_on_screen()
+                .map(|window| (window.id, window.title.as_str()))
+                .chain(
+                    self.valves_windows_kept_off()
+                        .map(|window| (window.id, window.title.as_str())),
+                ),
+        );
         let shown = !handed.after_signing_in;
         tracing::info!(
             seen = true,
@@ -21724,6 +21935,7 @@ impl Shell {
             shown,
             arrived: false,
             gone_since: None,
+            big_picture: handed.asked == lxb_steam::Doing::BigPicture,
         });
         // Before anything is shown, so that it is never shown anywhere else.
         self.bring_the_storefront_to_the_press();
@@ -21796,6 +22008,73 @@ impl Shell {
         }
     }
 
+    /// Remember a press of the Steam button, if Valve's client is running to
+    /// read it too.
+    ///
+    /// The client reads the button straight off the controller, so nothing the
+    /// shell does keeps the press from it. See
+    /// [`Shell::take_down_a_big_picture_nobody_asked_for`].
+    fn note_the_steam_button(&mut self, now: Instant) {
+        if !self.steam.a_client_is_running() {
+            self.steam_button = None;
+            return;
+        }
+        let windows = self
+            .valves_windows_on_screen()
+            .map(|window| window.id)
+            .chain(self.valves_windows_kept_off().map(|window| window.id))
+            .collect();
+        self.steam_button = Some(SteamButtonPress { at: now, windows });
+    }
+
+    /// Take down a Big Picture the client opened on the Steam button, which
+    /// nobody asked it for.
+    ///
+    /// The button is this shell's: its press opens the shell's own menu, and
+    /// the client is asked to leave it alone — "Guide button focuses Steam" is
+    /// set off on every wake. A client started in Steam's Deck mode does not
+    /// honour that, and a Steam Deck's own `steam` launcher always starts it
+    /// there. Read off a Deck on 2026-10-01: the setting reading false, the
+    /// client's controller log saying "Guide button sent to JS" at 02:02:16 and
+    /// Big Picture's window mapping at 02:02:17. The shell hid the window, as
+    /// it hides every window of the client's nobody asked to see, so all the
+    /// press left behind was Big Picture running out of sight — and in the way
+    /// of the next press of Open Steam (Client), which found no storefront.
+    ///
+    /// So a window of the client's own that comes up within
+    /// [`STEAM_ANSWERS_ITS_BUTTON_WITHIN`] of the button is taken for that
+    /// answer, and the client is asked to leave Big Picture. Unless what the
+    /// person has asked to see is Big Picture, and unless a press of theirs for
+    /// the client is still waiting to be answered — then the window may be the
+    /// one they asked for. Asking a client on its desktop face to leave Big
+    /// Picture changes nothing, so a window that was something else costs one
+    /// request that does nothing.
+    fn take_down_a_big_picture_nobody_asked_for(&mut self, now: Instant) {
+        let Some(press) = self.steam_button.as_ref() else {
+            return;
+        };
+        let theirs = match &self.steam_sight {
+            SteamSight::Background => false,
+            SteamSight::UserVisible(wanted) => wanted.big_picture,
+        } || self.the_client_splash().is_some();
+        let windows: HashSet<u32> = self
+            .valves_windows_on_screen()
+            .map(|window| window.id)
+            .chain(self.valves_windows_kept_off().map(|window| window.id))
+            .collect();
+        match after_the_steam_button(press, now, theirs, &windows) {
+            AfterTheButton::Wait => {}
+            AfterTheButton::Forget => self.steam_button = None,
+            AfterTheButton::LeaveBigPicture => {
+                self.steam_button = None;
+                tracing::info!(
+                    "Valve's client opened a window on the Steam button; asking it to leave Big Picture"
+                );
+                self.steam.leave_big_picture();
+            }
+        }
+    }
+
     /// Give the client sight for a window it already has up.
     ///
     /// The other reason sight is given: the client has stopped a launch to ask
@@ -21811,6 +22090,7 @@ impl Shell {
             shown: true,
             arrived: false,
             gone_since: None,
+            big_picture: false,
         });
         self.keep_steam_out_of_sight(false);
     }
@@ -36226,10 +36506,16 @@ impl Shell {
     /// turns itself: a display it says nothing about is one the Orientation
     /// page must not list, because choosing there would do nothing.
     fn refresh_display_turns(&mut self) {
-        let reported: Vec<(String, settings::Orientation)> = self
+        let reported: Vec<(String, settings::Turn)> = self
             .panels
             .iter()
-            .filter_map(|panel| Some((panel.name.clone(), panel.turned?)))
+            .filter_map(|panel| {
+                let turn = settings::Turn {
+                    drawn: panel.turned?,
+                    mounted: panel.mounted.unwrap_or(settings::Orientation::Landscape),
+                };
+                Some((panel.name.clone(), turn))
+            })
             .collect();
         if settings::note_turned(reported) {
             self.rebuild_settings();
@@ -36439,24 +36725,24 @@ impl Shell {
                 )
             })
             .collect();
-        // The controller goes with the keys, and it goes first. Giving up the
-        // keyboard is what puts the application back in front, and every pad
-        // it reads is one this shell repeats, press for press — including the
-        // press that is giving it back. A game that ignored `A` while the menu
-        // was up would otherwise be handed the keys a frame or two later with
-        // the thumb still on it, and a game that reads its pad as a state takes
-        // that for a press of its own. Asked here, before a single surface is
-        // committed, so the button is up on every copy before the compositor
-        // has the commit that hands over. See [`ControllerInput::hand_back`].
+        // The controller goes with the keys, and it goes first, both ways.
+        // Taking the keyboard is the shell coming in front, and from then on
+        // what is pressed is the shell's: every pad an application reads is
+        // taken from applications before the surface that takes the keys is
+        // committed. Giving the keyboard up is what puts the application back
+        // in front, and every pad it reads is one this shell repeats, press for
+        // press — including the press that is giving it back. A game handed the
+        // keys a frame or two later with the thumb still on `A`, reading its
+        // pad as a state, would take that for a press of its own. So the button
+        // is let go of on every copy before the compositor has the commit that
+        // hands over, and the pads go back once nothing is held. See
+        // [`ControllerInput::keep`].
         let keeps = states
             .get(self.focused_panel)
             .is_some_and(|((state, _), _)| {
                 keeps_the_pad(self.keep_keyboard_grabbed, *state, self.osk.is_open())
             });
-        if self.kept_the_pad && !keeps {
-            self.controller.hand_back();
-        }
-        self.kept_the_pad = keeps;
+        self.controller.keep(keeps);
 
         // Whether each display is currently visible enough for a new frame to
         // carry the change. A just-covered display may still draw one cleanup
@@ -38230,6 +38516,92 @@ mod steam_game_menu_tests {
         assert!(!rows[2].label.contains("Steam"));
     }
 
+    /// The Steam button on a Steam Deck, as its journal of 2026-10-01 has it:
+    /// the client running out of sight, the button pressed, and Big Picture's
+    /// window up a second and a half later. A window that was already there is
+    /// no answer to the button, and neither is one going away.
+    #[test]
+    fn a_window_the_client_opens_on_the_steam_button_takes_big_picture_down() {
+        let t0 = Instant::now();
+        let later = |ms: u64| t0 + std::time::Duration::from_millis(ms);
+        let ids = |ids: &[u32]| ids.iter().copied().collect::<HashSet<u32>>();
+        let press = SteamButtonPress {
+            at: t0,
+            windows: ids(&[3]),
+        };
+        assert_eq!(
+            after_the_steam_button(&press, later(500), false, &ids(&[3])),
+            AfterTheButton::Wait
+        );
+        assert_eq!(
+            after_the_steam_button(&press, later(500), false, &ids(&[])),
+            AfterTheButton::Wait
+        );
+        assert_eq!(
+            after_the_steam_button(&press, later(1500), false, &ids(&[3, 4])),
+            AfterTheButton::LeaveBigPicture
+        );
+    }
+
+    /// And a Big Picture somebody asked for is theirs: once they have, and
+    /// while a press of theirs for the client is still being answered, the
+    /// button is not watched at all. Nor is it for ever.
+    #[test]
+    fn a_big_picture_somebody_asked_for_is_left_alone() {
+        let t0 = Instant::now();
+        let new_window: HashSet<u32> = [4].into_iter().collect();
+        let press = SteamButtonPress {
+            at: t0,
+            windows: HashSet::new(),
+        };
+        assert_eq!(
+            after_the_steam_button(&press, t0, true, &new_window),
+            AfterTheButton::Forget
+        );
+        assert_eq!(
+            after_the_steam_button(
+                &press,
+                t0 + STEAM_ANSWERS_ITS_BUTTON_WITHIN + std::time::Duration::from_millis(1),
+                false,
+                &new_window
+            ),
+            AfterTheButton::Forget
+        );
+    }
+
+    /// Which of the client's windows a hand-over waits past. Open Steam
+    /// (Client) is answered by the storefront even where it is up already;
+    /// Big Picture by a window of its own; and Big Picture asked of a client
+    /// already in it by the window that is there — the press that, on a Steam
+    /// Deck on 2026-10-01, was shown Big Picture and had it taken away again
+    /// thirty seconds later.
+    #[test]
+    fn a_hand_over_waits_past_everything_but_its_answer() {
+        let handed = |asked, already_up| lxb_steam::HandedOver {
+            after_signing_in: false,
+            asked,
+            already_up,
+        };
+        let windows = [(3, "Steam"), (4, "Tryb Big Picture Steam")];
+        let ids = |ids: &[u32]| ids.iter().copied().collect::<HashSet<u32>>();
+        assert_eq!(
+            not_the_answer(handed(lxb_steam::Doing::Open, false), windows.into_iter()),
+            ids(&[4])
+        );
+        assert_eq!(
+            not_the_answer(
+                handed(lxb_steam::Doing::BigPicture, false),
+                windows.into_iter()
+            ),
+            ids(&[3, 4])
+        );
+        assert!(not_the_answer(
+            handed(lxb_steam::Doing::BigPicture, true),
+            windows.into_iter()
+        )
+        .is_empty());
+    }
+
     /// Removing a game is asked about before it happens, and the row that asks
     /// is not the row that does it. Valve's client is told not to put its own
     /// confirmation up, so this menu row must reach the shell's panel — a menu
@@ -38261,6 +38633,7 @@ mod steam_game_menu_tests {
             shown: true,
             arrived: false,
             gone_since: None,
+            big_picture: false,
         };
         assert_eq!(wanted.look(&none, &none, after(1)), SightVerdict::Wait);
 
@@ -38290,6 +38663,7 @@ mod steam_game_menu_tests {
             shown: true,
             arrived: false,
             gone_since: None,
+            big_picture: false,
         };
         assert_eq!(never.look(&none, &none, after(29)), SightVerdict::Wait);
         assert_eq!(
@@ -38315,6 +38689,7 @@ mod steam_game_menu_tests {
             shown: true,
             arrived: false,
             gone_since: None,
+            big_picture: false,
         };
         assert_eq!(wanted.look(&ids(&[8]), &none, at(500)), SightVerdict::Wait);
         // The desktop window goes.
@@ -38355,6 +38730,7 @@ mod steam_game_menu_tests {
             shown: false,
             arrived: false,
             gone_since: None,
+            big_picture: false,
         };
         // The login screen is kept off the screen throughout, and nothing
         // about it is an arrival or a departure.
@@ -38378,6 +38754,7 @@ mod steam_game_menu_tests {
             shown: false,
             arrived: false,
             gone_since: None,
+            big_picture: false,
         };
         assert_eq!(never.look(&none, &ids(&[4]), after(29)), SightVerdict::Wait);
         assert_eq!(
@@ -38404,6 +38781,7 @@ mod steam_game_menu_tests {
             shown: true,
             arrived: false,
             gone_since: None,
+            big_picture: false,
         };
         assert_eq!(
             wanted.look(&ids(&[5, 8]), &none, after(1)),
@@ -42818,8 +43196,20 @@ impl LayerShellHandler for Shell {
     fn closed(&mut self, _conn: &Connection, _qh: &QueueHandle<Self>, layer: &LayerSurface) {
         // Losing either of a panel's surfaces takes the whole panel: half a
         // display (bar without waves, or waves without a bar) helps nobody.
-        self.panels
-            .retain(|panel| &panel.layer != layer && &panel.backdrop != layer);
+        //
+        // Through `remove_panel`, which is what the display itself going away
+        // runs: the compositor closes a display's surfaces as it unplugs it,
+        // so this can arrive before the display's own removal does, and
+        // dropping the panel here without moving control off it left the
+        // shell driving a display that was no longer in its list.
+        let output = self
+            .panels
+            .iter()
+            .find(|panel| &panel.layer == layer || &panel.backdrop == layer)
+            .map(|panel| panel.output.clone());
+        if let Some(output) = output {
+            self.remove_panel(&output);
+        }
         // The session is over only when there is nowhere left to draw; a single
         // display going away is not a reason to quit.
         if self.panels.is_empty() {
@@ -43476,6 +43866,46 @@ impl Dispatch<ExtIdleNotificationV1, idle::Timer> for Shell {
     }
 }
 
+/// The display a compositor event describes the state of, for the events whose
+/// news has to survive arriving before the display's panel does.
+///
+/// State, and only state: what HDR, the night light, the modes, the turn, the
+/// place, the windows and the application in front of a display *are*. Those
+/// are said once and not again until they change, so one dropped is a display
+/// described wrongly for as long as it stays plugged in. The momentary ones —
+/// a press, the pointer, a capture finishing, the floating-window menu — are
+/// about a moment the panel was not there for, and are left to be dropped as
+/// they always were.
+fn display_state_of(event: &lxb_shell_v1::Event) -> Option<&wl_output::WlOutput> {
+    use lxb_shell_v1::Event;
+    match event {
+        Event::OutputForeground { output, .. }
+        | Event::OutputAppId { output, .. }
+        | Event::OutputHdr { output, .. }
+        | Event::OutputHdrControls { output, .. }
+        | Event::OutputNightLight { output, .. }
+        | Event::OutputInUse { output, .. }
+        | Event::OutputDrawing { output, .. }
+        | Event::OutputMode { output, .. }
+        | Event::OutputModesDone { output }
+        | Event::OutputTransform { output, .. }
+        | Event::OutputMounting { output, .. }
+        | Event::OutputPlace { output, .. }
+        | Event::OutputWindow { output, .. }
+        | Event::OutputWindowAppId { output, .. }
+        | Event::OutputWindowPid { output, .. }
+        | Event::OutputWindowsDone { output }
+        | Event::PipWindow { output, .. }
+        | Event::PipWindowsDone { output } => Some(output),
+        _ => None,
+    }
+}
+
+/// How many events are kept for displays that have no panel yet. A display
+/// described in full is a few dozen — its modes are most of it — so this is a
+/// bound on a compositor gone wrong, not on anything ordinary.
+const HELD_FOR_PANELS: usize = 4096;
+
 impl Dispatch<LxbShellV1, ()> for Shell {
     fn event(
         state: &mut Self,
@@ -43485,6 +43915,18 @@ impl Dispatch<LxbShellV1, ()> for Shell {
         _conn: &Connection,
         _qh: &QueueHandle<Self>,
     ) {
+        // About a display this shell has no panel for yet: kept, and heard
+        // when the panel is made. See [`Shell::held_for_panels`].
+        if let Some(output) = display_state_of(&event) {
+            if !state.panels.iter().any(|panel| &panel.output == output) {
+                let output = output.clone();
+                if state.held_for_panels.len() >= HELD_FOR_PANELS {
+                    state.held_for_panels.remove(0);
+                }
+                state.held_for_panels.push((output, event));
+                return;
+            }
+        }
         match event {
             // The machine's power button, taken off the keyboard by the
             // compositor. A press is decided on the way up and a hold by the
@@ -43952,6 +44394,26 @@ impl Dispatch<LxbShellV1, ()> for Shell {
                             "which way up a display is drawn"
                         );
                         panel.turned = reported;
+                        state.refresh_display_turns();
+                    }
+                }
+            }
+            lxb_shell_v1::Event::OutputMounting { output, transform } => {
+                // A value this shell does not have is left alone, for the
+                // reason an unknown turn is: counting from a guess would mark
+                // the wrong row.
+                let mounted = transform
+                    .into_result()
+                    .ok()
+                    .and_then(|transform| settings::Orientation::from_code(transform as u32));
+                if let Some(panel) = state.panels.iter_mut().find(|p| p.output == output) {
+                    if mounted.is_some() && panel.mounted != mounted {
+                        tracing::info!(
+                            display = %panel.name,
+                            mounted = ?mounted,
+                            "which way up a display is built into its machine"
+                        );
+                        panel.mounted = mounted;
                         state.refresh_display_turns();
                     }
                 }

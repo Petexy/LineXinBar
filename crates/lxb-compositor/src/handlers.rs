@@ -806,6 +806,22 @@ impl WlrLayerShellHandler for LxbState {
         _layer: Layer,
         namespace: String,
     ) {
+        // Asked for a display that has already gone — its cable came out
+        // between the client seeing it and asking — which is closed at once,
+        // as wlr-layer-shell says: a surface put on some other display instead
+        // would be the shell's panel for one screen drawn over another's.
+        if let Some(requested) = wl_output.as_ref() {
+            let alive = Output::from_resource(requested)
+                .is_some_and(|output| self.lxb.space.outputs().any(|live| live == &output));
+            if !alive {
+                tracing::info!(
+                    namespace,
+                    "a layer surface asked for a display that has gone; closed"
+                );
+                surface.send_close();
+                return;
+            }
+        }
         let output = wl_output
             .as_ref()
             .and_then(Output::from_resource)
@@ -1047,7 +1063,16 @@ impl PointerConstraintsHandler for LxbState {
 // misc
 // ---------------------------------------------------------------------------
 
-impl OutputHandler for LxbState {}
+impl OutputHandler for LxbState {
+    /// A client has bound a display, as the session shell does with every one
+    /// that is plugged in while it runs: it is told the state of that display
+    /// now, because everything announced when the display arrived went out
+    /// before it could be addressed. See [`crate::shell_control`]'s
+    /// `output_bound`.
+    fn output_bound(&mut self, output: Output, wl_output: WlOutput) {
+        self.lxb.shell_control.output_bound(&output, &wl_output);
+    }
+}
 
 impl smithay::wayland::tablet_manager::TabletSeatHandler for LxbState {
     fn tablet_tool_image(

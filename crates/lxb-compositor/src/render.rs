@@ -1310,20 +1310,84 @@ pub fn post_repaint(
     // afterwards tell a client it showed.
     record_where_each_surface_was_drawn(lxb, output, drawn);
 
-    let space = &lxb.space;
-    // Who has something on this display, worked out once — see
-    // [`windows_on_screen`], which is this decision and is asked the same
-    // question by [`crate::sleep`].
-    let shown = windows_on_screen(lxb, output);
-    // And which of them is the one in front, for the watch below. Not while
-    // the overview is up: every window is drawing there and none of them is
-    // the display.
+    // Which of them is the one in front, for the watch below. Not while the
+    // overview is up: every window is drawing there and none of them is the
+    // display.
     let front = (lxb.overview.progress(output, std::time::Instant::now()) == 0.0)
         .then(|| front_application_on_screen(lxb, output))
         .flatten();
     if let Some(front) = &front {
         watch_for_a_quiet_application(lxb, output, front, drawn);
     }
+
+    answer_the_frame(lxb, output, time, throttle);
+}
+
+/// How often a display that is switched off answers what is waiting on it.
+///
+/// A display switched off draws nothing, and for a frame callback that is the
+/// same as never answering at all: a client presenting FIFO waits for the
+/// answer to its last frame before it hands over the next, and it waits with
+/// no timeout. The session shell is such a client, on one thread that also
+/// reads the controller, so a callback held over a dark display is a shell
+/// that never reads the press that would light it again. Seen on a Steam Deck
+/// on 2026-10-01: both displays switched off at 02:09:40, and the shell had
+/// presented its last frame of the fade a moment before. It never drew or read
+/// a button again, and the screens stayed black for good.
+///
+/// So a dark display is still answered, on this slow clock rather than its own
+/// refresh: often enough that nothing waits on it for longer than a moment,
+/// and seldom enough that a client which draws whenever it is answered draws
+/// four frames a second for a screen nobody can see.
+pub const WHILE_DARK: std::time::Duration = std::time::Duration::from_millis(250);
+
+/// Answer everything on a display that is switched off, as a frame in which
+/// nothing was shown.
+///
+/// The same answers a drawn frame gives, through [`answer_the_frame`] — the
+/// layer surfaces and the windows the shell is driving out of sight are told
+/// their frame went out, and every window nobody can see is told its frame
+/// never will — less the watch [`post_repaint`] keeps on the application in
+/// front, which would be watching a screen that is switched off. And the layer
+/// surfaces' own presentation feedback, which a drawn frame answers when it
+/// reaches the screen, is answered here with the only thing that is true of
+/// it: it never did.
+///
+/// See [`WHILE_DARK`] for why this exists, and for how often it is asked.
+pub fn answer_a_dark_display(lxb: &Lxb, output: &Output, time: std::time::Duration) {
+    // Nothing was drawn on it, so nothing on it has this display any more.
+    record_where_each_surface_was_drawn(lxb, output, &RenderElementStates::default());
+    answer_the_frame(lxb, output, time, None);
+    let mut unshown = OutputPresentationFeedback::new(output);
+    for layer in layer_map_for_output(output).layers() {
+        layer.take_presentation_feedback(
+            &mut unshown,
+            |_, _| Some(output.clone()),
+            |surface, _| {
+                smithay::desktop::utils::surface_presentation_feedback_flags_from_states(
+                    surface,
+                    &Default::default(),
+                )
+            },
+        );
+    }
+    unshown.discarded();
+}
+
+/// The answers one frame of `output` owes: a frame callback to everything that
+/// may draw, and word to everything that may not that its frame was never
+/// shown. See [`post_repaint`], whose second half this is.
+fn answer_the_frame(
+    lxb: &Lxb,
+    output: &Output,
+    time: std::time::Duration,
+    throttle: Option<std::time::Duration>,
+) {
+    let space = &lxb.space;
+    // Who has something on this display, worked out once — see
+    // [`windows_on_screen`], which is this decision and is asked the same
+    // question by [`crate::sleep`].
+    let shown = windows_on_screen(lxb, output);
 
     // Whatever is answered here was never put on the screen, and its client has
     // to be told so rather than left waiting: see [`answer_unshown`].
@@ -1378,6 +1442,38 @@ pub fn post_repaint(
         }
         window.send_frame(output, time, throttle, |_, _| Some(output.clone()));
         answer_unshown(window, &mut unshown, output);
+    }
+
+    // And every layer surface on no display at all, for the reason the windows
+    // above are answered, and with more at stake.
+    //
+    // A layer surface is answered only by the repaint of the display it is on,
+    // so one on no live display is answered by nobody: the display it belonged
+    // to went away (see [`LxbState::display_unplugged`], which closes those and
+    // answers them once, but cannot answer what the client commits before it
+    // has read the close), or it was made for a display that had already gone.
+    // The session shell is such a client, presenting FIFO from its one thread,
+    // and a present waiting on a callback nobody sends is a shell that never
+    // draws or reads input again.
+    //
+    // [`LxbState::display_unplugged`]: crate::state::LxbState::display_unplugged
+    for layer in lxb.layer_shell_state.layer_surfaces() {
+        let surface = layer.wl_surface();
+        let on_a_display = lxb.space.outputs().any(|live| {
+            layer_map_for_output(live)
+                .layer_for_surface(surface, smithay::desktop::WindowSurfaceType::ALL)
+                .is_some()
+        });
+        if on_a_display {
+            continue;
+        }
+        smithay::desktop::utils::send_frames_surface_tree(
+            surface,
+            output,
+            time,
+            Some(std::time::Duration::ZERO),
+            |_, _| Some(output.clone()),
+        );
     }
 
     // Nothing collected above was drawn, by definition. Saying so is what frees

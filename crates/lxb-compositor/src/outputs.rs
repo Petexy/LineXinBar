@@ -140,6 +140,25 @@ pub(crate) fn set_maximized_states(states: &mut ToplevelStateSet) {
     states.set(xdg_toplevel::State::TiledBottom);
 }
 
+/// Which way up a display is built into the machine: the turn its panel's
+/// connector says stands the picture up.
+///
+/// Kept on the output from the moment it is connected, whatever it is drawn
+/// at afterwards. The turn it is drawn at is whatever somebody last chose; this
+/// is what the shell's Orientation page counts from, so a Steam Deck standing
+/// up the way it is built reads as not turned, rather than as the quarter turn
+/// its portrait panel needs.
+#[derive(Debug, Clone, Copy)]
+pub struct Mounted(pub Transform);
+
+/// How a display is mounted — normal for one whose connector says nothing.
+pub fn mounted(output: &Output) -> Transform {
+    output
+        .user_data()
+        .get::<Mounted>()
+        .map_or(Transform::Normal, |mounted| mounted.0)
+}
+
 /// Tracks the logical arrangement of every enabled output.
 #[derive(Debug, Default)]
 pub struct OutputManager {
@@ -1004,6 +1023,92 @@ impl crate::state::LxbState {
         }
         moved
     }
+
+    /// A display has gone: the cable came out, or a nested session was told
+    /// to act as if it had.
+    ///
+    /// One place for it, because the two backends that can lose a display
+    /// have to lose it the same way, and what a display leaves behind is
+    /// easy to get half right. The caller still owns the display's global and
+    /// removes it afterwards; everything the session knew about the display
+    /// is settled here.
+    pub fn display_unplugged(&mut self, output: &Output) {
+        // First, while the display's own layer map still says who was on it.
+        let closed = self.let_go_of_the_layers_on(output);
+        let config = self.lxb.config.clone();
+        self.lxb
+            .outputs
+            .remove_output(&mut self.lxb.space, output, &config);
+        // What it was set to survives; what it can do does not, until it is back.
+        self.lxb.hdr.disconnected(output);
+        // And nothing can be recorded off a connector that is no longer there, so
+        // whoever was waiting on a frame of it is told rather than left waiting.
+        self.lxb.screencopy.output_gone(output);
+        // Nor can it be driven at anything, or turned, until then — which the
+        // shell's pages have to hear about the same way they heard it arrive. Its
+        // leaving renumbers every display that was laid out after it, so the
+        // arrangement is republished for the survivors as well.
+        self.refresh_modes();
+        self.refresh_transforms();
+        self.refresh_places();
+        // A surface that had the keyboard may have been one of those closed,
+        // which leaves it with nobody; the same settling a layer surface
+        // being destroyed gets.
+        if closed {
+            self.refresh_exclusive_focus();
+            self.focus_topmost_window();
+        }
+    }
+
+    /// Close every layer surface on a display that has gone, and answer what
+    /// each is waiting on. `true` when there were any.
+    ///
+    /// A layer surface belongs to its display — it cannot be moved to another
+    /// the way a window is re-tiled — and the only place its frame callbacks
+    /// are answered is that display's repaint, which will not come again. The
+    /// session shell is a layer-shell client that presents FIFO from one
+    /// thread, and Mesa's Wayland driver waits for the previous frame's
+    /// callback inside the *next* present, with no timeout. So a shell drawing
+    /// on the display at the moment its cable came out blocked in its next
+    /// frame there, and a shell that cannot draw cannot be summoned: on a
+    /// Steam Deck whose hub carried a monitor, the session stopped answering
+    /// the moment the hub was pulled. Measured in a nested session with
+    /// `LXB_NESTED_UNPLUG`: the shell's main thread in
+    /// `wl_display_dispatch_queue`, under `vkQueuePresentKHR`, from
+    /// `Gpu::render`.
+    ///
+    /// wlr-layer-shell's own answer is `closed` — "the output may have been
+    /// destroyed" — and the callbacks are answered in the same breath, so a
+    /// present already waiting is let go rather than left for a repaint that
+    /// never comes. Anything the client commits to one of these before it
+    /// reads `closed` is answered by [`crate::render::post_repaint`], which
+    /// answers every layer surface that is on no display at all.
+    fn let_go_of_the_layers_on(&mut self, output: &Output) -> bool {
+        let layers: Vec<smithay::desktop::LayerSurface> =
+            layer_map_for_output(output).layers().cloned().collect();
+        if layers.is_empty() {
+            return false;
+        }
+        {
+            let mut map = layer_map_for_output(output);
+            for layer in &layers {
+                map.unmap_layer(layer);
+            }
+        }
+        let time = self.lxb.start_time.elapsed();
+        for layer in &layers {
+            // `Duration::ZERO` is "always overdue", which is what a surface
+            // whose display has gone is.
+            layer.send_frame(output, time, Some(std::time::Duration::ZERO), |_, _| None);
+            layer.layer_surface().send_close();
+        }
+        tracing::info!(
+            output = %output.name(),
+            layers = layers.len(),
+            "closed the layer surfaces of a display that went away"
+        );
+        true
+    }
 }
 
 /// The output's size in logical coordinates, honouring scale and transform.
@@ -1039,7 +1144,7 @@ pub fn transform_name(transform: Transform) -> &'static str {
     }
 }
 
-fn parse_transform(raw: &str) -> Option<Transform> {
+pub(crate) fn parse_transform(raw: &str) -> Option<Transform> {
     Some(match raw.trim().to_ascii_lowercase().as_str() {
         "normal" | "0" => Transform::Normal,
         "90" => Transform::_90,

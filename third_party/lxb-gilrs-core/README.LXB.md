@@ -35,6 +35,22 @@ What this copy does that 0.6.8 does not:
   of three. `pad_guard::hardware_tests::a_pad_turned_off_and_on_again_is_read_again`
   in `lxb-desktop` is that second run, and passes only with this fix.
 
+- **A gamepad can be taken for this reader alone.** `Gamepad::set_grabbed`
+  is `EVIOCGRAB` on the descriptor GilRs reads the device through, added for
+  Linux in `src/platform/linux/gamepad.rs` (with `eviocgrab` in `ioctl.rs`),
+  passed through in `src/lib.rs`, and answered with `Unsupported` by every
+  other platform; each is marked `LineXinBar:`. A taken device goes on
+  reporting to GilRs and to no other reader on the machine.
+
+  Why it is wanted here: while the shell holds the controller — the Home menu
+  open over a game — what is pressed is the shell's, and a game reading the
+  same pad from `/dev/input` heard all of it. The shell now takes every pad
+  applications read for that long (`crates/lxb-desktop/src/controller.rs`,
+  `ControllerInput::keep`), and has to go on reading the guard's replacements
+  itself while it does, which only the descriptor it reads them through can
+  do. `controller::hardware_tests::a_game_hears_nothing_of_the_pad_while_the_shell_holds_the_controller`
+  is the measurement.
+
 Upstream is not patched anywhere else. Anything under `src/` that is not named
 above is 0.6.8 as published, and upstream's master has the same code, checked
 at the commit above.

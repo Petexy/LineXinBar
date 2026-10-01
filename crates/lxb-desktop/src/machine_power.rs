@@ -549,7 +549,7 @@ pub fn changed_elsewhere(now: Instant) -> Option<PowerSettings> {
 /// Ask polkit to run this program as root to write both files.
 fn ask_root_to_apply(settings: PowerSettings) -> Result<(), String> {
     let pkexec = crate::locale::pkexec().ok_or("no pkexec on this machine")?;
-    let exe = std::env::current_exe().map_err(|err| err.to_string())?;
+    let exe = crate::locale::this_program().map_err(|err| err.to_string())?;
     let answered = std::process::Command::new(pkexec)
         .arg("--disable-internal-agent")
         .arg(&exe)
@@ -579,7 +579,7 @@ pub fn ask_root_to_sleep(how: &'static str) -> RootSleep {
     let Some(pkexec) = crate::locale::pkexec() else {
         return RootSleep::Failed("no pkexec on this machine".into());
     };
-    let exe = match std::env::current_exe() {
+    let exe = match crate::locale::this_program() {
         Ok(exe) => exe,
         Err(err) => return RootSleep::Failed(err.to_string()),
     };

@@ -358,6 +358,41 @@ pub fn helper() -> Result<PathBuf> {
     })
 }
 
+/// This program's file as it was when the program started, so that a
+/// coordinator can tell when a package has put another in its place.
+///
+/// The running image is the inode `/proc/self/exe` leads to, which the kernel
+/// keeps for as long as the process lives; the installed one is whatever is
+/// at [`helper`]'s path now. No package manager writes into a running
+/// executable — the kernel refuses that with `ETXTBSY` — so a new file is put
+/// down and renamed over the old name, and a different inode at the same path
+/// is a newer installation and nothing else.
+pub struct Installed {
+    path: PathBuf,
+    running: (u64, u64),
+}
+
+impl Installed {
+    pub fn this_program() -> Option<Self> {
+        let running = std::fs::metadata("/proc/self/exe").ok()?;
+        Some(Self::at(helper().ok()?, &running))
+    }
+
+    fn at(path: PathBuf, running: &std::fs::Metadata) -> Self {
+        Self {
+            path,
+            running: (running.dev(), running.ino()),
+        }
+    }
+
+    /// Whether another file now stands where this program was installed. A
+    /// file that is simply gone is no replacement: there is nothing newer to
+    /// hand over to.
+    pub fn replaced(&self) -> bool {
+        std::fs::metadata(&self.path).is_ok_and(|now| (now.dev(), now.ino()) != self.running)
+    }
+}
+
 pub fn start(step: &Step) -> Result<Transaction> {
     if step.custom.is_some() {
         if step.root {
@@ -677,6 +712,29 @@ pub fn write_line(file: &mut File, text: &[u8]) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    /// A package replaces a program by renaming a new file over its name,
+    /// and that is a replacement; the same file, or no file at all, is not.
+    #[test]
+    fn a_program_renamed_over_is_replaced_and_a_removed_one_is_not() {
+        let dir = std::env::temp_dir().join(format!("lxb-installed-test-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let program = dir.join("lxb-updates");
+        std::fs::write(&program, b"old").unwrap();
+        let installed = Installed::at(program.clone(), &std::fs::metadata(&program).unwrap());
+        assert!(!installed.replaced());
+        let next = dir.join("lxb-updates.new");
+        std::fs::write(&next, b"new").unwrap();
+        std::fs::rename(&next, &program).unwrap();
+        assert!(installed.replaced());
+        std::fs::remove_file(&program).unwrap();
+        assert!(!installed.replaced());
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+    #[test]
+    fn this_program_is_not_replaced_while_it_runs() {
+        assert!(!Installed::this_program().unwrap().replaced());
+    }
     #[test]
     fn unicode_and_escape_sequences_can_span_read_boundaries() {
         let mut transcript = Transcript::default();

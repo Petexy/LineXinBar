@@ -20,6 +20,8 @@ pub type IoctlRequest = libc::c_ulong;
 
 ioctl_read!(eviocgid, b'E', 0x02, /*struct*/ input_id);
 ioctl_write_int!(eviocrmff, b'E', 0x81);
+// LineXinBar: see `Gamepad::set_grabbed`.
+ioctl_write_int!(eviocgrab, b'E', 0x90);
 ioctl_write_ptr!(eviocsff, b'E', 0x80, ff_effect);
 ioctl_read_buf!(eviocgname, b'E', 0x06, MaybeUninit<u8>);
 ioctl_read_buf!(eviocgkey, b'E', 0x18, u8);

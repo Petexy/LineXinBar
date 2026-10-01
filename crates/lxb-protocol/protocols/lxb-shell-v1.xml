@@ -14,7 +14,7 @@
     all copies or substantial portions of the Software.
   </copyright>
 
-  <interface name="lxb_shell_v1" version="46">
+  <interface name="lxb_shell_v1" version="47">
     <description summary="private channel between LineXinBar and its session shell">
       Layer-shell lets a shell draw itself, but says nothing about the two
       things a console-style session needs: a hardware button that reaches the
@@ -2838,5 +2838,32 @@
       <arg name="cards" type="uint"
            summary="1 while the cards have the focus, 0 while the menu does"/>
     </request>
+
+    <event name="output_mounting" since="47">
+      <description summary="which way up a display is built into the machine">
+        Says how a display is mounted: the turn that stands its picture up the
+        way the machine around it is built. A handheld's screen is often a
+        portrait panel laid on its side in a landscape case, and its connector
+        says so in the kernel's panel orientation; this is that turn, in the
+        same eight values as output_transform, and normal for a display that
+        says nothing.
+
+        output_transform stays what the compositor is drawing at. A shell
+        offering orientations should count them from this one, so that a
+        screen standing up the way its machine is built reads as not turned at
+        all, rather than as the quarter turn its panel needs.
+
+        Sent for every display output_transform is sent for, just before the
+        first output_transform for it. A display's mounting does not change
+        while it is connected.
+
+        Written after every other event, so that each event before it keeps
+        the number it has always had: a program carrying its own copy of this
+        file at an older version goes on being understood.
+      </description>
+      <arg name="output" type="object" interface="wl_output" summary="the display"/>
+      <arg name="transform" type="uint" enum="transform"
+           summary="the turn that stands its picture up as the machine is built"/>
+    </event>
   </interface>
 </protocol>
