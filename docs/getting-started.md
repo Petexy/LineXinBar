@@ -305,6 +305,14 @@ window left still ends the session. Add `LXB_NESTED_REPLUG_AFTER=3` and the
 display comes back three seconds later, under the same name, the way a
 monitor does when its cable goes back in.
 
+`LXB_NESTED_REFRESH=30` makes every window refresh at thirty hertz instead of
+sixty — the refresh it says it has, and how often it is drawn — which is the
+only way to see what a slow screen does to everything that moves without owning
+one. Any rate from 1 to 480 hertz; anything else is ignored and the windows stay
+at sixty. Anything that is carried from one frame to the next is twice as old when
+it arrives on a screen that draws half as often, which is how a pane of glass
+over a flying window turned out to be showing where the window had been.
+
 `LXB_NESTED_MOUNTED=270` makes every window a panel built into its machine
 turned 270°, the way a Steam Deck's portrait panel sits in its landscape
 case: the display is drawn standing up in it, and says how it is built, so

@@ -100,6 +100,45 @@ pub fn overview_windows(lxb: &Lxb, output: &Output) -> Vec<Window> {
         .collect()
 }
 
+/// Which moment a list of elements is built for, and so whether building it may
+/// move the clocks the display's own frames run on.
+///
+/// The display draws its frame for *now*, and drawing it is what steps the
+/// things that are stepped rather than read off the clock: a card's spring, a
+/// floating window's arrival. A picture of that frame for the shell's glass is
+/// drawn for a moment that has **not come yet** — when the shell frame that
+/// carries it will be on screen, see [`crate::repaints`] — and has to leave
+/// every one of those alone, or it would start a window's arrival from a moment
+/// the display has not reached and carry the springs ahead of what is drawn.
+///
+/// What a picture still does is what it always did and nothing in it depends on
+/// the instant: it notes a floating window's last picture, for the day its client
+/// goes without warning (see [`keep_the_last_picture`]).
+#[derive(Debug, Clone, Copy)]
+pub(crate) enum Clock {
+    /// The display's own frame, for this instant.
+    Live(std::time::Instant),
+    /// A picture of the display for this instant, which is ahead of the clock.
+    /// It leaves the cards' spring and the floating windows' arrival where the
+    /// display has them, and reads everything else off the instant.
+    Ahead(std::time::Instant),
+}
+
+impl Clock {
+    /// The instant the elements are placed for.
+    fn at(self) -> std::time::Instant {
+        match self {
+            Clock::Live(at) | Clock::Ahead(at) => at,
+        }
+    }
+
+    /// Whether this is the display's own frame, which is the only one allowed to
+    /// move anything.
+    fn is_live(self) -> bool {
+        matches!(self, Clock::Live(_))
+    }
+}
+
 /// Assemble the full element list for `output`, front to back.
 ///
 /// Ordering follows wlr-layer-shell: overlay on top, then top, then regular
@@ -202,7 +241,14 @@ where
     // The one thing allowed in front of a floating window: the surface the shell
     // draws its context menu on. See [`push_the_menu_over_floating_windows`].
     push_the_menu_over_floating_windows(&mut elements, renderer, lxb, output, scale);
-    let floating = push_floating_windows(&mut elements, renderer, lxb, output, now, scale);
+    let floating = push_floating_windows(
+        &mut elements,
+        renderer,
+        lxb,
+        output,
+        Clock::Live(now),
+        scale,
+    );
 
     let layer_map = layer_map_for_output(output);
     let a_menu_is_up = lxb.outputs.pip().has_a_menu();
@@ -258,7 +304,7 @@ where
         renderer,
         lxb,
         output,
-        now,
+        Clock::Live(now),
         scale,
         &flying,
         &floating,
@@ -347,13 +393,14 @@ fn push_floating_windows<R>(
     renderer: &mut R,
     lxb: &Lxb,
     output: &Output,
-    now: std::time::Instant,
+    clock: Clock,
     scale: Scale<f64>,
 ) -> Vec<u32>
 where
     R: Renderer + ImportAll + ImportMem,
     R::TextureId: Send + Clone + 'static,
 {
+    let now = clock.at();
     let mut drawn = Vec::new();
     let space = &lxb.space;
 
@@ -375,9 +422,15 @@ where
         // has arrived, which is every frame of a video but the first handful —
         // and asking is what starts the clock, so the animation begins on the
         // frame this window is first drawn on. See [`crate::pip::arrival`].
-        let (alpha, depth) = crate::pip::floating_state(window)
-            .arriving(now)
-            .unwrap_or((1.0, 1.0));
+        //
+        // A picture of a moment still to come only reads that clock: it is the
+        // display's to start. See [`Clock`].
+        let arriving = if clock.is_live() {
+            crate::pip::floating_state(window).arriving(now)
+        } else {
+            crate::pip::floating_state(window).arriving_at(now)
+        };
+        let (alpha, depth) = arriving.unwrap_or((1.0, 1.0));
 
         // Everything below is measured from the frame the layout settled, in
         // logical coordinates relative to this output.
@@ -412,7 +465,12 @@ where
                 // Its own breath, times however much of the window there is:
                 // a mark at full strength around a window that is still arriving
                 // would be the accent turning up before the video it is about.
-                let breath = crate::pip::mark_alpha(lxb.start_time.elapsed()) * alpha;
+                let since_start = if clock.is_live() {
+                    lxb.start_time.elapsed()
+                } else {
+                    now.saturating_duration_since(lxb.start_time)
+                };
+                let breath = crate::pip::mark_alpha(since_start) * alpha;
                 if let Some(mark) = lxb
                     .outputs
                     .pip()
@@ -802,26 +860,31 @@ fn push_leaving_windows<R>(
 /// size. The shell's own surfaces are not in it in either direction — it has
 /// those already, at full resolution, and drawing them here would be handing
 /// the shell a blurred copy of its own frame.
+///
+/// **For the instant `at`, which is ahead of now**: the picture goes into a shell
+/// frame that is not on screen yet, and what a pane of glass should refract is
+/// what is beside it on the screen it is *on*. See [`crate::repaints`].
 pub fn elements_behind_the_shell<R>(
     renderer: &mut R,
     lxb: &Lxb,
     output: &Output,
     side: crate::capture::Side,
     scale: Scale<f64>,
+    at: std::time::Instant,
 ) -> Vec<LxbRenderElement<R>>
 where
     R: Renderer + ImportAll + ImportMem,
     R::TextureId: Send + Clone + 'static,
 {
-    let now = std::time::Instant::now();
+    let clock = Clock::Ahead(at);
     // What is in front of the shell's session surface and behind its menu: the
     // floating windows, and anything flying back out of a tile. Built either
     // way round, because the pass behind needs to know what these two already
     // took — which is the same reason the display's own frame draws them first.
     // The menu is deliberately in neither: a pane on it cannot refract itself.
     let mut ahead = Vec::new();
-    let floating = push_floating_windows(&mut ahead, renderer, lxb, output, now, scale);
-    let flying = push_restoring_windows(&mut ahead, renderer, lxb, output, now, scale);
+    let floating = push_floating_windows(&mut ahead, renderer, lxb, output, clock, scale);
+    let flying = push_restoring_windows(&mut ahead, renderer, lxb, output, at, scale);
     if side == crate::capture::Side::Above {
         return ahead;
     }
@@ -832,7 +895,7 @@ where
         renderer,
         lxb,
         output,
-        now,
+        clock,
         scale,
         &flying,
         &floating,
@@ -856,7 +919,7 @@ fn push_windows<R>(
     renderer: &mut R,
     lxb: &Lxb,
     output: &Output,
-    now: std::time::Instant,
+    clock: Clock,
     scale: Scale<f64>,
     flying: &[u32],
     floating: &[u32],
@@ -868,9 +931,9 @@ fn push_windows<R>(
     let Some(output_geo) = space.output_geometry(output) else {
         return;
     };
-    let overview = lxb.overview.progress(output, now);
+    let overview = lxb.overview.progress(output, clock.at());
     if overview > 0.0 {
-        push_overview_windows(elements, renderer, lxb, output, overview, scale);
+        push_overview_windows(elements, renderer, lxb, output, overview, clock, scale);
         return;
     }
     for window in space.elements_for_output(output).rev() {
@@ -1192,6 +1255,7 @@ fn push_overview_windows<R>(
     lxb: &Lxb,
     output: &Output,
     progress: f64,
+    clock: Clock,
     scale: Scale<f64>,
 ) where
     R: Renderer + ImportAll + ImportMem,
@@ -1216,7 +1280,12 @@ fn push_overview_windows<R>(
         lxb.overview.focus(output),
     );
 
-    let dt = lxb.overview.tick(output, std::time::Instant::now());
+    // Only the display's own frame steps the cards' spring. A picture of a
+    // moment still to come reads where the spring will be without moving it, so
+    // the display's next frame takes the whole of the time since its last.
+    let dt = clock
+        .is_live()
+        .then(|| lxb.overview.tick(output, std::time::Instant::now()));
 
     for (window, slot) in windows.iter().zip(&slots) {
         // Cards hanging past the screen edges are drawn too — clipped by the
@@ -1239,9 +1308,11 @@ fn push_overview_windows<R>(
             lxb_protocol::overview::fit(slot, geometry.size.w as f64, geometry.size.h as f64);
         // The slot end of the flight eases towards its place, which is what
         // turns a scroll of the row into a glide instead of a teleport.
-        let seat = lxb
-            .overview
-            .glide(output, crate::overview::window_id(window), target, dt);
+        let id = crate::overview::window_id(window);
+        let seat = match dt {
+            Some(dt) => lxb.overview.glide(output, id, target, dt),
+            None => lxb.overview.glide_at(output, id, target, clock.at()),
+        };
 
         // Both endpoints share the window's aspect ratio, so interpolating
         // the corners keeps it too and the scale below is uniform.
@@ -1303,7 +1374,13 @@ pub fn post_repaint(
     time: std::time::Duration,
     throttle: Option<std::time::Duration>,
     drawn: &RenderElementStates,
+    sampled: std::time::Instant,
 ) {
+    // That this display has just been repainted, and when the clock was read for
+    // it: what the pictures drawn for the shell's glass are timed against. See
+    // [`crate::repaints`].
+    lxb.repaints.repainted(output, sampled);
+
     // First, and before anything reads it back: record which display each
     // surface was just drawn on. See [`record_where_each_surface_was_drawn`] —
     // a frame nobody records the display of is a frame the compositor cannot

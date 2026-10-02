@@ -564,6 +564,24 @@ impl Floating {
         arrival(now.saturating_duration_since(started))
     }
 
+    /// The same answer as [`Floating::arriving`] for a moment that has not come
+    /// yet, **without starting the clock**.
+    ///
+    /// For a picture of the display drawn for the instant it will be seen at:
+    /// the clock is the display's to start, on the frame the window is first
+    /// drawn on, and one started by a picture a few frames early would count the
+    /// arrival from a moment the display has not reached. A window nobody has
+    /// drawn yet is at the very start of its arrival, which is where the display
+    /// will first put it.
+    pub fn arriving_at(&self, at: std::time::Instant) -> Option<(f32, f64)> {
+        let elapsed = self
+            .arrived
+            .get()
+            .map(|started| at.saturating_duration_since(started))
+            .unwrap_or_default();
+        arrival(elapsed)
+    }
+
     /// Put the question, once. `true` while it is going out, which is what says
     /// this configure carries no size.
     ///
@@ -3198,6 +3216,33 @@ mod tests {
             .arriving(at + ARRIVES_OVER * 10)
             .expect("it starts over");
         assert!(again < 0.01, "it arrives again: {again}");
+    }
+
+    /// A picture of the display for a moment that has not come only reads the
+    /// clock, and starting it is the display's to do: a picture that started it
+    /// a few frames early would have the window arrive from a moment the display
+    /// has not reached.
+    #[test]
+    fn looking_ahead_at_an_arrival_does_not_start_it() {
+        let state = Floating::default();
+        let at = std::time::Instant::now();
+
+        // Nobody has drawn the window: it is at the very start of its arrival,
+        // however far ahead the question is asked, and nothing has been started.
+        let (before, _) = state
+            .arriving_at(at + ARRIVES_OVER)
+            .expect("an undrawn window has not begun to arrive");
+        assert!(before < 0.01, "{before}");
+        assert!(state.arrived.get().is_none(), "asking must not start it");
+
+        // The display draws it, and from then on the look ahead agrees with the
+        // display's own answer for the same moment.
+        state.arriving(at).expect("it has only just started");
+        for fraction in [0.25, 0.5, 0.9] {
+            let later = at + ARRIVES_OVER.mul_f64(fraction);
+            assert_eq!(state.arriving_at(later), arrival(later - at));
+        }
+        assert_eq!(state.arriving_at(at + ARRIVES_OVER), None);
     }
 
     /// What a window has to be called, and what it must not be called. The

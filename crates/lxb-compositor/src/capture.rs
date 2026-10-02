@@ -188,12 +188,16 @@ impl Side {
 /// Transparent where nothing was drawn, because the shell composites this over
 /// the wallpaper it evaluates for itself: what nothing covers must arrive
 /// covering nothing.
+///
+/// Drawn for the instant `at`, which is the moment it will be on screen and not
+/// the moment it is asked for: see [`crate::repaints`], which is what says when.
 pub fn behind<R>(
     renderer: &mut R,
     lxb: &Lxb,
     output: &Output,
     side: Side,
     size: Size<i32, Physical>,
+    at: std::time::Instant,
 ) -> anyhow::Result<Shot>
 where
     R: Renderer + ImportAll + ImportMem + ExportMem + Offscreen<GlesTexture>,
@@ -216,7 +220,7 @@ where
     );
     let scale = Scale::from(output.current_scale().fractional_scale() * shrink);
 
-    let elements = crate::render::elements_behind_the_shell(renderer, lxb, output, side, scale);
+    let elements = crate::render::elements_behind_the_shell(renderer, lxb, output, side, scale, at);
     shoot(
         renderer,
         size,

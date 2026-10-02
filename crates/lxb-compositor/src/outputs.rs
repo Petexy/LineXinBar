@@ -1041,6 +1041,9 @@ impl crate::state::LxbState {
             .remove_output(&mut self.lxb.space, output, &config);
         // What it was set to survives; what it can do does not, until it is back.
         self.lxb.hdr.disconnected(output);
+        // Its repaint clock with it: one that comes back by the same name starts
+        // from the display it is, not the one it was.
+        self.lxb.repaints.forget(output);
         // And nothing can be recorded off a connector that is no longer there, so
         // whoever was waiting on a frame of it is told rather than left waiting.
         self.lxb.screencopy.output_gone(output);

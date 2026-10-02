@@ -4731,7 +4731,7 @@ pub struct GuideView<'a> {
     pub battery: Option<crate::power::Charge>,
     /// Whether the charge is written out in figures beside that mark.
     ///
-    /// The same setting the corner reads — Settings > Appearance > Battery
+    /// The same setting the corner reads — Settings > Power > Battery
     /// percentage — because it is one answer about one machine. A console
     /// where the number was on in one place and off in another would be a
     /// console with two settings and one row.

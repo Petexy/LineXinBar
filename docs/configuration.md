@@ -280,6 +280,27 @@ record, beside the material â€” see `particles` under `LXB_BACKGROUND_HANDOFF` â
 a bridge frame in front of a login screen, where the compositor can read only
 the greeter's own settings, draws what the greeter drew.
 
+## `battery-percent`, in `shell.toml`
+
+```toml
+battery-percent = true
+```
+
+Whether the battery's charge is written out in figures beside the mark that
+draws it, `true` or `false`; a file that says nothing leaves them off. Written
+from Settings > Power > Battery percentage, and written on every machine, one
+with no battery included, so that a file carried between a desktop and a laptop
+does not lose it. It is the account's own: the rest of that page is the
+machine's, in `/etc/lxb/power.toml`, and this is not.
+
+The shell reads it at startup and draws the figures in the start screen's
+corner and the guide's header. The display manager takes it from the account's
+published look, as it takes the accent, so the login screen (CEDM 0.9.3 and
+later) draws the same mark in its top-right corner on a machine with a battery,
+with the figures when the account whose tile is selected has this on. The shell
+republishes the look the moment the key changes. Nothing else reads it: neither
+the compositor nor an lxb-toolkit application draws a battery.
+
 ## `retroarch-roms`, in `shell.toml`
 
 `~/.config/lxb/shell.toml`, top level, beside the keys above:

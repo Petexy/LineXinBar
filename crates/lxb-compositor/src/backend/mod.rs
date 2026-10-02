@@ -131,11 +131,12 @@ impl Backend {
         output: &smithay::output::Output,
         side: crate::capture::Side,
         size: smithay::utils::Size<i32, smithay::utils::Physical>,
+        at: std::time::Instant,
     ) -> anyhow::Result<crate::capture::Shot> {
         match self {
-            Backend::Winit(b) => b.picture_behind(lxb, output, side, size),
-            Backend::X11(b) => b.picture_behind(lxb, output, side, size),
-            Backend::Udev(b) => b.picture_behind(lxb, output, side, size),
+            Backend::Winit(b) => b.picture_behind(lxb, output, side, size, at),
+            Backend::X11(b) => b.picture_behind(lxb, output, side, size, at),
+            Backend::Udev(b) => b.picture_behind(lxb, output, side, size, at),
         }
     }
 }

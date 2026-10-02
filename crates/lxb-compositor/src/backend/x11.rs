@@ -76,6 +76,32 @@ const REPLUG_AFTER: &str = "LXB_NESTED_REPLUG_AFTER";
 /// [`crate::outputs::Mounted`].
 const MOUNTED: &str = "LXB_NESTED_MOUNTED";
 
+/// A rate in hertz — `30`, `24`, `144` — that every virtual display refreshes
+/// at instead of sixty: it is the refresh the display says it has, and how often
+/// it is drawn.
+///
+/// A development aid for what a slow display does to everything that moves. A
+/// nested session draws on a timer, not on a retrace, so without this a
+/// thirty-hertz screen could not be tried without owning one — and the things
+/// that go wrong on one go wrong *because* a frame is twice as long: whatever is
+/// carried between two frames is twice as stale on arrival. See
+/// [`crate::repaints`], which was found with it.
+const REFRESH: &str = "LXB_NESTED_REFRESH";
+
+/// How often a virtual display refreshes: sixty hertz, or [`REFRESH`]'s answer.
+fn refresh_hz() -> f64 {
+    std::env::var(REFRESH)
+        .ok()
+        .and_then(|value| value.trim().parse::<f64>().ok())
+        .filter(|hz| (1.0..=480.0).contains(hz))
+        .unwrap_or(60.0)
+}
+
+/// That, in the millihertz a mode carries.
+fn refresh_millihertz() -> i32 {
+    (refresh_hz() * 1000.0).round() as i32
+}
+
 pub struct X11Backend {
     renderer: GlesRenderer,
     /// What a virtual display is made from, kept so one can be made again
@@ -126,8 +152,9 @@ impl X11Backend {
         output: &Output,
         side: crate::capture::Side,
         size: smithay::utils::Size<i32, smithay::utils::Physical>,
+        at: std::time::Instant,
     ) -> anyhow::Result<crate::capture::Shot> {
-        crate::capture::behind(&mut self.renderer, lxb, output, side, size)
+        crate::capture::behind(&mut self.renderer, lxb, output, side, size, at)
     }
 }
 
@@ -169,7 +196,7 @@ impl Maker {
 
         let mode = Mode {
             size: (size.0, size.1).into(),
-            refresh: 60_000,
+            refresh: refresh_millihertz(),
         };
         let output = Output::new(
             format!("X11-{number}"),
@@ -366,7 +393,7 @@ pub fn init(
         .handle()
         .insert_source(Timer::immediate(), |_, _, state| {
             render_all(state);
-            TimeoutAction::ToDuration(Duration::from_millis(16))
+            TimeoutAction::ToDuration(Duration::from_secs_f64(1.0 / refresh_hz()))
         })
         .map_err(|e| anyhow::anyhow!("failed to insert render timer: {e}"))?;
 
@@ -391,7 +418,7 @@ fn handle_event(state: &mut LxbState, event: X11Event) {
         } => {
             let mode = Mode {
                 size: (new_size.w as i32, new_size.h as i32).into(),
-                refresh: 60_000,
+                refresh: refresh_millihertz(),
             };
             {
                 let super::Backend::X11(x11) = &mut state.backend else {
@@ -603,6 +630,7 @@ fn render_output(state: &mut LxbState, window_id: u32) -> anyhow::Result<()> {
         time,
         Some(Duration::ZERO),
         &result.states,
+        frame_started,
     );
     // The host X server never tells us when this frame is seen, so the
     // hand-over is the best answer there is — and far better than none.

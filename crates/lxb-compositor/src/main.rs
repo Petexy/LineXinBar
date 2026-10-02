@@ -21,6 +21,7 @@ mod overview;
 mod pip;
 mod remembered;
 mod render;
+mod repaints;
 mod restore;
 mod scale;
 mod screencopy;

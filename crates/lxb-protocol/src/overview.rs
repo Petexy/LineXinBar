@@ -65,6 +65,10 @@ const GAP: f64 = 0.09;
 /// together.
 pub const CARD_SPRING: f64 = 19.0;
 
+/// The longest one step of [`spring`] is taken for, in seconds. Longer than this
+/// is a stall, or a resume from sleep, and is not replayed.
+pub const LONGEST_STEP: f64 = 0.1;
+
 /// One step of a critically damped spring: `position`, travelling at
 /// `velocity`, moves towards `target` over `dt` seconds at stiffness `rate`.
 /// Returns where it is and how fast it is going.
@@ -81,7 +85,7 @@ pub const CARD_SPRING: f64 = 19.0;
 /// at the same moment, which is the whole reason this lives here.
 pub fn spring(position: f64, velocity: f64, target: f64, rate: f64, dt: f64) -> (f64, f64) {
     // A stall — or a resume from sleep — must not be replayed all at once.
-    let dt = dt.clamp(0.0, 0.1);
+    let dt = dt.clamp(0.0, LONGEST_STEP);
     let offset = position - target;
     // x(t) = target + (offset + c·t)·e^(-rate·t), the critically damped
     // solution whose velocity at t = 0 is the velocity it is carrying.

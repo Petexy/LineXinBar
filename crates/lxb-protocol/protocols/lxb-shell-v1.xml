@@ -2426,6 +2426,20 @@
         is cheaper than a large one. The compositor scales to whatever size the
         buffer is.
 
+        **The windows in it are where they will be when the shell frame that
+        uses it is on screen, not where they are now.** The shell puts the
+        picture in a frame it has not drawn yet, and that frame is composited a
+        few refreshes after the ask; over a window that is moving — the overview
+        flies every window for a third of a second — a picture of the moment it
+        was asked for shows the window where it was, trailing the one the
+        display is drawing beside the glass. The compositor therefore places
+        every window in the picture for the moment it expects the frame to be
+        seen, from how often it repaints the display and how often the shell
+        asks: which is why the shell asks, for each side it needs, once for each
+        frame it draws, and takes the answer in before it draws the next. A
+        shell that asks at some other pace is shown its windows closer to where
+        they will be than before, though not exactly there.
+
         One buffer is one picture. The compositor fills it, sends
         the_picture_behind, and then leaves it alone until it is handed another
         — so a shell that stops asking stops being charged for the readback, and

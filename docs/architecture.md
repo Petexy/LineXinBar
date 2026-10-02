@@ -114,7 +114,7 @@ inject key presses and pointer clicks, and end the session.
 | request `set_picture_in_picture` | Whether a browser's picture-in-picture window floats over everything, how large it is drawn and which corner it sits in. One request for all three, because they are one rectangle. |
 | request `set_window_floating` | The user's own word for whether one window floats, whatever it calls itself: a video told to fill the display it is in the corner of, and an application told to go and sit in that corner. One request in both directions. |
 | request `set_menu_surface` | Which surface of the shell's a context menu is being drawn on, so that one surface can go in front of a floating window. Said only while a menu is up, and null again after. |
-| request `ask_for_the_picture_behind` | Hands over a shared-memory buffer and asks the compositor to draw into it what it is compositing on one side of the shell's own surfaces — for the glass on them to refract. One ask, one picture. |
+| request `ask_for_the_picture_behind` | Hands over a shared-memory buffer and asks the compositor to draw into it what it is compositing on one side of the shell's own surfaces — for the glass on them to refract, with its windows placed for the moment the shell's next frame will be on screen. One ask, one picture; the shell asks for each side it needs once for each frame it draws. |
 | event `the_picture_behind` | That buffer now holds it, and how much of it was drawn into. A size of zero means there was nothing to draw. |
 
 `output_foreground` is what lets the menu say *Close KWrite* and notice when an
@@ -385,8 +385,38 @@ nothing, so a game in front pays for none of this.
 
 Small on purpose. A pane frosts what it transmits — it samples several rungs down
 a blur chain — so what it wants back is something already blurred, and 256 pixels
-along the longer edge is a readback a shell can afford every frame. It is one
-frame behind, which is 16 ms of a picture about to be frosted past recognition.
+along the longer edge is a readback a shell can afford every frame.
+
+**And drawn for the moment it will be seen, not the moment it is asked for.** The
+shell puts the picture in a frame it has not drawn yet, and that frame reaches the
+screen two refreshes on from the ask — the driver holds a finished frame until the
+display has shown the last, and the compositor composites it a repaint later. A
+window that stands still does not mind. One that is flying does: the Home menu
+moves every window into its card over a third of a second, and a picture of the
+instant it was asked for shows the window where it was, trailing the one drawn
+beside the glass — a band of the application inside the sidebar, brightest over a
+white one, and the lower the refresh the longer the trail. Measured on a nested
+session the glass was 47 to 63 ms behind at 60 Hz and about 100 ms at 30 Hz.
+
+So the compositor places every window in the picture for the instant the shell's
+frame will be on screen. It knows when it repaints each display and how often the
+shell asks — for each side it needs, once for each frame it draws — and a picture
+asked for just after a repaint is for the repaint two after it. Everything a
+picture contains is a function of the clock or is solved forward from it, so this
+only says which instant to read it at, and it moves nothing: the cards' spring is
+solved forward on a copy, and a floating window's arrival is not started by a
+picture of a moment still to come. The shell, for its part, takes each answer in
+before it draws the next frame, while the windows behind the glass are moving: it
+waits for half of the display's refresh at most, and no less than a millisecond nor
+more than twelve, and gives up waiting if the compositor has missed that three
+times running. That the wait costs nothing — a frame is built and then
+held by the driver until the display has shown the last one — was seen on a nested
+session, not on a real display. Measured as above, the glass was on average
+within a millisecond of the windows beside it at 60, 30, 24 and 15 Hz, and the
+worst frame at 24 Hz was under three milliseconds out. The real display backend,
+which repaints on the retrace, has not been measured: it was read, not run.
+`LXB_NESTED_REFRESH` in `docs/getting-started.md` is how to see all of this
+without a slow screen.
 
 And it is **absorbed on the way in**. Everything here is designed against a
 wallpaper that is deliberately dark, which is what makes a pane's tint thin

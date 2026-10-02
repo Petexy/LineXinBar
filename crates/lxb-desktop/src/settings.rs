@@ -202,9 +202,18 @@ pub enum Setting {
     /// second answer to a question the machine has one of.
     ///
     /// Reaches no hardware and is the shell describing itself, which is why it
-    /// is under Appearance and not under System. The row exists only on a
-    /// machine that has a battery — see [`battery_percent_switch`], and
+    /// is kept in the account's file and not with the machine's power settings,
+    /// though its row is the last one on the Power page. The row exists only on
+    /// a machine that has a battery — see [`battery_percent_switch`], and
     /// [`note_battery`], which is what says so.
+    ///
+    /// The login screen draws the same mark in its corner and writes the same
+    /// figures with it, for the account whose tile is selected. It cannot open
+    /// this account's home to find out, so the choice reaches it in the
+    /// account's published look, and a change to it counts as news there — see
+    /// [`Shown`]. That is the other half of why it is the account's and not
+    /// the machine's: `/etc/lxb/power.toml` has one answer for every account,
+    /// and a login screen showing several has to ask each of them.
     BatteryPercent(bool),
     /// Which column of the start screen the shell opens on.
     ///
@@ -3665,32 +3674,28 @@ fn update_icon(id: lxb_updates::SourceId) -> &'static str {
     }
 }
 
-/// How the shell looks: the colour everything chosen is drawn in, how much
-/// material it is drawn with, and — on a machine that has a battery — whether
-/// its corner writes the charge out.
+/// How the shell looks: the colour everything chosen is drawn in, and how much
+/// material it is drawn with.
 ///
 /// The accent first, because it is the whole shell and what somebody who opens
 /// this page came for. The theme second: it is the larger change of the two, and
-/// it is also the one nobody goes looking for until something is slow. The
-/// battery's figures last, because they are one mark on one screen.
+/// it is also the one nobody goes looking for until something is slow.
+///
+/// The battery's figures used to be a third row here. They are on the Power page
+/// now — see [`battery_percent_switch`] — because what somebody who wants the
+/// charge in figures is asking is a question about the battery, and this page is
+/// about the shell's colour and material.
 fn appearance() -> Entry {
-    let mut rows = vec![accent_colour(), theme_row()];
-    // Only on a machine that has one. A desktop offered a switch for battery
-    // figures would be offered a setting it can never see the effect of, which
-    // is worse than not being offered it: the user would turn it on and go
-    // looking for what changed.
-    if let Some(charge) = *BATTERY.lock().unwrap() {
-        rows.push(battery_percent_switch(charge));
-    }
     folder(
         crate::i18n::text("shell-appearance"),
         crate::i18n::text("shell-how-the-shell-looks"),
         icons::SETTING_APPEARANCE,
-        rows,
+        vec![accent_colour(), theme_row()],
     )
 }
 
-/// The battery's charge in figures, on or off.
+/// The battery's charge in figures, on or off. The last row of Settings >
+/// Power, and there only on a machine that has a battery.
 ///
 /// Off and On in that order and marked the way every other switch in this tree
 /// is — see [`start_music_switch`], which is the same question asked about the
@@ -3701,6 +3706,18 @@ fn appearance() -> Entry {
 /// a picture of a full battery this machine may be nowhere near. It is the one
 /// row in this tree whose glyph moves, and it moves for the same reason the
 /// accent rows are each painted in the colour they stand for.
+///
+/// The one row on that page that is the account's own rather than the
+/// machine's: it is written to the account's `shell.toml` and not to
+/// `/etc/lxb/power.toml`, through [`Setting::BatteryPercent`] and not
+/// [`Setting::Power`], because it is how this account's shell draws its corner
+/// and not something every account on the machine has to agree on.
+///
+/// The login screen is the other place it is read, and it gets it the way it
+/// gets the accent: in the account's published look, republished the moment
+/// this changes, for whichever account has its tile selected. The machine's
+/// file is the wrong carrier for it for the reason above — a login screen that
+/// read one answer from there would write figures for everybody or for nobody.
 fn battery_percent_switch(charge: crate::power::Charge) -> Entry {
     let on = battery_percent();
     folder(
@@ -9307,7 +9324,8 @@ const SLEEP_PLUGGED_IN_CHOICES: [u32; 6] = [0, 900, 1800, 3600, 7200, 10800];
 ///
 /// The machine's settings, not this account's: every account and the login
 /// screen share them, and a change is written for all of them. See
-/// [`crate::machine_power`].
+/// [`crate::machine_power`]. The one exception is the last row, Battery
+/// percentage — see [`battery_percent_switch`].
 ///
 /// Its own page rather than rows under Display or System, because it is the
 /// page somebody holding a handheld goes looking for when the battery is going
@@ -9318,9 +9336,17 @@ const SLEEP_PLUGGED_IN_CHOICES: [u32; 6] = [0, 900, 1800, 3600, 7200, 10800];
 /// for the mains, as a phone is — and a desktop once, as plain Sleep. The power
 /// mode is offered only where there is a daemon to set it, and the battery
 /// saver only where there is also a battery to save.
+///
+/// The battery's figures come last, on a machine with a battery and nowhere
+/// else. A desktop offered a switch for battery figures would be offered a
+/// setting it can never see the effect of, which is worse than not being
+/// offered it: the user would turn it on and go looking for what changed. They
+/// come after the rows that change what the machine does because they change
+/// only what one mark says.
 fn power_page() -> Entry {
     let power = power_settings();
-    let battery = BATTERY.lock().unwrap().is_some();
+    let charge = *BATTERY.lock().unwrap();
+    let battery = charge.is_some();
     let mut rows = vec![
         wait_row(
             crate::i18n::text("power-dim-screen"),
@@ -9367,6 +9393,9 @@ fn power_page() -> Entry {
         if battery {
             rows.push(battery_saver_row(power.battery_saver));
         }
+    }
+    if let Some(charge) = charge {
+        rows.push(battery_percent_switch(charge));
     }
     // The state goes under the page: settings the machine would not take are
     // this session's alone, and the page says so rather than pretending.
@@ -12733,7 +12762,8 @@ struct Stored {
     /// Whether the corner writes the battery's charge out in figures beside
     /// the level it draws. Session-wide, and written on every machine — a
     /// desktop has no row for it and no mark to apply it to, and neither is a
-    /// reason to forget what the laptop this file came from was set to.
+    /// reason to forget what the laptop this file came from was set to. One of
+    /// the keys the login screen reads — see [`Shown`].
     battery_percent: Option<bool>,
     /// How large every application draws its own interface on a display this
     /// file says nothing about, in per cent of the size it chose. 100 is one to
@@ -13214,17 +13244,23 @@ fn save(stored: &Stored) {
 /// showing the answer it was given when this session started — which is the one
 /// staleness [`published`] exists to prevent, arrived at from the other side. It
 /// is the whole list, in the order below: the accent, the two halves of the
-/// material, the four flat HDR keys and the displays, and then the four that
+/// material, the four flat HDR keys and the displays, and then the five that
 /// are about what the screen *says* rather than what it is made of — the clock,
 /// the keyboard the board is a picture of, whether the buttons are written at
-/// all, and which control they are drawn from.
+/// all, which control they are drawn from, and whether the battery's charge is
+/// written out in figures beside its mark.
 ///
-/// The last of those is the only one that changes without anybody choosing it:
-/// the shell watches for which control is in hand rather than asking. It is
+/// The fourth of those is the only one that changes without anybody choosing
+/// it: the shell watches for which control is in hand rather than asking. It is
 /// here all the same, because it is what the login screen's own legend opens
 /// on, and it costs at most one publish each time somebody genuinely puts one
 /// down and picks the other up — [`set_controller_in_hand`] writes nothing when
 /// the answer has not changed.
+///
+/// That is twelve, which is as many as the standard library will compare as a
+/// tuple, and the next key a login screen reads cannot simply be added after
+/// them: it has to join one of the groups already here, as the theme's three
+/// did, or this has to become a struct.
 type Shown = (
     Option<String>,
     // The theme: both materials and the particles, which is one answer about
@@ -13238,6 +13274,7 @@ type Shown = (
     BTreeMap<String, StoredDisplay>,
     Option<String>,
     Option<String>,
+    Option<bool>,
     Option<bool>,
     Option<bool>,
 );
@@ -13417,6 +13454,7 @@ fn news_for_the_login_screen(stored: &Stored) -> bool {
         stored.keyboard_layout.clone(),
         stored.button_hints,
         stored.controller_in_hand,
+        stored.battery_percent,
     );
     let mut last = SHOWN.lock().unwrap();
     if last.as_ref() == Some(&shown) {
@@ -13552,10 +13590,12 @@ const PREAMBLE: &str = "\
 #
 # battery-percent: whether the start screen's corner writes the battery's
 # charge out in figures beside the mark that draws it, which is Settings >
-# Appearance > Battery percentage. Off unless this says true. Both the row and
+# Power > Battery percentage. Off unless this says true. Both the row and
 # the mark itself exist only on a machine that has a battery — a desktop shows
 # neither, and this key is kept for it anyway so that a file carried between
-# the two does not lose the setting on the way.
+# the two does not lose the setting on the way. The login screen reads it too:
+# on a machine with a battery it draws the same mark in its corner, and with
+# this on it writes the figures with it for the account whose tile is selected.
 #
 # button-hints: whether the shell writes what its buttons do — a picture of
 # each button and the word for what it does — which is Settings > System >
@@ -13571,10 +13611,10 @@ const PREAMBLE: &str = "\
 # lxb-toolkit read this key too and write their own legends from it, which is
 # why it is here rather than kept to the shell.
 #
-# Settings > Power is not kept here. How soon the screen dims, goes dark and
-# the machine sleeps, and what the power button does, are the device's settings,
-# shared by every account and by the login screen, and they are kept in
-# /etc/lxb/power.toml.
+# The rest of Settings > Power is not kept here. How soon the screen dims, goes
+# dark and the machine sleeps, and what the power button does, are the device's
+# settings, shared by every account and by the login screen, and they are kept
+# in /etc/lxb/power.toml.
 #
 # low-end-mode: whether the shell draws itself the cheap way — a still
 # wallpaper drawn once, the plain materials, no sparkles and no blur, and a few
@@ -15893,15 +15933,19 @@ mod tests {
     /// changed.
     #[test]
     fn the_battery_row_stands_only_on_a_machine_that_has_a_battery() {
+        let appearance_titles = || {
+            appearance_page()
+                .iter()
+                .map(|entry| entry.title().to_string())
+                .collect::<Vec<_>>()
+        };
+
         with_battery(None, || {
-            assert_eq!(
-                appearance_page()
-                    .iter()
-                    .map(Entry::title)
-                    .collect::<Vec<_>>(),
-                ["Accent colour", "Theme"],
+            assert!(
+                !power_titles(&power_rows()).contains(&"Battery percentage".to_string()),
                 "a machine with no battery is offered a battery setting",
             );
+            assert_eq!(appearance_titles(), ["Accent colour", "Theme"]);
         });
 
         with_battery(
@@ -15910,15 +15954,23 @@ mod tests {
                 charging: false,
             }),
             || {
-                let page = appearance_page();
+                let rows = power_rows();
                 assert_eq!(
-                    page.iter().map(Entry::title).collect::<Vec<_>>(),
-                    ["Accent colour", "Theme", "Battery percentage"],
-                    "the accent first: it is the whole shell, and this is one mark",
+                    power_titles(&rows).last().map(String::as_str),
+                    Some("Battery percentage"),
+                    "last: the rows before it change what the machine does, this changes one mark",
                 );
                 // The row is drawn at the level the machine is actually at, so
                 // the list is headed by the mark the user is deciding about.
-                assert_eq!(page[2].icon(), Some(crate::icons::BATTERY_HIGH));
+                assert_eq!(
+                    power_row(&rows, "Battery percentage").icon(),
+                    Some(crate::icons::BATTERY_HIGH)
+                );
+                assert_eq!(
+                    appearance_titles(),
+                    ["Accent colour", "Theme"],
+                    "and it is no longer on the page about how the shell looks",
+                );
             },
         );
     }
@@ -15940,7 +15992,7 @@ mod tests {
                 *BATTERY_PERCENT.lock().unwrap() = false;
 
                 let page = |()| {
-                    appearance_page()[2]
+                    power_row(&power_rows(), "Battery percentage")
                         .entries()
                         .expect("Battery percentage opens onto its two values")
                         .to_vec()
@@ -16109,6 +16161,7 @@ mod tests {
                     "Power button",
                     "Power mode",
                     "Battery saver",
+                    "Battery percentage",
                 ]
             );
             let mode = power_row(&rows, "Power mode");
@@ -21033,6 +21086,49 @@ hdr = true
             );
             assert!(!news_for_the_login_screen(&stored));
         }
+
+        *SHOWN.lock().unwrap() = None;
+    }
+
+    /// Turning the battery's figures on or off is news to the login screen, and
+    /// writing the same answer again is not.
+    ///
+    /// The login screen draws the mark for the account whose tile is selected
+    /// and writes the figures with it only when that account has them on, and
+    /// it can learn that from nowhere but what was published. A key left out of
+    /// what counts as news is a setting that changes in the session and not on
+    /// the screen the user signs out to. Said on a value of [`Stored`] rather
+    /// than through [`apply`], which would write the real settings file and
+    /// start the real login screen.
+    #[test]
+    fn the_login_screen_hears_when_the_battery_figures_are_turned_over() {
+        let _guard = LOCK.lock().unwrap_or_else(|held| held.into_inner());
+        *SHOWN.lock().unwrap() = None;
+
+        let mut stored = Stored {
+            battery_percent: Some(false),
+            ..Stored::default()
+        };
+        // The first save of a session is news whatever it says.
+        assert!(news_for_the_login_screen(&stored));
+        assert!(!news_for_the_login_screen(&stored));
+
+        stored.battery_percent = Some(true);
+        assert!(
+            news_for_the_login_screen(&stored),
+            "the figures were turned on and the login screen was not told",
+        );
+        // A save for anything else carries the answer it already had.
+        assert!(!news_for_the_login_screen(&stored));
+        stored.sound_volume = Some(0.5);
+        assert!(!news_for_the_login_screen(&stored));
+
+        stored.battery_percent = Some(false);
+        assert!(
+            news_for_the_login_screen(&stored),
+            "the figures were turned off and the login screen was not told",
+        );
+        assert!(!news_for_the_login_screen(&stored));
 
         *SHOWN.lock().unwrap() = None;
     }

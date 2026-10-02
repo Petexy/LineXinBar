@@ -250,12 +250,13 @@ impl UdevBackend {
         output: &Output,
         side: crate::capture::Side,
         size: smithay::utils::Size<i32, smithay::utils::Physical>,
+        at: std::time::Instant,
     ) -> anyhow::Result<crate::capture::Shot> {
         let mut renderer = self
             .gpus
             .single_renderer(&self.primary_gpu)
             .map_err(|err| anyhow::anyhow!("no renderer to draw the picture with: {err}"))?;
-        crate::capture::behind(&mut renderer, lxb, output, side, size)
+        crate::capture::behind(&mut renderer, lxb, output, side, size, at)
     }
 }
 
@@ -1711,7 +1712,14 @@ fn render_surface(state: &mut LxbState, node: DrmNode, crtc: crtc::Handle) {
             // queued: this is what records where each surface was drawn, and
             // both of those read it back. See
             // [`crate::render::record_where_each_surface_was_drawn`].
-            post_repaint(&state.lxb, &output, time, None, &render_result.states);
+            post_repaint(
+                &state.lxb,
+                &output,
+                time,
+                None,
+                &render_result.states,
+                frame_started,
+            );
             // And, if this frame was a black one, the display it puts the
             // black on. Whether it is *queued* below makes no difference:
             // a frame nothing changed in is one the screen is already showing.
@@ -1787,6 +1795,7 @@ fn render_surface(state: &mut LxbState, node: DrmNode, crtc: crtc::Handle) {
                 time,
                 None,
                 &RenderElementStates::default(),
+                frame_started,
             );
         }
     }

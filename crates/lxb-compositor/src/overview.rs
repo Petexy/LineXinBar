@@ -19,7 +19,7 @@ use std::time::{Duration, Instant};
 use smithay::desktop::Window;
 use smithay::output::Output;
 
-use lxb_protocol::overview::{spring, Focus, Rect, CARD_SPRING};
+use lxb_protocol::overview::{spring, Focus, Rect, CARD_SPRING, LONGEST_STEP};
 
 /// A card's eased rectangle and the speed each of its edges is travelling at.
 ///
@@ -35,6 +35,27 @@ struct Glide {
 /// How long a window takes to fly between its real place and its card. The
 /// shell times the start screen and the cards' decoration on the same value.
 const FLIGHT: Duration = lxb_protocol::overview::FLIGHT;
+
+/// The furthest [`Overviews::glide_at`] looks ahead of the last frame the display
+/// drew, in seconds. A display that has not drawn for longer than this is not
+/// one whose next frame will be where a long look ahead says: the spring steps
+/// no more than [`LONGEST_STEP`] on the first frame back, and a card that is
+/// not being drawn is not one worth being clever about.
+const LOOKS_AHEAD_AT_MOST: f64 = 0.25;
+
+/// One step of a card's spring towards `target`, each edge on its own, all four
+/// at the same stiffness, so a card keeps its shape on the way.
+fn advance(glide: Glide, target: Rect, dt: f64) -> Glide {
+    let (mut at, mut speed) = (glide.at, glide.velocity);
+    (at.x, speed.x) = spring(at.x, speed.x, target.x, CARD_SPRING, dt);
+    (at.y, speed.y) = spring(at.y, speed.y, target.y, CARD_SPRING, dt);
+    (at.w, speed.w) = spring(at.w, speed.w, target.w, CARD_SPRING, dt);
+    (at.h, speed.h) = spring(at.h, speed.h, target.h, CARD_SPRING, dt);
+    Glide {
+        at,
+        velocity: speed,
+    }
+}
 
 #[derive(Debug, Clone)]
 struct OverviewAnim {
@@ -205,15 +226,46 @@ impl Overviews {
                 h: 0.0,
             },
         });
+        *glide = advance(*glide, target, dt);
+        glide.at
+    }
 
-        // Each edge on its own spring, all four at the same stiffness, so a
-        // card keeps its shape on the way.
-        let at = &mut glide.at;
-        let speed = &mut glide.velocity;
-        (at.x, speed.x) = spring(at.x, speed.x, target.x, CARD_SPRING, dt);
-        (at.y, speed.y) = spring(at.y, speed.y, target.y, CARD_SPRING, dt);
-        (at.w, speed.w) = spring(at.w, speed.w, target.w, CARD_SPRING, dt);
-        (at.h, speed.h) = spring(at.h, speed.h, target.h, CARD_SPRING, dt);
+    /// Where `window`'s card will be at `at`, if its target stays where it is:
+    /// [`Overviews::glide`] looked ahead rather than taken.
+    ///
+    /// **Moves nothing.** It reads the eased card as the last frame left it and
+    /// solves the spring forward on a copy, so a picture of the overview drawn
+    /// for a moment that has not come yet neither ticks the clock the display's
+    /// own frames step by nor seats a card the display has not met. The spring
+    /// is closed-form, so what this says is what [`Overviews::glide`] would have
+    /// said had the display stepped the card in frames, each no longer than a
+    /// spring is carried in one go — which is what it does while it is drawing.
+    /// A display that has stopped drawing for longer than that steps its card
+    /// less far on the first frame back than this looks; there is nothing to
+    /// show a picture of then.
+    ///
+    /// A card the display has not seen yet is at its target, which is where the
+    /// display will first put it.
+    pub fn glide_at(&self, output: &Output, window: u32, target: Rect, at: Instant) -> Rect {
+        let Some(glide) = self.eased.borrow().get(&(output.name(), window)).copied() else {
+            return target;
+        };
+        let Some(since) = self.ticked.borrow().get(&output.name()).copied() else {
+            return glide.at;
+        };
+        // In steps no longer than a spring will take: `spring` refuses to be
+        // carried over a stall in one go, and a look ahead that crossed one
+        // would stop short of where the display will be.
+        let mut ahead = at
+            .saturating_duration_since(since)
+            .as_secs_f64()
+            .min(LOOKS_AHEAD_AT_MOST);
+        let mut glide = glide;
+        while ahead > 0.0 {
+            let step = ahead.min(LONGEST_STEP);
+            glide = advance(glide, target, step);
+            ahead -= step;
+        }
         glide.at
     }
 
@@ -311,6 +363,101 @@ mod tests {
         // A display with no overview on it has nothing to be focused.
         overviews.set_focus(&b, Focus::Cards);
         assert_eq!(overviews.focus(&b), Focus::Menu);
+    }
+
+    fn card(x: f64, w: f64) -> Rect {
+        Rect {
+            x,
+            y: 100.0,
+            w,
+            h: w * 0.5625,
+        }
+    }
+
+    fn same(a: Rect, b: Rect) -> bool {
+        [(a.x, b.x), (a.y, b.y), (a.w, b.w), (a.h, b.h)]
+            .iter()
+            .all(|(a, b)| (a - b).abs() < 1e-9)
+    }
+
+    /// A card that is gliding towards a slot the display has been moving it to,
+    /// at the moment the display last stepped it.
+    fn gliding(out: &Output, t0: Instant) -> Overviews {
+        let overviews = Overviews::default();
+        // Seated at the first slot, then the slot moves and the card is carried.
+        overviews.glide(out, 7, card(300.0, 640.0), 0.0);
+        overviews.tick(out, t0 - Duration::from_millis(16));
+        overviews.glide(out, 7, card(500.0, 640.0), 0.016);
+        overviews.tick(out, t0);
+        overviews
+    }
+
+    /// A look ahead leaves the display's own stepping exactly as it was: nothing
+    /// is ticked, nothing is seated, nothing is carried.
+    #[test]
+    fn looking_ahead_moves_nothing() {
+        let out = output("A");
+        let t0 = Instant::now() + Duration::from_secs(60);
+        let overviews = gliding(&out, t0);
+        let eased = overviews.eased.borrow().clone();
+        let ticked = overviews.ticked.borrow().clone();
+
+        let _ = overviews.glide_at(&out, 7, card(500.0, 640.0), t0 + Duration::from_millis(33));
+        // A card the display has never met is not seated by being asked about.
+        let _ = overviews.glide_at(&out, 8, card(900.0, 640.0), t0 + Duration::from_millis(33));
+
+        assert_eq!(overviews.eased.borrow().len(), eased.len());
+        for (key, was) in eased.iter() {
+            let now = overviews.eased.borrow()[key];
+            assert!(same(now.at, was.at) && same(now.velocity, was.velocity));
+        }
+        assert_eq!(*overviews.ticked.borrow(), ticked);
+    }
+
+    /// And what it says is where the display's own stepping would have put the
+    /// card, whether that stepping came in one frame or three: the spring is
+    /// closed-form, which is what makes a picture of a moment still to come a
+    /// picture of the moment it will be.
+    #[test]
+    fn looking_ahead_is_what_stepping_would_have_said() {
+        let out = output("A");
+        let t0 = Instant::now() + Duration::from_secs(60);
+        let target = card(500.0, 640.0);
+        for ahead in [0.016, 0.033, 0.1, 0.25] {
+            let seen =
+                gliding(&out, t0).glide_at(&out, 7, target, t0 + Duration::from_secs_f64(ahead));
+            // The same card stepped by the display: in one go where one go is
+            // all a spring will take, and in the pieces it is cut into past that.
+            let stepped = gliding(&out, t0);
+            let mut left = ahead;
+            let mut at = None;
+            while left > 1e-12 {
+                let step = left.min(LONGEST_STEP);
+                at = Some(stepped.glide(&out, 7, target, step));
+                left -= step;
+            }
+            assert!(same(seen, at.unwrap()), "{ahead}: {seen:?} against {at:?}");
+        }
+    }
+
+    /// A card the display has not met is at its target, which is where the
+    /// display will put it; and with no frame ticked yet there is nothing to
+    /// look ahead *from*, so a card is where it is.
+    #[test]
+    fn looking_ahead_at_what_has_not_been_stepped_says_where_it_stands() {
+        let out = output("A");
+        let t0 = Instant::now() + Duration::from_secs(60);
+        let target = card(500.0, 640.0);
+
+        let fresh = Overviews::default();
+        assert!(same(fresh.glide_at(&out, 1, target, t0), target));
+        assert!(fresh.eased.borrow().is_empty());
+
+        // Seated, never ticked: where it was seated, whatever the moment.
+        fresh.glide(&out, 1, card(300.0, 640.0), 0.0);
+        fresh.ticked.borrow_mut().remove(&out.name());
+        let said = fresh.glide_at(&out, 1, target, t0 + Duration::from_secs(5));
+        assert!(same(said, card(300.0, 640.0)), "{said:?}");
     }
 
     #[test]

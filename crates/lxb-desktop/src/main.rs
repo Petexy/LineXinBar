@@ -1758,6 +1758,8 @@ fn main() -> anyhow::Result<()> {
         needs_redraw: true,
         next_frame_deadline: Instant::now(),
         paced_until: None,
+        picture_due: None,
+        picture_misses: 0,
         wallpaper_clock: wallpaper_handoff.unwrap_or_else(wallpaper_clock::WallpaperClock::local),
         start: Instant::now(),
         last_frame: Instant::now(),
@@ -2131,6 +2133,10 @@ fn main() -> anyhow::Result<()> {
             break;
         }
 
+        // And, with a frame in the air whose glass is over something that
+        // moves, the picture the next one is to be drawn with.
+        wait_for_the_pictures(&mut event_queue, &mut shell)?;
+
         let until_watchdog = shell
             .next_frame_deadline
             .saturating_duration_since(Instant::now());
@@ -2158,6 +2164,122 @@ fn child_session_displays() -> anyhow::Result<(OsString, Option<OsString>)> {
         std::env::var_os("WAYLAND_DISPLAY").unwrap_or_else(|| OsString::from("wayland-0"));
     let xwayland = std::env::var_os("LXB_XWAYLAND_DISPLAY");
     Ok((wayland, xwayland))
+}
+
+/// What a display does about the picture of one side of what is behind it, on
+/// one pass of the loop.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum PictureStep {
+    /// Ask the compositor for one.
+    Ask,
+    /// Nothing is behind that side any more: let go of the last one.
+    Empty,
+    /// Nothing to do on this pass.
+    Leave,
+}
+
+/// Which of the three, for a side that `wanted` a picture or not, on a pass that
+/// `drew` or not, with the last ask still out (`already_asked`) or not.
+///
+/// A side nothing is behind is emptied however the pass went: a game that has
+/// closed must not go on being refracted because the frame was held back. And a
+/// side is asked for only when the pass drew a frame to put the picture in, and
+/// the last one has come. Not when it drew nothing: a pass whose frame low-end
+/// hardware mode held back for later has nothing new to carry a picture, and a
+/// shell that asked anyway had every answer wake it to draw, be held back, and
+/// ask again — two to three thousand renders and readbacks a second on the
+/// compositor's only thread, for a screen drawn ten times.
+fn picture_step(wanted: bool, drew: bool, already_asked: bool) -> PictureStep {
+    if !wanted {
+        PictureStep::Empty
+    } else if drew && !already_asked {
+        PictureStep::Ask
+    } else {
+        PictureStep::Leave
+    }
+}
+
+/// Whether a display drew a frame on the pass that began at `now`: it was last
+/// drawn at exactly that instant, which is what the pass stamps every display it
+/// draws with.
+fn drew_on_this_pass(last_drawn: Option<Instant>, now: Instant) -> bool {
+    last_drawn == Some(now)
+}
+
+/// How many times in a row a frame is held for a picture that does not come
+/// within the wait before the shell stops holding frames for it, until the
+/// windows behind its glass have stopped moving and begun again.
+///
+/// A compositor that answers within a moment is waited for; one that is busy, or
+/// slow to read a picture back, is not going to start answering, and every wait
+/// that ends without an answer is a frame spent for nothing on a device that may
+/// have no frame to spare.
+const PICTURE_MISSES_ALLOWED: u8 = 3;
+
+/// How long a frame is held for the picture its glass was just asked for, on a
+/// display refreshing at `millihertz` (0 where it does not say).
+///
+/// Half a refresh, and between one and twelve milliseconds. The picture is drawn
+/// by the compositor in a moment or two — about a millisecond when it is idle,
+/// and in a nested session at thirty hertz as much as ten when the compositor was
+/// busy presenting — and what the wait buys is that the next frame is drawn
+/// *with* it rather than the one after: a frame older than that is a window
+/// another refresh further along than the glass says. A quarter of a refresh was
+/// tried first and missed those slow answers often enough to turn the wait off
+/// for the rest of a flight.
+///
+/// On the nested session it was measured in, the wait comes out of time the
+/// driver held the frame for anyway: a frame is built, and then held until the
+/// display has answered the one before it. Whether that is so on a real display,
+/// or where nothing blocks, is not known: see [`PICTURE_MISSES_ALLOWED`] for what
+/// is done where the answer does not come in time.
+fn picture_wait(millihertz: u32) -> Duration {
+    let period = if millihertz >= 1000 {
+        Duration::from_nanos(1_000_000_000_000 / u64::from(millihertz))
+    } else {
+        Duration::from_nanos(16_666_667)
+    };
+    (period / 2).clamp(Duration::from_millis(1), Duration::from_millis(12))
+}
+
+/// Hold the loop, for a moment, for the picture the glass of the frame just
+/// drawn was asked for — and take it in before the next frame is built.
+///
+/// **Why a wait, when nothing else in this loop waits for anything.** A frame is
+/// built, handed to the driver and *held there* until the display has answered
+/// the last one, so the shell always starts the next frame the instant the
+/// previous one is out. The answer to the ask that came out with it lands a
+/// moment later — after that frame was begun, and in the queue the driver is not
+/// reading — so every picture was used a frame late, and a second ask could not
+/// go out until the first had been taken in: one picture for every two frames,
+/// each of them three or four refreshes old by the time it was on screen. Held
+/// here, the frame is begun with the picture it asked for; the wait comes out of
+/// the time the driver would have held the frame anyway.
+///
+/// Bounded, and asked for only while the windows behind the glass are moving: see
+/// [`Shell::ask_for_the_pictures_behind`]. A compositor that does not answer in
+/// time costs the glass a frame of age, and the shell the wait a few times over.
+fn wait_for_the_pictures(
+    event_queue: &mut EventQueue<Shell>,
+    shell: &mut Shell,
+) -> anyhow::Result<()> {
+    let Some(due) = shell.picture_due.take() else {
+        return Ok(());
+    };
+    while shell.a_picture_is_on_its_way() {
+        let left = due.saturating_duration_since(Instant::now());
+        if left.is_zero() {
+            break;
+        }
+        wait_for_wayland(event_queue, left)?;
+        event_queue.dispatch_pending(shell)?;
+    }
+    shell.picture_misses = if shell.a_picture_is_on_its_way() {
+        shell.picture_misses.saturating_add(1)
+    } else {
+        0
+    };
+    Ok(())
 }
 
 /// Wait for Wayland traffic, but only for long enough to service controller
@@ -5464,6 +5586,13 @@ struct Shell {
     /// where one is waiting for a moment rather than for its display. See
     /// [`low_end_next`].
     paced_until: Option<Instant>,
+    /// Until when the loop holds the next frame for a picture it has just asked
+    /// the compositor for, where there is one to hold it for. See
+    /// [`Shell::ask_for_the_pictures_behind`].
+    picture_due: Option<Instant>,
+    /// How many times in a row the wait for a picture ended without it. See
+    /// [`PICTURE_MISSES_ALLOWED`].
+    picture_misses: u8,
     wallpaper_clock: wallpaper_clock::WallpaperClock,
     start: Instant,
     last_frame: Instant,
@@ -6574,6 +6703,18 @@ impl Shell {
             || self.osk.is_moving()
             || self.notifications.is_moving()
             || self.volume.is_moving();
+        // And whether the *windows* under the glass are on their way, which is a
+        // narrower thing than any of the above: the overview's flight, the cards'
+        // glide, and the column's slide across a narrow display are the only
+        // things the compositor moves under the shell's panes. A bubble, the
+        // volume control or a highlight moves nothing behind them. See
+        // [`Shell::ask_for_the_pictures_behind`], which holds a frame for the
+        // glass's picture only for this.
+        let windows_moving = (show_menu
+            && (cards_moving
+                || ui::guide_is_arriving(self.guide.age())
+                || ui::card_fade(card_age) < 1.0))
+            || self.guide.pan_is_moving();
         // And the two that belong to a display rather than to the one being
         // driven: a loading screen growing out of its tile or handing over, and
         // a window flying back out of its card.
@@ -7988,7 +8129,7 @@ impl Shell {
         // is drawing behind these surfaces — for the glass on the *next* one.
         // After the frame rather than before it, so the answer is waiting by the
         // time it is wanted. See [`Shell::ask_for_the_pictures_behind`].
-        self.ask_for_the_pictures_behind();
+        self.ask_for_the_pictures_behind(now, windows_moving);
 
         // The watchdog exists to recover from a frame callback that never
         // arrives. With every display hidden none were asked for, so waiting
@@ -18110,16 +18251,27 @@ impl Shell {
     /// Ask the compositor for a fresh picture of what it is drawing on each side
     /// of this display's own surfaces, where a pane of glass would want one.
     ///
-    /// **One ask, one picture.** The compositor draws it there and then, so the
-    /// pacing is entirely here: asked once per frame while something is behind
-    /// the glass, and not at all otherwise. A display whose shell is not drawing
-    /// — a game in front of it, a screen resting — asks for nothing, which is
-    /// what keeps this off the bill during the one thing a console does most.
+    /// **One ask, one picture, and at most one per side for each frame drawn.**
+    /// The compositor draws it there and then, so the pacing is entirely here:
+    /// asked once for every frame a display actually draws while something is
+    /// behind the glass, and not at all otherwise. A display whose shell is not
+    /// drawing — a game in front of it, a screen resting, a frame low-end hardware
+    /// mode held back for later — asks for nothing, which is what keeps this off
+    /// the bill during the one thing a console does most. A pass that asked
+    /// whether or not it drew sent two to three thousand of them a second in
+    /// low-end mode, each one a render and a readback on the compositor's only
+    /// thread, for a screen that was drawn ten times.
     ///
-    /// The answer arrives before the next frame and is used on it. One frame
-    /// behind, which is 16 ms of a picture that is about to be frosted past
-    /// recognition anyway.
-    fn ask_for_the_pictures_behind(&mut self) {
+    /// And the compositor draws it for the moment the frame that uses it will be
+    /// on screen, not the moment it is asked — see `lxb_shell_v1`'s
+    /// `ask_for_the_picture_behind` — which it can only do if it knows how often
+    /// that is: the gap between two asks is the gap between two frames.
+    ///
+    /// The answer is waited for while the windows behind the glass are moving: see
+    /// [`wait_for_the_pictures`], which is what makes the next frame the one that
+    /// uses it. `moving` says they are — not that the shell is animating
+    /// something of its own, which moves nothing behind the glass.
+    fn ask_for_the_pictures_behind(&mut self, now: Instant, moving: bool) {
         let Some(control) = self.shell_control.clone() else {
             return;
         };
@@ -18127,6 +18279,7 @@ impl Shell {
             return;
         }
         let mut asked = false;
+        let mut refresh = 0;
         for index in 0..self.panels.len() {
             let drawing = self.panel_is_visible(index);
             let Some(panel) = self.panels.get(index) else {
@@ -18139,29 +18292,33 @@ impl Shell {
                 drawing && panel.foreground.is_some(),
                 drawing && !panel.floating.is_empty(),
             ];
+            // A picture is for the next frame this display draws; one that did
+            // not draw on this pass has nothing new to put it in.
+            let drew = drew_on_this_pass(panel.last_drawn, now);
             let size = picture_behind_size(panel.width, panel.height);
             let already = [panel.behind[0].asked, panel.behind[1].asked];
             for side in 0..2 {
-                if !wanted[side] {
-                    // Emptied rather than left holding the last frame of a game
-                    // that has closed, and emptied once.
-                    let Some(panel) = self.panels.get_mut(index) else {
+                match picture_step(wanted[side], drew, already[side]) {
+                    PictureStep::Leave => continue,
+                    PictureStep::Empty => {
+                        // Emptied rather than left holding the last frame of a
+                        // game that has closed, and emptied once.
+                        let Some(panel) = self.panels.get_mut(index) else {
+                            continue;
+                        };
+                        if let (Some(gpu), true) = (
+                            self.gpu.as_ref(),
+                            panel.behind[side]
+                                .picture
+                                .as_ref()
+                                .is_some_and(|picture| !picture.is_empty()),
+                        ) {
+                            gpu.put_picture(&mut panel.behind[side].picture, 0, 0, &[]);
+                            self.needs_redraw = true;
+                        }
                         continue;
-                    };
-                    if let (Some(gpu), true) = (
-                        self.gpu.as_ref(),
-                        panel.behind[side]
-                            .picture
-                            .as_ref()
-                            .is_some_and(|picture| !picture.is_empty()),
-                    ) {
-                        gpu.put_picture(&mut panel.behind[side].picture, 0, 0, &[]);
-                        self.needs_redraw = true;
                     }
-                    continue;
-                }
-                if already[side] {
-                    continue;
+                    PictureStep::Ask => {}
                 }
                 let Some(buffer) = self.buffer_for_the_picture_behind(index, side, size) else {
                     continue;
@@ -18179,13 +18336,41 @@ impl Shell {
                     &buffer,
                 );
                 asked = true;
+                // The beat of the display being driven where it asked, and of
+                // the first that did where it did not.
+                if refresh == 0 || index == self.focused_panel {
+                    refresh = self
+                        .output_state
+                        .info(&self.panels[index].output)
+                        .as_ref()
+                        .map_or(0, refresh_of);
+                }
             }
+        }
+        // A new movement starts with the compositor given the benefit of the doubt.
+        if !moving {
+            self.picture_misses = 0;
         }
         if asked {
             if let Err(err) = self.conn.flush() {
                 tracing::warn!(?err, "could not ask for the picture behind");
             }
+            // Held for only while the windows behind the glass move: a picture of
+            // one that is standing still is as good a frame late as on time. And
+            // only while the compositor is keeping up: one that has missed the
+            // wait a few times in a row is not going to start, and a wait that
+            // never ends in an answer is a frame spent for nothing.
+            if moving && self.picture_misses < PICTURE_MISSES_ALLOWED {
+                self.picture_due = Some(Instant::now() + picture_wait(refresh));
+            }
         }
+    }
+
+    /// Whether a picture this shell asked the compositor for has not come yet.
+    fn a_picture_is_on_its_way(&self) -> bool {
+        self.panels
+            .iter()
+            .any(|panel| panel.behind.iter().any(|behind| behind.asked))
     }
 
     /// The shared-memory buffer one of those pictures is drawn into, made or
@@ -50407,5 +50592,58 @@ mod low_end_tests {
         for frame in 0..=600u64 {
             assert!(!once.drew(after + Duration::from_micros(frame * 16_667)));
         }
+    }
+}
+
+#[cfg(test)]
+mod picture_tests {
+    use super::*;
+
+    /// One ask for one drawn frame: not for a pass that drew nothing, and not
+    /// while the last one is still out; and a side nothing is behind is emptied
+    /// whatever the pass did, so a closed game is not refracted for a held frame.
+    #[test]
+    fn a_picture_is_asked_for_once_for_every_frame_drawn() {
+        assert_eq!(picture_step(true, true, false), PictureStep::Ask);
+        assert_eq!(picture_step(true, false, false), PictureStep::Leave);
+        assert_eq!(picture_step(true, true, true), PictureStep::Leave);
+        assert_eq!(picture_step(true, false, true), PictureStep::Leave);
+        for drew in [true, false] {
+            for already in [true, false] {
+                assert_eq!(picture_step(false, drew, already), PictureStep::Empty);
+            }
+        }
+    }
+
+    /// A display drew on a pass if it was stamped with that pass's instant, and
+    /// a frame held back from an earlier pass is not that: this is the whole of
+    /// what keeps low-end hardware mode from asking on every pass.
+    #[test]
+    fn a_display_drew_only_on_the_pass_that_stamped_it() {
+        let now = Instant::now();
+        assert!(drew_on_this_pass(Some(now), now));
+        assert!(!drew_on_this_pass(
+            Some(now - Duration::from_millis(16)),
+            now
+        ));
+        assert!(!drew_on_this_pass(None, now));
+    }
+
+    /// A frame is held for its picture for half a refresh, and for no less than
+    /// a millisecond or more than twelve: a slow display has time and should not
+    /// be given all of it, and a fast one has almost none.
+    #[test]
+    fn a_frame_is_held_for_its_picture_half_a_refresh_and_never_long() {
+        let sixty = picture_wait(60_000);
+        assert!(
+            sixty > Duration::from_micros(8_300) && sixty < Duration::from_micros(8_400),
+            "{sixty:?}"
+        );
+        assert_eq!(picture_wait(30_000), Duration::from_millis(12));
+        assert_eq!(picture_wait(15_000), Duration::from_millis(12));
+        assert!(picture_wait(144_000) < Duration::from_millis(4));
+        assert_eq!(picture_wait(960_000), Duration::from_millis(1));
+        // A display that does not say its refresh is taken at sixty.
+        assert_eq!(picture_wait(0), sixty);
     }
 }

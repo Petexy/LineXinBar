@@ -146,46 +146,6 @@ as its own user, in front of every account on the machine. So the frame that
 bridges the start of the session is the water, in your accent, and your own
 wallpaper appears with the shell.
 
-### Battery percentage
-
-`Settings > Appearance > Battery percentage` decides whether the start screen's
-corner writes the charge out in figures over the mark that draws it. **Off**,
-until somebody asks for it.
-
-**The row is there only on a machine with a battery**, and so is the mark. What
-counts as one is the kernel's own answer, read from `/sys/class/power_supply`:
-a supply of type `Battery` whose `scope` is not `Device` and which is actually
-in its bay. That last pair of conditions is doing real work — a desktop with a
-wireless mouse on it lists a battery, and it is the mouse's; a laptop with the
-battery taken out still lists the bay it came from. Neither is a machine this
-corner has anything to say about, and on both it says nothing rather than
-drawing an outline or greying a row out. No daemon is involved: UPower is what
-a desktop environment would ask, it may not be installed, and what it reads is
-this same directory.
-
-The mark itself is not the setting. It is one of six drawings of the same
-shell — empty, low, half, high, full, and a bolt for a battery that is filling
-— and it is drawn whenever there is a battery, in the same water as the clock
-beside it. It appears twice: in the start screen's corner, and in the
-[guide's header](guide.md#the-guide-overlay) under the day. One size in both, because what
-decides that size is the material rather than either layout — the shell's wall
-is 2.4 units of the drawing, and what matters is how many pixels that lands on
-at 1280x800. Being on the mains outranks the level: while it is filling, the bolt
-is what is shown, and the level it is filling from is what the figures are for.
-Sitting plugged in at full is not filling, and shows a full battery.
-
-The figures are off by default because the mark already answers the question a
-glance at a corner asks, which is *how much is left*. A number is for somebody
-who wants to know whether it is 61 or 68, and a console that put one on the
-wallpaper for everybody would be asking everybody to read it.
-
-```toml
-battery-percent = true
-```
-
-The key is written on every machine, a desktop included, so that a file carried
-between one and a laptop does not lose the setting on the way.
-
 Entries are read directly rather than through the XDG menu files, so the
 `.menu` layouts a desktop ships (Plasma's vendor submenus, its Lost & Found, and
 anything kmenuedit has rearranged) do not carry over. `OnlyShowIn` and
@@ -725,18 +685,21 @@ Settings > Power  >  Dim screen          >  After 2 minutes
                      Power button        >  Sleep
                      Power mode          >  Balanced
                      Battery saver       >  On
+                     Battery percentage  >  Off
 ```
 
 What a console does when it is put down: a little later the screen dims, a
 little after that it goes dark, and left long enough the machine sleeps. Pick
 it up — any key, the mouse, a finger, **or a button on a controller** — and it
 is where it was. The page is the four waits, what the power button does, and,
-where the machine has them, the power mode and the battery saver.
+where the machine has them, the power mode, the battery saver and
+[whether the battery is written out in figures](#battery-percentage).
 
 **These are the device's settings, not the account's.** Every account on the
 machine shares them, and so does the login screen: a handheld left on the
 login screen dims, goes dark and sleeps on the same waits, and its power button
 does what the page says there too. See [Where they are kept](#where-they-are-kept).
+The one row that is the account's own is [Battery percentage](#battery-percentage).
 
 ### The waits
 
@@ -823,6 +786,66 @@ saver by itself at 20% while running on the battery and puts the mode that was
 chosen back when the charger goes in. A mode chosen by hand in between is left
 alone.
 
+### Battery percentage
+
+`Settings > Power > Battery percentage` decides whether the start screen's
+corner writes the charge out in figures over the mark that draws it. **Off**,
+until somebody asks for it.
+
+**The row is there only on a machine with a battery**, and so is the mark. What
+counts as one is the kernel's own answer, read from `/sys/class/power_supply`:
+a supply of type `Battery` whose `scope` is not `Device` and which is actually
+in its bay. That last pair of conditions is doing real work — a desktop with a
+wireless mouse on it lists a battery, and it is the mouse's; a laptop with the
+battery taken out still lists the bay it came from. Neither is a machine this
+corner has anything to say about, and on both it says nothing rather than
+drawing an outline or greying a row out. No daemon is involved: UPower is what
+a desktop environment would ask, it may not be installed, and what it reads is
+this same directory.
+
+The mark itself is not the setting. It is one of six drawings of the same
+shell — empty, low, half, high, full, and a bolt for a battery that is filling
+— and it is drawn whenever there is a battery, in the same water as the clock
+beside it. In the session it appears twice: in the start screen's corner, and
+in the [guide's header](guide.md#the-guide-overlay) under the day. One size in
+both, because what decides that size is the material rather than either layout
+— the shell's wall is 2.4 units of the drawing, and what matters is how many
+pixels that lands on at 1280x800. Being on the mains outranks the level: while
+it is filling, the bolt is what is shown, and the level it is filling from is
+what the figures are for. Sitting plugged in at full is not filling, and shows
+a full battery.
+
+The figures are off by default because the mark already answers the question a
+glance at a corner asks, which is *how much is left*. A number is for somebody
+who wants to know whether it is 61 or 68, and a console that put one on the
+wallpaper for everybody would be asking everybody to read it.
+
+```toml
+battery-percent = true
+```
+
+The key is written on every machine, a desktop included, so that a file carried
+between one and a laptop does not lose the setting on the way.
+
+**Unlike the rest of the page, this one is the account's own.** It is written to
+`~/.config/lxb/shell.toml` and not to `/etc/lxb/power.toml`, because it is how
+this account's shell draws its corner rather than something the machine does,
+and nothing about it needs a password. It travels to the login screen the same
+way, in the account's published look, and not in the machine's file: that file
+has one answer for every account, and a login screen has several to ask. Before
+0.9.3 the row was under Appearance; the key is the same, so a choice made there
+is kept.
+
+**The login screen draws it too**, from CEDM 0.9.3 on: the same mark in its
+top-right corner on a machine with a battery, and the same figures with it when
+the account whose tile is selected has this on. It cannot open anybody's home to
+find out — the greeter runs as an account of its own, in front of every account
+on the machine — so the choice reaches it as that account's published look. The
+key is carried the way the accent's is, and it is republished the moment the
+setting changes, so somebody who turns the figures on and signs straight out
+meets them. On a machine whose login screen is not CEDM nothing changes: the
+key is written and nothing there reads it.
+
 ### The battery running out
 
 Whatever the page says, a battery running the machine is announced at 10% and
@@ -831,7 +854,8 @@ seconds later unless the charger goes in — whatever else is holding sleep off.
 
 ### Where they are kept
 
-Not in `shell.toml`. The page writes two files of the machine's:
+Apart from Battery percentage, not in `shell.toml`. The page writes two files
+of the machine's:
 
 - **`/etc/lxb/power.toml`**, which every LineXinBar session and the login
   screen read. A session notices, within a minute, a change another account

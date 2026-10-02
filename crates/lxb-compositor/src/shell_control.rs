@@ -2226,9 +2226,12 @@ impl LxbState {
     ///
     /// Done here and now rather than on the way to a frame, which is what makes
     /// it free when nobody wants one: the work happens once per ask and a shell
-    /// that is not drawing glass over anything does not ask. The picture it gets
-    /// is therefore of the moment it asked, one frame before it uses it — which
-    /// a pane frosts into invisibility.
+    /// that is not drawing glass over anything does not ask. But **drawn for the
+    /// moment it will be seen, not the one it is asked at**: the shell puts it in
+    /// a frame it has not drawn yet, and that frame reaches the screen a few
+    /// refreshes later. A picture of the moment it was asked at is a picture of
+    /// where every moving window was, and over a window flying across the display
+    /// the glass shows it trailing. See [`crate::repaints`].
     ///
     /// A picture that cannot be drawn is answered with a size of zero rather
     /// than an error. A pane refracting a stale game is worse than a pane
@@ -2293,7 +2296,21 @@ impl LxbState {
         }
 
         let size = smithay::utils::Size::from((width, height));
-        let shot = match self.backend.picture_behind(&self.lxb, output, side, size) {
+        // For the moment it will be seen at, which is not now: the shell puts
+        // this picture in a frame it has not drawn yet, and that frame is on
+        // screen a few refreshes from here. See [`crate::repaints`].
+        let asked = std::time::Instant::now();
+        let at = self.lxb.repaints.shown_at(output, side, asked);
+        tracing::trace!(
+            display = %output.name(),
+            ?side,
+            ahead_ms = at.saturating_duration_since(asked).as_secs_f64() * 1000.0,
+            "a picture of what is behind the shell, drawn for a later moment"
+        );
+        let shot = match self
+            .backend
+            .picture_behind(&self.lxb, output, side, size, at)
+        {
             Ok(shot) => shot,
             Err(err) => {
                 tracing::debug!(?err, display = %output.name(), "no picture to draw behind the shell");

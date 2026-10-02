@@ -248,6 +248,9 @@ pub struct Lxb {
     /// Which display is showing the window overview, and how far along its
     /// enter/leave animation is.
     pub overview: crate::overview::Overviews,
+    /// When each display is repainted, which is what the pictures drawn for the
+    /// shell's glass are timed against. See [`crate::repaints`].
+    pub repaints: crate::repaints::Repaints,
     /// Windows on their way back out of the tile that asked for them.
     pub restores: crate::restore::Restores,
     /// Applications stopped because nothing of them is on screen.
@@ -550,6 +553,7 @@ impl LxbState {
                 popups: PopupManager::default(),
                 outputs: OutputManager::new(),
                 overview: crate::overview::Overviews::default(),
+                repaints: crate::repaints::Repaints::default(),
                 restores: crate::restore::Restores::default(),
                 sleepers: crate::sleep::Sleepers::default(),
                 flashes: crate::flash::Flashes::default(),

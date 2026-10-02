@@ -81,8 +81,9 @@ impl WinitBackend {
         output: &smithay::output::Output,
         side: crate::capture::Side,
         size: smithay::utils::Size<i32, smithay::utils::Physical>,
+        at: std::time::Instant,
     ) -> anyhow::Result<crate::capture::Shot> {
-        crate::capture::behind(self.backend.renderer(), lxb, output, side, size)
+        crate::capture::behind(self.backend.renderer(), lxb, output, side, size, at)
     }
 }
 
@@ -354,6 +355,7 @@ fn render(state: &mut LxbState) -> anyhow::Result<()> {
         time,
         Some(Duration::ZERO),
         &result.states,
+        frame_started,
     );
     // The host compositor never tells us when this frame is seen, so the
     // hand-over is the best answer there is — and far better than none.
