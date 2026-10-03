@@ -41,7 +41,7 @@
 //! navigable from a keyboard, deliberately: the arrows would be moving a
 //! cursor around a picture of the keys the user is already typing on.
 
-use std::collections::HashMap;
+use std::collections::{BTreeSet, HashMap};
 use std::fs::File;
 use std::io::Write;
 use std::os::fd::{AsFd, OwnedFd};
@@ -1066,6 +1066,153 @@ fn alphabet() -> Vec<Stroke> {
     strokes
 }
 
+/// The highest keycode anything downstream of this board can carry.
+///
+/// X11's limit, and so XWayland's, and so that of every game in a container.
+/// The board's alphabet is far shorter than the range this leaves — see
+/// `every_layout_sends_every_key_of_the_board_including_the_space_bar`, which
+/// measures it on the layouts that reach the most strokes.
+const LAST_KEYCODE: u32 = 255;
+
+/// The keycode a real keyboard sends for a key that is known by its *place*
+/// rather than by what it prints.
+///
+/// A character key is known by its symbol: which key of a keyboard carries `ę`
+/// is a fact about the layout and not about the keyboard, and an application
+/// asking what was typed reads the symbol. Space, Enter, Tab, Backspace,
+/// Escape, the function row and the arrows are the other kind. Every toolkit
+/// and every game there is asks whether *Space* was pressed — the key in the
+/// middle of the bottom row — and asks it of the keycode.
+///
+/// **The bug this exists for.** The board used to hand its codes out in the
+/// order its own alphabet came out in, so the space bar went out on whatever
+/// number was left over by the time the bottom row was reached — and that
+/// number moves with the layout, because a layout that reaches more accented
+/// letters has more strokes before it. Measured across every layout
+/// xkeyboard-config ships: on a US keyboard the space bar was sent as Delete;
+/// on German, Austrian, Lithuanian, Estonian, Swedish, Italian, Icelandic and
+/// US-International as a code with no key behind it at all; on Polish and
+/// French as Suspend. Anything that read the board's own keymap typed a space
+/// regardless, which is why it worked for some people and not for others, and
+/// why the difference was their keyboard layout rather than anything they did.
+fn place_of(stroke: Stroke) -> Option<u32> {
+    if let Stroke::Named(name) = stroke {
+        if let Some(index) = FUNCTION_KEYS.iter().position(|known| *known == name) {
+            // F1 to F10 run together; F11 and F12 sit apart, where a keyboard
+            // that grew two more function keys had room for them.
+            return Some(match index {
+                ..=9 => 67 + index as u32,
+                further => 95 + (further as u32 - 10),
+            });
+        }
+    }
+    Some(match stroke {
+        Stroke::ESCAPE => 9,
+        Stroke::BACKSPACE => 22,
+        Stroke::TAB => 23,
+        Stroke::ENTER => 36,
+        Stroke::SPACE => 65,
+        Stroke::Named("Up") => 111,
+        Stroke::Named("Left") => 113,
+        Stroke::Named("Right") => 114,
+        Stroke::Named("Down") => 116,
+        _ => return None,
+    })
+}
+
+/// Where the session's layout puts each character the board draws on its
+/// plain face, by [`KEYCODES`] — which is the same question [`caps_in`]
+/// answers, read the other way round.
+///
+/// Not needed to type: a character arrives by its symbol. It is here because
+/// of what happens when the keymap this board hands over does *not* reach the
+/// client — a client that binds its keyboard after the last handover is given
+/// the session's own keymap, and the board's codes are then read against that.
+/// With the plain face on the keys the layout actually puts it on, what comes
+/// out in that case is the letter the user pressed instead of a different one.
+/// The shifted and AltGr faces cannot be pinned the same way: the board sends
+/// a capital as a key of its own and holds no Shift, so `A` cannot share `a`'s
+/// place.
+fn plain_places() -> Vec<(Stroke, u32)> {
+    let mut places = Vec::new();
+    for (row, keycodes) in KEYCODES.iter().enumerate() {
+        for (cap, keycode) in caps_in(row + 1).iter().zip(keycodes.iter()) {
+            if let Some(stroke) = cap.at(Level::Plain) {
+                places.push((stroke, *keycode));
+            }
+        }
+    }
+    places
+}
+
+/// Which keycode each stroke of an alphabet goes out on, and one code nobody
+/// is standing on.
+struct Codes {
+    /// One per stroke, in the alphabet's own order.
+    given: Vec<u32>,
+    /// For the key that types nothing — see [`Typist::rearm`].
+    spare: u32,
+}
+
+/// Give every stroke of an alphabet a keycode, keeping the ones a keyboard
+/// already has.
+///
+/// Three passes, in this order and for the reason the order exists: a key
+/// known by its place must have its own code, so it is given out before
+/// anything else can be standing on it.
+fn keycodes(alphabet: &[Stroke]) -> Codes {
+    // Zero is no keycode — a keymap's lowest is eight — so it stands for a
+    // stroke that has not been given one yet.
+    let mut given = vec![0u32; alphabet.len()];
+    let mut taken = BTreeSet::new();
+
+    for (index, stroke) in alphabet.iter().enumerate() {
+        if let Some(code) = place_of(*stroke) {
+            if taken.insert(code) {
+                given[index] = code;
+            }
+        }
+    }
+
+    let places = plain_places();
+    for (index, stroke) in alphabet.iter().enumerate() {
+        if given[index] != 0 {
+            continue;
+        }
+        let Some((_, code)) = places.iter().find(|(known, _)| known == stroke) else {
+            continue;
+        };
+        if taken.insert(*code) {
+            given[index] = *code;
+        }
+    }
+
+    let mut next = FIRST_KEYCODE;
+    let mut free = || {
+        while taken.contains(&next) {
+            next += 1;
+        }
+        // Not reachable on any layout xkeyboard-config ships: the board's
+        // alphabet tops out at 209 strokes against the 247 codes this range
+        // holds. Said out loud rather than wrapped round, because a code
+        // handed out twice would type one letter for another and nothing
+        // anywhere would say so, while a code past the end is a keymap that
+        // will not compile and `rearm` already says that.
+        if next > LAST_KEYCODE {
+            tracing::error!("the board's alphabet outgrew the keycodes a keymap can carry");
+        }
+        taken.insert(next);
+        next
+    };
+    for code in given.iter_mut().filter(|code| **code == 0) {
+        *code = free();
+    }
+    Codes {
+        spare: free(),
+        given,
+    }
+}
+
 /// An xkb keymap in which every stroke the board can send has a key of its
 /// own.
 ///
@@ -1076,17 +1223,23 @@ fn alphabet() -> Vec<Stroke> {
 ///
 /// `spare` adds one key that types nothing. It is not there to be pressed —
 /// see [`Typist::rearm`] for what it is for.
-fn keymap(alphabet: &[Stroke], spare: bool) -> String {
-    let keys = alphabet.len() + usize::from(spare);
+fn keymap(alphabet: &[Stroke], codes: &Codes, spare: bool) -> String {
     let mut text = String::from("xkb_keymap {\n");
     text.push_str("xkb_keycodes \"lxb\" {\n");
     text.push_str("  minimum = 8;\n");
-    text.push_str(&format!("  maximum = {};\n", FIRST_KEYCODE as usize + keys));
-    for index in 0..keys {
-        text.push_str(&format!(
-            "  <K{index}> = {};\n",
-            FIRST_KEYCODE as usize + index
-        ));
+    let highest = codes
+        .given
+        .iter()
+        .copied()
+        .chain(spare.then_some(codes.spare))
+        .max()
+        .unwrap_or(FIRST_KEYCODE);
+    text.push_str(&format!("  maximum = {highest};\n"));
+    for (index, code) in codes.given.iter().enumerate() {
+        text.push_str(&format!("  <K{index}> = {code};\n"));
+    }
+    if spare {
+        text.push_str(&format!("  <K{}> = {};\n", alphabet.len(), codes.spare));
     }
     text.push_str("};\n");
     text.push_str("xkb_types \"lxb\" { include \"complete\" };\n");
@@ -1110,31 +1263,36 @@ fn keymap(alphabet: &[Stroke], spare: bool) -> String {
 
 /// The keycode to send for each stroke of an alphabet.
 ///
-/// [`keymap`] read in the other direction, off the same list — which is why
-/// the two are never called apart. See [`handover`].
-fn codes_for(alphabet: &[Stroke]) -> HashMap<Stroke, u32> {
+/// [`keymap`] read in the other direction, off the same list of codes — which
+/// is why the two are never called apart. See [`handover`].
+fn codes_for(alphabet: &[Stroke], codes: &Codes) -> HashMap<Stroke, u32> {
     alphabet
         .iter()
-        .enumerate()
+        .zip(codes.given.iter())
         // The protocol's keycodes are the kernel's, which are the keymap's
         // less the eight every xkb keymap is offset by.
-        .map(|(index, stroke)| (*stroke, FIRST_KEYCODE + index as u32 - 8))
+        .map(|(stroke, code)| (*stroke, code - 8))
         .collect()
 }
 
 /// Everything one handover to the compositor consists of: the keymap to give
 /// it, and the codes to send against that keymap.
 ///
-/// The two come from one call to [`alphabet`] and there is deliberately no way
-/// to come by either alone. The alphabet is not a constant — it is the board's
-/// keys in the board's order, and the board is built from whatever the
-/// session's layout puts on it, so a layout that reaches more characters has
-/// more strokes in it and puts them in different places. Read at two different
-/// moments the two halves disagree, and a keycode that stands for one letter
-/// in the shell stands for another in the keymap the application was handed.
+/// The two come from one call to [`alphabet`] and one to [`keycodes`], and
+/// there is deliberately no way to come by either alone. The alphabet is not a
+/// constant — it is the board's keys in the board's order, and the board is
+/// built from whatever the session's layout puts on it, so a layout that
+/// reaches more characters has more strokes in it and puts them in different
+/// places. Read at two different moments the two halves disagree, and a
+/// keycode that stands for one letter in the shell stands for another in the
+/// keymap the application was handed.
 fn handover(spare: bool) -> (String, HashMap<Stroke, u32>) {
     let alphabet = alphabet();
-    (keymap(&alphabet, spare), codes_for(&alphabet))
+    let codes = keycodes(&alphabet);
+    (
+        keymap(&alphabet, &codes, spare),
+        codes_for(&alphabet, &codes),
+    )
 }
 
 /// Put the keymap somewhere the compositor can map it.
@@ -1407,14 +1565,21 @@ impl Typist {
     /// `8`. Nothing in the shell could show that, because the shell's own
     /// fields read the stroke and never the keycode.
     fn rearm(&mut self) -> std::io::Result<()> {
-        self.spare = !self.spare;
-        let (text, codes) = handover(self.spare);
+        // Which of the pair this would be, worked out without committing to it
+        // yet. A keymap that could not be written is one the compositor was
+        // never handed, and flipping anyway would leave the *next* handover
+        // offering the half it is already holding — which it would not pass
+        // on, which is the very thing this alternation exists to prevent.
+        let spare = !self.spare;
+        let (text, codes) = handover(spare);
         let (fd, size) = keymap_file(&text)?;
         self.keyboard
             .keymap(KeymapFormat::XkbV1 as u32, fd.as_fd(), size);
         // After the handover rather than before it: a keymap that could not be
         // written leaves the compositor holding the last one, and these have to
-        // be the codes of the keymap it is holding.
+        // be the codes — and the half of the pair — of the keymap it is
+        // holding.
+        self.spare = spare;
         self.codes = codes;
         Ok(())
     }
@@ -1442,6 +1607,35 @@ impl Typist {
     }
 }
 
+/// One of the shell's own fields, as the board knows it apart from the next.
+///
+/// An identity and nothing more: the board never reads either half of it, it
+/// only ever compares one with another. `panel` names the thing on screen and
+/// `step` tells its fields apart where it asks for more than one in turn — an
+/// account name, then a password, then sometimes a code off a phone.
+///
+/// Both are the caller's to choose, and the only rule is the one that matters:
+/// the same field must name itself the same way on every frame it is drawn,
+/// and two fields must never name themselves alike. See
+/// [`Osk::offer_shell_field`], which is the only thing that uses this.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Field {
+    panel: &'static str,
+    step: u32,
+}
+
+impl Field {
+    /// The only field of a panel that has one.
+    pub const fn only(panel: &'static str) -> Field {
+        Field { panel, step: 0 }
+    }
+
+    /// One of several a panel asks for in turn.
+    pub const fn step(panel: &'static str, step: u32) -> Field {
+        Field { panel, step }
+    }
+}
+
 /// The keyboard as the shell holds it.
 #[derive(Default)]
 pub struct Osk {
@@ -1453,9 +1647,10 @@ pub struct Osk {
     /// has the cursor now. Without it, closing the keyboard over a still
     /// focused field would only re-open it on the next frame.
     offered: bool,
-    /// A shell login offers the board once across redraws and successive fields.
-    /// Kept separate from application text-input focus and from manual dismissal.
-    shell_field_offered: bool,
+    /// Which of the shell's own fields the board has already come up by
+    /// itself for. Kept separate from application text-input focus and from
+    /// manual dismissal — see [`Self::offer_shell_field`].
+    shell_field_offered: Option<Field>,
     /// Whether the user has shown they have a keyboard of their own. It stops
     /// the board offering itself to any further text field; see
     /// [`Self::dismiss_for_typing`], which is what concludes it from a key
@@ -1630,15 +1825,33 @@ impl Osk {
         self.raise(true)
     }
 
-    /// Synchronize an automatically offered shell input panel with the board.
-    /// Redrawing a field must not undo a physical keystroke or a manual dismissal.
-    /// Explicit keyboard shortcuts still use `open_here` to request it again.
-    pub fn offer_shell_field(&mut self, typing: bool) -> bool {
-        if !typing {
-            let offered = std::mem::take(&mut self.shell_field_offered);
-            return offered && self.types_here() && self.close();
-        }
-        if std::mem::replace(&mut self.shell_field_offered, true) || self.keyboard_at_hand {
+    /// Offer the board for one of the shell's own fields, drawn by a panel
+    /// that is redrawn every frame. Whether that changed anything.
+    ///
+    /// Spent **per field**, which is the whole point of taking a [`Field`]
+    /// rather than a yes-or-no. Two redraws of the same field carry the same
+    /// identity and the second does nothing, so rendering a field is not a
+    /// request to reopen a board the user has put away — and a *different*
+    /// field is a different offer, so the board comes up for it whatever
+    /// became of the last one.
+    ///
+    /// The bug that cost was total and silent. A sign-in asks for an account
+    /// name, then a password; the offer used to be one sticky flag for the
+    /// whole panel, so somebody who typed their name and put the board away
+    /// with Start — which is what Start is for, and what [`Self::submit`]
+    /// already promises keeps the next field's own board — reached the
+    /// password field with no keyboard and no way to ask for one. The field
+    /// could not be filled in at all.
+    ///
+    /// `None` is the panel saying it has no field now: the board goes if it
+    /// was up for one, and the next field asks again.
+    pub fn offer_shell_field(&mut self, field: Option<Field>) -> bool {
+        let Some(field) = field else {
+            let offered = self.shell_field_offered.take();
+            return offered.is_some() && self.types_here() && self.close();
+        };
+        let already = self.shell_field_offered.replace(field);
+        if already == Some(field) || self.keyboard_at_hand {
             return false;
         }
         self.open_here()
@@ -2398,7 +2611,9 @@ mod tests {
         assert_eq!(xkb::keysym_get_name(Keysym::new(raw)), "dead_circumflex");
         // And it has a key of its own in the keymap the board uploads, written
         // under the name xkbcommon will parse back.
-        assert!(keymap(&alphabet(), false).contains("[ dead_circumflex ]"));
+        let alphabet = alphabet();
+        let codes = keycodes(&alphabet);
+        assert!(keymap(&alphabet, &codes, false).contains("[ dead_circumflex ]"));
     }
 
     /// A layout that will not compile leaves the board exactly as it was.
@@ -2716,7 +2931,8 @@ mod tests {
     fn the_keymap_gives_every_key_the_board_can_send_a_code_of_its_own() {
         let _held = alone();
         let alphabet = alphabet();
-        let text = keymap(&alphabet, false);
+        let codes = keycodes(&alphabet);
+        let text = keymap(&alphabet, &codes, false);
 
         // Every character on the board, in both cases, plus every key that is
         // not a character at all: Esc, Tab, Back, Enter, Space, the function
@@ -2744,15 +2960,19 @@ mod tests {
             }
         }
 
-        // Distinct codes, and all of them inside what evdev can carry.
-        let mut codes: Vec<u32> = (0..alphabet.len())
-            .map(|index| FIRST_KEYCODE + index as u32)
-            .collect();
-        let count = codes.len();
-        codes.dedup();
-        assert_eq!(codes.len(), count);
+        // Distinct codes, and all of them inside what a keycode can carry.
+        let mut sorted = codes.given.clone();
+        let count = sorted.len();
+        sorted.push(codes.spare);
+        sorted.sort_unstable();
+        sorted.dedup();
+        assert_eq!(sorted.len(), count + 1, "two keys share a code");
         assert!(
-            codes.last().is_some_and(|last| *last <= 255),
+            sorted.first().is_some_and(|first| *first >= FIRST_KEYCODE),
+            "a code below the keymap's own minimum"
+        );
+        assert!(
+            sorted.last().is_some_and(|last| *last <= LAST_KEYCODE),
             "the keymap outgrew the range a keycode can be sent in"
         );
     }
@@ -2766,8 +2986,9 @@ mod tests {
     fn no_two_handovers_offer_the_compositor_the_same_keymap() {
         let _held = alone();
         let alphabet = alphabet();
-        let plain = keymap(&alphabet, false);
-        let spared = keymap(&alphabet, true);
+        let codes = keycodes(&alphabet);
+        let plain = keymap(&alphabet, &codes, false);
+        let spared = keymap(&alphabet, &codes, true);
         assert_ne!(plain, spared);
 
         // The spare key is the only difference, and it types nothing: every
@@ -2780,10 +3001,10 @@ mod tests {
             assert!(plain.contains(&key), "{stroke:?} moved");
             assert!(spared.contains(&key), "{stroke:?} moved when spared");
         }
-        // And the spare is past the end, so it has no code the board can send.
-        let spare = FIRST_KEYCODE as usize + alphabet.len();
-        assert!(spared.contains(&format!("<K{}> = {spare};", alphabet.len())));
-        assert!(spared.contains(&format!("maximum = {};", spare + 1)));
+        // And the spare's code is one no stroke was given, so it is not a code
+        // the board can send.
+        assert!(!codes.given.contains(&codes.spare));
+        assert!(spared.contains(&format!("<K{}> = {};", alphabet.len(), codes.spare)));
     }
 
     /// The bug this guards typed a different letter than the one pressed, in
@@ -2827,6 +3048,15 @@ mod tests {
         };
         for (stroke, code) in &codes {
             let wanted = xkb::keysym_from_name(&stroke.keysym(), xkb::KEYSYM_NO_FLAGS);
+            // Asked first, because a name xkb cannot parse is `NoSymbol` on
+            // both sides of the comparison below and would pass it saying
+            // nothing: a key that types nothing would look like a key that
+            // types itself.
+            assert_ne!(
+                wanted.raw(),
+                0,
+                "{stroke:?} is written into the keymap under a name xkb has not got"
+            );
             assert_eq!(
                 typed(*code),
                 Some(wanted),
@@ -2834,16 +3064,225 @@ mod tests {
             );
         }
 
-        // And the codes the board had before the layout was announced would
-        // have typed something else, which is the whole of the bug: they are
-        // not wrong keycodes, they are the right ones for another keyboard.
+        // A plain letter keeps the code its own key on the desk has, whatever
+        // the layout: `e` is the third key of the upper row on both of these,
+        // and so is sent as that key. That is what [`plain_places`] is for.
         let e = Stroke::Char('e');
-        let stale = fallback[&e];
-        assert_ne!(codes[&e], stale);
+        assert_eq!(codes[&e], fallback[&e]);
+        assert_eq!(codes[&e] + 8, 26, "`e` is not on the key `e` is on");
+
+        // But the faces a layout reaches with Shift and AltGr are its own, and
+        // they still move — which is the whole of the bug. The codes are not
+        // wrong keycodes; they are the right ones for another keyboard.
+        let moved = codes
+            .iter()
+            .filter(|(stroke, _)| fallback.contains_key(*stroke))
+            .find(|(stroke, code)| fallback[stroke] != **code)
+            .map(|(stroke, _)| *stroke)
+            .expect("a Polish board sends something on a code the US one did not");
+        let stale = fallback[&moved];
+        assert_ne!(codes[&moved], stale);
         assert_ne!(
             typed(stale),
-            Some(xkb::keysym_from_name("U0065", xkb::KEYSYM_NO_FLAGS))
+            Some(xkb::keysym_from_name(&moved.keysym(), xkb::KEYSYM_NO_FLAGS)),
+            "{moved:?} happened to type itself through the stale code"
         );
+
+        // And a letter this layout reaches that the fallback has no key for at
+        // all is the plainest form of the same thing.
+        let polish = Stroke::Char('ę');
+        assert!(codes.contains_key(&polish));
+        assert!(!fallback.contains_key(&polish));
+    }
+
+    /// The bug this guards is the one reported as "space does not work on the
+    /// on-screen keyboard, sometimes, for some people" — and the reason it was
+    /// some people is that it was some *layouts*.
+    ///
+    /// The board used to hand its keycodes out in the order its own alphabet
+    /// came out in, and that order moves with the layout: a layout reaching
+    /// more accented letters has more strokes before the bottom row, where the
+    /// space bar is. So the space bar went out as a different key on every
+    /// keyboard. Read against the session's own keymap — which is what a client
+    /// that bound its keyboard after the last handover is holding — it was
+    /// Delete on a US layout, nothing at all on German, Austrian, Lithuanian,
+    /// Estonian, Swedish, Italian and US-International, and Suspend on Polish
+    /// and French.
+    ///
+    /// Both halves are checked here, because both are the fix: the board sends
+    /// Space from the place a keyboard has Space, and that place reads as a
+    /// space under the session's keymap as well as under the board's own.
+    #[test]
+    fn the_keys_known_by_their_place_are_sent_from_that_place() {
+        let _held = alone();
+        let context = xkb::Context::new(xkb::CONTEXT_NO_FLAGS);
+        // evdev's own numbers, which is what the virtual keyboard carries and
+        // what an application asking *which key* was pressed asks about.
+        let places = [
+            (Stroke::SPACE, 57, "space"),
+            (Stroke::ENTER, 28, "Return"),
+            (Stroke::BACKSPACE, 14, "BackSpace"),
+            (Stroke::TAB, 15, "Tab"),
+            (Stroke::ESCAPE, 1, "Escape"),
+            (Arrow::Left.stroke(), 105, "Left"),
+            (Arrow::Right.stroke(), 106, "Right"),
+            (Arrow::Up.stroke(), 103, "Up"),
+            (Arrow::Down.stroke(), 108, "Down"),
+            (Stroke::Named("F1"), 59, "F1"),
+            (Stroke::Named("F12"), 88, "F12"),
+        ];
+        for (layout, variant) in [
+            ("us", ""),
+            ("us", "intl"),
+            ("de", ""),
+            ("at", ""),
+            ("se", ""),
+            ("ee", ""),
+            ("it", ""),
+            ("is", ""),
+            ("lt", ""),
+            ("fr", "oss"),
+            ("pl", ""),
+            ("ru", ""),
+            ("ara", ""),
+        ] {
+            *CAPS.lock().unwrap() = None;
+            assert!(note_layout(layout, variant));
+            let (_, codes) = handover(false);
+
+            // The session's own keymap, which is what a client reads these
+            // codes against when the board's keymap has not reached it.
+            let session = xkb::Keymap::new_from_names(
+                &context,
+                "",
+                "",
+                layout,
+                variant,
+                None,
+                xkb::KEYMAP_COMPILE_NO_FLAGS,
+            )
+            .expect("the layout to compile");
+
+            for (stroke, code, name) in places {
+                assert_eq!(
+                    codes.get(&stroke).copied(),
+                    Some(code),
+                    "{layout}({variant}) does not send {name} from {name}'s own key"
+                );
+                let wanted = xkb::keysym_from_name(name, xkb::KEYSYM_NO_FLAGS);
+                assert_eq!(
+                    session
+                        .key_get_syms_by_level(xkb::Keycode::new(code + 8), 0, 0)
+                        .first()
+                        .copied(),
+                    Some(wanted),
+                    "{layout}({variant}) reads {name}'s own key as something else"
+                );
+            }
+        }
+    }
+
+    /// The same round trip on every layout a session is likely to be set to,
+    /// and on the keys most easily missed: the space bar, the arrows and the
+    /// way out all sit in the bottom row, so they are the last strokes of the
+    /// alphabet and the first to be lost to anything that runs out of room.
+    ///
+    /// The board's alphabet is not a constant — a layout with four populated
+    /// faces on every character key reaches more than twice as many strokes as
+    /// the US fallback, and every stroke after the first new one moves along —
+    /// so this is the only way to know that the keymap written for a layout
+    /// somebody actually uses says what the board thinks it says.
+    #[test]
+    fn every_layout_sends_every_key_of_the_board_including_the_space_bar() {
+        let _held = alone();
+        let context = xkb::Context::new(xkb::CONTEXT_NO_FLAGS);
+        for (layout, variant) in [
+            // No AltGr, so the bottom row has the wide space bar.
+            ("us", ""),
+            ("us", "dvorak"),
+            // Four faces and a great many of them, which is what makes the
+            // alphabet long.
+            ("us", "intl"),
+            ("de", ""),
+            ("fr", "oss"),
+            ("pl", ""),
+            ("lt", ""),
+            ("se", ""),
+            ("ee", ""),
+            // Alphabets that are not Latin at all.
+            ("ru", ""),
+            ("gr", ""),
+            ("ara", ""),
+            ("il", ""),
+        ] {
+            *CAPS.lock().unwrap() = None;
+            assert!(
+                note_layout(layout, variant),
+                "{layout}({variant}) would not compile"
+            );
+            let (text, codes) = handover(false);
+            let handed = xkb::Keymap::new_from_string(
+                &context,
+                text,
+                xkb::KEYMAP_FORMAT_TEXT_V1,
+                xkb::KEYMAP_COMPILE_NO_FLAGS,
+            )
+            .unwrap_or_else(|| {
+                panic!("{layout}({variant}) handed over a keymap that will not compile")
+            });
+
+            // Every key the board draws has a code, the space bar included.
+            for row in 0..ROW_COUNT {
+                for key in row_keys(row) {
+                    let strokes: Vec<Stroke> = match key {
+                        Key::Char(cap) => cap.strokes().collect(),
+                        Key::Named(_, stroke) => vec![stroke],
+                        Key::Arrow(arrow) => vec![arrow.stroke()],
+                        Key::Shift | Key::Caps | Key::Ctrl | Key::Alt | Key::AltGr | Key::Close => {
+                            vec![]
+                        }
+                    };
+                    for stroke in strokes {
+                        assert!(
+                            codes.contains_key(&stroke),
+                            "{layout}({variant}) draws {stroke:?} with no code to send it by"
+                        );
+                    }
+                }
+            }
+            assert!(
+                codes.contains_key(&Stroke::SPACE),
+                "{layout}({variant}) has no space bar to send"
+            );
+
+            // And every one of them arrives as itself, read against the keymap
+            // it was handed alongside — including the ones at the end of a long
+            // alphabet, which is where the bottom row lives.
+            for (stroke, code) in &codes {
+                let wanted = xkb::keysym_from_name(&stroke.keysym(), xkb::KEYSYM_NO_FLAGS);
+                assert_ne!(
+                    wanted.raw(),
+                    0,
+                    "{layout}({variant}) writes {stroke:?} under a name xkb has not got"
+                );
+                assert_eq!(
+                    handed
+                        .key_get_syms_by_level(xkb::Keycode::new(code + 8), 0, 0)
+                        .first()
+                        .copied(),
+                    Some(wanted),
+                    "{layout}({variant}) types something else than {stroke:?} \
+                     through code {code}"
+                );
+                // Inside what an X11 keymap — and so XWayland, and so every
+                // game in a container — can carry at all.
+                assert!(
+                    code + 8 <= 255,
+                    "{layout}({variant}) puts {stroke:?} on code {code}, past what \
+                     XWayland can read"
+                );
+            }
+        }
     }
 
     #[test]
@@ -3079,19 +3518,24 @@ mod tests {
         assert!(osk.is_open(), "summoning it did not undo the refusal");
     }
 
+    /// Two fields of one panel, as a panel that asks for both in turn names
+    /// them — an account name and then a password.
+    const NAME: Option<Field> = Some(Field::step("a-sign-in", 0));
+    const PASSWORD: Option<Field> = Some(Field::step("a-sign-in", 1));
+
     #[test]
     fn login_redraws_and_next_fields_respect_a_physical_keyboard() {
         let _held = alone();
         let mut osk = Osk::default();
         osk.set_controller_in_hand(false);
-        assert!(!osk.offer_shell_field(true));
+        assert!(!osk.offer_shell_field(NAME));
         assert!(!osk.is_open());
         for _ in 0..10 {
-            assert!(!osk.offer_shell_field(true));
+            assert!(!osk.offer_shell_field(NAME));
         }
-        osk.offer_shell_field(false);
+        osk.offer_shell_field(None);
         assert!(
-            !osk.offer_shell_field(true),
+            !osk.offer_shell_field(PASSWORD),
             "next login field must remember physical typing"
         );
         assert!(osk.keyboard_at_hand);
@@ -3102,18 +3546,18 @@ mod tests {
         let _held = alone();
         let mut osk = Osk::default();
         osk.set_controller_in_hand(true);
-        assert!(osk.offer_shell_field(true));
+        assert!(osk.offer_shell_field(NAME));
         assert!(osk.types_here(), "shell input needs no virtual keyboard");
         osk.set_controller_in_hand(false);
         // The first grabbed letter redraws the panel before on_typed closes the board.
-        assert!(!osk.offer_shell_field(true));
+        assert!(!osk.offer_shell_field(NAME));
         osk.close();
         for _ in 0..10 {
-            assert!(!osk.offer_shell_field(true));
+            assert!(!osk.offer_shell_field(NAME));
             assert!(!osk.is_open());
         }
-        osk.offer_shell_field(false);
-        assert!(!osk.offer_shell_field(true));
+        osk.offer_shell_field(None);
+        assert!(!osk.offer_shell_field(PASSWORD));
         assert!(!osk.is_open());
     }
 
@@ -3122,12 +3566,12 @@ mod tests {
         let _held = alone();
         let mut osk = Osk::default();
         osk.set_controller_in_hand(false);
-        osk.offer_shell_field(true);
+        osk.offer_shell_field(NAME);
         osk.open_here();
         osk.dismiss_for_typing();
-        osk.offer_shell_field(false);
+        osk.offer_shell_field(None);
         assert!(
-            !osk.offer_shell_field(true),
+            !osk.offer_shell_field(PASSWORD),
             "a later password or Steam Guard field must stay closed"
         );
         assert!(osk.keyboard_at_hand);
@@ -3138,22 +3582,86 @@ mod tests {
         let _held = alone();
         let mut osk = Osk::default();
         osk.set_controller_in_hand(true);
-        assert!(osk.offer_shell_field(true));
+        assert!(osk.offer_shell_field(NAME));
         osk.close();
         assert!(
-            !osk.offer_shell_field(true),
+            !osk.offer_shell_field(NAME),
             "refresh must not undo manual dismissal"
         );
         assert!(osk.open_here(), "explicit request still opens it");
         assert!(osk.types_here());
         assert!(
-            osk.offer_shell_field(false),
+            osk.offer_shell_field(None),
             "leaving the login closes its board"
         );
         assert!(
-            osk.offer_shell_field(true),
+            osk.offer_shell_field(NAME),
             "a new controller login offers it again"
         );
+    }
+
+    /// The bug this guards made every second field of a sign-in impossible to
+    /// fill in. The offer was one sticky flag for the whole panel, so a user
+    /// who typed their account name and put the board away — with Start, which
+    /// is what Start is *for*, or with the key in the corner of the board —
+    /// walked to Next, pressed it, and met a password field with no keyboard
+    /// over it and nothing on screen saying how to get one.
+    ///
+    /// Reported for the Steam sign-in and for the RetroAchievements one, which
+    /// are the two panels in this shell that ask for two things in a row.
+    #[test]
+    fn a_field_put_away_still_brings_the_board_up_for_the_next_field() {
+        let _held = alone();
+        for away in [
+            // Start, which is Enter and the board away with it.
+            |osk: &mut Osk| {
+                osk.submit(0);
+            },
+            // The key in the corner of the board.
+            |osk: &mut Osk| {
+                osk.close();
+            },
+        ] {
+            let mut osk = Osk::default();
+            osk.set_controller_in_hand(true);
+            assert!(osk.offer_shell_field(NAME), "the account name's own board");
+
+            away(&mut osk);
+            assert!(!osk.is_open());
+            // The panel goes on being drawn while the user walks to the button.
+            for _ in 0..10 {
+                assert!(!osk.offer_shell_field(NAME), "a redraw undid the dismissal");
+                assert!(!osk.is_open());
+            }
+
+            // Next, pressed. The password field is a different field.
+            assert!(
+                osk.offer_shell_field(PASSWORD),
+                "the password field came up with no keyboard"
+            );
+            assert!(osk.is_open());
+            assert!(osk.types_here(), "a password goes nowhere but the shell");
+
+            // And that board is this field's: redrawing it does not reopen it
+            // once it too has been put away.
+            osk.close();
+            assert!(!osk.offer_shell_field(PASSWORD));
+            assert!(!osk.is_open());
+        }
+    }
+
+    /// A field reached twice is twice a field. The same panel asking the same
+    /// question again — a password typed wrongly, asked for a second time — is
+    /// owed a board of its own, and names itself differently to get one.
+    #[test]
+    fn the_same_question_asked_again_is_offered_again() {
+        let _held = alone();
+        let mut osk = Osk::default();
+        osk.set_controller_in_hand(true);
+        assert!(osk.offer_shell_field(Some(Field::step("a-tool", 1))));
+        osk.submit(0);
+        assert!(osk.offer_shell_field(Some(Field::step("a-tool", 2))));
+        assert!(osk.is_open());
     }
 
     /// The same refusal, carried in from outside — which is how it survives a

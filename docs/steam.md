@@ -53,11 +53,27 @@ Signing in is a panel, and it offers both ways Steam has:
 - **Type an account name and password.** The name, then the password, then
   whatever Steam Guard asks for — a code from an email, a code from the
   authenticator, or a press on the phone, which needs no field at all and so
-  does not get one.
+  does not get one. Each of those fields brings up
+  [the on-screen keyboard](controls.md#the-shells-own-fields) in its turn,
+  whichever way the one before it was finished.
 
 The password is encrypted, in this process, under the RSA key Steam issues for
 that account name, and the plaintext never leaves the machine or reaches a
-`String`. What is kept afterwards is the refresh token Steam hands back, in
+`String`.
+
+Asking for that key is the one call of `IAuthenticationService` that is
+*fetched* rather than posted. Steam's front at `api.steampowered.com` answers
+`GetPasswordRSAPublicKey` on GET only and refuses a POST with HTTP 405, while
+every method that changes something — beginning a sign-in, polling it, handing
+over a Steam Guard code, giving a token up — answers a POST only and refuses a
+GET the same way. Which way round a method wants is a fact about that method,
+so `Wire::call` and `Wire::fetch` are two calls rather than one with a flag,
+and the protobuf request travels in the body of the first and the query string
+of the second. A failing HTTP status that Steam sent no result code of its own
+alongside is reported as the front door turning the call away rather than as a
+refusal of an account, because nothing of the user's was looked at.
+
+What is kept afterwards is the refresh token Steam hands back, in
 `$XDG_DATA_HOME/lxb/steam.json`, readable by nobody else. The password is not
 stored, ever, and there is nowhere in the client it could be: signing in again
 after a reboot uses the token. This machine appears in the account's Steam

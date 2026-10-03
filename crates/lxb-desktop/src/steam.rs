@@ -4646,7 +4646,7 @@ impl Steam {
                     crate::i18n::text("shell-carry-on-in-the-background"),
                 )],
                 start: 0,
-                typing: false,
+                field: None,
             },
             Stage::SetupFailed(why) => Panel {
                 lines: vec![heading, dialog::Line::Note(why.clone()), dialog::Line::Rule],
@@ -4658,7 +4658,7 @@ impl Steam {
                     menu::Entry::new(menu::Command::SteamCancel, crate::i18n::text("shell-close")),
                 ],
                 start: 0,
-                typing: false,
+                field: None,
             },
             Stage::Choosing => Panel {
                 lines: vec![
@@ -4685,7 +4685,7 @@ impl Steam {
                 // On the code, which is the way in that needs no keyboard —
                 // and this shell is driven with a thumb.
                 start: 0,
-                typing: false,
+                field: None,
             },
             Stage::Qr(code) => Panel {
                 lines: vec![
@@ -4708,7 +4708,7 @@ impl Steam {
                 ],
                 buttons: vec![cancel],
                 start: 0,
-                typing: false,
+                field: None,
             },
             Stage::Account(typed) => Panel {
                 lines: vec![
@@ -4724,7 +4724,7 @@ impl Steam {
                     cancel,
                 ],
                 start: 0,
-                typing: true,
+                field: Some(SIGN_IN_FIELDS[0]),
             },
             Stage::Password { account, secret } => Panel {
                 lines: vec![
@@ -4743,7 +4743,7 @@ impl Steam {
                     cancel,
                 ],
                 start: 0,
-                typing: true,
+                field: Some(SIGN_IN_FIELDS[1]),
             },
             Stage::Code {
                 confirmation,
@@ -4763,7 +4763,7 @@ impl Steam {
                     cancel,
                 ],
                 start: 0,
-                typing: true,
+                field: Some(SIGN_IN_FIELDS[2]),
             },
             Stage::Waiting(note) => Panel {
                 lines: vec![
@@ -4774,7 +4774,7 @@ impl Steam {
                 ],
                 buttons: vec![cancel],
                 start: 0,
-                typing: false,
+                field: None,
             },
             Stage::Failed(why) => Panel {
                 lines: vec![heading, dialog::Line::Note(why.clone()), dialog::Line::Rule],
@@ -4788,7 +4788,7 @@ impl Steam {
                 // On trying again: the panel is only ever here because
                 // somebody was in the middle of signing in.
                 start: 0,
-                typing: false,
+                field: None,
             },
             Stage::LibraryUnavailable(why) => Panel {
                 lines: vec![heading, dialog::Line::Note(why.clone()), dialog::Line::Rule],
@@ -4800,7 +4800,7 @@ impl Steam {
                     menu::Entry::new(menu::Command::SteamCancel, crate::i18n::text("shell-close")),
                 ],
                 start: 0,
-                typing: false,
+                field: None,
             },
         };
         Some(panel)
@@ -4812,13 +4812,30 @@ fn counted(games: usize) -> String {
     crate::message!("count-games", "count" => games)
 }
 
+/// The three fields a sign-in asks for, in the order it asks for them.
+///
+/// Named here rather than written out at each arm so that no two of them can
+/// drift into being the same field, which is the whole of what the board reads
+/// them for: the account name's board must not count as the password's, or the
+/// password field comes up with no keyboard and no way to ask for one.
+const SIGN_IN_FIELDS: [crate::keyboard::Field; 3] = [
+    crate::keyboard::Field::step("steam-sign-in", 0),
+    crate::keyboard::Field::step("steam-sign-in", 1),
+    crate::keyboard::Field::step("steam-sign-in", 2),
+];
+
 /// One frame of the sign-in panel.
 pub struct Panel {
     pub lines: Vec<dialog::Line>,
     pub buttons: Vec<menu::Entry>,
     pub start: usize,
-    /// Whether the on-screen keyboard belongs over it.
-    pub typing: bool,
+    /// Which field of its own the board belongs over, where it has one.
+    ///
+    /// An identity rather than a yes-or-no because this panel asks for three
+    /// things in turn — an account name, a password, and sometimes a code off
+    /// a phone — and each of them is owed a keyboard of its own. See
+    /// [`crate::keyboard::Field`].
+    pub field: Option<crate::keyboard::Field>,
 }
 
 #[cfg(test)]
@@ -4907,7 +4924,7 @@ mod tests {
             "a step that carries a number is drawn as a bar: {:?}",
             panel.lines
         );
-        assert!(!panel.typing, "there is nothing here to type into");
+        assert!(panel.field.is_none(), "there is nothing here to type into");
 
         // One button, and it is not a cancel. Half a gigabyte is coming down.
         let commands: Vec<menu::Command> =
@@ -5155,7 +5172,10 @@ mod tests {
         assert_eq!(account, "someone", "the field was not trimmed");
 
         let panel = steam.panel().expect("a panel is up");
-        assert!(panel.typing, "a field with no keyboard cannot be filled in");
+        assert!(
+            panel.field.is_some(),
+            "a field with no keyboard cannot be filled in"
+        );
         assert!(panel
             .lines
             .iter()
@@ -5179,25 +5199,25 @@ mod tests {
         assert!(panel.lines.iter().any(
             |l| matches!(l,dialog::Line::Note(text) if text=="Enter your Steam account name.")
         ));
-        assert!(osk.offer_shell_field(panel.typing));
+        assert!(osk.offer_shell_field(panel.field));
         // First physical key through the grab: input redraws before the board closes.
         osk.set_controller_in_hand(false);
         assert_eq!(steam.type_into(Stroke::Char('s')), Typed::Into);
-        osk.offer_shell_field(steam.panel().unwrap().typing);
+        osk.offer_shell_field(steam.panel().unwrap().field);
         osk.close();
         for c in "omeone".chars() {
             assert_eq!(steam.type_into(Stroke::Char(c)), Typed::Into);
-            osk.offer_shell_field(steam.panel().unwrap().typing);
+            osk.offer_shell_field(steam.panel().unwrap().field);
             assert!(!osk.is_open());
         }
         steam.submit();
         let panel = steam.panel().unwrap();
         assert!(panel.lines.iter().any(|l|matches!(l,dialog::Line::Note(text) if text.contains("password") && text.contains("someone"))));
-        osk.offer_shell_field(panel.typing);
+        osk.offer_shell_field(panel.field);
         assert!(!osk.is_open());
         for c in "private".chars() {
             steam.type_into(Stroke::Char(c));
-            osk.offer_shell_field(steam.panel().unwrap().typing);
+            osk.offer_shell_field(steam.panel().unwrap().field);
             assert!(!osk.is_open());
         }
         assert!(steam
@@ -5207,7 +5227,92 @@ mod tests {
             .iter()
             .any(|l| matches!(l, dialog::Line::Secret { typed: 7 })));
         steam.cancel();
-        osk.offer_shell_field(false);
+        osk.offer_shell_field(None);
+    }
+
+    /// The bug this guards made signing in with a password impossible from the
+    /// controller alone. Start is how a field is finished — Enter, and the
+    /// board away with it — and the next field is owed a board of its own.
+    /// The offer was one flag for the whole panel, so the password field came
+    /// up with no keyboard over it, and nothing on screen said how to get one.
+    #[test]
+    fn the_password_field_brings_up_a_board_after_the_name_was_finished() {
+        let mut steam = Steam::settled();
+        let mut osk = crate::keyboard::Osk::default();
+        osk.set_controller_in_hand(true);
+        steam.with_password();
+
+        assert!(
+            osk.offer_shell_field(steam.panel().unwrap().field),
+            "the account name's own board"
+        );
+        typing(&mut steam, "someone");
+
+        // Start: Enter goes into the field, and the board goes away with it.
+        assert_eq!(osk.submit(0), crate::keyboard::Press::Type(Stroke::ENTER));
+        assert!(!osk.is_open());
+        assert_eq!(
+            steam.type_into(Stroke::ENTER),
+            Typed::Done { submitted: true }
+        );
+        steam.submit();
+
+        // The panel is on the password now, and it has a keyboard.
+        let panel = steam.panel().expect("a panel is up");
+        assert!(
+            osk.offer_shell_field(panel.field),
+            "the password field came up with no keyboard"
+        );
+        assert!(osk.is_open());
+        assert!(osk.types_here(), "a password goes nowhere but the shell");
+        typing(&mut steam, "private");
+        assert!(steam
+            .panel()
+            .unwrap()
+            .lines
+            .iter()
+            .any(|line| matches!(line, dialog::Line::Secret { typed: 7 })));
+
+        // And a Steam Guard code after it, which is a third field.
+        osk.close();
+        steam.signing_in = Some(Stage::Code {
+            confirmation: Confirmation::DeviceCode,
+            typed: String::new(),
+        });
+        assert!(
+            osk.offer_shell_field(steam.panel().unwrap().field),
+            "the code field came up with no keyboard"
+        );
+    }
+
+    /// Every field of the sign-in names itself differently, which is the whole
+    /// of what the board reads them for.
+    #[test]
+    fn no_two_sign_in_fields_are_the_same_field() {
+        let mut named: Vec<crate::keyboard::Field> = Vec::new();
+        let mut steam = Steam::settled();
+        steam.with_password();
+        for stage in [
+            Stage::Account(String::new()),
+            Stage::Password {
+                account: "someone".into(),
+                secret: Secret::default(),
+            },
+            Stage::Code {
+                confirmation: Confirmation::DeviceCode,
+                typed: String::new(),
+            },
+        ] {
+            steam.signing_in = Some(stage);
+            let field = steam
+                .panel()
+                .expect("a panel is up")
+                .field
+                .expect("a field to type into");
+            assert!(!named.contains(&field), "two fields named themselves alike");
+            named.push(field);
+        }
+        assert_eq!(named.len(), 3);
     }
 
     /// An empty account name is not an answer: the panel stays where it is

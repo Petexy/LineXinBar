@@ -350,11 +350,15 @@ pub fn steam_id_of(token: &str) -> Option<u64> {
 }
 
 /// Ask for the RSA key belonging to one account name.
+///
+/// Fetched rather than posted, which is the one asymmetry in this service:
+/// every method above changes something and is posted, this one only answers
+/// a question and refuses a post with HTTP 405. See [`Wire::fetch`].
 fn password_key(wire: &Wire, account: &str) -> Result<PublicKey, Failed> {
     let mut request = Writer::new();
     request.string(1, account);
 
-    let answer = wire.call(SERVICE, "GetPasswordRSAPublicKey", request)?;
+    let answer = wire.fetch(SERVICE, "GetPasswordRSAPublicKey", request)?;
     let modulus = protobuf::text(&answer, 1);
     let exponent = protobuf::text(&answer, 2);
     let timestamp = protobuf::number(&answer, 3);
@@ -521,5 +525,104 @@ mod tests {
         assert_eq!(with(protobuf::Value::Fixed32(9999.0f32.to_bits())), 30.0);
         assert_eq!(with(protobuf::Value::Fixed32(f32::NAN.to_bits())), 5.0);
         assert_eq!(interval(&vec![], 3), 5.0, "no field at all");
+    }
+
+    /// Stand in for Steam's front door for exactly one call, and say how it
+    /// was asked for.
+    ///
+    /// A listener on the loopback rather than a mock of the HTTP library,
+    /// because what is being checked is the request that goes out on the wire
+    /// — the verb and the path — and nothing short of a socket sees that.
+    fn one_call(answer: Vec<u8>) -> (String, std::sync::mpsc::Receiver<String>) {
+        use std::io::{Read, Write};
+
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("a port to listen on");
+        let host = format!("http://{}", listener.local_addr().expect("the port"));
+        let (say, heard) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let Ok((mut stream, _)) = listener.accept() else {
+                return;
+            };
+            // The head only: a GET has no body, and a POST's body is not what
+            // this is watching for.
+            let mut head = Vec::new();
+            let mut byte = [0u8; 1];
+            while !head.ends_with(b"\r\n\r\n") {
+                match stream.read(&mut byte) {
+                    Ok(1) => head.push(byte[0]),
+                    _ => break,
+                }
+            }
+            let asked = String::from_utf8_lossy(&head).to_string();
+            let _ = stream.write_all(
+                format!(
+                    "HTTP/1.1 200 OK\r\nx-eresult: 1\r\nContent-Type: application/octet-stream\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                    answer.len()
+                )
+                .as_bytes(),
+            );
+            let _ = stream.write_all(&answer);
+            let _ = stream.flush();
+            let _ = say.send(asked.lines().next().unwrap_or_default().to_string());
+        });
+        (host, heard)
+    }
+
+    /// The bug this guards made signing in with an account name and a password
+    /// impossible for everybody, and said so in the one sentence that explains
+    /// nothing: "Steam refused that (error 405)."
+    ///
+    /// The key an account's password is encrypted under is the first call of
+    /// that sign-in, and it is the one method of this service that is *asked*
+    /// rather than *told*. Steam answers it on GET and refuses a POST with
+    /// HTTP 405, so the password was never even encrypted — and 405, read as a
+    /// result code, became a number the panel blamed the account for.
+    #[test]
+    fn the_key_for_a_password_is_fetched_rather_than_posted() {
+        let mut answer = Writer::new();
+        answer
+            // A modulus wide enough for PKCS #1's own eleven bytes, which is
+            // all `PublicKey::from_hex` asks of it.
+            .string(1, "00c1a5b3d4e6f708192a3b4c5d6e7f80")
+            .string(2, "010001")
+            .varint(3, 1_700_000_000);
+        let (host, heard) = one_call(answer.finish());
+
+        let key = password_key(&Wire::to(&host), "someone").expect("the key Steam sent");
+        assert_eq!(key.timestamp, 1_700_000_000);
+
+        let asked = heard
+            .recv_timeout(std::time::Duration::from_secs(5))
+            .expect("the stand-in to have heard the call");
+        assert!(
+            asked.starts_with("GET /IAuthenticationService/GetPasswordRSAPublicKey/v1/?"),
+            "the key was not fetched: {asked:?}"
+        );
+        // And the request travelled in the query string, where a fetched
+        // method carries it.
+        assert!(
+            asked.contains("input_protobuf_encoded=Cgdzb21lb25l"),
+            "the account name did not go with it: {asked:?}"
+        );
+    }
+
+    /// The other side of the same coin: every method that *changes* something
+    /// is posted, and Steam refuses those on GET.
+    #[test]
+    fn a_sign_in_by_code_is_posted() {
+        let mut answer = Writer::new();
+        answer.varint(1, 7).string(2, "https://s.team/q/1");
+        let (host, heard) = one_call(answer.finish());
+
+        let session = begin_with_qr(&Wire::to(&host)).expect("the session Steam began");
+        assert_eq!(session.client_id, 7);
+
+        let asked = heard
+            .recv_timeout(std::time::Duration::from_secs(5))
+            .expect("the stand-in to have heard the call");
+        assert_eq!(
+            asked,
+            "POST /IAuthenticationService/BeginAuthSessionViaQR/v1/ HTTP/1.1"
+        );
     }
 }

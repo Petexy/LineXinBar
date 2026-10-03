@@ -310,6 +310,21 @@ impl RetroAchievements {
     pub fn typing(&self) -> bool {
         matches!(self.stage, Some(Stage::Account(_) | Stage::Password(..)))
     }
+
+    /// Which field of its own the board belongs over, where it has one.
+    ///
+    /// Two fields, asked for in turn, and each of them owed a keyboard: the
+    /// board that came up for the username must not count as the password's,
+    /// or somebody who put it away over the first — which is what Start does —
+    /// reaches the second with no way to type into it. See
+    /// [`crate::keyboard::Field`].
+    pub fn field(&self) -> Option<crate::keyboard::Field> {
+        match self.stage {
+            Some(Stage::Account(_)) => Some(crate::keyboard::Field::step("retroachievements", 0)),
+            Some(Stage::Password(..)) => Some(crate::keyboard::Field::step("retroachievements", 1)),
+            _ => None,
+        }
+    }
     pub fn type_into(&mut self, stroke: crate::keyboard::Stroke) -> crate::steam::Typed {
         use crate::{keyboard::Stroke, steam::Typed};
         if !self.typing() {
@@ -1152,17 +1167,17 @@ mod tests {
         assert!(lines.iter().any(|l| matches!(l,dialog::Line::Note(text) if text=="Enter your RetroAchievements username.")));
         let mut osk = crate::keyboard::Osk::default();
         osk.set_controller_in_hand(false);
-        osk.offer_shell_field(client.typing());
+        osk.offer_shell_field(client.field());
         assert!(!osk.is_open());
         for c in "Alice".chars() {
             client.type_into(crate::keyboard::Stroke::Char(c));
-            osk.offer_shell_field(client.typing());
+            osk.offer_shell_field(client.field());
             assert!(!osk.is_open(), "a field redraw reopened the keyboard");
         }
         client.submit();
         for c in "secret".chars() {
             client.type_into(crate::keyboard::Stroke::Char(c));
-            osk.offer_shell_field(client.typing());
+            osk.offer_shell_field(client.field());
             assert!(!osk.is_open(), "a field redraw reopened the keyboard");
         }
         let (lines, _) = client.panel().unwrap();
@@ -1178,6 +1193,51 @@ mod tests {
         assert!(!client.typing());
         assert!(client.panel().is_none());
     }
+    /// The bug this guards made signing in to RetroAchievements impossible
+    /// from the controller alone — the same bug as the Steam sign-in's, in the
+    /// other panel of this shell that asks for two things in a row. Start
+    /// finishes the username and takes the board with it; the password field
+    /// is a different field and is owed a board of its own.
+    #[test]
+    fn the_password_field_brings_up_a_board_after_the_username_was_finished() {
+        let (mut client, _) = client();
+        client.begin();
+        let mut osk = crate::keyboard::Osk::default();
+        osk.set_controller_in_hand(true);
+        assert!(
+            osk.offer_shell_field(client.field()),
+            "the username's own board"
+        );
+        for c in "Alice".chars() {
+            client.type_into(crate::keyboard::Stroke::Char(c));
+            assert!(
+                !osk.offer_shell_field(client.field()),
+                "a redraw reopened it"
+            );
+        }
+
+        // Start: Enter into the field, and the board away with it.
+        osk.submit(0);
+        assert!(!osk.is_open());
+        client.submit();
+
+        assert!(
+            osk.offer_shell_field(client.field()),
+            "the password field came up with no keyboard"
+        );
+        assert!(osk.is_open());
+        assert!(osk.types_here(), "a password goes nowhere but the shell");
+        assert_ne!(
+            client.field(),
+            None,
+            "the password field does not want a keyboard at all"
+        );
+
+        // The two fields really are two fields.
+        client.cancel();
+        assert_eq!(client.field(), None, "a cancelled sign-in has no field");
+    }
+
     #[test]
     fn steam_games_hide_setup_even_when_search_has_no_matches() {
         let (mut client, _) = client();

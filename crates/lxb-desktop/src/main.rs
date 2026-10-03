@@ -16145,7 +16145,8 @@ impl Shell {
         self.compressing = Some(asked);
         // The board comes up with the field, on the terms a sign-in's does:
         // once, and not for somebody who has shown they have a keyboard.
-        self.osk.offer_shell_field(true);
+        self.osk
+            .offer_shell_field(Some(keyboard::Field::only("compress")));
         self.sync_surface_state();
         self.needs_redraw = true;
     }
@@ -16172,7 +16173,7 @@ impl Shell {
             return;
         };
         let (kinds, chosen) = (asked.kinds(), asked.chosen());
-        self.osk.offer_shell_field(false);
+        self.osk.offer_shell_field(None);
         self.sync_surface_state();
         if !self.dialog.descend(kinds, chosen) {
             tracing::warn!("there was no list of kinds to step into");
@@ -16210,7 +16211,8 @@ impl Shell {
         if self.compressing.is_none() {
             return;
         }
-        self.osk.offer_shell_field(true);
+        self.osk
+            .offer_shell_field(Some(keyboard::Field::only("compress")));
         self.sync_surface_state();
         self.needs_redraw = true;
     }
@@ -16281,7 +16283,7 @@ impl Shell {
             from: asked.from,
         });
         self.dismiss_password_board();
-        self.osk.offer_shell_field(false);
+        self.osk.offer_shell_field(None);
         // The button held the panel so that a refused name could be said on
         // it; the name passed, so the panel goes now — after the press, as it
         // would have from a button that did not hold.
@@ -20080,7 +20082,7 @@ impl Shell {
                 self.updates.set_aside();
                 // The board that came up for the panel's own field goes
                 // with it; the question raises its own.
-                self.osk.offer_shell_field(false);
+                self.osk.offer_shell_field(None);
             }
             self.ask_to_authenticate(request);
         }
@@ -20788,7 +20790,7 @@ impl Shell {
         self.ps3_setup_panel = false;
         self.ps3_asked_remove = None;
         self.ps3_asked_clear = None;
-        self.osk.offer_shell_field(false);
+        self.osk.offer_shell_field(None);
         // A core offered and not answered is an offer given up on; a fetch
         // already running is not, and goes on behind the bar with the row
         // saying so. What is dropped here is only the shell's belief that its
@@ -27735,7 +27737,7 @@ impl Shell {
             );
             self.retroachievement_buttons = commands;
         }
-        self.osk.offer_shell_field(self.retroachievements.typing());
+        self.osk.offer_shell_field(self.retroachievements.field());
         self.sync_surface_state();
         self.needs_redraw = true;
     }
@@ -28237,7 +28239,7 @@ impl Shell {
                 self.close_dialog();
             }
             self.steam_buttons.clear();
-            self.osk.offer_shell_field(false);
+            self.osk.offer_shell_field(None);
             return;
         };
 
@@ -28258,7 +28260,7 @@ impl Shell {
 
         // Rendering the field is not an explicit request to reopen the board.
         // Honour physical typing and manual dismissal across login updates.
-        self.osk.offer_shell_field(panel.typing);
+        self.osk.offer_shell_field(panel.field);
         self.sync_surface_state();
         self.needs_redraw = true;
     }

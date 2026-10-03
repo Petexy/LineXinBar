@@ -177,6 +177,14 @@ pub struct Updates {
     /// Where the terminal frame's window is in the transcript.
     scroll: Scroll,
     pub typing: bool,
+    /// How many questions this panel has put up a field for.
+    ///
+    /// Only ever compared, and only so the board can tell one tool's question
+    /// from the next — see [`crate::keyboard::Field`]. A tool asks more than
+    /// once: a password typed wrongly is asked for again, and the second
+    /// question is owed a keyboard whether or not the first one's was put
+    /// away.
+    asked: u32,
     typed: Secret,
     /// The line of output a Yes or No was the answer to. A tool that echoes
     /// the answer leaves its question on the screen with a `y` after it,
@@ -264,6 +272,7 @@ impl Updates {
             view: View::Job,
             scroll: Scroll::Following,
             typing: false,
+            asked: 0,
             typed: Secret::default(),
             answered: None,
             history: vec![],
@@ -414,7 +423,14 @@ impl Updates {
     }
     pub fn edit(&mut self) {
         self.typing = true;
+        self.asked = self.asked.wrapping_add(1);
         self.typed = Secret::default();
+    }
+
+    /// Which field of its own the board belongs over, where there is one.
+    pub fn field(&self) -> Option<crate::keyboard::Field> {
+        self.typing
+            .then(|| crate::keyboard::Field::step("updates", self.asked))
     }
     /// Answer the question at the end of the tool's output with a `y` or an
     /// `n`, which is what every package manager's confirmation takes, so
@@ -1798,7 +1814,7 @@ impl crate::Shell {
             );
             self.updates.buttons = commands;
         }
-        self.osk.offer_shell_field(self.updates.typing);
+        self.osk.offer_shell_field(self.updates.field());
         self.sync_surface_state();
         self.needs_redraw = true;
     }

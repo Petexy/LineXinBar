@@ -645,6 +645,72 @@ because there is no application to receive the keycodes. That is deliberate: a
 shortcut that silently refuses on some screens is harder to learn than one that
 visibly does nothing.
 
+### Which key the board sends
+
+The keymap the board uploads gives every stroke it can send a key of its own,
+with one keysym on it and no shift level: the board decides what a key means,
+so a capital is a key of its own rather than a letter with Shift held, and
+nothing can be left latched in an application when the keyboard goes away
+mid-word.
+
+Which *keycode* each of those keys carries is not arbitrary, and used to be.
+Two kinds of key have to be told apart:
+
+- A character key is known by the symbol on it. Which key of a keyboard carries
+  `ę` is a fact about the layout, not about the keyboard, and an application
+  asking what was typed reads the symbol. The board still puts the unshifted
+  face of each character on the key the session's own layout has it on, so that
+  a client reading these codes against the session's keymap — see below — gets
+  the letter that was pressed rather than a different one. The shifted and
+  AltGr faces cannot be placed that way, because the board holds no Shift.
+- Space, Enter, Tab, Backspace, Escape, the function row and the arrows are
+  known by their *place*. Every toolkit and every game asks whether Space was
+  pressed — the key in the middle of the bottom row — and asks it of the
+  keycode. These are sent from the keycode a real keyboard sends them from, on
+  every layout.
+
+The second rule is a fix rather than a nicety. The board used to hand its
+keycodes out in the order its own alphabet came out in, and that order moves
+with the layout: a layout reaching more accented letters has more strokes
+before the bottom row, where the space bar is. So the space bar went out as a
+different key on every keyboard, and read against the session's own keymap it
+was Delete on a US layout, nothing at all on German, Austrian, Lithuanian,
+Estonian, Swedish, Italian and US-International, and Suspend on Polish and
+French.
+
+A client reads these codes against the session's keymap whenever the board's
+own has not reached it. A compositor passes a virtual keyboard's keymap on only
+when it differs from the one in force, so the shell hands the same keymap over
+again — with one spare key that types nothing, alternating, so that it is never
+a keymap the compositor already holds — whenever the board appears, whenever
+the cursor moves to another field, and whenever the session changes layout. A
+client that binds its keyboard between two of those moments is holding the
+session's keymap, which is why where the keys sit matters at all.
+
+### The shell's own fields
+
+A field the shell draws itself — a Steam account name and password, a
+RetroAchievements username and password, a Wi-Fi password, an administrator's
+password, the name of an archive — gets the board without any of the protocols
+above, because there is no application involved. Nothing it types is sent
+through the virtual keyboard either: the keystroke is handed back to the shell
+and put in the field, since a password sent through the virtual keyboard would
+go to whichever client happens to hold the keys.
+
+The board is offered **once per field**, and the distinction matters:
+
+- Drawing the same field again is not a request for the board, so putting it
+  away over a field keeps it away for that field however many times the panel
+  redraws.
+- The next field is a different field. A sign-in that asks for an account name
+  and then a password gets a board for each, whichever way the one before it was
+  finished — with Start, which is Enter and the board away with it, or with the
+  key at the board's bottom right and then the button on the panel. The same
+  question asked twice, such as a password the system did not accept, counts as
+  two fields for the same reason.
+- Somebody who has shown they have a keyboard of their own is still never
+  offered the board for any of them. The shortcut above still summons it.
+
 ### The corner hint
 
 When a field has the cursor, the guide menu is closed and the keyboard is not
