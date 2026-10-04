@@ -169,6 +169,13 @@ pub struct ControllerInput {
     /// the session that owns the machine may. See
     /// [`ControllerInput::taking_from_applications`].
     takes_from_applications: bool,
+    /// What was answered in the last [`COINCIDENCE`], and which controller each
+    /// press arrived on. See [`answer`], which is the whole of what this is
+    /// for: one press reported by two devices is answered once.
+    answered: Vec<(Action, Arrived, Duration)>,
+    /// Pads already named in the journal as repeating another controller, so
+    /// that each is named once rather than on every press.
+    copies: Vec<gilrs::GamepadId>,
 }
 
 /// What the shell has taken from applications, and whether it is waiting to
@@ -205,6 +212,34 @@ enum Touched {
     SteamController,
 }
 
+/// How close together two reports of the same press have to be to be one
+/// press, rather than two.
+///
+/// A copy arrives milliseconds after the pad it was copied from — ten, on the
+/// Steam Deck, measured with two logs side by side. A person pressing the same
+/// button twice on purpose takes far longer than this, even mashing it; and a
+/// person pressing it twice on *two different controllers* inside a sixth of a
+/// second is not a thing anybody does on purpose at all.
+const COINCIDENCE: Duration = Duration::from_millis(150);
+
+/// Which controller one press arrived on.
+///
+/// Not the question [`Touched`] answers. That one names the pad a hand is on,
+/// which is about people; this one names where a press came in, which is about
+/// devices — so that the same press arriving a second time somewhere else can
+/// be told from a second press.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Arrived {
+    /// A pad GilRs is offering, by its id.
+    Pad(gilrs::GamepadId),
+    /// The Steam Controller, the Deck's controls or the Steam Controller 2,
+    /// read from the raw report rather than through any gamepad node.
+    SteamController,
+    /// The guard, which holds the guide button of every pad it took and is the
+    /// only place that button arrives. See [`crate::pad_guard`].
+    Guard,
+}
+
 impl ControllerInput {
     pub fn new(enabled: bool) -> Self {
         if !enabled {
@@ -219,6 +254,8 @@ impl ControllerInput {
                 taken: Taken::default(),
                 raw_buttons_held: false,
                 takes_from_applications: false,
+                answered: Vec::new(),
+                copies: Vec::new(),
                 pad: SteamPad::new(false),
                 guard: PadGuard::new(false),
             };
@@ -238,6 +275,8 @@ impl ControllerInput {
                     taken: Taken::default(),
                     raw_buttons_held: false,
                     takes_from_applications: false,
+                    answered: Vec::new(),
+                    copies: Vec::new(),
                     pad: SteamPad::new(true),
                     guard: PadGuard::new(true),
                 }
@@ -254,6 +293,8 @@ impl ControllerInput {
                     taken: Taken::default(),
                     raw_buttons_held: false,
                     takes_from_applications: false,
+                    answered: Vec::new(),
+                    copies: Vec::new(),
                     // Still worth watching: this pad's Steam button never came
                     // through GilRs in the first place, so whatever stopped
                     // GilRs from starting has not cost us this.
@@ -496,6 +537,12 @@ impl ControllerInput {
         // last, once every button that arrived in the same eight milliseconds
         // has had its chance to claim the hold. Doing both here would open the
         // guide on a screenshot chord whose two halves landed in one poll.
+        // And what has already been answered, carried out of the field and
+        // back into it for the same reason `chorded` is: every one of the
+        // pushes below happens while GilRs is borrowed. See [`answer`].
+        let mut answered = std::mem::take(&mut self.answered);
+        let mut copies = std::mem::take(&mut self.copies);
+
         let guide = self.guard.take_edges();
         let guide_held = self.guard.guide_held();
         stirred |= guide.pressed || guide_held;
@@ -522,7 +569,15 @@ impl ControllerInput {
             {
                 self.last_touched = Some(Touched::SteamController);
             }
-            actions.extend(pad_actions(frame, &mut chorded));
+            for action in pad_actions(frame, &mut chorded) {
+                answer(
+                    &mut actions,
+                    &mut answered,
+                    action,
+                    Arrived::SteamController,
+                    now,
+                );
+            }
             if !frame.pressed.is_empty() {
                 tracing::debug!(pressed = ?frame.pressed, "steam controller buttons");
             }
@@ -624,7 +679,31 @@ impl ControllerInput {
                             "controller button"
                         );
                         if let Some(action) = action {
-                            actions.push(action);
+                            let answered_it = answer(
+                                &mut actions,
+                                &mut answered,
+                                action,
+                                Arrived::Pad(event.id),
+                                now,
+                            );
+                            // Named once, and at a level somebody reading a
+                            // journal will see. A pad whose every press is
+                            // already answered elsewhere is a copy of another
+                            // one — Valve's client makes such a pad for a game
+                            // — and which device it is is the one thing this
+                            // shell cannot work out for itself. See [`answer`].
+                            if !answered_it && !copies.contains(&event.id) {
+                                copies.push(event.id);
+                                let gamepad = gilrs.gamepad(event.id);
+                                tracing::info!(
+                                    id = %event.id,
+                                    name = gamepad.name(),
+                                    vendor = ?gamepad.vendor_id(),
+                                    product = ?gamepad.product_id(),
+                                    "this pad repeats a controller the shell already reads; \
+                                     its presses are answered once"
+                                );
+                            }
                         }
                     }
                     EventType::ButtonReleased(button, code) => {
@@ -637,7 +716,13 @@ impl ControllerInput {
                         // See [`Sticks::read`].
                         if is_guide(button, code) {
                             if !chorded {
-                                actions.push(Action::Guide);
+                                answer(
+                                    &mut actions,
+                                    &mut answered,
+                                    Action::Guide,
+                                    Arrived::Pad(event.id),
+                                    now,
+                                );
                             }
                             chorded = false;
                         }
@@ -669,7 +754,13 @@ impl ControllerInput {
         // hold nothing claimed is a tap. See the drain at the top.
         if guide.released {
             if !chorded {
-                actions.push(Action::Guide);
+                answer(
+                    &mut actions,
+                    &mut answered,
+                    Action::Guide,
+                    Arrived::Guard,
+                    now,
+                );
             }
             chorded = false;
         }
@@ -719,6 +810,8 @@ impl ControllerInput {
         }
         let arrows = self.arrow_edges(sticks.dpad);
         self.guide_chorded = chorded;
+        self.answered = answered;
+        self.copies = copies;
 
         if !active {
             self.navigation.reset();
@@ -1138,6 +1231,58 @@ fn is_a_copy(gamepad: &gilrs::Gamepad<'_>) -> bool {
     let (vendor, product) = (gamepad.vendor_id(), gamepad.product_id());
     crate::steam_hid::is_a_stand_in(vendor, product)
         || crate::pads::made_by_steam_input(vendor, product)
+}
+
+/// Answer one press — unless it is a press already answered, arriving a second
+/// time on another controller.
+///
+/// [`is_a_copy`] above knows the two devices a copy has been seen on and skips
+/// them by their ids. This is the same rule without the list, and it is here
+/// because the list ran out: Valve's client makes its pad for a game with
+/// whatever ids the client of the day uses, a shell cannot be shipped knowing
+/// all of them, and a user whose copy carries different ones gets every press
+/// twice with no sign of why. Issue #11 is that user — a Steam Controller,
+/// where `A` on the overview's *Start screen* showed the start screen and then
+/// started the application under the highlight, one bumper press moved two
+/// displays, and a button that toggles something toggled it back.
+///
+/// So the question asked is not *which* device this is but whether this press
+/// has already been answered somewhere else a moment ago. One press reported
+/// twice is answered once, whatever is doing the reporting — Steam Input's
+/// pad, a copy made by something this shell has never heard of, or a pad read
+/// through two drivers at once while a source is changing hands.
+///
+/// **What this deliberately does not do** is collapse two presses on one
+/// controller. A person mashing `A` is pressing `A` repeatedly and means every
+/// one of them, and the source is how that is told apart: a repeat from the
+/// same device is always answered. The cost is a second player who presses the
+/// same button on a second pad inside [`COINCIDENCE`] of the first — their
+/// press is read as the copy it looks exactly like. That is the same trade the
+/// rest of this module already makes: see [`pushed_pad`], where two hands on
+/// two pads are one answer by design.
+fn answer(
+    actions: &mut Vec<Action>,
+    answered: &mut Vec<(Action, Arrived, Duration)>,
+    action: Action,
+    from: Arrived,
+    now: Duration,
+) -> bool {
+    answered.retain(|(_, _, at)| now.saturating_sub(*at) < COINCIDENCE);
+    if let Some((_, first, _)) = answered
+        .iter()
+        .find(|(had, by, _)| *had == action && *by != from)
+    {
+        tracing::debug!(
+            ?action,
+            ?from,
+            ?first,
+            "the same press on a second controller: answered once"
+        );
+        return false;
+    }
+    answered.push((action, from, now));
+    actions.push(action);
+    true
 }
 
 /// Whether a pad GilRs is offering is one that applications read in place of
@@ -3085,6 +3230,8 @@ mod hardware_tests {
             taken: Taken::default(),
             raw_buttons_held: false,
             takes_from_applications: true,
+            answered: Vec::new(),
+            copies: Vec::new(),
         }
     }
 
@@ -3254,6 +3401,171 @@ mod hardware_tests {
             "the same press on any other pad is: {from_the_pad:?}"
         );
     }
+    /// One press reported by two controllers is answered once, and two presses
+    /// on one controller are answered twice.
+    ///
+    /// The rule [`answer`] holds, asked of it directly. It is the id-free half
+    /// of `a_press_steam_input_repeated_is_not_answered_twice` above: that one
+    /// knows the copy by its ids, and this one knows nothing about either
+    /// device except that they are two.
+    #[test]
+    fn the_same_press_on_two_controllers_is_answered_once() {
+        let at = Duration::from_millis;
+        let mut answered = Vec::new();
+        let mut actions = Vec::new();
+
+        // The pad, and a copy of it ten milliseconds later — the Deck's
+        // measured distance.
+        answer(
+            &mut actions,
+            &mut answered,
+            Action::Launch,
+            Arrived::SteamController,
+            at(1000),
+        );
+        answer(
+            &mut actions,
+            &mut answered,
+            Action::Launch,
+            Arrived::Guard,
+            at(1010),
+        );
+        assert_eq!(actions, vec![Action::Launch], "one press, answered once");
+
+        // The same button again on the controller it was pressed on: a second
+        // press, and meant.
+        answer(
+            &mut actions,
+            &mut answered,
+            Action::Launch,
+            Arrived::SteamController,
+            at(1050),
+        );
+        assert_eq!(
+            actions,
+            vec![Action::Launch, Action::Launch],
+            "a repeat on the same controller is a second press"
+        );
+
+        // And far enough apart to be two presses wherever they came from.
+        answer(
+            &mut actions,
+            &mut answered,
+            Action::Launch,
+            Arrived::Guard,
+            at(1050) + COINCIDENCE,
+        );
+        assert_eq!(actions.len(), 3, "past the window, both are answered");
+
+        // Two different buttons at once are two presses, not a copy.
+        let mut actions = Vec::new();
+        let mut answered = Vec::new();
+        answer(
+            &mut actions,
+            &mut answered,
+            Action::Left,
+            Arrived::SteamController,
+            at(2000),
+        );
+        answer(
+            &mut actions,
+            &mut answered,
+            Action::Back,
+            Arrived::Guard,
+            at(2005),
+        );
+        assert_eq!(actions, vec![Action::Left, Action::Back]);
+    }
+
+    /// And the same thing end to end, on two pads the shell has no list for.
+    ///
+    /// This is issue #11 made in `uinput`: a controller, and something else on
+    /// the machine repeating its presses under ids this shell was never
+    /// shipped knowing. Before [`answer`] the shell answered both — which in
+    /// the overview showed the start screen and then launched the tile under
+    /// its highlight, and on the bumpers moved two displays for one press.
+    #[test]
+    fn a_press_two_unknown_pads_both_report_is_answered_once() {
+        if !uinput_is_available() {
+            crate::skipped("/dev/uinput cannot be opened here");
+            return;
+        }
+        let _guard = crate::pad_guard::serial();
+        let _driver = crate::steam_hid::serial();
+        const ONE: &str = "LineXinBar Test Pad One";
+        const TWO: &str = "LineXinBar Test Pad Two";
+        let (mut one, one_node) =
+            make_pad_as(ONE, InputId::new(BusType::BUS_USB, 0x9a7e, 0x4d22, 0x0001))
+                .expect("a test pad can be made");
+        let (mut two, two_node) =
+            make_pad_as(TWO, InputId::new(BusType::BUS_USB, 0x9a7e, 0x4d23, 0x0001))
+                .expect("a second test pad can be made");
+
+        let deadline = Instant::now() + PATIENCE;
+        let mut gilrs = loop {
+            if std::fs::File::open(&one_node).is_ok() && std::fs::File::open(&two_node).is_ok() {
+                if let Ok(gilrs) = Gilrs::new() {
+                    let seen = |name: &str| gilrs.gamepads().any(|(_, pad)| pad.os_name() == name);
+                    if seen(ONE) && seen(TWO) {
+                        break gilrs;
+                    }
+                }
+            }
+            if Instant::now() >= deadline {
+                crate::skipped("the test pads never reached GilRs");
+                return;
+            }
+            std::thread::sleep(Duration::from_millis(50));
+        };
+        settle(&mut gilrs);
+
+        let mut input = reading_only(gilrs);
+        let started = Instant::now();
+        let press = |pad: &mut VirtualDevice| {
+            pad.emit(&[*KeyEvent::new(KeyCode::BTN_EAST, 1)])
+                .expect("the test pad can press B");
+            pad.emit(&[*KeyEvent::new(KeyCode::BTN_EAST, 0)])
+                .expect("and let go of it");
+        };
+        let drain = |input: &mut ControllerInput, how_long: Duration| {
+            let mut actions = Vec::new();
+            let until = Instant::now() + how_long;
+            while Instant::now() < until {
+                actions.extend(input.poll(started.elapsed(), true).actions);
+                std::thread::sleep(POLL_INTERVAL);
+            }
+            actions
+        };
+
+        // Both pads report the press, as a controller and its copy do.
+        press(&mut one);
+        press(&mut two);
+        let together = drain(&mut input, Duration::from_millis(300));
+        assert_eq!(
+            together
+                .iter()
+                .filter(|action| **action == Action::Back)
+                .count(),
+            1,
+            "one press on two pads is answered once: {together:?}"
+        );
+
+        // And two presses far enough apart are two presses, on whichever pad.
+        press(&mut one);
+        let first = drain(&mut input, COINCIDENCE + Duration::from_millis(100));
+        press(&mut two);
+        let second = drain(&mut input, Duration::from_millis(300));
+        let answered = first
+            .iter()
+            .chain(second.iter())
+            .filter(|action| **action == Action::Back)
+            .count();
+        assert_eq!(
+            answered, 2,
+            "past the window both are answered: {first:?} then {second:?}"
+        );
+    }
+
     /// A pad shaped like an Xbox one — two sticks, two triggers as axes — under
     /// ids of the caller's choosing.
     fn make_xbox_shaped(name: &str, id: InputId) -> std::io::Result<(VirtualDevice, PathBuf)> {

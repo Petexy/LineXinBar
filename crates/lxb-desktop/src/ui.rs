@@ -2170,6 +2170,30 @@ fn corner_run(
     ink
 }
 
+/// The widest character a clock is written in, as a share of its size: what a
+/// run is reserved by when the atlas cannot measure it yet.
+const WIDEST_FIGURE: f32 = 0.6;
+
+/// How wide a clock comes out at size 1.0 — the hour in the guide's header, or
+/// the corner's own.
+///
+/// Measured from the advances the atlas holds, which is what shaping will
+/// answer: every character a clock can be written in is in the corner's closed
+/// set (`crate::gpu::corner_can_draw`, held to it for all nine languages and
+/// both clocks by `i18n::tests::every_clock_format_is_drawn_from_the_corners_set`),
+/// and no pair of them kerns.
+///
+/// A character still missing from the atlas — the first frames of a session
+/// are drawn from a provisional one — is reserved [`WIDEST_FIGURE`] instead.
+/// An unknown width must never be read as no width: that is the reading that
+/// puts the day back underneath the hour.
+fn clock_run_width(run: impl Iterator<Item = char> + Clone, slots: &dyn SlotLookup) -> f32 {
+    run.clone()
+        .map(|letter| slots.letter(letter).map(|letter| letter.advance))
+        .sum::<Option<f32>>()
+        .unwrap_or_else(|| run.count() as f32 * WIDEST_FIGURE)
+}
+
 /// Which of the three fans a band is drawn with.
 fn signal_glyph(signal: Signal) -> &'static str {
     match signal {
@@ -4948,15 +4972,31 @@ pub fn build_guide(view: GuideView, width: f32, height: f32) -> Scene {
     // narrow, and a fourth stacked line of the same left-aligned text would
     // read as a list rather than as a heading. Dropped by the difference in
     // the two sizes so both sit on one baseline instead of one hanging.
+    //
+    // It begins where the hour ends. Both used to be given the whole width of
+    // the column — the hour written from the left of it, the day from the
+    // right — which is two runs over the same paper as soon as the two of them
+    // are wider than the column is. The column is a share of the display's
+    // *width* and the type on it is a share of its *height*, so a display that
+    // is tall for how wide it is runs out of room for both without anything
+    // being wrong with either; reported on a 1200×1920 screen standing on its
+    // side, where `13:11` and `Tue 29 Sep` were printed through one another
+    // (issue #11). Measured rather than divided between them by some fixed
+    // share, so a short hour leaves the day the rest of the line and the day
+    // is shortened — `Cut::Tail`, as it always was — only where even that is
+    // not enough.
     if let Some(clock) = &view.clock {
+        let hour = clock_run_width(clock.time.chars(), view.slots) * title_size;
+        let gap = GUIDE_PADDING * scale * 0.35;
+        let kept = (hour + gap).min(text_w);
         texts.push(Text {
             content: clock.date.to_string(),
-            x: sidebar_x + text_x,
+            x: sidebar_x + text_x + kept,
             y: 52.0 * scale + (title_size - subtitle_size) * 0.72,
             size: subtitle_size,
             color: theme.text_soft.a(0.7 * slide),
             bold: false,
-            max_width: text_w,
+            max_width: text_w - kept,
             align: TextAlign::Right,
             clip: None,
             halo: 0.0,
@@ -23270,6 +23310,46 @@ mod tests {
         )
     }
 
+    /// The same scene with a clock of the caller's choosing, for the test about
+    /// the hour and the day sharing a line.
+    fn guide_clock_scene(guide: &Guide, time: &str, date: &str, width: f32, height: f32) -> Scene {
+        let items = guide.items(false);
+        let level = |item: Item, value: f32| {
+            items.contains(&item).then_some(Level {
+                value,
+                muted: false,
+            })
+        };
+        build_guide(
+            GuideView {
+                guide,
+                clock: Some(Clock { time, date }),
+                volume: level(Item::Volume, 0.35),
+                brightness: level(Item::Brightness, 0.85),
+                stick_pointer: false,
+                do_not_disturb: false,
+                unread: 0.0,
+                battery: None,
+                battery_percent: false,
+                app: Some("Celeste"),
+                close_target: None,
+                screen: None,
+                cards: &[],
+                highlight: None,
+                menu_highlight: None,
+                behind: 0.0,
+                card_age: guide.age(),
+                power: 0.0,
+                time: 0.0,
+                elsewhere: 0.0,
+                legend: None,
+                slots: &AllSlots,
+            },
+            width,
+            height,
+        )
+    }
+
     /// The same scene on a display of any size, for the tests about the ones
     /// too narrow for the column and the cards side by side.
     fn guide_scene_on(
@@ -24806,6 +24886,67 @@ mod tests {
         blind.clock = None;
         let scene = build_guide(blind, 1920.0, 1080.0);
         assert!(scene.texts.iter().any(|text| text.content == "LineXinBar"));
+    }
+
+    /// The day begins after the hour, on every display and in every language.
+    ///
+    /// Both of them used to be given the whole width of the column, the hour
+    /// written from its left and the day from its right, and nothing said what
+    /// happened when the two of them wanted the same paper. What happened is
+    /// that they were printed through each other — reported on 2026-09-29
+    /// against a 1200×1920 screen standing on its side, where the column is a
+    /// share of a small *width* while the type on it is a share of a large
+    /// *height* (issue #11). The column has been widened on a display like that
+    /// since, which takes the collision from certain to merely close; this is
+    /// what takes it to impossible.
+    ///
+    /// The longest clock and the longest day the shell can be asked to write:
+    /// a twelve-hour hour, and the Portuguese date, which is the only one with
+    /// a word in the middle of it.
+    #[test]
+    fn the_day_is_never_written_over_the_hour() {
+        for (width, height) in [
+            (1920.0, 1080.0),
+            // The reporter's two screens, the second standing on its side.
+            (1200.0, 1920.0),
+            (1080.0, 1920.0),
+            // A small nested window, and a very tall column.
+            (800.0, 600.0),
+            (1280.0, 1024.0),
+            (3840.0, 2160.0),
+        ] {
+            for (time, date) in [("15:18", "Tue 5 Aug"), ("12:45 PM", "qua. 28 de set.")] {
+                let mut guide = Guide::default();
+                guide.open();
+                guide.backdate_open(2.0);
+                let scene = guide_clock_scene(&guide, time, date, width, height);
+                let text = |content: &str| {
+                    scene
+                        .texts
+                        .iter()
+                        .find(|text| text.content == content)
+                        .unwrap_or_else(|| {
+                            panic!("{content:?} should head the column on {width}×{height}")
+                        })
+                };
+                let hour = text(time);
+                let day = text(date);
+                let ink = clock_run_width(time.chars(), &AllSlots) * hour.size;
+                assert!(
+                    day.x >= hour.x + ink,
+                    "{width}×{height}, {time:?} and {date:?}: the day starts at {} and the \
+                     hour runs to {}",
+                    day.x,
+                    hour.x + ink
+                );
+                assert!(
+                    day.max_width >= 0.0,
+                    "and the day is still given a box to be written in"
+                );
+                // Still one line: the day beside the hour, not under it.
+                assert!((day.y - hour.y).abs() < hour.size);
+            }
+        }
     }
 
     /// A bar is a groove with a value in it, so where it was pressed is the

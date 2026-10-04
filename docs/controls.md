@@ -225,6 +225,29 @@ Deck that was one press of `A` on Close closing an application twice, ten
 milliseconds apart, and one press of `A` on Start screen bringing the start
 screen up and then starting the application under its highlight.
 
+**And the shell no longer has to know which pad is the copy.** Knowing Steam
+Input's pad by its ids is a list, and a list runs out: Valve's client makes
+that pad with whatever ids the client of the day uses, and a user whose copy
+carries different ones got every press twice with no sign of why — issue #11,
+where `A` on *Start screen* started the application under the start screen's
+highlight, one bumper press moved two displays, and a button that toggles
+something toggled it back. So the question asked of a press is no longer which
+device it came from but whether this press has already been answered somewhere
+else: **the same action, arriving on a second controller within 150 ms, is
+answered once**, whatever that controller is. It holds for Steam Input's pad,
+for a copy made by something this shell has never heard of, and for a pad read
+through two drivers at once while a source is changing hands.
+
+Two presses on *one* controller are still two presses — a person mashing `A`
+means every one of them, and the source is what tells the two cases apart — and
+a held direction still repeats, because a direction is read from the merged
+state of every pad rather than delivered by one. The cost is a second player
+pressing the same button on a second pad inside that 150 ms, whose press is
+read as the copy it looks exactly like; that is the same trade the shell
+already makes by taking one answer from however many pads are pushing. A pad
+whose presses turn out to be another's is named once in the journal: `this pad
+repeats a controller the shell already reads; its presses are answered once`.
+
 Three rules keep this from costing more than it is worth:
 
 - **A pad is never taken without being given back.** The grab and the stand-in
