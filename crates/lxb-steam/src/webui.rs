@@ -4354,15 +4354,17 @@ mod tests {
     /// only a fresh one means a running client has to be started again.
     #[test]
     fn exposing_says_whether_the_client_missed_it() {
-        // Held because `expose` writes a note saying whose the marker is, and
-        // where that note goes is `$XDG_STATE_HOME` — which the tidying tests
-        // below point at scratch directories of their own. Without this, a note
-        // written here lands in one of theirs and names a marker in another
-        // directory entirely, so the tidying reads the wrong path and leaves
-        // the marker it was asked about where it is. That is what
+        // A state directory of its own because `expose` writes a note saying
+        // whose the marker is, and where that note goes is `$XDG_STATE_HOME`.
+        // The guard half of this is what stops the note landing in a scratch
+        // directory one of the tidying tests below had pointed that variable
+        // at, where it would name a marker in another directory entirely and
+        // the tidying would read the wrong path — that is what
         // `the marker outlived the wake that left it` was, about one run of
-        // this crate's tests in three.
-        let _turn = crate::one_at_a_time_with_the_environment();
+        // this crate's tests in three. The directory half is what stops the
+        // note being written into the real state directory belonging to
+        // whoever is running the suite. See [`crate::AStateDirectoryOfItsOwn`].
+        let _state = crate::a_state_directory_of_its_own("expose");
         let root = std::env::temp_dir().join(format!("lxb-expose-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&root);
         std::fs::create_dir_all(&root).unwrap();
@@ -4548,6 +4550,10 @@ mod tests {
     /// the client is learned after it has the client to itself.
     #[test]
     fn a_second_flow_waits_at_the_door_before_it_asks_anything() {
+        // A state directory of its own because taking the wizard writes a lock
+        // file under `$XDG_STATE_HOME`; see
+        // [`crate::AStateDirectoryOfItsOwn`].
+        let _state = crate::a_state_directory_of_its_own("the-door");
         let held = the_wizard(None);
 
         let (running, is_running) = std::sync::mpsc::channel();
@@ -4659,6 +4665,10 @@ mod tests {
             }
         }
 
+        // As in [`a_second_flow_waits_at_the_door_before_it_asks_anything`]:
+        // the wizard's lock file lives under `$XDG_STATE_HOME`. See
+        // [`crate::AStateDirectoryOfItsOwn`].
+        let _state = crate::a_state_directory_of_its_own("ground-moved");
         let held = the_wizard(None);
         let moved = AtomicBool::new(false);
         let (running, is_running) = std::sync::mpsc::channel();
@@ -5188,8 +5198,22 @@ mod tests {
     /// the handle it registered with before anything here ran. A press is the
     /// client calling every callback still registered, with the key and the
     /// game's app. Skipped where there is no `node` to run it in.
+    ///
+    /// ## Why this one holds the environment guard
+    ///
+    /// It is the only test in this crate that starts a **child process**, and
+    /// starting one is touching process-global state in a way that is easy to
+    /// miss: between the fork and the `exec` the child holds a copy of every
+    /// descriptor this process has open, and an `flock` belongs to the open
+    /// file description rather than to the descriptor. So for the width of that
+    /// window a turn this process had already let go of is still held — by a
+    /// `node` on its way up — and
+    /// [`crate::turns::tests::a_turn_that_is_taken_is_not_free`], which asks
+    /// whether a turn nobody is holding can be taken, was refused and failed.
+    /// Taking the guard puts the two in a queue instead.
     #[test]
     fn the_overlay_stops_hearing_the_steam_button_and_nothing_else() {
+        let _turn = crate::one_at_a_time_with_the_environment();
         let script = format!(
             "const registered = [];
              globalThis.window = globalThis;

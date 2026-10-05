@@ -1670,9 +1670,32 @@ mod tests {
     /// coordinator died on start with a message about `SUN_LEN`. With a
     /// runtime directory the socket goes there and stays short whatever the
     /// state path is; without one the failure at least says what it is.
+    ///
+    /// ## The length of the machine's own temporary directory
+    ///
+    /// Asked, rather than assumed. The runtime directory this test makes goes
+    /// under `$TMPDIR`, and a socket under it has to fit in the same 108 bytes
+    /// everything here is about — so on a machine whose temporary directory is
+    /// itself long enough to use most of that, the first `unwrap` below is the
+    /// code answering correctly about a path this test chose and nothing is
+    /// learned. `/tmp` leaves ninety-odd bytes and a Nix builder's `/build`
+    /// more, so this runs where it is run; a continuous-integration checkout
+    /// nested forty directories deep is where it would not, and there it says
+    /// so rather than failing as though the code were wrong.
     #[test]
     fn the_socket_stays_short_under_a_long_state_directory() {
         let runtime = std::env::temp_dir().join(format!("lxb-updates-rt-{}", std::process::id()));
+        // `lxb-updates-` and sixteen hexadecimal digits and `.sock`, and the
+        // separator before it.
+        let longest_name = "lxb-updates-0000000000000000.sock".len() + 1;
+        if runtime.as_os_str().len() + longest_name >= 108 {
+            eprintln!(
+                "skipped: the_socket_stays_short_under_a_long_state_directory: \
+                 no Unix socket fits under this machine's temporary directory ({})",
+                runtime.display()
+            );
+            return;
+        }
         let _ = fs::remove_dir_all(&runtime);
         fs::create_dir_all(&runtime).unwrap();
         fs::set_permissions(&runtime, fs::Permissions::from_mode(0o700)).unwrap();

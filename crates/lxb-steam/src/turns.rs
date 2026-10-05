@@ -686,6 +686,38 @@ mod tests {
         let _ = std::fs::remove_dir_all(&state);
     }
 
+    /// Ask for the client's turn from a thread of its own, and leave nothing
+    /// behind holding it.
+    ///
+    /// A thread, because from the asking thread the process-local half would
+    /// deadlock rather than answer — and that is also the shape of the case:
+    /// another session asking while this one holds it.
+    ///
+    /// **The turn is let go of before the answer goes out, and the thread is
+    /// joined before this returns.** Both halves of that matter, and getting
+    /// either wrong is what [`a_turn_that_is_taken_is_not_free`]'s own note is
+    /// about: an asker that sends first and drops afterwards is an asker still
+    /// holding the client's turn when the test that started it has finished.
+    ///
+    /// The answer is waited for with a clock on it rather than for ever,
+    /// because a [`take_if_free`] that *waited* is the one defect this test
+    /// could not otherwise tell from a pass — and it is reached before the
+    /// join, so a stuck asker fails the test instead of hanging the suite.
+    fn asked_for_from_a_thread_of_its_own() -> bool {
+        let (answered, was_free) = std::sync::mpsc::channel();
+        let asker = std::thread::spawn(move || {
+            let turn = take_if_free(What::TheClient, Behalf::nothing());
+            let was_free = turn.is_some();
+            drop(turn);
+            let _ = answered.send(was_free);
+        });
+        let answer = was_free
+            .recv_timeout(Duration::from_secs(5))
+            .expect("take_if_free waited instead of answering");
+        asker.join().expect("the asker panicked");
+        answer
+    }
+
     /// `take_if_free` answers rather than waits, which is the whole of what the
     /// tidying at startup needs of it.
     ///
@@ -693,11 +725,27 @@ mod tests {
     /// one per name per process, so a test that asserts one is *free* is
     /// asserting about every other test running beside it — and `cargo test`
     /// runs them on threads of one process. Every test in this crate that takes
-    /// the client's turn holds [`crate::one_at_a_time_with_the_environment`]
-    /// first, as this one does, so they are in a queue; the wizard's is taken
-    /// by two tests in [`crate::webui`] that have no reason to hold that mutex
-    /// and correctly do not, and asserting the wizard was free here failed
-    /// whenever one of them was between its two halves.
+    /// a turn of any name holds [`crate::one_at_a_time_with_the_environment`]
+    /// first, as this one does, so they are in a queue.
+    ///
+    /// ## And nothing this test starts outlives it
+    ///
+    /// Which is the half that was wrong, and it broke a different test
+    /// entirely. Each asker used to send its answer and drop its turn
+    /// afterwards, so the instant this test had what it came for there was a
+    /// thread nobody had heard of still holding the client's turn — and this
+    /// test lets go of the environment guard immediately, which lets the next
+    /// one in. The next one was
+    /// [`crate::webui::tests::a_marker_left_behind_by_a_dead_session_is_taken_back_by_the_next`],
+    /// which asks for that same turn *without waiting* and reads a held one as
+    /// "somebody is inside a wake, so leave the marker alone" — correctly, for
+    /// a turn held by a session, and about a turn held by a stranded asker it
+    /// left the marker on the disk and failed.
+    ///
+    /// It was reported from a NixOS build, which is the useful part: the window
+    /// is microseconds wide and never opened on the machine this was written
+    /// on, and a builder with another core count landed in it. See
+    /// [`asked_for_from_a_thread_of_its_own`], which is where the fix is.
     #[test]
     fn a_turn_that_is_taken_is_not_free() {
         let _environment = crate::one_at_a_time_with_the_environment();
@@ -706,28 +754,14 @@ mod tests {
         unsafe { std::env::set_var("XDG_STATE_HOME", &state) };
 
         let held = take(What::TheClient, Behalf::nothing());
-
-        // From this thread the local mutex would deadlock rather than answer,
-        // so the second asker is a thread of its own — which is also the shape
-        // of the case: another session asking while this one holds it.
-        let (answered, was_free) = std::sync::mpsc::channel();
-        std::thread::spawn(move || {
-            let _ = answered.send(take_if_free(What::TheClient, Behalf::nothing()).is_some());
-        });
-        assert_eq!(
-            was_free.recv_timeout(Duration::from_secs(5)),
-            Ok(false),
+        assert!(
+            !asked_for_from_a_thread_of_its_own(),
             "a turn somebody was holding answered that it was free"
         );
 
         drop(held);
-        let (answered, was_free) = std::sync::mpsc::channel();
-        std::thread::spawn(move || {
-            let _ = answered.send(take_if_free(What::TheClient, Behalf::nothing()).is_some());
-        });
-        assert_eq!(
-            was_free.recv_timeout(Duration::from_secs(5)),
-            Ok(true),
+        assert!(
+            asked_for_from_a_thread_of_its_own(),
             "a turn nobody was holding would not be taken"
         );
 

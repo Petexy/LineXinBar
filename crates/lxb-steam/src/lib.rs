@@ -147,6 +147,75 @@ pub(crate) fn one_at_a_time_with_the_environment() -> std::sync::MutexGuard<'sta
     TURN.lock().unwrap_or_else(|held| held.into_inner())
 }
 
+/// The guard above, and a state directory of this test's own behind it.
+///
+/// For every test that reaches code which writes `$XDG_STATE_HOME`. Everything
+/// this crate remembers between runs lives there — the audit record (see
+/// [`audit`]), the note about Valve's debugging marker (see [`webui`]) and the
+/// turn locks (see [`turns`]) — and every one of those is *the user's*, one per
+/// machine. Three separate things go wrong without one of these, and only the
+/// first is obvious:
+///
+/// * The files are the user's. A test appending to the audit record writes a
+///   line into somebody's own account of what their session did to their
+///   Steam, and a test taking a turn leaves a lock file beside it.
+/// * `$XDG_STATE_HOME` is process-global and `cargo test` runs these on
+///   threads of one process, so a test that writes the state directory without
+///   this writes into whichever scratch directory a *properly guarded* test
+///   had pointed that variable at a moment earlier. That test then fails on a
+///   file it never wrote, which is a failure landing as far from its cause as
+///   a failure can land.
+/// * Nothing can be asserted about what is there, because what is there to
+///   begin with is whatever the machine happens to hold.
+///
+/// Both halves are needed. Taking [`one_at_a_time_with_the_environment`] is
+/// what makes the `set_var` sound; pointing the variable somewhere private is
+/// the other half, and a test holding only the guard still writes the real
+/// directory.
+#[cfg(test)]
+pub(crate) struct AStateDirectoryOfItsOwn {
+    at: std::path::PathBuf,
+    was: Option<std::ffi::OsString>,
+    /// Still held while the `Drop` below runs — a value's own `drop` body
+    /// comes before any of its fields are dropped — which is what makes the
+    /// `set_var` in there sound, and what puts the variable back the way it
+    /// was found before the next test is let in.
+    _turn: std::sync::MutexGuard<'static, ()>,
+}
+
+#[cfg(test)]
+impl Drop for AStateDirectoryOfItsOwn {
+    fn drop(&mut self) {
+        // SAFETY: the guard this value is still holding — it is dropped after
+        // this body runs — is what makes this the only thread touching the
+        // environment.
+        unsafe {
+            match self.was.take() {
+                Some(was) => std::env::set_var("XDG_STATE_HOME", was),
+                None => std::env::remove_var("XDG_STATE_HOME"),
+            }
+        }
+        let _ = std::fs::remove_dir_all(&self.at);
+    }
+}
+
+/// Take the guard and point `$XDG_STATE_HOME` at a directory named after this
+/// test, for as long as the caller keeps the value.
+#[cfg(test)]
+pub(crate) fn a_state_directory_of_its_own(name: &str) -> AStateDirectoryOfItsOwn {
+    let turn = one_at_a_time_with_the_environment();
+    let at = std::env::temp_dir().join(format!("lxb-state-{name}-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&at);
+    let was = std::env::var_os("XDG_STATE_HOME");
+    // SAFETY: the guard taken above, which the returned value holds.
+    unsafe { std::env::set_var("XDG_STATE_HOME", &at) };
+    AStateDirectoryOfItsOwn {
+        at,
+        was,
+        _turn: turn,
+    }
+}
+
 /// The account that is signed in.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Account {
@@ -6070,6 +6139,8 @@ mod tests {
     /// panel about a press nobody there made.
     #[test]
     fn a_job_that_outlived_its_account_is_not_reported() {
+        let _state = crate::a_state_directory_of_its_own("outlived");
+
         let (send, taken) = mpsc::channel();
         let mut watching = Watching::default();
         watching.fetching.insert(7, Moved::now());
@@ -7156,6 +7227,8 @@ mod tests {
     /// percentage until the session was restarted.
     #[test]
     fn a_download_that_says_it_is_running_and_is_not_says_so() {
+        let _state = crate::a_state_directory_of_its_own("stuck");
+
         let (send, taken) = mpsc::channel();
         let mut watching = Watching::default();
         watching.fetching.insert(7, Moved::now());

@@ -3512,6 +3512,15 @@ pub mod account {
         /// account is untouched in both files.
         #[test]
         fn it_signs_only_this_account_out() {
+            // [`sign_out`] reads the account list and writes all of it back, so
+            // it takes [`crate::turns::What::TheAccountList`] — and a turn's
+            // lock file lives under `$XDG_STATE_HOME`, which belongs to the
+            // whole process. Without this the lock went wherever the test
+            // running beside this one had just pointed that variable: the real
+            // state directory belonging to whoever is running the suite, or
+            // another test's scratch directory with an `flock` held on a file
+            // inside it. See [`crate::AStateDirectoryOfItsOwn`].
+            let _state = crate::a_state_directory_of_its_own("account-list");
             let root = std::env::temp_dir().join(format!("lxb-account-{}", std::process::id()));
             let _ = std::fs::remove_dir_all(&root);
             std::fs::create_dir_all(root.join("config")).unwrap();
@@ -5683,14 +5692,19 @@ mod tests {
     /// was the path that said so.
     #[test]
     fn a_first_start_makes_the_directory_it_needs() {
-        // Held because `expose` writes a note beside the marker saying whose it
-        // is, and where that note goes is `$XDG_STATE_HOME` — which the tests
-        // in `webui` point at scratch directories of their own. Without this
-        // the two write into each other: measured on this machine, about one
-        // run of `cargo test -p lxb-steam` in twelve failed in one of those
-        // tests, never in this one, which is what makes it worth writing down
-        // here rather than there.
-        let _turn = crate::one_at_a_time_with_the_environment();
+        // `expose` writes a note beside the marker saying whose it is, and
+        // where that note goes is `$XDG_STATE_HOME`. Both halves of this are
+        // needed. The guard is what stops the note landing in a scratch
+        // directory one of the `webui` tidying tests had pointed that variable
+        // at, which used to make the two write into each other: measured on
+        // this machine, about one run of `cargo test -p lxb-steam` in twelve
+        // failed in one of those tests, never in this one, which is what made
+        // it worth writing down here rather than there. The directory of its
+        // own is what stops the note being written into the real state
+        // directory belonging to whoever is running the suite — a note there
+        // saying this shell made a marker in a directory that will be gone a
+        // moment later. See [`crate::AStateDirectoryOfItsOwn`].
+        let _state = crate::a_state_directory_of_its_own("first-run");
         let scratch = scratch("first-run");
         let options = Options::in_home(&Where::Native(PathBuf::from("/usr/bin/steam")), &scratch);
         assert!(!options.root.exists(), "nothing has been run here");
