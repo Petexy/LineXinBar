@@ -24,6 +24,7 @@ in the project README.
 | [RetroArch](retroarch.md) | Optional integration, ROM folders, cores and console games |
 | [Epic Games](epic.md) | Optional integration through Heroic: sign-in, library, installs, updates, cloud saves and achievements |
 | [PlayStation 3](ps3.md) | Optional integration through RPCS3: setup, disc images and packages, animated previews, disc keys and trophies |
+| [Windows Apps](windows.md) | Optional integration through Proton: setup, installers and portable games, a prefix per game, compatibility and updates |
 | [Desktop settings](settings.md) | Appearance, displays, HDR, night light, sound, networking and system settings |
 | [Controls and multiple displays](controls.md) | Gamepads, keyboard shortcuts, mouse, touch and on-screen keyboard |
 | [Guide overlay and context menus](guide.md) | App switching, quick settings, volume mixer and stick pointer |

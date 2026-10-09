@@ -132,6 +132,22 @@ pub enum Want {
     /// screen — a PSP game's `PIC1.PNG`. A third want for the second's reason:
     /// a third picture of the file. See [`crate::art::softened_scenery_from`].
     Softened,
+    /// The drawing a Windows program wears, taken out of the program itself
+    /// — what a `.exe` met in a folder is drawn as, instead of a page.
+    ///
+    /// Its own want and not [`Want::Thumbnail`], and the difference is not
+    /// cosmetic: a thumbnail is made by reading the file, and reading a
+    /// `.exe` as a picture would be a worker pulling a hundred megabytes of
+    /// program through an image decoder to be told it is not a PNG. What a
+    /// program's drawing takes instead is the Windows Apps helper, which is
+    /// the only thing here that can read one — see [`program`].
+    ///
+    /// Nothing is written to the shared cache for it. That cache is
+    /// everybody's, and what belongs in it is a picture of what is *in* a
+    /// file; an icon is a drawing the file carries, no other desktop puts
+    /// one there, and the helper hands this over faster than a cache would
+    /// answer anyway.
+    Program,
     /// A game's logo, at its own shape inside [`crate::art::LOGO_SIZE`] rather
     /// than inside [`SIZE`]: the loading screen draws it a third of a display
     /// wide, and a thumbnail blown up that far is a smear. An Epic game's,
@@ -143,6 +159,13 @@ pub enum Want {
 /// One finished picture of a file.
 pub enum Made {
     Thumbnail(Picture),
+    /// A Windows program's own drawing. A [`Picture`] like a thumbnail, and
+    /// it goes into the same band of the atlas under the same key — the
+    /// program's own path — because it is the picture of that row. What it
+    /// is *not* is a picture of something, so what draws it fits it whole
+    /// instead of cropping it to a circle; that is the drawing's business
+    /// and not this module's. See `ui::column_rows`.
+    Program(Picture),
     Backdrop(crate::art::Scenery),
     /// The blurred one. Two variants carrying the same thing, so that what
     /// comes back says which of the two pictures of that file it is: the sight
@@ -295,6 +318,7 @@ fn work(queue: &Queue, send: &Sender<(Job, Option<Made>)>) {
 fn produce(path: &Path, want: Want) -> Option<Made> {
     match want {
         Want::Thumbnail => thumbnail(path).map(Made::Thumbnail),
+        Want::Program => program(path).map(Made::Program),
         Want::Backdrop => backdrop(path).map(Made::Backdrop),
         Want::Snapshot => snapshot(path).map(Made::Snapshot),
         Want::Softened => softened(path).map(Made::Softened),
@@ -536,7 +560,7 @@ fn from_film(path: &Path) -> Option<Picture> {
         if !crate::model::executable_on_path(std::ffi::OsStr::new(program)) {
             continue;
         }
-        if !ran(program, &args) {
+        if !ran(std::ffi::OsStr::new(program), &args) {
             continue;
         }
         let Ok(data) = std::fs::read(&out.path) else {
@@ -547,6 +571,43 @@ fn from_film(path: &Path) -> Option<Picture> {
         }
     }
     None
+}
+
+/// The drawing inside a Windows program, taken out by the one program on
+/// this machine that can read one.
+///
+/// The same bargain [`from_film`] makes with `ffmpegthumbnailer`, and
+/// deliberately the same shape: a scratch file is named, the tool is run
+/// with a deadline on it, what it wrote is read back and decoded, and the
+/// scratch goes when this returns. Nothing is cached, because there is
+/// nothing to cache — the answer goes straight into the atlas, and the row
+/// is asked about once.
+///
+/// **It is the helper and not this file that reads the executable.** The
+/// drawing is inside a `.exe` as a Windows icon directory, which is a
+/// Windows bitmap with a one-bit mask under it, and the program that already
+/// knows how to read one is `lxb-proton` — which is also what gives the row
+/// its press. So one package brings the whole of what a Windows program is
+/// on this bar: install it and a `.exe` wears its own drawing and runs when
+/// pressed; leave it out and `crate::proton::helper` answers `None` here,
+/// the row keeps the page, and the press is what it always was.
+///
+/// Reading somebody's arbitrary `.exe` happens in that separate process,
+/// which is worth saying plainly: the file is untrusted, and the parser that
+/// walks it is not in the shell.
+fn program(path: &Path) -> Option<Picture> {
+    let helper = crate::proton::helper()?;
+    let out = Scratch::new("png")?;
+    let args = argv(&["icon", "%f", "--to", "%o"], path, &out);
+    if !ran(helper.as_os_str(), &args) {
+        return None;
+    }
+    // Nothing written is the helper's way of saying this file carries no
+    // drawing, which is an answer and not a failure — a `.msi` is an
+    // installer database and a great many real programs carry no icon. It
+    // comes back as `None` all the same, so the row keeps its mark and
+    // nothing asks about that file again this session.
+    decode(&std::fs::read(&out.path).ok()?)
 }
 
 /// Fill `%f` and `%o` in with the file being read and the file being written.
@@ -566,7 +627,12 @@ fn argv<'a>(template: &[&'a str], file: &'a Path, out: &'a Scratch) -> Vec<&'a s
 /// Killed rather than waited out: a tool wedged on a damaged file would
 /// otherwise hold one of the two workers for the rest of the session, and the
 /// row it was for is long off the screen.
-fn ran(program: &str, args: &[&std::ffi::OsStr]) -> bool {
+///
+/// By path rather than by name, because one of the three programs this runs
+/// is not on `PATH` at all: the Windows Apps helper may be the one built
+/// beside the shell, and where it is, that is the one that has to answer.
+/// See [`crate::proton::helper`].
+fn ran(program: &std::ffi::OsStr, args: &[&std::ffi::OsStr]) -> bool {
     use std::process::{Command, Stdio};
 
     let Ok(mut child) = Command::new(program)
@@ -587,7 +653,10 @@ fn ran(program: &str, args: &[&std::ffi::OsStr]) -> bool {
             Err(_) => return false,
         }
         if std::time::Instant::now() >= deadline {
-            tracing::warn!(program, "thumbnailer took too long; giving up on it");
+            tracing::warn!(
+                program = %Path::new(program).display(),
+                "thumbnailer took too long; giving up on it"
+            );
             let _ = child.kill();
             let _ = child.wait();
             return false;

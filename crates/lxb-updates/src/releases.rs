@@ -86,6 +86,18 @@ pub enum Marker {
 /// The family, in the order it has to be installed in: the shell before the
 /// greeter that runs its compositor, the toolkit before the applications
 /// whose builds compile its sources in.
+/// Every project this source updates, and which packages and installed files
+/// each one is made of.
+///
+/// **The LineXinBar entry has to list every component `packaging/install.sh`
+/// can install.** A component missing from here is a package this source
+/// cannot see: it is not counted as installed, so its copy is never offered
+/// a newer release and it silently falls behind the rest of the shell, which
+/// is version-locked to it. `lxb-rpcs3` was missing from 0.9.3, which is how
+/// this note came to be written. Nothing checks the two lists against each
+/// other — a test here would have to read a file outside this crate, which
+/// no test in this workspace does — so a new optional package is two edits,
+/// and this is the second one.
 pub const FAMILY: &[Project] = &[
     Project {
         repo: "LineXinBar",
@@ -94,6 +106,8 @@ pub const FAMILY: &[Project] = &[
             "lxb-desktop",
             "lxb-retroarch",
             "lxb-heroic",
+            "lxb-rpcs3",
+            "lxb-proton",
         ],
         parts: &[
             Part {
@@ -111,6 +125,14 @@ pub const FAMILY: &[Project] = &[
             Part {
                 component: "heroic",
                 marker: Marker::Prefix("bin/lxb-heroic"),
+            },
+            Part {
+                component: "rpcs3",
+                marker: Marker::Prefix("bin/lxb-rpcs3"),
+            },
+            Part {
+                component: "proton",
+                marker: Marker::Prefix("bin/lxb-proton"),
             },
         ],
         reports: &["bin/lxb-updates", "bin/lxb"],
@@ -1155,6 +1177,16 @@ pub enum Operation {
     /// Every package file named, from the releases named, in one transaction
     /// of the system's package manager.
     Packages { targets: Vec<Target> },
+    /// What the Windows Apps package fetched for itself, brought up to
+    /// date: a tree under `$XDG_DATA_HOME/lxb/proton/` that no package
+    /// manager on this machine will ever update.
+    ///
+    /// Carries nothing. There is nothing for the review to authorize but
+    /// the act itself — no package names, no prefix, no tag — because the
+    /// helper decides what to fetch, checks every download against the
+    /// digest published beside it, and writes into one directory it owns.
+    /// Anything this carried would be a second opinion about that.
+    Proton,
     /// One project's tag, built and installed under `prefix`.
     Source {
         repo: String,
@@ -1217,6 +1249,10 @@ impl Operation {
         match self {
             Self::Packages { .. } => true,
             Self::Source { prefix, .. } => SYSTEM_PREFIXES.contains(&prefix.as_str()),
+            // Never. It writes into one directory under the user's own data
+            // home and nowhere else, which is the whole reason this can be
+            // offered beside updates that do need the password.
+            Self::Proton => false,
         }
     }
 
@@ -1226,6 +1262,9 @@ impl Operation {
     /// what the root worker passes.
     pub fn validate(&self, home: Option<&Path>) -> Result<()> {
         match self {
+            // Nothing to check: it carries nothing, and where it writes is
+            // the helper's own directory rather than anything named here.
+            Self::Proton => {}
             Self::Packages { targets } => {
                 if targets.is_empty() || targets.len() > FAMILY.len() {
                     bail!("Invalid release targets");
@@ -1327,10 +1366,18 @@ pub fn check(source: &mut crate::Source) -> Result<()> {
         .operations
         .iter()
         .any(|o| matches!(o, Operation::Source { .. }));
-    source.provider = crate::Provider::Releases {
-        operations: plan.operations,
-    };
-    source.items = plan.items;
+    // And what the Windows Apps package fetched for itself, which is the one
+    // thing on this page that no package manager anywhere will ever update.
+    // Asked after the releases so a helper that cannot answer — no network,
+    // or none installed at all — costs this source nothing: see
+    // `crate::proton::newer`, which answers `None` for all three.
+    let mut operations = plan.operations;
+    let mut items = plan.items;
+    let (rows, proton) = proton_review(crate::proton::newer());
+    items.extend(rows);
+    operations.extend(proton);
+    source.provider = crate::Provider::Releases { operations };
+    source.items = items;
     source.listed = true;
     source.fresh = true;
     source.note = if building {
@@ -1345,6 +1392,23 @@ pub fn check(source: &mut crate::Source) -> Result<()> {
         });
     }
     Ok(())
+}
+
+/// What the Windows Apps package adds to this source's review: the rows to
+/// show, and the operation to carry out where there is one.
+///
+/// Separate from [`check`] so the one thing that must not happen can be
+/// pinned: an offer with nothing newer in it must add no operation, or
+/// Update now would spend somebody's connection fetching what they have.
+fn proton_review(offer: Option<crate::proton::Offer>) -> (Vec<Item>, Option<Operation>) {
+    let Some(offer) = offer else {
+        return (Vec::new(), None);
+    };
+    let rows = crate::proton::items(&offer);
+    match rows.is_empty() {
+        true => (Vec::new(), None),
+        false => (rows, Some(Operation::Proton)),
+    }
 }
 
 /// What a check decided.
@@ -1483,6 +1547,40 @@ mod tests {
 
     fn v(text: &str) -> Version {
         Version::parse(text).unwrap()
+    }
+
+    /// Nothing newer is no rows **and no operation**. The second half is
+    /// the one that matters: an operation here would have Update now spend
+    /// somebody's connection fetching a Proton they already have.
+    #[test]
+    fn nothing_newer_adds_no_work_to_the_review() {
+        assert_eq!(proton_review(None), (vec![], None));
+        let nothing = crate::proton::Offer {
+            protocol: 1,
+            ..Default::default()
+        };
+        assert_eq!(proton_review(Some(nothing)), (vec![], None));
+    }
+
+    /// Something newer is rows to read and one operation to carry out, and
+    /// that operation needs no password: it writes into a directory under
+    /// the user's own data home and nowhere else.
+    #[test]
+    fn something_newer_is_one_operation_that_needs_no_password() {
+        let offer = crate::proton::Offer {
+            protocol: 1,
+            proton: Some(crate::proton::Download {
+                name: Some("cachyos-11.0-20261005-slr".into()),
+                bytes: Some(346_993_320),
+                already: false,
+            }),
+            ..Default::default()
+        };
+        let (rows, operation) = proton_review(Some(offer));
+        assert_eq!(rows.len(), 1);
+        assert_eq!(operation, Some(Operation::Proton));
+        assert!(!Operation::Proton.root(), "and it never asks for root");
+        assert!(Operation::Proton.validate(None).is_ok());
     }
 
     #[test]

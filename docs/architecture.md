@@ -202,6 +202,41 @@ none. The page counts its four turns from it, so a handheld standing up the way
 it is built reads as 0° whatever its panel needs; `output_transform` and
 `set_output_transform` stay the turn as drawn.
 
+`set_connector_enabled` and the `connector` / `connectors_done` events
+(version 48) are how a screen is switched off and back on. They are the one
+part of this interface that names a display by a **string** rather than by a
+`wl_output`, and that is forced: a display nobody is driving has no `wl_output`
+for a client to bind — there is nothing to drive — so a request that could only
+name a lit display could never switch a dark one back on. Keeping the global
+alive for an undriven display was the alternative and is worse than it sounds:
+a `wl_output` nothing repaints has hung this session twice already, because a
+client presenting FIFO waits for its last frame's callback with no timeout, and
+Xwayland would publish the dark screen as an XRandR output in every game's
+fullscreen list.
+
+So the batch is the whole truth about which screens exist, lit or dark, and the
+compositor reports what it is actually *doing* rather than what it was last
+asked for — the two differ exactly when a request could not be carried out,
+which is the case a page must not draw as success. Each entry also carries
+whether switching it is the shell's to do at all, so the page never offers a
+press that would be refused: the last display still lit stays lit, a display
+the compositor's own config file answers for is answered by that file, and a
+nested session has nothing to switch.
+
+`set_always_on_display` (version 49) names one surface of the shell's per
+display, and the compositor draws that surface *over* the black it has drawn
+across that display rather than under it. It is the only thing a dark screen
+shows, and everything else about the display stays exactly as dark as it was:
+its windows are still off screen and the applications behind them still
+stopped. The compositor has no letters to write a clock with, so the drawing
+stays where the drawing already is — this moves one surface and nothing else.
+
+It also stops that display being taken down at the connector while it is named.
+A display the shell switches off is normally cleared once its black is all the
+way down, which is a modeset in each direction; there is nothing to show a clock
+on once a panel's backlight has gone out, so a named display is left lit. That
+is the one cost of the request and it is stated in the page that offers it.
+
 `set_launch_output` exists because keyboard focus is the wrong thing to infer
 the launch display from. Starting a second application from the guide hands
 focus back to the *first* one long before the new window maps, so the new

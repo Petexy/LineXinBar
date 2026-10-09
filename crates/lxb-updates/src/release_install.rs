@@ -43,6 +43,7 @@ pub fn run(argument: &str) -> Result<()> {
         });
     }
     match operation {
+        Operation::Proton => crate::proton::fetch(say),
         Operation::Packages { targets } => packages(&targets),
         Operation::Source {
             repo,

@@ -51,8 +51,18 @@ PlayStation 3 here is RPCS3.
 
 A **PlayStation 3** row stands in the Games column under Steam, Epic Games and
 RetroArch, and RPCS3's own `.desktop` entry comes off the bar where it does.
-RPCS3's window is one press away, as **Open RPCS3** in the row's menu. A press
-does the one thing that is left:
+RPCS3's window is one press away, as **Open RPCS3** in the row's menu, and
+**Remove RPCS3** under it takes the program off the machine — last of the menu,
+because it is the only row there that takes something away. It asks first, with
+two answers: **Remove** leaves RPCS3's own folder where it is, and **Remove
+everything** takes that too, which for RPCS3 is the console's drives as well —
+the system software, the games you installed from packages, your saves and your
+trophies. The game files in your own folder stay either way. It works the same
+on a machine where you installed RPCS3 yourself, whichever way you installed it,
+and an RPCS3 that arrived as an AppImage is removed by deleting that file; the
+whole of it is in `docs/configuration.md` under *Taking it off again*.
+
+A press does the one thing that is left:
 
 1. **RPCS3, or the PlayStation 3's system software, is missing.** "Press to set
    it up". The press asks, and **Install** does both, with a bar: RPCS3's
@@ -260,6 +270,26 @@ and keeps it beside them in `~/.cache/lxb/rpcs3/trophies/<set>`. They are read a
 every scan of the games, and whenever a game RPCS3 was playing ends.
 
 ## Settings > Games > PlayStation 3
+
+**Integration**, on by default — a machine that installed the package asked for
+it. Off, the shell has nothing to do with RPCS3: no PlayStation 3 row, column or
+trophies, no preview film or music, no **Install** offered over a `.pkg` in
+Files, and RPCS3's own `.desktop` entry back on the bar as an application like
+any other. The `ps3` folder of your ROM collection goes back to being
+RetroArch's to list, where it would be if this package had never been
+installed — those rows cannot start, because RetroArch has no PlayStation 3
+core, but a folder you can see beats a folder that vanished.
+
+It takes effect on the press. Nothing on the disk is touched: the games folder
+stays chosen, installed games stay installed, and the saves and trophies are
+RPCS3's own — switching it back on finds all of them. A game already running
+through RPCS3 is left running. A setup still downloading RPCS3 and the system
+software is given up on, and the row says it was never finished.
+
+Everything below the switch goes with it while it is off, because each of those
+rows is one of RPCS3's own settings and the shell is no longer driving RPCS3.
+Written as `ps3-integration`; a file that says nothing about it gets the
+integration on.
 
 **Games folder** is where your PlayStation 3 games are. It is the same row that
 stands at the head of the column while the question is open.

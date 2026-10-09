@@ -1,5 +1,6 @@
 //! LineXinBar — a micro Wayland compositor with multi-display support.
 
+mod always_on;
 mod backdrop;
 mod backend;
 mod blackout;

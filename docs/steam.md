@@ -34,6 +34,16 @@ machine with no client running starts one, with the request already in hand —
 so what comes up is Steam's own startup, on whichever account it signs itself
 in as, rather than the shell's.
 
+**Remove Steam** is on the same menu, last of it, and it takes Valve's client
+off the machine — the package, however you installed it. It asks first, with two
+answers: **Remove** leaves Steam's own folder where it is, and **Remove
+everything** takes that too, which is every game you have installed and their
+saves. Your library stays on the bar either way, because this shell signs in to
+Steam itself and lists your games over the network; what changes is that the
+rows stop offering to play them. You stay signed in — that is *Sign out*, above
+— and the whole of how a removal works is in `docs/configuration.md` under
+*Taking it off again*.
+
 The client is one program with two faces, and it is only ever on one of them.
 **Open Steam (Client)** pressed while it is in Big Picture first takes it out of
 Big Picture (`steam://close/bigpicture`, which changes nothing on a client

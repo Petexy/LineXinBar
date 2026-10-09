@@ -218,6 +218,35 @@ and there would be no way back to. A machine that has not got RetroArch yet is
 offered it and nothing else; a machine still waiting on the helper raises no menu
 at all, because every row on it needs an answer that has not arrived.
 
+**And the integration can be turned off, under Settings > Games > RetroArch >
+Integration.** On, which is everything this section describes. Off, none of it
+exists and RetroArch is an application like any other: no RetroArch row at the
+head of Games, no column of your own games, no RetroAchievements, no cores or
+artwork fetched, and RetroArch's own `.desktop` entry back on the bar wearing
+the icon its package ships. Pressing it opens RetroArch's own interface,
+because nothing is hiding it any more.
+
+It takes effect on the press rather than at the next start: the bar is read off
+the disk again, the cursor stays on the row that was pressed, and the worker is
+stopped or started with it. Everything under the switch goes with it, because
+each of those rows is a setting belonging to an emulator the shell is no longer
+driving — so an integration that is off is a page of one row, and that row is
+the way back.
+
+**Nothing on the disk is touched.** Your ROMs folder stays chosen, your
+RetroAchievements account stays signed in, and the cores and artwork stay where
+they were fetched to; switching it back on finds all of it, exactly as it was.
+That is the difference between turning the integration off and removing
+RetroArch, which is a separate act on the row's own menu and does forget the
+folder. A game being served off a disc is let go of, and a core that was coming
+down stops.
+
+Written to the settings file as `retroarch-integration`, on every machine
+including one that has never had the package: what it answers is what *this
+shell* does, so a package taken off for a month and put back finds the answer
+you gave. A file that says nothing about it — every file written before this
+switch existed — gets the integration on.
+
 **And the emulators have settings, under Settings > Games > RetroArch.** One page
 per installed core at the top — PPSSPP's rendering resolution and texture
 upscaling, Mesen's overclock — and under them the settings that belong to no core:

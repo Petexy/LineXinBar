@@ -209,6 +209,7 @@ fn flatpak(kind: Kind, paths: &Paths) -> Option<Installation> {
     deploy(scope)?;
     Some(Installation {
         kind,
+        id: Some(FLATPAK_ID.to_string()),
         command: vec![
             "flatpak".to_string(),
             "run".to_string(),

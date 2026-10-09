@@ -132,6 +132,22 @@ struct SurfaceData {
     /// once the black is all the way down, cleared the moment it is asked back,
     /// and what the next frame queued turns the connector back on from.
     switched_off: bool,
+    /// Whether this display is to be taken down altogether, because somebody
+    /// switched it off in Settings — `lxb_shell_v1.set_connector_enabled`.
+    ///
+    /// Not the same thing as [`Self::switched_off`] above it, which is the idle
+    /// timer's and is undone by the next thing anybody presses. This is the
+    /// user's answer: the display leaves the arrangement, its windows move to
+    /// the screens that are left, its `wl_output` goes away and it is written
+    /// down for the next session.
+    ///
+    /// A request rather than the act, and read at the top of
+    /// [`render_surface`], because taking a connector down is a modeset — and
+    /// [`DrmSurface::clear`] commits with `ALLOW_MODESET`, which comes back
+    /// EBUSY while a page flip is in flight. The top of a frame is the one
+    /// moment the pipe is reliably quiet, which is exactly why the idle
+    /// switch-off above lives there too.
+    going_dark: bool,
     /// How many frames in a row have come out with nothing new in them — see
     /// [`idle_poll`] — and the timer of a render put off because of it, which a
     /// real request for a frame cancels rather than waits behind.
@@ -477,6 +493,20 @@ pub fn init(
         }
     }
 
+    // A session that came up with every display switched off would be a brick:
+    // the machine looks dead, and the page that would undo it has no screen to
+    // be drawn on — a lock-out that survives a reboot, since the answer was
+    // written down. So before refusing to start, an answer the *machine* wrote
+    // is dropped and that display is lit.
+    //
+    // Only an answer the machine wrote. A config file a person wrote saying
+    // `enabled = false` is left exactly as it is: that is a deliberate
+    // instruction about this hardware, the file is theirs to edit, and a
+    // compositor that quietly overrode it would be a worse failure than one
+    // that said it had no display to use.
+    if state.lxb.outputs.is_empty() {
+        light_a_display_if_none_is_lit(&mut state);
+    }
     if state.lxb.outputs.is_empty() {
         anyhow::bail!("no usable display found; is a monitor connected?");
     }
@@ -824,7 +854,22 @@ fn inherited_an_unusable_device(state: &LxbState, node: DrmNode) -> bool {
             .scanner
             .connectors()
             .values()
-            .any(|connector| connector.state() == connector::State::Connected)
+            .filter(|connector| connector.state() == connector::State::Connected)
+            // A display switched off is not a display this compositor failed
+            // to inherit. Without this term, a session whose every screen is
+            // switched off throws away the seamless hand-over, resets the DRM
+            // device, scans it again, switches them off again, and leaves
+            // "inherited a display configuration this compositor cannot use"
+            // as the first thing anybody reads in the journal — a false
+            // diagnosis of a session that is doing exactly what was asked.
+            .any(|connector| {
+                let name = format!(
+                    "{}-{}",
+                    connector.interface().as_str(),
+                    connector.interface_id()
+                );
+                state.lxb.outputs.is_enabled(&name, &state.lxb.config)
+            })
 }
 
 /// Scan a device's connectors once and act on what changed.
@@ -902,11 +947,37 @@ fn connector_connected(
         connector.interface_id()
     );
 
-    if !OutputManager::is_enabled(&name, &state.lxb.config) {
-        tracing::info!(output = %name, "output disabled by config, leaving it dark");
+    if !state.lxb.outputs.is_enabled(&name, &state.lxb.config) {
+        tracing::info!(output = %name, "this display is switched off; leaving it dark");
+        // Said even though nothing is being drawn on it: a display that is off
+        // is still a display the session has, and the page that offers to
+        // switch it back on is built from exactly this list. Without it a
+        // screen switched off would be indistinguishable from one with its
+        // cable out, and there would be no row to press to get it back.
+        state.refresh_connectors();
         return;
     }
 
+    light_connector(state, node, connector, crtc, name);
+}
+
+/// Light a connector that is to be driven: everything about a display coming
+/// into being, once it has been decided that it should.
+///
+/// Split out from [`connector_connected`] so that the one path exists twice
+/// over — for a cable going in, and for a display switched back on by a press
+/// in Settings. A second path would be a second answer to "what is a display
+/// made of here", and the four things most easily left out of a hand-written
+/// one are the HDR registration (without which the display comes back in SDR
+/// while the page still says otherwise), the opening backdrop, the three
+/// Settings refreshes, and the first frame.
+fn light_connector(
+    state: &mut LxbState,
+    node: DrmNode,
+    connector: connector::Info,
+    crtc: crtc::Handle,
+    name: String,
+) {
     let Some(mode) = pick_mode(
         &connector,
         state
@@ -1087,6 +1158,7 @@ fn connector_connected(
             hdr,
             hdr_display,
             switched_off: false,
+            going_dark: false,
             empty_run: 0,
             idle_timer: None,
             last_render: None,
@@ -1135,6 +1207,10 @@ fn connector_connected(
     state.refresh_modes();
     state.refresh_transforms();
     state.refresh_places();
+    // And which displays there are to switch at all, for the same reason: a
+    // screen arriving is one more the page can offer, and the screen that was
+    // the only one on is no longer the one that has to stay on.
+    state.refresh_connectors();
 
     schedule_render(state, node, crtc, Duration::ZERO);
 }
@@ -1169,11 +1245,88 @@ fn remove_surface(state: &mut LxbState, node: DrmNode, crtc: crtc::Handle) {
 
     let Some(surface) = surface else { return };
 
+    // Before the surface is dropped, and it matters now that a display can be
+    // taken down and brought back by a press. A connector switched back on is
+    // given the same CRTC, so a timer left behind here fires against the fresh
+    // surface — nulling out an idle timer it does not own and asking for a
+    // frame nobody wanted — and one registration is leaked per switch. On a
+    // cable coming out it never showed, because nothing came back.
+    if let Some(timer) = surface.idle_timer {
+        state.lxb.loop_handle.remove(timer);
+    }
+
     state.display_unplugged(&surface.output);
 
     if let Some(global) = surface.global {
         state.lxb.display_handle.remove_global::<LxbState>(global);
     }
+
+    // The guard with no equivalent before this: switch one display off, then
+    // pull the other one's cable, and the session would be left with nothing
+    // on screen while a perfectly good connector sat dark beside it. Nothing
+    // else would notice — a cable coming out is not a decision anybody made
+    // about the display that is still plugged in.
+    //
+    // So the user's answer is set aside, for this session only: the display is
+    // lit and nothing is written down. What they chose is still in the file, so
+    // the next session comes up the way they left it.
+    light_a_display_if_none_is_lit(state);
+}
+
+/// Bring some plugged-in display back on if the session has none lit at all.
+///
+/// A last resort, reached two ways and never by a press: a display going away
+/// and leaving nothing lit, and a session starting with every display switched
+/// off. A press cannot reach it, because the floor in
+/// [`crate::backend::LxbState::set_connector_enabled`] refuses the last display
+/// on long before this. There is no page to press on a machine where every
+/// screen is dark, so this recovery cannot be the user's to make.
+///
+/// A display a *config file* switches off is not a candidate. That is a
+/// deliberate instruction about this hardware, written by a person into a file
+/// that is theirs to edit, and overriding it would be a worse failure than
+/// saying there is no display to use. Only an answer the machine wrote down for
+/// itself is set aside — and only in this session: the file is left alone, so
+/// nothing a user chose is erased by a cable coming out.
+fn light_a_display_if_none_is_lit(state: &mut LxbState) {
+    if state.lxb.space.outputs().next().is_some() {
+        return;
+    }
+    let candidate = {
+        let super::Backend::Udev(udev) = &state.backend else {
+            return;
+        };
+        udev.devices.iter().find_map(|(node, device)| {
+            device
+                .scanner
+                .connectors()
+                .values()
+                .filter(|info| info.state() == connector::State::Connected)
+                .map(|info| {
+                    let name = format!("{}-{}", info.interface().as_str(), info.interface_id());
+                    (name, info)
+                })
+                .find(|(name, _)| !state.lxb.config.enabled_is_pinned(name))
+                .and_then(|(name, info)| {
+                    device
+                        .scanner
+                        .crtc_for_connector(&info.handle())
+                        .map(|crtc| (*node, info.clone(), crtc, name))
+                })
+        })
+    };
+    let Some((node, info, crtc, name)) = candidate else {
+        return;
+    };
+    tracing::warn!(
+        display = %name,
+        "no display is on at all, so this one is lit whatever it was switched to"
+    );
+    // For this session, so that the next device rescan or return from a text
+    // console does not read the answer back out of the config and darken it
+    // again. Nothing is written down.
+    state.lxb.outputs.switch(&name, true);
+    light_connector(state, node, info, crtc, name);
 }
 
 /// The turn a built-in panel's mounting asks for, from the kernel's `panel
@@ -1284,6 +1437,134 @@ fn match_mode(
 /// Empty for an output this backend is not driving, which is the same answer a
 /// nested backend gives for all of them: there is no connector, so there is
 /// nothing to choose between.
+/// Every display plugged into this machine, lit or dark.
+///
+/// Read off the connector scan rather than off the surfaces, because the
+/// surfaces are only the displays being driven and the whole point of this list
+/// is the ones that are not. The scanner keeps every connector's whole
+/// `connector::Info` from the last scan — see
+/// [`smithay_drm_extras::drm_scanner::DrmScanner::connectors`] — so a display
+/// switched off is still fully described here without anything being re-probed.
+///
+/// Only connectors with something actually plugged into them. A socket with no
+/// cable in it is not a display somebody can be offered a switch for, and a
+/// machine with six unused DisplayPort sockets would otherwise fill the page
+/// with screens that do not exist.
+pub fn connectors(state: &LxbState) -> Vec<super::Connector> {
+    let super::Backend::Udev(udev) = &state.backend else {
+        return Vec::new();
+    };
+    let mut found = Vec::new();
+    for device in udev.devices.values() {
+        for info in device.scanner.connectors().values() {
+            if info.state() != connector::State::Connected {
+                continue;
+            }
+            let name = format!("{}-{}", info.interface().as_str(), info.interface_id());
+            let lit = device
+                .surfaces
+                .values()
+                .any(|surface| surface.output.name() == name);
+            let switching = match state.lxb.config.enabled_is_pinned(&name) {
+                true => super::Switching::SetElsewhere,
+                false => super::Switching::Allowed,
+            };
+            found.push(super::Connector {
+                name,
+                lit,
+                switching,
+            });
+        }
+    }
+    // The connector scan is a hash map, so its order is not anything. Sorted by
+    // name, so the page's rows hold still from one answer to the next rather
+    // than rearranging themselves under somebody's thumb.
+    found.sort_by(|a, b| a.name.cmp(&b.name));
+    found
+}
+
+/// Switch one display off, or back on. `true` when it went through.
+///
+/// The two halves are deliberately asymmetric. Lighting one happens here and
+/// now: the connector and its CRTC are still in the scan, so
+/// [`light_connector`] has everything it needs and nothing has to be replugged
+/// or re-probed. Darkening one is *asked for* here and carried out on that
+/// display's next frame — see [`render_surface`] — because switching a
+/// connector off is a modeset that comes back EBUSY if a page flip is in
+/// flight, which at sixty frames a second is most of the time.
+pub fn set_connector_enabled(state: &mut LxbState, name: &str, on: bool) -> bool {
+    if !on {
+        let found = {
+            let super::Backend::Udev(udev) = &mut state.backend else {
+                return false;
+            };
+            udev.devices
+                .values_mut()
+                .flat_map(|device| device.surfaces.values_mut())
+                .find(|surface| surface.output.name() == name)
+        };
+        let Some(surface) = found else {
+            tracing::debug!(display = name, "no display of that name is lit");
+            return false;
+        };
+        surface.going_dark = true;
+        // The frame that takes it down has to be asked for: a display nothing
+        // is happening on has no other reason to draw again, and the request
+        // would sit on the surface until something else woke it.
+        state.queue_redraw();
+        return true;
+    }
+
+    let found = {
+        let super::Backend::Udev(udev) = &state.backend else {
+            return false;
+        };
+        udev.devices.iter().find_map(|(node, device)| {
+            device
+                .scanner
+                .connectors()
+                .values()
+                .find(|info| {
+                    info.state() == connector::State::Connected
+                        && format!("{}-{}", info.interface().as_str(), info.interface_id()) == name
+                })
+                .and_then(|info| {
+                    device
+                        .scanner
+                        .crtc_for_connector(&info.handle())
+                        .map(|crtc| (*node, info.clone(), crtc))
+                })
+        })
+    };
+    let Some((node, info, crtc)) = found else {
+        tracing::warn!(
+            display = name,
+            "no connector of that name has a pipe to be driven on"
+        );
+        return false;
+    };
+    // The session's answer has to be in place before this: `light_connector`
+    // is the same function a cable going in runs, and it is reached through
+    // the switched-off guard.
+    state.lxb.outputs.switch(name, true);
+    light_connector(state, node, info, crtc, name.to_string());
+    // Whether it actually came up: a modeset can fail, and a display reported
+    // as lit when it is not would leave the page marking the wrong row.
+    let lit = match &state.backend {
+        super::Backend::Udev(udev) => udev
+            .devices
+            .values()
+            .flat_map(|device| device.surfaces.values())
+            .any(|surface| surface.output.name() == name),
+        _ => false,
+    };
+    if !lit {
+        state.lxb.outputs.forget_switch(name);
+        tracing::warn!(display = name, "this display would not come back on");
+    }
+    lit
+}
+
 pub fn output_modes(state: &LxbState, output: &Output) -> Vec<DisplayMode> {
     let super::Backend::Udev(udev) = &state.backend else {
         return Vec::new();
@@ -1480,7 +1761,12 @@ fn schedule_render(state: &mut LxbState, node: DrmNode, crtc: crtc::Handle, dela
                     && state
                         .lxb
                         .blackouts
-                        .is_off(&surface.output, std::time::Instant::now()) =>
+                        .is_off(&surface.output, std::time::Instant::now())
+                    // A display showing a clock is asking for frames on
+                    // purpose, and they are the only frames it will ever get:
+                    // swallowed here, the clock would be drawn no oftener than
+                    // this compositor's own slow timer happens to fire.
+                    && !state.lxb.always_on.showing(&surface.output) =>
             {
                 return;
             }
@@ -1598,6 +1884,52 @@ fn render_surface(state: &mut LxbState, node: DrmNode, crtc: crtc::Handle) {
     let output = surface.output.clone();
     let primary_gpu = udev.primary_gpu;
 
+    // A display somebody has switched off in Settings, taken down here because
+    // here is the one moment this connector is quiet. Two steps, and the order
+    // of them is the whole of it.
+    //
+    // First the connector goes off, while the `DrmOutput` is still alive —
+    // `with_compositor` looks the compositor up by CRTC and unwraps, so after
+    // the drop it would panic, and dropping a `DrmOutput` issues no commit at
+    // all: it only takes the compositor out of the manager's map. A display
+    // taken down without this would go on scanning out the last frame it was
+    // given, lit and frozen with the bar burnt onto it, which is the opposite
+    // of what was asked for.
+    //
+    // Then the rest of it, one turn of the event loop later, because taking
+    // the display out of the session needs the whole state and this function
+    // is holding the device. A turn is also what lets the clear reach the
+    // screen before its windows are moved.
+    if surface.going_dark {
+        let cleared = surface
+            .drm_output
+            .with_compositor(|compositor| compositor.clear());
+        match cleared {
+            Ok(()) => tracing::info!(display = %output.name(), "switched this display off"),
+            // Reported and then carried on with. The display leaves the
+            // session either way: a connector that would not go dark is a
+            // worse screen to leave a user looking at than one that did, and
+            // the setting has already been written down.
+            Err(err) => tracing::warn!(
+                ?err,
+                display = %output.name(),
+                "could not take this display's connector down; it leaves the session anyway"
+            ),
+        }
+        let res = state
+            .lxb
+            .loop_handle
+            .insert_source(Timer::immediate(), move |_, _, state| {
+                remove_surface(state, node, crtc);
+                state.refresh_connectors();
+                TimeoutAction::Drop
+            });
+        if let Err(err) = res {
+            tracing::warn!(?err, "could not finish switching a display off");
+        }
+        return;
+    }
+
     // A display the shell has switched off, now that its black is all the way
     // down: the connector goes off, and nothing is drawn or queued for it until
     // it is asked back — the request that brings it back queues the redraw that
@@ -1609,10 +1941,18 @@ fn render_surface(state: &mut LxbState, node: DrmNode, crtc: crtc::Handle) {
     // waits for the answer to its last frame with no timeout, and the frame
     // that switched the display off used to be the last answer anybody on it
     // ever got. See [`crate::render::WHILE_DARK`].
+    // Switched off at the connector — unless this display is one the shell has
+    // asked to go on showing something while it is dark. There is nothing to
+    // show a clock on once a panel's backlight has gone out, so a display with
+    // an always-on display named for it stays lit and is drawn below like any
+    // other. It is still black: `is_black` is untouched, so its windows are
+    // still off screen and the applications behind them still stopped. The only
+    // thing on it is the shell's one named surface. See [`crate::always_on`].
     if state
         .lxb
         .blackouts
         .is_off(&output, std::time::Instant::now())
+        && !state.lxb.always_on.showing(&output)
     {
         if !surface.switched_off {
             let cleared = surface

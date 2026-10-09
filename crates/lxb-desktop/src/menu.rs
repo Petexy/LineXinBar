@@ -45,6 +45,75 @@ use std::time::Instant;
 
 use crate::system::Level;
 
+/// One of the programs an integration drives, named for the removal.
+///
+/// Not the integration and not its row: the row is called PlayStation 3 and the
+/// program is called RPCS3, and it is the program that is being taken off the
+/// machine. Every panel here says the program's name for that reason — somebody
+/// removing something is owed the name of the thing that goes.
+///
+/// Windows Apps is deliberately not one of these. Proton is what a Windows game
+/// is run *with* rather than a program with a window of its own, that
+/// integration installs no application, and a row offering to remove one would
+/// be a row about nothing. See `Shell::windows_entry_menu`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Program {
+    Steam,
+    /// Heroic Games Launcher, which the Epic Games row stands in front of.
+    Heroic,
+    RetroArch,
+    /// RPCS3, which the PlayStation 3 row stands in front of.
+    Rpcs3,
+}
+
+impl Program {
+    /// What it is called. A program's own name, never a translation and never
+    /// the row's.
+    pub fn name(self) -> &'static str {
+        match self {
+            Program::Steam => "Steam",
+            Program::Heroic => "Heroic",
+            Program::RetroArch => "RetroArch",
+            Program::Rpcs3 => "RPCS3",
+        }
+    }
+
+    /// The mark every panel of its removal wears — the same one its row wears,
+    /// so the question is plainly about the thing that was pressed.
+    pub fn mark(self) -> String {
+        match self {
+            Program::Steam => crate::icons::STEAM.to_string(),
+            Program::Heroic => crate::heroic::mark().to_string(),
+            Program::RetroArch => crate::retroarch::mark().to_string(),
+            Program::Rpcs3 => crate::ps3::mark().to_string(),
+        }
+    }
+
+    /// The Fluent key for the sentence naming what this program's own folder
+    /// holds — the one thing the second button costs, and the one thing that is
+    /// genuinely different for each of the four.
+    pub fn what_its_folder_holds(self) -> &'static str {
+        match self {
+            // Every game installed through Valve's client lives under it.
+            Program::Steam => "steam-remove-everything-explanation",
+            Program::Heroic => "epic-remove-everything-explanation",
+            Program::RetroArch => "retroarch-remove-everything-explanation",
+            Program::Rpcs3 => "ps3-remove-everything-explanation",
+        }
+    }
+
+    /// And the sentence saying what the first button leaves behind, which is
+    /// the same list seen from the other end.
+    pub fn what_stays(self) -> &'static str {
+        match self {
+            Program::Steam => "steam-remove-what-stays",
+            Program::Heroic => "epic-remove-what-stays",
+            Program::RetroArch => "retroarch-remove-what-stays",
+            Program::Rpcs3 => "ps3-remove-what-stays",
+        }
+    }
+}
+
 /// What choosing an entry asks the shell to do.
 ///
 /// One variant per command the shell's context menus can carry. An enum rather
@@ -234,6 +303,61 @@ pub enum Command {
     Ps3Open,
     /// Read the PS3 folder and the installed games again.
     Ps3Rescan,
+    /// Fetch what a Windows program needs to run, the user having said yes.
+    /// The offer itself is a panel rather than a menu row — see
+    /// `Shell::offer_to_set_up_windows`.
+    WindowsSetUp,
+    /// Start the Windows game the menu was raised over.
+    WindowsPlay,
+    /// Step into what the Windows game the menu was raised over can run
+    /// with. Offered only while Valve's client is installed, because without
+    /// it there is one Proton on the machine and nothing to choose between.
+    WindowsCompatibility,
+    /// Run the selected game under that Proton from now on; `None` for
+    /// whatever this machine would choose.
+    ///
+    /// Interned rather than owned, as [`Command::EpicRunWith`] is and for the
+    /// same reason: every row of the bar carries a command by value, so this
+    /// enum stays `Copy`. See [`crate::settings::intern`].
+    WindowsUnder(Option<&'static str>),
+    /// Step into what inside the game's own folder should be played, for a
+    /// setup that was interrupted or guessed wrong.
+    WindowsChoose,
+    /// That one is the game from now on — a path inside the game's own
+    /// folder, interned for the reason above.
+    WindowsPlayThis(&'static str),
+    /// Walk the disk for a program to run inside the game's own Windows
+    /// installation — a mod's setup, a patcher, an installer that wants the
+    /// game already there.
+    ///
+    /// Deliberately a walk of the whole disk and not a list of what is
+    /// already in the prefix: the thing somebody wants to run is in their
+    /// Downloads, which is the entire point. It creates no prefix and
+    /// changes nothing the game plays.
+    WindowsRunInside,
+    /// The same act from the other end: step into which game's Windows the
+    /// Windows program *this* menu was raised over should run in.
+    ///
+    /// On a file's menu in Files, where the file is the thing already known
+    /// and the game is the thing to choose. [`Command::WindowsRunInside`] is
+    /// the pair of this on a game's own menu, where it is the other way
+    /// round — and between them they are one act reachable from whichever
+    /// half somebody happens to be standing on.
+    WindowsRunInsideAGame,
+    /// That game: run the file the menu was raised over inside its Windows.
+    ///
+    /// The game's identifier, interned for the reason
+    /// [`Command::WindowsUnder`]'s is.
+    WindowsRunThisInside(&'static str),
+    /// Ask whether to take the Windows game the menu was raised over off the
+    /// disk. [`Command::WindowsRemove`] is the yes.
+    WindowsOfferRemove,
+    /// Take it off the disk, the user having said yes. Only ever reached from
+    /// the panel [`Command::WindowsOfferRemove`] raises.
+    WindowsRemove,
+    /// Step into the orders the Windows Apps column can be listed in.
+    WindowsSort,
+    WindowsSortBy(crate::proton::Sort),
     /// Start, or install, the PlayStation 3 game the menu was raised over.
     Ps3Play,
     /// Install the PlayStation 3 package pressed in Files, the user having
@@ -295,21 +419,23 @@ pub enum Command {
     /// distribute is a sentence in a settings page until the day it stops a
     /// game, and then it is the only thing on screen worth answering.
     ChooseBiosFolder,
-    /// Take RetroArch off this machine, with everything it and this
-    /// integration kept.
+    /// Take the program one of the integrations drives off this machine.
     ///
     /// Raises a panel spelling out what goes before anything happens — see
-    /// `Shell::offer_to_remove_retroarch`. The row is on the menu over the
-    /// RetroArch row under Games, and only where there is a RetroArch to
-    /// remove.
-    RemoveRetroArch,
-    /// They read that panel and said yes.
+    /// `Shell::offer_to_remove_program`. The row is on the menu over that
+    /// integration's own row under Games, and only where there is a program
+    /// there to remove.
+    RemoveProgram(Program),
+    /// They read that panel and pressed one of its two answers. `true` is
+    /// **Remove everything**, which takes the program's own folder with it.
     ///
     /// Its own command rather than the same one pressed twice, because the two
     /// presses mean different things and the difference is a program being
     /// deleted: one asks a question and one answers it. Nothing but the panel's
-    /// own button carries this.
-    ReallyRemoveRetroArch,
+    /// own buttons carries this, and which of the two was pressed travels with
+    /// it rather than being read back off anything — a removal that asked again
+    /// afterwards could be told something else.
+    ReallyRemoveProgram(Program, bool),
     /// Unmount the drive with this device number, from the menu over its row
     /// in Files. See [`crate::drives`].
     Unmount(u64),
@@ -2977,6 +3103,49 @@ mod tests {
         assert!(menu.close());
         assert_eq!(menu.depth(), 0);
         assert!(!menu.back());
+    }
+
+    /// Every program's two sentences are real messages, and no two programs
+    /// share one.
+    ///
+    /// The catalogue test that walks the source cannot reach these. It reads
+    /// each identifier out of a quoted literal standing in the file, and these
+    /// arrive as a `&'static str` chosen by a match, so nothing it can see
+    /// spells them. A key misspelt here would come back as its own name on a
+    /// panel asking somebody whether to delete a program — which is the worst
+    /// place in the shell for a string to be wrong.
+    #[test]
+    fn each_program_has_its_own_two_sentences() {
+        let every = [
+            Program::Steam,
+            Program::Heroic,
+            Program::RetroArch,
+            Program::Rpcs3,
+        ];
+        let mut seen = Vec::new();
+        for program in every {
+            for key in [program.what_stays(), program.what_its_folder_holds()] {
+                let said = crate::i18n::text(key);
+                assert_ne!(said, key, "{key} is not in the catalogue");
+                assert!(said.ends_with('.'), "{key} is a sentence: {said}");
+                assert!(!seen.contains(&key), "{key} is used for two programs");
+                seen.push(key);
+            }
+            // And the name on every panel is the program's, never the row's:
+            // the row is called PlayStation 3 and the thing being deleted is
+            // called RPCS3.
+            assert!(!program.name().is_empty());
+            assert!(!program.mark().is_empty());
+        }
+        // What each one says about its own folder names that program, so a
+        // pair wired to the wrong program would read as another program's.
+        for program in every {
+            assert!(
+                crate::i18n::text(program.what_its_folder_holds()).contains(program.name()),
+                "{}'s own sentence does not name it",
+                program.name()
+            );
+        }
     }
 
     #[test]

@@ -13,11 +13,12 @@
 //! plumbing, or a walk over somebody's ROM folder, and a distribution should be
 //! able to ship the shell without shipping an opinion about emulators.
 //!
-//! ## Eight questions and no state
+//! ## Nine questions and no state
 //!
 //! ```text
 //! lxb-retroarch probe          is there a RetroArch, and could there be one
 //! lxb-retroarch install        put one in this user's own flatpak installation
+//! lxb-retroarch forget         it has been removed; forget what was kept for it
 //! lxb-retroarch scan DIR       what consoles are in this folder, and what runs them
 //! lxb-retroarch permit DIR     let a sandboxed RetroArch read that folder
 //! lxb-retroarch cores A,B ...  fetch a core per console, from libretro's server
@@ -28,7 +29,8 @@
 //!
 //! Nothing here remembers anything between runs, and nothing here starts a
 //! game. `disc` is the one verb that stays: a disc's game has to be somewhere
-//! RetroArch can open for as long as the disc is in — see `disc.rs`. Three of the seven reach the network, and only when asked: `install`
+//! RetroArch can open for as long as the disc is in — see `disc.rs`. Three of
+//! the nine reach the network, and only when asked: `install`
 //! fetches RetroArch from Flathub, `cores` fetches a core from libretro's build
 //! server — the same one RetroArch's own Online Updater uses — and `art`
 //! fetches pictures from libretro's thumbnail server.
@@ -190,18 +192,37 @@ enum Asked {
     /// distribution package, which is what makes the offer one the shell can
     /// put behind a plain Yes.
     Install,
-    /// Take it off again, with everything it and this integration kept.
+    /// RetroArch has been taken off this machine; forget what this integration
+    /// kept for it.
     ///
-    /// The application, its whole `~/.var/app` tree — configuration, the cores
-    /// the shell downloaded, the assets, the saves, any BIOS put there — the
-    /// filesystem permission granted for the games folder, and the shell's own
-    /// cache of the cover art it fetched. Somebody's games and the folder they
-    /// are in are not touched.
+    /// **Removing RetroArch itself is the shell's job**, because only the shell
+    /// can ask for a password. It knows how this one was installed and hands it
+    /// back to whatever installed it — a `--user` flatpak with nobody's
+    /// permission, a system-wide one through polkit, a distribution package
+    /// through `sudo` and a panel — so an integration set up by hand on a
+    /// machine that packages RetroArch can be undone exactly like one the shell
+    /// installed itself. What is left afterwards is everything *outside* that
+    /// program, which no package manager and no `--delete-data` can reach, and
+    /// that is this.
     ///
-    /// Only for the `--user` flatpak this shell installs. A system-wide one or
-    /// a distribution package is somebody else's decision to undo, and this
-    /// says so rather than asking for a password.
-    Uninstall,
+    /// Always: the filesystem permission granted to the sandbox for the games
+    /// folder, which outlives the application and would be silently inherited
+    /// by a reinstall; the shell's own cache of the cover art fetched from
+    /// libretro; the scratch directory a core's files land in; and what the
+    /// achievements half remembers.
+    ///
+    /// With `--data`, which is the shell's **Remove everything**: RetroArch's
+    /// own configuration directory outside any sandbox, `~/.config/retroarch`.
+    /// A flatpak's is gone already — `flatpak uninstall --delete-data` took it
+    /// — and a distribution package never had one taken, because a package
+    /// manager has no business in somebody's home directory. Asked for, both go.
+    ///
+    /// Somebody's games and the folder they are in are not touched, either way.
+    Forget {
+        /// Take RetroArch's own configuration directory as well.
+        #[arg(long)]
+        data: bool,
+    },
     /// List the consoles in a ROM folder, and the games in each.
     Scan {
         /// The folder holding one subfolder per console.
@@ -344,9 +365,9 @@ fn main() -> ExitCode {
                 ExitCode::FAILURE
             }
         }
-        Asked::Uninstall => {
-            if install::remove(&mut out) {
-                achievements::forget();
+        Asked::Forget { data } => {
+            achievements::forget();
+            if install::forget(&mut out, data) {
                 ExitCode::SUCCESS
             } else {
                 ExitCode::FAILURE

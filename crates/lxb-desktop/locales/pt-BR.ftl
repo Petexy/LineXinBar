@@ -240,6 +240,10 @@ shell-notifications = Notificações
 shell-off = Desligado
 shell-off-steam-is-an-application-like-any-other = Desligado — o Steam é um aplicativo como outro qualquer
 shell-oled-protection = Proteção OLED
+shell-always-on-display = Tela sempre ligada
+shell-what-a-dark-screen-still-shows = O que uma tela apagada ainda mostra
+shell-show-the-time-on-this-screen-while-it-is-dark = Mostrar a hora nesta tela enquanto ela estiver apagada
+shell-no-screen-can-show-the-time = Nenhuma tela pode mostrar a hora
 shell-on = Ligado
 shell-on-for-as-long-as-the-switch-above-is = Ligado enquanto o interruptor acima estiver
 shell-on-screen-keyboard = Teclado na tela
@@ -248,6 +252,13 @@ shell-on-the-library-is-a-column-of-the-bar = Ligado — a biblioteca é uma col
 shell-one-hour-of-night-light = Uma hora de luz noturna
 shell-only-devices-this-machine-is-paired-with = Somente dispositivos pareados com esta máquina
 shell-only-one-display = Só uma tela
+shell-screens-in-use = Telas em uso
+shell-which-screens-the-bar-draws-on = Em quais telas a barra desenha
+shell-in-use = Em uso
+shell-not-in-use = Fora de uso
+shell-this-screen-stays-in-use = Esta tela continua em uso
+shell-set-on-this-machine = Definido na própria máquina
+shell-no-screen-can-be-switched = Nenhuma tela pode ser desligada
 shell-only-the-ones-named-below = Somente os nomeados abaixo
 shell-open = Abrir
 shell-open-with = Abrir com
@@ -507,10 +518,15 @@ shell-your-folder-this-machine-and-anything-plugged-in = A sua pasta, esta máqu
 shell-linexinbar-s-own-settings-will-live-here = As configurações do próprio LineXinBar ficarão aqui
 shell-no-applications-in-this-category = Nenhum aplicativo nesta categoria
 oled-needs-the-compositor = O preto é desenhado sobre a tela inteira, cursor e tudo, então cabe ao compositor desenhá-lo: o desta sessão nunca ouviu falar disso
+always-on-needs-a-display = Esta configuração pertence a uma tela, e nenhuma tela se apresentou: o que foi escolhido para cada uma é mantido e volta com ela
 application-scale-needs-a-display = Este ajuste pertence a uma tela, e nenhuma se anunciou: o que foi escolhido para cada uma fica guardado e volta com ela
 orientation-nested-session = Nada aqui é dono da própria imagem: a sessão está rodando dentro de outro compositor, que decide para que lado a janela dela fica
 placement-nested-or-mirrored = Nada aqui tem um lugar para mudar: a sessão está rodando dentro de outro compositor, ou todas as telas estão mostrando a mesma região, e em nenhum dos casos há uma primeira tela para ser
 display-order-needs-two-screens = Uma ordem é algo que duas telas têm. Esta é o arranjo inteiro, e não há outro lugar nele para ficar
+switching-not-possible = Nada aqui pode ser desligado: a sessão está rodando dentro de outro compositor, a quem pertence a janela em que ela desenha
+one-screen-must-stay-in-use = A barra precisa de uma tela para desenhar. Conecte outra e esta poderá ser desligada
+the-last-screen-in-use-stays-on = A única tela ainda em uso. Ligue outra e esta também poderá ser desligada
+screen-switching-set-elsewhere = Se esta tela é usada ou não está definido na própria máquina, e uma escolha feita aqui não duraria até o próximo início de sessão
 resolution-nested-session = Nada aqui é dono de um conector: a sessão está rodando dentro de outro compositor, que decide o tamanho da janela dela
 night-light-nested-session = Nada aqui é dono de uma rampa de cor: a sessão está rodando dentro de outro compositor, que decide com que a janela dela é tingida
 hdr-no-display-or-pipeline = Nenhuma tela conectada informa HDR, ou o driver não tem um pipeline de cor para alimentá-lo
@@ -687,7 +703,6 @@ shell-remove-your-cover = Remover a sua capa
 shell-removing-this-can-take-a-moment = Removendo… isto pode levar um momento.
 shell-renaming-it-to-what-the-game-is-called-may-find-some = Renomeá-lo com o nome do jogo pode encontrar algumas.
 shell-repair-with-steam = Reparar com o Steam
-shell-retroarch-has-been-removed = O RetroArch foi removido
 shell-retroarch-plays-your-own-game-files = O RetroArch roda os seus próprios arquivos de jogo.
 shell-saved-in = Salvo em
 shell-sign-in-to-steam = Entrar no Steam
@@ -730,7 +745,6 @@ shell-that-cannot-be-used-as-a-password = Isso não pode ser usado como senha.
 shell-that-console = Aquele console
 shell-that-password-was-not-accepted-try-again = Essa senha não foi aceita. Tente de novo.
 shell-the-download-has-finished = O download terminou.
-shell-the-games-themselves-stay = Os jogos em si ficam.
 shell-the-picture-was-not-kept = A imagem não foi mantida
 shell-the-screenshot-could-not-be-saved = Não foi possível salvar a captura de tela.
 shell-the-screenshot-has-been-saved = A captura de tela foi salva.
@@ -759,7 +773,6 @@ shell-where-should-this-be-unpacked = Onde isto deve ser descompactado?
 shell-you-are-offline-on-steam-choose-a-status-above-to-come-back = Você está offline no Steam. Escolha um status acima para voltar.
 shell-you-can-keep-using-it-in-the-meantime = Você pode continuar a usá-lo enquanto isso.
 shell-your-device-needs-to-stay-on-while-updating = O seu dispositivo precisa ficar ligado durante a atualização.
-shell-your-games-are-where-they-were = Os seus jogos estão onde estavam.
 count-items = { $count ->
     [one] { $count } item
    *[other] { $count } itens
@@ -912,7 +925,6 @@ shell-preparing-your-updates = Preparando as suas atualizações…
 shell-press-to-download-it = Toque para baixar
 shell-ready-to-update = Pronto para atualizar
 shell-removing = Removendo…
-shell-removing-retroarch = Removendo o RetroArch
 shell-respond = Responder
 shell-restart-now = Reiniciar agora
 shell-restart-the-system = Reiniciar o sistema?
@@ -1069,10 +1081,8 @@ shell-white = Branco
 shell-silver = Prata
 shell-black = Preto
 shell-configure-retroachievements = Configurar o RetroAchievements
-shell-remove-retroarch-question = Remover o RetroArch?
 shell-configure-retroachievements-question = Configurar o RetroAchievements?
 shell-asking-steam-ellipsis = Consultando o Steam…
-shell-remove-retroarch = Remover o RetroArch
 shell-asking-steam = Consultando o Steam
 shell-not-checked-yet = Ainda não verificado
 shell-restarting-ellipsis = Reiniciando…
@@ -1084,7 +1094,6 @@ shell-updating-ellipsis = Atualizando…
 shell-updates-installed-full-stop = Atualizações instaladas.
 shell-updates-installed = Atualizações instaladas
 retroarch-install-explanation = É gratuito, e nada mais nesta máquina é alterado.
-retroarch-remove-explanation = Tudo o que ele guardava vai junto: as suas configurações, os emuladores que esta interface baixou, os saves, qualquer BIOS que você escolheu e onde os seus jogos estão.
 rom-folders-explanation = Dentro dela, mantenha os jogos de cada console em uma pasta com o nome do console: psp, nes, snes.
 
 # Lines that share a panel with a name on its own line, and other short forms.
@@ -1472,6 +1481,20 @@ showing-name = Mostrando  { $name }
 
 uninstall-unknown-origin = O LineXinBar não consegue saber o que instalou isto, então não pode removê-lo.
 uninstall-forbidden = Você não tem permissão para remover aplicativos neste sistema.
+
+# Remover o programa que uma integração usa.
+remove-name = Remover { $name }
+name-has-been-removed = { $name } foi removido
+shell-remove-everything = Remover tudo
+shell-what-it-kept-is-still-on-the-disk = Os dados continuam no disco, então instalá-lo de novo vai encontrá-los.
+steam-remove-what-stays = Seus jogos, seus downloads e sua pasta da Steam ficam, e você continua conectado.
+steam-remove-everything-explanation = Remover tudo também apaga a pasta da Steam: todos os jogos instalados e os saves deles.
+epic-remove-what-stays = Seus jogos da Epic continuam instalados onde estão, e você continua conectado.
+epic-remove-everything-explanation = Remover tudo também apaga a pasta do Heroic: as configurações, o login e o que ele baixou para rodar os jogos.
+retroarch-remove-what-stays = Seus jogos e a pasta onde eles estão ficam.
+retroarch-remove-everything-explanation = Remover tudo também apaga a pasta do RetroArch: as configurações, os emuladores baixados para ele, os saves e a BIOS que você escolheu.
+ps3-remove-what-stays = Os arquivos de jogo da sua pasta ficam.
+ps3-remove-everything-explanation = Remover tudo também apaga a pasta do RPCS3: o software do sistema, os jogos instalados de pacotes, seus saves e seus troféus.
 password-could-not-be-checked = Não foi possível pedir a esta máquina que verificasse a sua senha.
 
 # Archives.
@@ -1659,6 +1682,12 @@ retroarch-no-bios-for-console = Nada ali é um arquivo com que o { $console } co
 retroarch-console-games-need-more = Os jogos de { $console } precisam de algo que esta máquina não tem.
 retroarch-core-missing-for = Falta algo para jogar os jogos de { $console }.
 retroarch-console-may-need-bios = Os jogos de { $console } podem precisar da BIOS do próprio console, que não pode ser baixada.
+
+# Settings > Games > RetroArch > Integration.
+retroarch-on-your-games-are-a-column-of-the-bar = Ligado — os seus próprios jogos são uma coluna da barra
+retroarch-off-retroarch-is-an-application-like-any-other = Desligado — o RetroArch é um aplicativo como outro qualquer
+retroarch-retroarch-is-an-application-like-any-other-with-its-own-icon = O RetroArch é um aplicativo como outro qualquer, com o seu próprio ícone
+retroarch-play-your-own-games-from-the-bar = Jogue os seus próprios jogos de console a partir da barra
 
 # Updates and the terminal under them.
 terminal-lines-following = Linhas { $from }–{ $to } de { $total } · acompanhando · Esquerda para olhar para trás
@@ -2137,6 +2166,10 @@ ps3-trouble-not-a-package = Este arquivo não é um jogo de PlayStation 3 que po
 ps3-trouble-package = O arquivo pode estar danificado ou ser uma atualização de um jogo que não está instalado.
 ps3-trouble-other = Tente de novo mais tarde.
 ps3-where-your-games-are = Onde estão seus jogos de PlayStation 3
+ps3-on-your-playstation-3-games-are-a-column-of-the-bar = Ligado — os seus jogos de PlayStation 3 são uma coluna da barra
+ps3-off-rpcs3-is-an-application-like-any-other = Desligado — o RPCS3 é um aplicativo como outro qualquer
+ps3-rpcs3-is-an-application-like-any-other-with-its-own-icon = O RPCS3 é um aplicativo como outro qualquer, com o seu próprio ícone
+ps3-play-your-playstation-3-games-from-the-bar = Jogue os seus jogos de PlayStation 3 a partir da barra
 ps3-install-question = Instalar este jogo de PlayStation 3? Ele é copiado para o console, e este arquivo fica onde está.
 ps3-installed-find-it = Ele está instalado e pronto para jogar na coluna PlayStation 3.
 ps3-trophy-platinum = Platina
@@ -2206,3 +2239,48 @@ low-end-off-note = Todos os efeitos, tão suaves quanto o dispositivo permitir
 low-end-on-note = Um papel de parede parado, efeitos mais simples e menos quadros
 low-end-slow = A interface está lenta neste dispositivo
 low-end-slow-body = O modo para hardware modesto, em Configurações > Sistema, pode deixá-la mais suave.
+
+# Windows Apps — the games somebody has installed under Proton.
+windows-run-an-exe = Executar um programa do Windows
+windows-run-an-exe-note = Escolha um instalador ou um programa e dê a ele um lugar próprio
+windows-run-inside-a-prefix = Executar algo dentro
+windows-run-inside-game = Executar dentro de { $game }
+windows-looking = Procurando com o que executar programas do Windows
+windows-press-to-set-up = Pressione para preparar
+windows-getting-ready = Preparando para executar programas do Windows
+windows-settling = Conferindo o que foi baixado
+windows-no-games-yet = Ainda não há programas do Windows
+windows-ready = Pronto para jogar
+windows-install-unfinished = Esta instalação nunca foi concluída
+windows-nothing-installed-yet = Nada foi instalado aqui ainda
+windows-trouble-offline = Não foi possível alcançar o download. Verifique a conexão e tente de novo.
+windows-trouble-damaged = O download não chegou inteiro. Tente de novo.
+windows-trouble-no-space = Não há espaço suficiente no disco.
+windows-trouble-wrong-machine = Não há uma versão disto para este aparelho.
+windows-trouble-in-use = Isto ainda está em execução. Feche e tente de novo.
+windows-trouble-other = Isso não funcionou. Tente de novo.
+windows-count-games = { $count ->
+    [one] { $count } programa do Windows
+   *[other] { $count } programas do Windows
+    }
+windows-set-up-explanation = Programas do Windows precisam de um download gratuito antes de poderem ser executados. Nada mais neste aparelho é alterado.
+windows-what-to-play = Escolher o que jogar
+windows-asking-what-is-here = Vendo o que esta máquina tem
+windows-looking-in-the-folder = Procurando nos arquivos da pasta
+windows-nothing-looks-like-a-program = Nada aqui parece um programa
+windows-uninstall-takes-saves = Tudo que está na pasta deste jogo vai com ele, inclusive os jogos salvos. Isso não pode ser desfeito.
+windows-copy-this-game-or-app-in = Copiar o jogo ou aplicativo desta pasta
+windows-add-a-game-or-app-folder = Adicionar uma pasta de jogo ou aplicativo
+windows-add-a-game-or-app-folder-note = Copiar um jogo ou aplicativo que você já tem neste disco
+windows-this-machines-choice = Escolha desta máquina
+windows-uninstalling = Desinstalando…
+windows-games-and-apps-folder = Pasta dos jogos e aplicativos
+windows-games-and-apps-folder-note = Onde os jogos e aplicativos novos ficam
+windows-programs-and-games-on-this-machine = Os programas e os jogos de Windows nesta máquina
+windows-on-your-windows-games-and-apps-are-a-column-of-the-bar = Ligado — os seus jogos e aplicativos de Windows são uma coluna da barra
+windows-off-nothing-here-runs-windows-programs = Desligado — aqui não roda nenhum programa de Windows
+windows-your-games-and-apps-stay-on-the-disk-and-nothing-reaches-them = Os seus jogos e aplicativos continuam no disco, e nada na barra chega até eles
+windows-run-your-windows-games-and-apps-from-the-bar = Execute os seus jogos e aplicativos de Windows a partir da barra
+windows-keep-games-and-apps-in-this-folder = Guardar os jogos e aplicativos novos nesta pasta
+windows-run-inside-a-game = Executar dentro de um jogo
+windows-which-game-to-run-it-in = Escolha o jogo em que ele será executado

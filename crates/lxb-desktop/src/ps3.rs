@@ -96,6 +96,12 @@ pub fn offered() -> bool {
     FOUND.lock().is_ok_and(|found| found.is_some())
 }
 
+/// The helper, where this machine has it — for starting the integration again
+/// once it has been switched off and on. [`crate::heroic::helper`]'s twin.
+pub fn helper() -> Option<PathBuf> {
+    FOUND.lock().ok()?.clone()
+}
+
 /// Look for the helper: `named` first, then beside the shell's own
 /// executable, then `PATH` — [`crate::heroic::look_for_helper`]'s order, for
 /// its reason: a local build must not pick up an older installed helper.
@@ -356,6 +362,54 @@ struct Installation {
     /// differ. A helper that does not say is answered with `command`.
     #[serde(default)]
     play: Vec<String>,
+    /// Which of the four ways RPCS3 is here, which is the whole of what
+    /// deciding how to remove it needs. `None` from a helper too old to say,
+    /// and then the row that takes it off is not offered at all.
+    #[serde(default)]
+    kind: Option<Kind>,
+    /// Its flatpak application id, for an installation that is one.
+    #[serde(default)]
+    id: Option<String>,
+}
+
+/// Where one RPCS3 is, in the terms the shell's own removal is asked in.
+///
+/// `None` for an installation the helper did not say enough about, which takes
+/// the row that removes it away rather than guessing: this is the one command
+/// in the shell that deletes software.
+///
+/// A flatpak is named by its application id, which the helper sends for exactly
+/// this reason — the id is the word `flatpak uninstall` is handed, and a second
+/// copy of it in this shell would be two places that have to agree. A
+/// distribution package is named by the program itself, the first word of the
+/// command the helper would start it with, and the package manager is asked who
+/// owns it. An AppImage is a file somebody downloaded whole, which nothing
+/// installed and nothing claims, so removing it is deleting that file — see
+/// [`crate::uninstall::Doing::File`].
+fn installed_where(installation: &Installation) -> Option<crate::uninstall::Installed> {
+    use crate::uninstall::Installed;
+    match installation.kind? {
+        Kind::FlatpakUser | Kind::FlatpakSystem => {
+            Some(Installed::Flatpak(installation.id.clone()?))
+        }
+        Kind::System => Some(Installed::At(installation.command.first()?.into())),
+        Kind::AppImage => Some(Installed::Downloaded(installation.command.first()?.into())),
+    }
+}
+
+/// Which of the ways RPCS3 can be on a machine this one is.
+///
+/// Read off the helper's own answer rather than worked out here: the helper is
+/// what looked, and which installation it picked is a decision it already made
+/// — see `lxb-rpcs3`'s `rpcs3::installation`, which prefers the distribution's
+/// package and falls back to an AppImage last.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum Kind {
+    System,
+    FlatpakUser,
+    FlatpakSystem,
+    AppImage,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -532,6 +586,12 @@ struct Permission {
 enum Ask {
     Probe,
     Setup,
+    /// RPCS3 has been removed; the helper is to forget what this integration
+    /// kept for it — see its `setup::forget`. `data` is the second of the
+    /// panel's two buttons, **Remove everything**.
+    Forget {
+        data: bool,
+    },
     Scan(Option<PathBuf>),
     Key(PathBuf),
     /// Install a package, and after it the updates to the same game that were
@@ -549,6 +609,9 @@ enum Ask {
 enum Heard {
     Probed(Probe),
     SettingUp(Progress),
+    /// A line of the clearing-up after a removal, which is for the log alone:
+    /// RPCS3 is gone by then and nothing on screen is waiting.
+    Forgotten(Progress),
     Scanned(Library),
     Keyed(PathBuf, KeyResult),
     Adding(PathBuf, Progress),
@@ -564,6 +627,8 @@ fn answer(helper: &Path, ask: &Ask, back: &Sender<Heard>) {
     match ask {
         Ask::Probe => command.arg("probe"),
         Ask::Setup => command.arg("setup"),
+        Ask::Forget { data: true } => command.arg("forget").arg("--data"),
+        Ask::Forget { data: false } => command.arg("forget"),
         Ask::Scan(folder) => command.arg("scan").args(folder),
         Ask::Key(image) => command.arg("key").arg(image),
         Ask::Add(path, updates) => command.arg("add").arg(path).args(updates),
@@ -594,6 +659,7 @@ fn answer(helper: &Path, ask: &Ask, back: &Sender<Heard>) {
             let heard = match ask {
                 Ask::Probe => serde_json::from_str(line).map(Heard::Probed),
                 Ask::Setup => serde_json::from_str(line).map(Heard::SettingUp),
+                Ask::Forget { .. } => serde_json::from_str(line).map(Heard::Forgotten),
                 Ask::Scan(_) => serde_json::from_str(line).map(Heard::Scanned),
                 Ask::Key(image) => {
                     serde_json::from_str(line).map(|said| Heard::Keyed(image.clone(), said))
@@ -624,7 +690,9 @@ fn answer(helper: &Path, ask: &Ask, back: &Sender<Heard>) {
         }
     }
     let status = child.wait();
-    if !said {
+    // A clearing-up that said nothing is not a broken integration: RPCS3 has
+    // already gone by then, and there is no row left for the news to reach.
+    if !said && !matches!(ask, Ask::Forget { .. }) {
         let why = format!("{HELPER} answered nothing ({status:?})");
         tracing::warn!(why, "the PlayStation 3 helper");
         let _ = back.send(Heard::Broken(why));
@@ -680,6 +748,10 @@ enum Found {
         firmware: Option<String>,
         /// RPCS3's configuration folder, where its controller file goes.
         config: Option<PathBuf>,
+        /// Where this RPCS3 is, in the terms the shell's own removal is asked
+        /// in — see [`Ps3::installed_where`]. Worked out once, when the probe
+        /// lands, because that is the moment the answer is known.
+        installed: Option<crate::uninstall::Installed>,
     },
 }
 
@@ -883,6 +955,37 @@ impl Ps3 {
         self.send(Ask::Setup);
     }
 
+    /// RPCS3 has gone; tell the helper to take what was kept for it.
+    ///
+    /// Sent after the removal itself, which is the shell's — see
+    /// `Shell::program_removed`. Nothing is drawn for it and nothing waits on
+    /// it: RPCS3 is already gone, and every one of these is a cache or a
+    /// permission belonging to a program that is not there. What goes, and what
+    /// `everything` adds, is in the helper's `setup::forget`.
+    pub fn forget_what_it_kept(&mut self, everything: bool) {
+        self.send(Ask::Forget { data: everything });
+    }
+
+    /// Forget everything read off an RPCS3 that is no longer there.
+    ///
+    /// The games, the trophies, the question of where the folder is and what
+    /// was found in it. Not a tidy-up: every one of these is something the bar
+    /// and the Trophies column are built from, and a shell that left them
+    /// standing would go on drawing a column of games nothing can play and
+    /// trophies for a console that is not emulated here any more. The user's
+    /// own game files are untouched, as they always are.
+    pub fn forget(&mut self) {
+        let Some(inner) = self.inner.as_mut() else {
+            return;
+        };
+        inner.games = Vec::new();
+        inner.trophies = Default::default();
+        inner.unreadable = None;
+        inner.reading = false;
+        inner.found = Found::Asking;
+        crate::ps3_settings::known_config(None);
+    }
+
     pub fn setting_up(&self) -> Option<&Working> {
         self.inner.as_ref()?.setting_up.as_ref()
     }
@@ -987,6 +1090,12 @@ impl Ps3 {
         let mut rescan = false;
         while let Ok(heard) = inner.heard.try_recv() {
             match heard {
+                // Nothing on screen, by design — see
+                // [`Ps3::forget_what_it_kept`]. The helper's own stderr is
+                // where each path it could not remove is named.
+                Heard::Forgotten(line) => {
+                    tracing::info!(stage = ?line.stage, note = %line.note, "clearing up after RPCS3");
+                }
                 Heard::Probed(probe) => {
                     if probe.protocol != PROTOCOL {
                         tracing::warn!(
@@ -1001,6 +1110,7 @@ impl Ps3 {
                     let was_here = matches!(inner.found, Found::Here { .. });
                     inner.found = match probe.rpcs3 {
                         Some(installation) => Found::Here {
+                            installed: installed_where(&installation),
                             play: match installation.play.is_empty() {
                                 true => installation.command.clone(),
                                 false => installation.play,
@@ -1236,6 +1346,21 @@ impl Ps3 {
             Found::Here { firmware: None, .. } => Press::SetUp,
             Found::Here { .. } if folder().is_none() && inner.games.is_empty() => Press::Folder,
             Found::Here { .. } => Press::Enter,
+        }
+    }
+
+    /// Where the RPCS3 this machine would use is, for the row that takes it
+    /// off. `None` while there is none, while one is being set up, and on a
+    /// session whose helper did not say enough about the one there is — see
+    /// [`installed_where`], which is where the answer is worked out.
+    pub fn installed_where(&self) -> Option<crate::uninstall::Installed> {
+        let inner = self.inner.as_ref()?;
+        if inner.setting_up.is_some() {
+            return None;
+        }
+        match &inner.found {
+            Found::Here { installed, .. } => installed.clone(),
+            Found::Asking | Found::Absent { .. } => None,
         }
     }
 

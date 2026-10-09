@@ -351,6 +351,28 @@ pub const SETTING_HDR: &str = "lxb:setting-hdr";
 /// else in that tree.
 pub const SETTING_SCREEN_REST: &str = "lxb:setting-screen-rest";
 
+/// Settings > Display > Screens in use: which screens the bar draws on.
+///
+/// A monitor with a tick in its screen, built exactly as
+/// [`SETTING_SCREEN_REST`] is built with a moon in the same opening — the two
+/// pages ask the two questions anybody has about a screen they are not looking
+/// at, so a reader who has learnt one drawing can read the other. It goes on
+/// that folder and on the switch inside it; the screens listed under it wear
+/// [`SETTING_DISPLAY`], as they do everywhere else in that tree.
+pub const SETTING_SCREEN_USE: &str = "lxb:setting-screen-use";
+
+/// Settings > Display > Always on display: what a screen goes on showing once
+/// it has gone dark.
+///
+/// The third monitor of the set, built exactly as [`SETTING_SCREEN_REST`] and
+/// [`SETTING_SCREEN_USE`] are, with a clock face in the same opening. A face
+/// rather than a pair of numerals: the page is about the time, and two digits
+/// at the size a row draws a mark are four strokes nobody can resolve, while a
+/// ring with two hands is the shape everyone already reads as the time. It goes
+/// on that folder and on the switch inside it; the screens listed under it wear
+/// [`SETTING_DISPLAY`], as they do everywhere else in that tree.
+pub const SETTING_ALWAYS_ON: &str = "lxb:setting-always-on";
+
 /// Settings > Display > Display order: which screen the compositor puts first.
 ///
 /// The one glyph in this set with two screens in it, because it is the one page
@@ -973,7 +995,7 @@ pub fn letter_mark(letter: char) -> Option<&'static str> {
 /// has these whatever is installed on the machine — which is what the
 /// quick-settings bars are *for* — and they are still drawings, editable in
 /// anything that opens an SVG rather than in a string literal.
-pub const BUILTIN: [(&str, &str); 160] = [
+pub const BUILTIN: [(&str, &str); 162] = [
     (VOLUME, include_str!("glyphs/volume.svg")),
     (VOLUME_MUTED, include_str!("glyphs/volume-muted.svg")),
     (BRIGHTNESS, include_str!("glyphs/brightness.svg")),
@@ -1149,6 +1171,14 @@ pub const BUILTIN: [(&str, &str); 160] = [
     (
         SETTING_SCREEN_REST,
         include_str!("glyphs/setting-screen-rest.svg"),
+    ),
+    (
+        SETTING_SCREEN_USE,
+        include_str!("glyphs/setting-screen-use.svg"),
+    ),
+    (
+        SETTING_ALWAYS_ON,
+        include_str!("glyphs/setting-always-on.svg"),
     ),
     (
         SETTING_MICROPHONE,
@@ -2926,7 +2956,7 @@ pub(crate) mod tests {
     fn every_built_in_glyph_ships_and_draws_something() {
         assert_eq!(
             BUILTIN.len(),
-            160,
+            162,
             "a speaker, a struck-out one, a sun, a note, the three transport \
              buttons and the second face of the middle one, a stick pointer, a \
              mixer, a \
@@ -2972,7 +3002,11 @@ pub(crate) mod tests {
              at sign it logs in by, the key its password is, the framed face of \
              its avatar and the shield \
              saying what it may do — plus its four \
-             turns of a monitor, the two links of a chain, hooked and \
+             turns of a monitor, the monitor with a moon in it that rests, \
+             the monitor with a tick in it that is used at all and the monitor \
+             with a clock in it that says what it shows once it is dark, the \
+             two \
+             links of a chain, hooked and \
              snapped, that a network is joined and left by and the rune \
              everything Bluetooth is reached through wears, the three \
              strengths of the wireless fan the corner of the start screen \
@@ -3129,6 +3163,8 @@ pub(crate) mod tests {
                 SETTING_SCHEDULE,
                 SETTING_HDR,
                 SETTING_SCREEN_REST,
+                SETTING_SCREEN_USE,
+                SETTING_ALWAYS_ON,
                 SETTING_MICROPHONE,
                 SETTING_NETWORK,
                 SETTING_ADDRESS,

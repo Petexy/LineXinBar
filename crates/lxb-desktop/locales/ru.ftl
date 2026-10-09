@@ -240,6 +240,10 @@ shell-notifications = Уведомления
 shell-off = Выкл.
 shell-off-steam-is-an-application-like-any-other = Выкл. — Steam такое же приложение, как любое другое
 shell-oled-protection = Защита OLED
+shell-always-on-display = Всегда включённый экран
+shell-what-a-dark-screen-still-shows = Что тёмный экран всё ещё показывает
+shell-show-the-time-on-this-screen-while-it-is-dark = Показывать время на этом экране, пока он тёмный
+shell-no-screen-can-show-the-time = Ни один экран не может показать время
 shell-on = Вкл.
 shell-on-for-as-long-as-the-switch-above-is = Вкл., пока включён переключатель выше
 shell-on-screen-keyboard = Экранная клавиатура
@@ -248,6 +252,13 @@ shell-on-the-library-is-a-column-of-the-bar = Вкл. — библиотека �
 shell-one-hour-of-night-light = Один час ночного света
 shell-only-devices-this-machine-is-paired-with = Только устройства, сопряжённые с этой машиной
 shell-only-one-display = Только один экран
+shell-screens-in-use = Используемые экраны
+shell-which-screens-the-bar-draws-on = На каких экранах рисуется панель
+shell-in-use = Используется
+shell-not-in-use = Не используется
+shell-this-screen-stays-in-use = Этот экран остаётся используемым
+shell-set-on-this-machine = Задано на самой машине
+shell-no-screen-can-be-switched = Ни один экран нельзя отключить
 shell-only-the-ones-named-below = Только названные ниже
 shell-open = Открыть
 shell-open-with = Открыть с помощью
@@ -507,10 +518,15 @@ shell-your-folder-this-machine-and-anything-plugged-in = Ваша папка, э
 shell-linexinbar-s-own-settings-will-live-here = Собственные настройки LineXinBar будут здесь
 shell-no-applications-in-this-category = В этой категории нет приложений
 oled-needs-the-compositor = Чёрный рисуется поверх всего экрана, включая курсор, поэтому рисовать его должен композитор: композитор этого сеанса о нём не знает
+always-on-needs-a-display = Эта настройка принадлежит экрану, а ни один экран не сообщил о себе: выбранное для каждого сохраняется и возвращается вместе с ним
 application-scale-needs-a-display = Эта настройка принадлежит экрану, а ни один экран не объявился: выбранное для каждого сохраняется и вернётся вместе с ним
 orientation-nested-session = Здесь ничто не владеет собственной картинкой: сеанс работает внутри другого композитора, который решает, какой стороной вверх стоит его окно
 placement-nested-or-mirrored = Здесь нечему менять место: сеанс работает внутри другого композитора, либо все экраны показывают одну и ту же область, и ни в том, ни в другом случае нет первого экрана
 display-order-needs-two-screens = Порядок — это то, что есть у двух экранов. Этот — вся расстановка целиком, и другого места в ней нет
+switching-not-possible = Здесь нечего отключать: сеанс работает внутри другого композитора, которому принадлежит окно, в котором он рисует
+one-screen-must-stay-in-use = Панели нужен экран, на котором рисовать. Подключите ещё один, и этот можно будет отключить
+the-last-screen-in-use-stays-on = Единственный экран, который ещё используется. Включите ещё один, и этот тоже можно будет отключить
+screen-switching-set-elsewhere = Используется ли этот экран, задано на самой машине, и выбор, сделанный здесь, не сохранится до следующего входа
 resolution-nested-session = Здесь ничто не владеет разъёмом: сеанс работает внутри другого композитора, который решает, какого размера его окно
 night-light-nested-session = Здесь ничто не владеет цветовой кривой: сеанс работает внутри другого композитора, который решает, чем окрашено его окно
 hdr-no-display-or-pipeline = Ни один подключённый экран не сообщает о HDR, либо у драйвера нет цветового конвейера, который мог бы его питать
@@ -687,7 +703,6 @@ shell-remove-your-cover = Убрать вашу обложку
 shell-removing-this-can-take-a-moment = Удаление… это может занять некоторое время.
 shell-renaming-it-to-what-the-game-is-called-may-find-some = Если переименовать по названию игры, что-то может найтись.
 shell-repair-with-steam = Восстановить через Steam
-shell-retroarch-has-been-removed = RetroArch удалён
 shell-retroarch-plays-your-own-game-files = RetroArch запускает ваши собственные файлы игр.
 shell-saved-in = Сохранено в
 shell-sign-in-to-steam = Войти в Steam
@@ -730,7 +745,6 @@ shell-that-cannot-be-used-as-a-password = Это нельзя использов
 shell-that-console = Та консоль
 shell-that-password-was-not-accepted-try-again = Этот пароль не принят. Попробуйте снова.
 shell-the-download-has-finished = Загрузка завершена.
-shell-the-games-themselves-stay = Сами игры остаются.
 shell-the-picture-was-not-kept = Картинка не сохранена
 shell-the-screenshot-could-not-be-saved = Не удалось сохранить снимок экрана.
 shell-the-screenshot-has-been-saved = Снимок экрана сохранён.
@@ -759,7 +773,6 @@ shell-where-should-this-be-unpacked = Куда это распаковать?
 shell-you-are-offline-on-steam-choose-a-status-above-to-come-back = Вы не в сети в Steam. Выберите статус выше, чтобы вернуться.
 shell-you-can-keep-using-it-in-the-meantime = Тем временем можно продолжать пользоваться.
 shell-your-device-needs-to-stay-on-while-updating = Во время обновления устройство должно оставаться включённым.
-shell-your-games-are-where-they-were = Ваши игры там же, где и были.
 count-items = { $count ->
     [one] { $count } элемент
     [few] { $count } элемента
@@ -932,7 +945,6 @@ shell-preparing-your-updates = Подготовка ваших обновлен�
 shell-press-to-download-it = Нажмите, чтобы загрузить
 shell-ready-to-update = Готово к обновлению
 shell-removing = Удаление…
-shell-removing-retroarch = Удаление RetroArch
 shell-respond = Ответить
 shell-restart-now = Перезагрузить сейчас
 shell-restart-the-system = Перезагрузить систему?
@@ -1089,10 +1101,8 @@ shell-white = Белый
 shell-silver = Серебряный
 shell-black = Чёрный
 shell-configure-retroachievements = Настроить RetroAchievements
-shell-remove-retroarch-question = Удалить RetroArch?
 shell-configure-retroachievements-question = Настроить RetroAchievements?
 shell-asking-steam-ellipsis = Запрос к Steam…
-shell-remove-retroarch = Удалить RetroArch
 shell-asking-steam = Запрос к Steam
 shell-not-checked-yet = Ещё не проверено
 shell-restarting-ellipsis = Перезагрузка…
@@ -1104,7 +1114,6 @@ shell-updating-ellipsis = Обновление…
 shell-updates-installed-full-stop = Обновления установлены.
 shell-updates-installed = Обновления установлены
 retroarch-install-explanation = Это бесплатно, и больше ничего на этой машине не меняется.
-retroarch-remove-explanation = Всё, что он хранил, уйдёт вместе с ним: его настройки, эмуляторы, загруженные этой оболочкой, сохранения, выбранные вами BIOS и место, где лежат ваши игры.
 rom-folders-explanation = Внутри неё держите игры каждой консоли в папке с именем консоли: psp, nes, snes.
 
 # Lines that share a panel with a name on its own line, and other short forms.
@@ -1564,6 +1573,20 @@ showing-name = Показано  { $name }
 
 uninstall-unknown-origin = LineXinBar не может определить, чем это было установлено, и поэтому не может это удалить.
 uninstall-forbidden = У вас нет разрешения удалять приложения в этой системе.
+
+# Удаление программы, которой пользуется интеграция.
+remove-name = Удалить { $name }
+name-has-been-removed = { $name } удалён
+shell-remove-everything = Удалить всё
+shell-what-it-kept-is-still-on-the-disk = Его данные остались на диске, поэтому при повторной установке он их найдёт.
+steam-remove-what-stays = Ваши игры, загрузки и папка Steam остаются, и вы остаётесь в своей учётной записи.
+steam-remove-everything-explanation = «Удалить всё» удаляет и собственную папку Steam: все установленные игры и их сохранения.
+epic-remove-what-stays = Игры Epic остаются установленными там, где они есть, и вы остаётесь в своей учётной записи.
+epic-remove-everything-explanation = «Удалить всё» удаляет и собственную папку Heroic: его настройки, вход в учётную запись и то, что он скачал для запуска игр.
+retroarch-remove-what-stays = Ваши игры и папка, в которой они лежат, остаются.
+retroarch-remove-everything-explanation = «Удалить всё» удаляет и собственную папку RetroArch: его настройки, скачанные для него эмуляторы, сохранения и выбранный BIOS.
+ps3-remove-what-stays = Файлы игр в вашей папке остаются.
+ps3-remove-everything-explanation = «Удалить всё» удаляет и собственную папку RPCS3: системное программное обеспечение, игры, установленные из пакетов, ваши сохранения и трофеи.
 password-could-not-be-checked = Эту машину не удалось попросить проверить ваш пароль.
 
 # Archives.
@@ -1772,6 +1795,12 @@ retroarch-no-bios-for-console = Там нет файла, с которого { 
 retroarch-console-games-need-more = Играм { $console } нужно то, чего нет на этой машине.
 retroarch-core-missing-for = Для игр { $console } чего-то не хватает.
 retroarch-console-may-need-bios = Играм { $console } может понадобиться собственный BIOS консоли, который нельзя загрузить.
+
+# Settings > Games > RetroArch > Integration.
+retroarch-on-your-games-are-a-column-of-the-bar = Вкл. — ваши собственные игры являются колонкой панели
+retroarch-off-retroarch-is-an-application-like-any-other = Выкл. — RetroArch такое же приложение, как любое другое
+retroarch-retroarch-is-an-application-like-any-other-with-its-own-icon = RetroArch такое же приложение, как любое другое, со своим значком
+retroarch-play-your-own-games-from-the-bar = Играйте в свои собственные консольные игры прямо с панели
 
 # Updates and the terminal under them.
 terminal-lines-following = Строки { $from }–{ $to } из { $total } · слежение · Влево, чтобы посмотреть назад
@@ -2250,6 +2279,10 @@ ps3-trouble-not-a-package = Этот файл не является игрой �
 ps3-trouble-package = Возможно, файл повреждён или это обновление для игры, которая не установлена.
 ps3-trouble-other = Повторите попытку позже.
 ps3-where-your-games-are = Где находятся ваши игры для PlayStation 3
+ps3-on-your-playstation-3-games-are-a-column-of-the-bar = Вкл. — ваши игры PlayStation 3 являются колонкой панели
+ps3-off-rpcs3-is-an-application-like-any-other = Выкл. — RPCS3 такое же приложение, как любое другое
+ps3-rpcs3-is-an-application-like-any-other-with-its-own-icon = RPCS3 такое же приложение, как любое другое, со своим значком
+ps3-play-your-playstation-3-games-from-the-bar = Играйте в свои игры PlayStation 3 прямо с панели
 ps3-install-question = Установить эту игру для PlayStation 3? Она будет скопирована в консоль, а этот файл останется на месте.
 ps3-installed-find-it = Установка завершена. Игра ждёт в столбце PlayStation 3.
 ps3-trophy-platinum = Платина
@@ -2325,3 +2358,49 @@ low-end-off-note = Все эффекты, настолько плавно, на�
 low-end-on-note = Неподвижные обои, более простые эффекты и меньше кадров
 low-end-slow = Оболочка работает медленно на этом устройстве
 low-end-slow-body = Режим для слабого оборудования в Настройки > Система может сделать её плавнее.
+
+# Windows Apps — the games somebody has installed under Proton.
+windows-run-an-exe = Запустить программу Windows
+windows-run-an-exe-note = Выберите установщик или программу и дайте ей собственное место
+windows-run-inside-a-prefix = Запустить что-то внутри
+windows-run-inside-game = Запустить в { $game }
+windows-looking = Поиск того, чем запускать программы Windows
+windows-press-to-set-up = Нажмите, чтобы подготовить
+windows-getting-ready = Подготовка к запуску программ Windows
+windows-settling = Проверка загруженного
+windows-no-games-yet = Программ Windows пока нет
+windows-ready = Готово к игре
+windows-install-unfinished = Эта установка так и не была завершена
+windows-nothing-installed-yet = Сюда ещё ничего не установлено
+windows-trouble-offline = Не удалось получить загрузку. Проверьте соединение и попробуйте снова.
+windows-trouble-damaged = Загрузка пришла не полностью. Попробуйте снова.
+windows-trouble-no-space = На диске недостаточно места.
+windows-trouble-wrong-machine = Для этого устройства такой версии нет.
+windows-trouble-in-use = Это ещё работает. Закройте и попробуйте снова.
+windows-trouble-other = Это не получилось. Попробуйте снова.
+windows-count-games = { $count ->
+    [one] { $count } программа Windows
+    [few] { $count } программы Windows
+   *[other] { $count } программ Windows
+    }
+windows-set-up-explanation = Программам Windows нужна одна бесплатная загрузка, прежде чем их можно будет запустить. Больше на этом устройстве ничего не меняется.
+windows-what-to-play = Выбрать, что запускать
+windows-asking-what-is-here = Проверяется, что есть на этом компьютере
+windows-looking-in-the-folder = Просматриваются файлы папки
+windows-nothing-looks-like-a-program = Здесь ничего не похоже на программу
+windows-uninstall-takes-saves = Всё из папки этой игры удалится вместе с ней, включая сохранения. Это нельзя отменить.
+windows-copy-this-game-or-app-in = Скопировать игру или приложение из этой папки
+windows-add-a-game-or-app-folder = Добавить папку с игрой или приложением
+windows-add-a-game-or-app-folder-note = Скопировать игру или приложение, которое уже есть на этом диске
+windows-this-machines-choice = Выбор этого компьютера
+windows-uninstalling = Удаление…
+windows-games-and-apps-folder = Папка с играми и приложениями
+windows-games-and-apps-folder-note = Где хранятся новые игры и приложения
+windows-programs-and-games-on-this-machine = Программы и игры Windows на этой машине
+windows-on-your-windows-games-and-apps-are-a-column-of-the-bar = Вкл. — ваши игры и приложения Windows являются колонкой панели
+windows-off-nothing-here-runs-windows-programs = Выкл. — здесь не запускается ни одна программа Windows
+windows-your-games-and-apps-stay-on-the-disk-and-nothing-reaches-them = Ваши игры и приложения остаются на диске, но с панели к ним ничего не ведёт
+windows-run-your-windows-games-and-apps-from-the-bar = Запускайте свои игры и приложения Windows прямо с панели
+windows-keep-games-and-apps-in-this-folder = Хранить новые игры и приложения в этой папке
+windows-run-inside-a-game = Запустить внутри игры
+windows-which-game-to-run-it-in = Выберите игру, внутри которой его запустить

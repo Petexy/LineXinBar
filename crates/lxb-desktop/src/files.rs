@@ -221,6 +221,16 @@ pub enum Shows {
     /// There is only ever one account form open at a time, and it is the form
     /// that knows whose face this is; see [`crate::users::set_picture`].
     Portrait,
+    /// Only what could be a Windows program: the folders to keep walking
+    /// through, and the `.exe` files themselves.
+    ///
+    /// The first walk in this shell whose answer is a **file** rather than a
+    /// folder. Every other picker answers with a folder and carries a
+    /// [`crate::settings::Picking`] saying what the folder is for; this one
+    /// has no such question to answer, because what it is for is the one
+    /// thing it does — give that program a place of its own and run it. See
+    /// [`crate::proton`].
+    Executable,
 }
 
 impl Shows {
@@ -229,7 +239,11 @@ impl Shows {
     pub fn picking(self) -> Option<crate::settings::Picking> {
         match self {
             Shows::Folders(picking) => Some(picking),
-            Shows::Everything | Shows::Scenery | Shows::Picture(_) | Shows::Portrait => None,
+            Shows::Everything
+            | Shows::Scenery
+            | Shows::Picture(_)
+            | Shows::Portrait
+            | Shows::Executable => None,
         }
     }
 
@@ -238,7 +252,11 @@ impl Shows {
     pub fn piece(self) -> Option<crate::retroarch::Piece> {
         match self {
             Shows::Picture(piece) => Some(piece),
-            Shows::Everything | Shows::Scenery | Shows::Folders(_) | Shows::Portrait => None,
+            Shows::Everything
+            | Shows::Scenery
+            | Shows::Folders(_)
+            | Shows::Portrait
+            | Shows::Executable => None,
         }
     }
 }
@@ -275,7 +293,63 @@ fn worth_showing(shows: Shows, path: &Path, leads_to_a_folder: bool) -> bool {
         Shows::Picture(_) | Shows::Portrait => {
             leads_to_a_folder || crate::media::kind_of(path) == Some(crate::media::Kind::Image)
         }
+        // And a Windows program, which is an extension and not a
+        // `crate::media::Kind` at all — nothing in this shell plays, draws or
+        // thumbnails one of these; they are files one other program knows
+        // what to do with.
+        Shows::Executable => leads_to_a_folder || is_a_windows_program(path),
     }
+}
+
+/// The endings that make a file something Windows will run.
+///
+/// Four, because a mod is shipped in whichever of them its author reached
+/// for. `.exe` is the program itself; `.msi` is a Windows Installer
+/// package, which is what a great many patches and redistributables come
+/// as; `.bat` and `.cmd` are the same thing under two names, and are what
+/// a mod's own instructions tell somebody to double-click more often than
+/// anybody would like.
+///
+/// What a file *is* rather than what it is called is not a question this
+/// shell can answer — the only program here that knows is the one on the
+/// other side of the helper — so the name is what decides, as it does on
+/// Windows itself.
+const WINDOWS_PROGRAMS: &[&str] = &["exe", "msi", "bat", "cmd"];
+
+/// Whether a file is something Windows would run.
+///
+/// Matched without regard to case, because a disk written by Windows holds
+/// `GAME.EXE` as readily as `game.exe`.
+pub fn is_a_windows_program(path: &Path) -> bool {
+    path.extension()
+        .and_then(|end| end.to_str())
+        .is_some_and(|end| {
+            WINDOWS_PROGRAMS
+                .iter()
+                .any(|known| end.eq_ignore_ascii_case(known))
+        })
+}
+
+/// The two of those four that could be carrying a drawing of their own.
+///
+/// A Windows program has carried its own icon since Windows 3.0, and it is
+/// the drawing the person recognises from every other machine they have used
+/// it on — so a row for one is worth asking about. Asking costs a process and
+/// a read of the file, though, and two of the four endings can be ruled out
+/// by their name alone: a `.bat` and a `.cmd` are text files, with no
+/// resources in them for anything to find. A folder of a hundred launcher
+/// scripts would otherwise be a hundred programs started to be told no.
+///
+/// The `.msi` is in rather than out, and honestly so: it is an installer
+/// database rather than an executable, so it will nearly always answer with
+/// nothing — but it is a *container*, the one of the four that could carry a
+/// drawing without being a program, and what is inside it is the helper's
+/// question rather than this table's. A guess made here would be this file
+/// deciding a thing it cannot read.
+pub fn may_carry_its_own_drawing(path: &Path) -> bool {
+    path.extension()
+        .and_then(|end| end.to_str())
+        .is_some_and(|end| end.eq_ignore_ascii_case("exe") || end.eq_ignore_ascii_case("msi"))
 }
 
 /// One file, as a row of a directory's column.
@@ -1325,6 +1399,24 @@ pub fn described(path: &Path) -> (&'static str, &'static str) {
     if let Some(kind) = crate::media::kind_of(path) {
         return (crate::media::mime_of(path).unwrap_or(OCTETS), kind.glyph());
     }
+    // And a Windows program, on the same rule the archive is here under: the
+    // shell knows what one is, because it runs one itself. A press on this
+    // row gives the program a Windows of its own and starts it — see
+    // `Shell::windows_program_under_cursor` — so the row says so, rather
+    // than drawing a page over the one file in the folder that is going to
+    // do something when it is pressed.
+    //
+    // Only where this machine runs Windows programs, and that is the whole
+    // of the condition. Without it nothing here can run the file, the press
+    // falls through to whatever the desktop makes of it, and a mark
+    // promising Windows would be promising something no press can deliver.
+    // The type stays `OCTETS` either way: what opens a `.exe` is this
+    // integration and not a mime handler, and naming a type here would put
+    // whatever declares it on the Open with list in front of the row that
+    // actually works.
+    if is_a_windows_program(path) && crate::proton::runs_windows_programs() {
+        return (OCTETS, crate::proton::mark());
+    }
     let extension = path
         .extension()
         .and_then(OsStr::to_str)
@@ -1465,6 +1557,40 @@ pub fn names_a_type(mime: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// **A mod is shipped in whichever form its author reached for**, and
+    /// for a long time the walk offered only one of them: somebody with a
+    /// patch as a `.msi` or a mod whose instructions say to double-click a
+    /// `.bat` could see the file sitting in the folder and not press it.
+    #[test]
+    fn every_ending_windows_would_run_can_be_chosen() {
+        for named in [
+            "setup.exe",
+            "GAME.EXE",
+            "patch.msi",
+            "Redistributable.MSI",
+            "install-the-mod.bat",
+            "run.CMD",
+        ] {
+            assert!(
+                is_a_windows_program(Path::new("/somewhere").join(named).as_path()),
+                "{named}"
+            );
+        }
+        for named in [
+            "readme.txt",
+            "game.dll",
+            "save.exe.bak",
+            "notes.batch",
+            "archive.msix",
+            "no-ending",
+        ] {
+            assert!(
+                !is_a_windows_program(Path::new("/somewhere").join(named).as_path()),
+                "{named}"
+            );
+        }
+    }
 
     /// A directory of this test's own under the system's temporary folder, or
     /// `None` where there is nowhere to write — in which case the test that
@@ -1608,6 +1734,72 @@ mod tests {
         assert_eq!(mark("/x/card.img"), crate::icons::FILE_PAGE);
         // And the three the shelves already know keep their own marks.
         assert_eq!(mark("/x/song.flac"), crate::media::Kind::Audio.glyph());
+    }
+
+    /// A Windows program wears the Windows mark, and only where this machine
+    /// is one that can run it.
+    ///
+    /// Both halves of the rule the archive is here under: a mark is for a kind
+    /// the shell can actually do something with. Press a `.exe` on a machine
+    /// with the package and it runs; press one on a machine without it and
+    /// nothing happens that the desktop would not have done anyway — so the
+    /// mark has to come and go with the package, or it would be a row
+    /// promising something the press cannot deliver.
+    #[test]
+    fn a_windows_program_wears_the_windows_mark_where_one_can_be_run() {
+        let _pretending = crate::proton::PRETENDING
+            .lock()
+            .unwrap_or_else(|err| err.into_inner());
+        let mark = |name: &str| described(Path::new(name)).1;
+
+        // Nothing pretended: no package, so these are files like any other.
+        let without: Vec<&str> = ["/x/setup.exe", "/x/start.bat"].map(mark).into();
+
+        crate::proton::pretend_installed(Some(PathBuf::from("/usr/bin/lxb-proton")));
+        // All four endings Windows runs, because all four are things this
+        // machine can now be asked to run — a mod ships whichever of them its
+        // author reached for.
+        let with: Vec<&str> = ["/x/setup.exe", "/x/PATCH.MSI", "/x/start.bat", "/x/go.cmd"]
+            .map(mark)
+            .into();
+        // And the type is still "some bytes" with the package here, which is
+        // deliberate: what opens one of these is the integration and not a
+        // mime handler, so nothing new goes on the Open with list in front of
+        // the row that actually works.
+        let kind = described(Path::new("/x/setup.exe")).0;
+        let document = mark("/x/notes.pdf");
+        // Put back before anything is asserted, so a failure cannot leave the
+        // rest of the suite believing this machine has the package.
+        crate::proton::pretend_installed(None);
+
+        assert_eq!(without, [crate::icons::FILE_PAGE; 2], "no package, no mark");
+        assert_eq!(with, [crate::proton::mark(); 4]);
+        assert_eq!(kind, OCTETS);
+        assert_eq!(document, crate::icons::FILE_PAGE, "and nothing else moved");
+    }
+
+    /// Only two of the four could be carrying a drawing, so only two are
+    /// ever asked about — a folder of launcher scripts starts no processes.
+    #[test]
+    fn only_the_two_endings_that_could_carry_a_drawing_are_asked_about() {
+        let asked = |name: &str| may_carry_its_own_drawing(Path::new(name));
+        assert!(asked("/x/game.exe"));
+        assert!(asked("/x/GAME.EXE"), "a disk written by Windows");
+        assert!(asked("/x/patch.msi"));
+        // Text files, whatever Windows does with them.
+        assert!(!asked("/x/start.bat"));
+        assert!(!asked("/x/start.cmd"));
+        // And everything the question is not about.
+        assert!(!asked("/x/notes.txt"));
+        assert!(!asked("/x/holiday.jpg"));
+        assert!(!asked("/x/thing"));
+
+        // Every one of them is still a Windows program, which is the other
+        // question: what can be *run* is four endings, and what can be
+        // *asked about* is the two of them that hold resources.
+        for name in ["/x/game.exe", "/x/patch.msi", "/x/start.bat", "/x/go.cmd"] {
+            assert!(is_a_windows_program(Path::new(name)), "{name}");
+        }
     }
 
     /// Every type drawn as a box has something behind the press, and every type

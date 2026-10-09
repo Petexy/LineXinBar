@@ -364,6 +364,13 @@ struct Installation {
     /// changing is a game of Heroic's ending — see [`Heroic::keep`].
     #[serde(default)]
     config: Option<String>,
+    /// Heroic's flatpak application id, which is the whole of what removing it
+    /// needs to be told: this integration is built on the Flathub build and the
+    /// helper finds no other kind, so an installation with no id is one this
+    /// shell has not been told enough about and offers no removal for. `None`
+    /// from a helper too old to say.
+    #[serde(default)]
+    id: Option<String>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -645,6 +652,12 @@ struct Artwork {
 enum Ask {
     Probe,
     Install,
+    /// Heroic has been removed; the helper is to forget what this integration
+    /// kept for it — see its `install::forget`. `data` is the second of the
+    /// panel's two buttons, **Remove everything**.
+    Forget {
+        data: bool,
+    },
     SignOut,
     Library {
         refresh: bool,
@@ -677,6 +690,9 @@ enum Ask {
 enum Heard {
     Probed(Probe),
     Installing(Progress),
+    /// A line of the clearing-up after a removal, which is for the log alone:
+    /// Heroic is gone by then and nothing on screen is waiting.
+    Forgotten(Progress),
     Account(Account),
     Library(Library),
     Pictured(Artwork),
@@ -704,6 +720,8 @@ fn answer(helper: &Path, ask: &Ask, back: &Sender<Heard>) {
     match ask {
         Ask::Probe => command.arg("probe"),
         Ask::Install => command.arg("install"),
+        Ask::Forget { data: true } => command.arg("forget").arg("--data"),
+        Ask::Forget { data: false } => command.arg("forget"),
         Ask::SignOut => command.arg("sign-out"),
         Ask::Library { refresh } => {
             command.arg("library");
@@ -762,6 +780,7 @@ fn answer(helper: &Path, ask: &Ask, back: &Sender<Heard>) {
             let heard = match ask {
                 Ask::Probe => serde_json::from_str(line).map(Heard::Probed),
                 Ask::Install => serde_json::from_str(line).map(Heard::Installing),
+                Ask::Forget { .. } => serde_json::from_str(line).map(Heard::Forgotten),
                 Ask::SignOut => serde_json::from_str(line).map(Heard::Account),
                 Ask::Library { .. } => serde_json::from_str(line).map(Heard::Library),
                 Ask::Art { .. } => serde_json::from_str(line).map(Heard::Pictured),
@@ -1132,8 +1151,16 @@ impl Inner {
 
 enum Found {
     Asking,
-    Absent { flatpak: bool },
-    Here { command: Vec<String>, proton: bool },
+    Absent {
+        flatpak: bool,
+    },
+    Here {
+        command: Vec<String>,
+        proton: bool,
+        /// Heroic's flatpak application id, kept for the row that takes it off
+        /// the machine — see [`Heroic::installed_where`].
+        id: Option<String>,
+    },
 }
 
 /// An install as the shell is drawing it.
@@ -1351,6 +1378,7 @@ impl Heroic {
         let Found::Here {
             command,
             proton: true,
+            ..
         } = &inner.found
         else {
             return;
@@ -1545,6 +1573,17 @@ impl Heroic {
             ended: None,
         });
         self.send(Ask::Install);
+    }
+
+    /// Heroic has gone; tell the helper to take what was kept for it.
+    ///
+    /// Sent after the removal itself, which is the shell's — see
+    /// `Shell::program_removed`. Nothing is drawn for it and nothing waits on
+    /// it: Heroic is already gone, and every one of these is a cache or a
+    /// permission belonging to a program that is not there. What goes, and what
+    /// `everything` adds, is in the helper's `install::forget`.
+    pub fn forget_what_it_kept(&mut self, everything: bool) {
+        self.send(Ask::Forget { data: everything });
     }
 
     /// The install on screen, if one is happening.
@@ -1769,6 +1808,12 @@ impl Heroic {
         let mut start_background = false;
         while let Ok(heard) = inner.heard.try_recv() {
             match heard {
+                // Nothing on screen, by design — see
+                // [`Heroic::forget_what_it_kept`]. The helper's own stderr is
+                // where each path it could not remove is named.
+                Heard::Forgotten(line) => {
+                    tracing::info!(stage = ?line.stage, note = %line.note, "clearing up after Heroic");
+                }
                 Heard::Probed(probe) if probe.protocol != PROTOCOL => {
                     tracing::warn!(
                         protocol = probe.protocol,
@@ -1788,6 +1833,7 @@ impl Heroic {
                             Found::Here {
                                 command: found.command,
                                 proton: probe.proton.is_some(),
+                                id: found.id,
                             }
                         }
                         None => Found::Absent {
@@ -2166,6 +2212,27 @@ impl Heroic {
         change
     }
 
+    /// Where the Heroic this machine would use is, for the row that takes it
+    /// off — see [`crate::uninstall::Installed`]. `None` while there is none,
+    /// while one is being installed, and on a session whose helper did not say
+    /// which flatpak it found.
+    ///
+    /// Only ever a flatpak, because that is the only kind this integration is
+    /// built on and the only kind the helper looks for: Heroic's Flathub build,
+    /// whose bundled legendary and whose sandbox paths everything in
+    /// `lxb-heroic` is written against. A Heroic installed some other way is
+    /// not found at all, so there is nothing here to offer to remove.
+    pub fn installed_where(&self) -> Option<crate::uninstall::Installed> {
+        let inner = self.inner.as_ref()?;
+        if inner.installing.is_some() {
+            return None;
+        }
+        match &inner.found {
+            Found::Here { id, .. } => Some(crate::uninstall::Installed::Flatpak(id.clone()?)),
+            Found::Asking | Found::Absent { .. } => None,
+        }
+    }
+
     /// What pressing the row means now.
     pub fn press(&self) -> Press {
         let Some(inner) = self.inner.as_ref() else {
@@ -2469,6 +2536,7 @@ impl Heroic {
     pub fn row_menu(&self) -> Vec<menu::Entry> {
         let mut rows = Vec::new();
         let press = self.press();
+        let removable = self.installed_where().is_some();
         match press {
             Press::Waiting | Press::Cannot(_) => return rows,
             Press::Install | Press::SetUp => rows.push(
@@ -2516,6 +2584,27 @@ impl Heroic {
                     menu::Command::EpicOpenHeroic,
                     crate::i18n::text("epic-open-heroic"),
                 )
+                .group(1),
+            );
+        }
+        // Below the rule with Heroic's own window, because it is about that
+        // program rather than about this account's library — and last of the
+        // band, because it is the only row here that takes something away, which
+        // is where the Steam, RetroArch and PlayStation 3 menus put theirs. What
+        // it takes is spelt out in a panel before anything happens; see
+        // `Shell::offer_to_remove_program`.
+        //
+        // It is about Heroic and nothing else. Signing out is the row above,
+        // and the games Heroic installed are kept where Heroic was told to keep
+        // them, which is outside all of this.
+        if removable {
+            rows.push(
+                menu::Entry::new(
+                    menu::Command::RemoveProgram(menu::Program::Heroic),
+                    crate::message!("remove-name", "name" => "Heroic"),
+                )
+                .glyph(icons::UNINSTALL)
+                .grave()
                 .group(1),
             );
         }
@@ -3573,6 +3662,7 @@ esac
                 found: Found::Here {
                     command: vec!["flatpak".into(), "run".into(), FLATPAK.into()],
                     proton: true,
+                    id: Some(FLATPAK.to_string()),
                 },
                 account: Some("Somebody".to_string()),
                 games,
@@ -4291,6 +4381,13 @@ esac
                 (menu::Command::EpicSignOut, Some(icons::SIGN_OUT), 0),
                 (menu::Command::EpicSort, Some(icons::SORT), 1),
                 (menu::Command::EpicOpenHeroic, None, 1),
+                // Last of the band, as the Steam row's own Remove is: it is the
+                // only row here that takes something away.
+                (
+                    menu::Command::RemoveProgram(menu::Program::Heroic),
+                    Some(icons::UNINSTALL),
+                    1
+                ),
                 (menu::Command::Dismiss, None, 1),
             ]
         );

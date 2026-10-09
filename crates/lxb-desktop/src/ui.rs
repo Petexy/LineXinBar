@@ -2170,6 +2170,83 @@ fn corner_run(
     ink
 }
 
+/// What one screen shows while it is dark: the time, in the middle of it, in a
+/// grey barely above the black it stands on.
+///
+/// Settings > Display > Always on display. The whole scene is this one run —
+/// no wallpaper, no bar, no corner — because the surface it is drawn on is
+/// lifted over the compositor's black and everything it leaves clear is that
+/// black showing through. A screen with this on is a black screen with a clock
+/// on it and nothing else at all.
+///
+/// Laid out from the same cells the start screen's corner is drawn from, so it
+/// is the same clock in the same letters as the login screen's, only larger and
+/// darker. Centred rather than right-aligned, which is the one thing
+/// [`corner_run`] does not do: the run is measured first and the pen started
+/// half its width to the left of the middle.
+///
+/// `fade` is how far the clock has arrived, 0 to 1. It comes up out of the
+/// black rather than appearing in it: the screen has just finished going dark,
+/// and something that simply *was* there the next frame reads as a glitch
+/// rather than as the screen settling. The alpha rides the colour and
+/// [`shaded_shape`] moves it into the quad's own fade, which is where a
+/// measured shape's transparency has to live — left in the colour it would
+/// make the letters paler rather than fainter, which on a near-black stain is
+/// backwards.
+///
+/// `drift` moves the whole run by a few pixels. Nothing about a still picture
+/// is safe on the panels this page exists for — that is the argument the page
+/// above it is built on — and a clock left in one place all night would burn in
+/// exactly as a bar does. See [`crate::main::ALWAYS_ON_DRIFT`] for the path it
+/// walks.
+pub fn always_on_scene(
+    width: f32,
+    height: f32,
+    clock: &str,
+    drift: [f32; 2],
+    fade: f32,
+    slots: &impl SlotLookup,
+) -> Scene {
+    let mut quads = Vec::new();
+    // A twelfth of the shorter side, which lands a little under 70 px on a
+    // 1080p screen and scales with the panel rather than with its resolution:
+    // what matters is how large it reads from across a room, and a room is not
+    // measured in pixels. Far larger than the corner's and far smaller than
+    // the login screen's, which has a column beside it and this has nothing.
+    let size = width.min(height) / 12.0;
+    let ink = clock_run_width(clock.chars(), slots) * size;
+    // `corner_run` is given the *right* edge of the run, so a centred run is
+    // the middle plus half the ink. The vertical is the middle of the letters
+    // and not the top of their box: the box is a square of the type's size and
+    // the letters sit [`crate::gpu::LETTER_MIDDLE`] of the way down it, which
+    // is what the corner's own baseline constant already accounts for.
+    let right = width * 0.5 + ink * 0.5 + drift[0];
+    let top = height * 0.5 - crate::gpu::LETTER_MIDDLE * size + drift[1];
+    let mut ink = always_on_ink();
+    ink[3] *= fade.clamp(0.0, 1.0);
+    corner_run(&mut quads, clock.chars(), [right, top, size], ink, slots);
+    Scene {
+        quads,
+        texts: Vec::new(),
+    }
+}
+
+/// The grey the always-on clock is drawn in.
+///
+/// Authored as a colour and converted on the way to the shader like every other
+/// colour here, so it is the grey it reads as rather than the far brighter one
+/// the same number means once it is linear. Dark enough that an OLED panel is
+/// still very nearly off — this is a screen somebody is not looking at — and
+/// light enough to be read from across a room in the dark, which is the whole
+/// of what it is for.
+///
+/// Its alpha is 1.0 deliberately. A near-black at a low alpha over the
+/// compositor's black is simply nothing: what makes this faint is the colour,
+/// not the amount of it.
+fn always_on_ink() -> [f32; 4] {
+    crate::theme::Color(0x4A4A4A).a(1.0)
+}
+
 /// The widest character a clock is written in, as a share of its size: what a
 /// run is reserved by when the atlas cannot measure it yet.
 const WIDEST_FIGURE: f32 = 0.6;
@@ -3012,6 +3089,11 @@ pub fn build(
                 // A PlayStation 3 game's icon, read out of the game into the
                 // shell's cache — or, for one in a folder, the file itself.
                 Entry::Ps3Game(game) => game.cover.as_deref().and_then(|at| slots.thumbnail(at)),
+                // And a Windows program's own icon, which the helper read
+                // out of the `.exe` and wrote beside the game.
+                Entry::WindowsGame(game) => {
+                    game.cover.as_deref().and_then(|at| slots.thumbnail(at))
+                }
                 _ => entry.media().and_then(|file| slots.thumbnail(&file.path)),
             };
             // And whether that cover is drawn in colour. A game that is not on
@@ -3096,6 +3178,13 @@ pub fn build(
             // the reason [`column_cards`] gives: the cover its own library
             // stands on a card goes in the hole instead, so a game looks like
             // itself wherever it turns up rather than like its store's mark.
+            // And a Windows program's own icon, which is here rather than on
+            // a card for the reason an account's photograph is: the Windows
+            // column is a column of rows, and a program's drawing is a
+            // *mark* — the thing on its row that says which program it is.
+            // It goes in the hole the shared Windows mark would have filled,
+            // which is exactly the hole a program's icon fills on every
+            // other machine the person has used it on.
             let preview = card
                 .is_none()
                 .then(|| {
@@ -3103,26 +3192,66 @@ pub fn build(
                         .file()
                         .map(|file| file.path.as_path())
                         .or_else(|| entry.portrait())
+                        .or_else(|| entry.windows_game().and_then(|game| game.cover.as_deref()))
                 })
                 .flatten()
                 .and_then(|at| slots.thumbnail(at))
                 .or_else(|| held.filter(|_| column.found && card.is_none()))
                 .filter(|thumb| thumb.aspect.is_finite() && thumb.aspect > 0.0);
             if let Some(thumb) = preview {
-                let size = icon_size * ITEM_PREVIEW;
+                // **A program's own icon is not a photograph, and drawing it
+                // as one cuts it up.** Everything else that goes in this hole
+                // is a picture *of* something — a face, a frame of a film, a
+                // cover — and the right thing to do with one of those is fill
+                // the hole and crop to it, because the corners of a
+                // photograph hold nothing anybody chose. An icon is the
+                // opposite: it is a drawing with its own margin inside a
+                // square, as a glyph is, and its edges are the drawing. Cemu
+                // carries a rounded cyan square with a letter on it, and
+                // filling the hole with that cut the square's sides clean
+                // off.
+                //
+                // So it is drawn the way every other application icon on this
+                // bar is drawn — at the glyph's own size, square, whole — in
+                // the room the shared Windows mark would have had.
+                //
+                // Which is also every `.exe` met in a folder: the drawing
+                // that came out of it is the same kind of thing as the one
+                // on a Windows game's row, because it is the same drawing
+                // out of the same file.
+                let own_icon = entry.windows_game().is_some()
+                    || entry
+                        .file()
+                        .is_some_and(|file| crate::files::is_a_windows_program(&file.path));
+                let size = match own_icon {
+                    true => icon_size,
+                    false => icon_size * ITEM_PREVIEW,
+                };
+                // And fitted rather than cropped, for the same reason: an
+                // icon that is not square is a drawing somebody made that
+                // shape, and cutting it to a square would be the complaint
+                // again one axis along.
+                let (w, h) = match own_icon && thumb.aspect >= 1.0 {
+                    true => (size, size / thumb.aspect),
+                    false if own_icon => (size * thumb.aspect, size),
+                    false => (size, size),
+                };
                 quads.push(Quad {
-                    x: x - size / 2.0,
-                    y: y - size / 2.0,
-                    w: size,
-                    h: size,
+                    x: x - w / 2.0,
+                    y: y - h / 2.0,
+                    w,
+                    h,
                     slot: thumb.slot,
                     color: [1.0, 1.0, 1.0, alpha],
-                    radius: if matches!(entry, Entry::Trophy(_)) {
-                        size * 0.06
-                    } else {
-                        size / 2.0
+                    radius: match (own_icon, entry) {
+                        (true, _) => 0.0,
+                        (_, Entry::Trophy(_)) => size * 0.06,
+                        _ => size / 2.0,
                     },
-                    crop: round_crop(thumb.aspect),
+                    crop: match own_icon {
+                        true => [0.0, 0.0, 1.0, 1.0],
+                        false => round_crop(thumb.aspect),
+                    },
                     // A game that is not on this disk is drawn without colour
                     // here too, as its own column draws it. Nothing else a hole
                     // shows is ever drained.
@@ -4380,16 +4509,39 @@ fn pick_row(scene: &mut Scene, row: PickRow<'_>, slots: &dyn SlotLookup) {
         .filter(|thumb| thumb.aspect.is_finite() && thumb.aspect > 0.0);
     match preview {
         Some(thumb) => {
-            let size = icon_size * ITEM_PREVIEW;
+            // Except a Windows program's own drawing, which is not a picture
+            // *of* anything: it is a mark with its own margin inside a
+            // square, and cropping it to a circle takes the corners of
+            // somebody's drawing off. So it is drawn the way the bar draws
+            // every application icon — whole, at the glyph's own size, in
+            // the room the mark would have had — exactly as the same drawing
+            // is drawn on a row of the Windows Apps column. See
+            // `column_rows`, where the argument is written out in full.
+            let own_icon = row.preview.is_some_and(crate::files::is_a_windows_program);
+            let size = match own_icon {
+                true => icon_size,
+                false => icon_size * ITEM_PREVIEW,
+            };
+            let (w, h) = match own_icon && thumb.aspect >= 1.0 {
+                true => (size, size / thumb.aspect),
+                false if own_icon => (size * thumb.aspect, size),
+                false => (size, size),
+            };
             scene.quads.push(Quad {
-                x: x - size / 2.0,
-                y: y - size / 2.0,
-                w: size,
-                h: size,
+                x: x - w / 2.0,
+                y: y - h / 2.0,
+                w,
+                h,
                 slot: thumb.slot,
                 color: [1.0, 1.0, 1.0, row.alpha],
-                radius: size / 2.0,
-                crop: round_crop(thumb.aspect),
+                radius: match own_icon {
+                    true => 0.0,
+                    false => size / 2.0,
+                },
+                crop: match own_icon {
+                    true => [0.0, 0.0, 1.0, 1.0],
+                    false => round_crop(thumb.aspect),
+                },
                 ..Quad::default()
             });
         }
@@ -16630,6 +16782,104 @@ mod tests {
         }
     }
 
+    /// The always-on display is the time and nothing else, in the middle of the
+    /// screen: no wallpaper, no bar, no corner. Everything it leaves clear is
+    /// the compositor's black showing through, so what this scene has in it is
+    /// exactly what is on that screen.
+    #[test]
+    fn a_dark_screen_shows_the_time_and_nothing_else() {
+        let scene = always_on_scene(1920.0, 1080.0, "20:38", [0.0, 0.0], 1.0, &AllSlots);
+        assert!(scene.texts.is_empty(), "no text run, only measured letters");
+        assert_eq!(scene.quads.len(), 5, "one quad per character of 20:38");
+
+        // Centred: the run's own middle is the screen's middle. Measured from
+        // the quads themselves rather than from the arithmetic that placed
+        // them, so a sign error in the layout cannot agree with itself.
+        let left = scene
+            .quads
+            .iter()
+            .map(|quad| quad.x)
+            .fold(f32::INFINITY, f32::min);
+        let right = scene
+            .quads
+            .iter()
+            .map(|quad| quad.x + quad.w)
+            .fold(f32::NEG_INFINITY, f32::max);
+        assert!(
+            ((left + right) / 2.0 - 960.0).abs() < 1.0,
+            "the run straddles the middle of the screen: {left}..{right}"
+        );
+    }
+
+    /// And it moves, because a clock left in one place all night is the still
+    /// picture the page it belongs to exists to stop. The whole run travels
+    /// together — a drift that moved the letters apart would be a clock coming
+    /// to pieces.
+    #[test]
+    fn the_clock_on_a_dark_screen_creeps() {
+        let still = always_on_scene(1920.0, 1080.0, "20:38", [0.0, 0.0], 1.0, &AllSlots);
+        let moved = always_on_scene(1920.0, 1080.0, "20:38", [6.0, -4.0], 1.0, &AllSlots);
+        assert_eq!(still.quads.len(), moved.quads.len());
+        for (before, after) in still.quads.iter().zip(&moved.quads) {
+            assert!(
+                (after.x - before.x - 6.0).abs() < 0.01,
+                "every letter moves together"
+            );
+            assert!((after.y - before.y + 4.0).abs() < 0.01);
+        }
+    }
+
+    /// It comes up out of the black rather than appearing in it. The alpha
+    /// rides the quad's own fade and not its colour — on a measured shape the
+    /// colour's alpha is moved there by [`shaded_shape`] — because a near-black
+    /// stain left to fade in its colour would grow paler rather than fainter,
+    /// which is backwards.
+    #[test]
+    fn the_clock_on_a_dark_screen_arrives_out_of_the_black() {
+        let begun = always_on_scene(1920.0, 1080.0, "20:38", [0.0, 0.0], 0.0, &AllSlots);
+        let half = always_on_scene(1920.0, 1080.0, "20:38", [0.0, 0.0], 0.5, &AllSlots);
+        let there = always_on_scene(1920.0, 1080.0, "20:38", [0.0, 0.0], 1.0, &AllSlots);
+
+        assert_eq!(begun.quads[0].fade, 0.0, "nothing at all to begin with");
+        assert!(
+            half.quads[0].fade > 0.0 && half.quads[0].fade < there.quads[0].fade,
+            "and on its way between the two"
+        );
+        for scene in [&begun, &half, &there] {
+            assert_eq!(
+                scene.quads[0].color[3], 1.0,
+                "the alpha travels in the fade, never in the colour"
+            );
+        }
+        // The arrival moves nothing: a clock that slid as it appeared would be
+        // two animations where the drift is the only one anybody asked for.
+        for (faint, full) in begun.quads.iter().zip(&there.quads) {
+            assert_eq!((faint.x, faint.y), (full.x, full.y));
+        }
+    }
+
+    /// A time the atlas cannot spell draws nothing at all rather than a run
+    /// with a hole in it — the rule the corner is already under. On a screen
+    /// with nothing else on it that is a screen which stays black, which is the
+    /// right failure: a clock missing a digit would be worse than no clock.
+    #[test]
+    fn a_time_that_cannot_be_spelled_draws_nothing() {
+        let scene = always_on_scene(1920.0, 1080.0, "20h38", [0.0, 0.0], 1.0, &AllSlots);
+        assert!(scene.quads.is_empty());
+    }
+
+    /// An afternoon on the twelve-hour clock, which is three more characters
+    /// and the ones the fixture had to learn: it is still one centred run.
+    #[test]
+    fn a_twelve_hour_evening_is_drawn_too() {
+        let scene = always_on_scene(1920.0, 1080.0, "8:38 PM", [0.0, 0.0], 1.0, &AllSlots);
+        assert_eq!(
+            scene.quads.len(),
+            6,
+            "the space has an advance and no shape"
+        );
+    }
+
     /// One of the corner's characters as the renderer would answer for it.
     ///
     /// The advances are Roboto's own, so a run measured in a test is as wide as
@@ -16642,6 +16892,13 @@ mod tests {
             '/' => 0.4126,
             '%' => 0.7324,
             ' ' => 0.24805,
+            // The three a twelve-hour clock is written with. Without them a
+            // test that asks for an afternoon finds an empty scene — the run is
+            // drawn whole or not at all — and the failure reads as a layout
+            // fault rather than as a fixture that cannot spell the time.
+            'A' => 0.6523,
+            'M' => 0.8730,
+            'P' => 0.6309,
             _ => return None,
         };
         Some(crate::gpu::Letter {
@@ -21665,6 +21922,67 @@ mod tests {
                 paths.iter().map(|path| picture(path)).collect(),
             )],
         }])
+    }
+
+    /// **A Windows program's own icon is a drawing, not a photograph.**
+    ///
+    /// Everything else that goes in a row's hole is a picture *of*
+    /// something, and the right thing to do with one of those is fill the
+    /// hole and crop to it — the corners of a photograph hold nothing
+    /// anybody chose. An icon is the opposite: it is a drawing with its own
+    /// margin inside a square, exactly as a glyph is, and its edges are
+    /// part of it. Cemu's is a rounded cyan square with a letter on it, and
+    /// filling the hole with it cut the square's sides clean off, which is
+    /// what somebody reported.
+    #[test]
+    fn a_windows_programs_own_icon_is_drawn_whole_and_not_cropped_to_a_circle() {
+        let row = Entry::WindowsGame(crate::apps::WindowsGame {
+            id: "cemu".into(),
+            name: "Cemu".into(),
+            note: "Ready to play".into(),
+            progress: None,
+            ready: true,
+            at: PathBuf::from("/games/cemu"),
+            proton: None,
+            cover: Some(PathBuf::from("/games/cemu/icon.png")),
+        });
+        let lattice = shelved_games(vec![row]);
+        for (width, height) in [(1280.0, 720.0), (1920.0, 1080.0), (3840.0, 2160.0)] {
+            let scene = opened(&lattice, width, height, &Pictures(1.0));
+            let drawn: Vec<_> = scene
+                .quads
+                .iter()
+                .filter(|quad| quad.slot == THUMB_SLOT)
+                .collect();
+            assert_eq!(drawn.len(), 1, "the icon, once");
+            let icon = drawn[0];
+            assert!(
+                icon.radius < icon.w * 0.1,
+                "an icon is not rounded off into a portrait: {}",
+                icon.radius
+            );
+            assert_eq!(icon.crop, [0.0, 0.0, 1.0, 1.0], "and nothing is cut away");
+            // And it is drawn at the size every other application icon on
+            // this bar is, not at the size a photograph fills the hole with
+            // — a drawing that already carries its own margin, blown up to
+            // a photograph's size, is the larger object of the two.
+            let glass = scene
+                .quads
+                .iter()
+                .find(|quad| {
+                    quad.slot == SOLID_SLOT
+                        && quad.thickness > 0.0
+                        && (quad.x + quad.w / 2.0 - icon.x - icon.w / 2.0).abs() < 0.01
+                        && (quad.y + quad.h / 2.0 - icon.y - icon.h / 2.0).abs() < 0.01
+                })
+                .expect("the chosen row's hole is behind it");
+            assert!(
+                icon.w < glass.w,
+                "the light still reaches round it: {} in {}",
+                icon.w,
+                glass.w
+            );
+        }
     }
 
     /// That album, open, with the cursor settled on its first picture.

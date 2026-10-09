@@ -240,6 +240,10 @@ shell-notifications = सूचनाएँ
 shell-off = बंद
 shell-off-steam-is-an-application-like-any-other = बंद — Steam बाकी ऐप्लिकेशन जैसा ही एक ऐप्लिकेशन है
 shell-oled-protection = OLED सुरक्षा
+shell-always-on-display = हमेशा चालू स्क्रीन
+shell-what-a-dark-screen-still-shows = बुझी स्क्रीन फिर भी क्या दिखाती है
+shell-show-the-time-on-this-screen-while-it-is-dark = यह स्क्रीन बुझी हो तब उस पर समय दिखाएँ
+shell-no-screen-can-show-the-time = कोई स्क्रीन समय नहीं दिखा सकती
 shell-on = चालू
 shell-on-for-as-long-as-the-switch-above-is = जब तक ऊपर वाला स्विच चालू है, तब तक चालू
 shell-on-screen-keyboard = ऑन-स्क्रीन कीबोर्ड
@@ -248,6 +252,13 @@ shell-on-the-library-is-a-column-of-the-bar = चालू — लाइब्�
 shell-one-hour-of-night-light = एक घंटे की रात की रोशनी
 shell-only-devices-this-machine-is-paired-with = केवल वे डिवाइस जिनसे यह मशीन पेयर है
 shell-only-one-display = केवल एक डिस्प्ले
+shell-screens-in-use = उपयोग में स्क्रीनें
+shell-which-screens-the-bar-draws-on = बार किन स्क्रीनों पर बनती है
+shell-in-use = उपयोग में
+shell-not-in-use = उपयोग में नहीं
+shell-this-screen-stays-in-use = यह स्क्रीन उपयोग में रहेगी
+shell-set-on-this-machine = मशीन पर ही तय किया गया
+shell-no-screen-can-be-switched = कोई स्क्रीन बंद नहीं की जा सकती
 shell-only-the-ones-named-below = केवल नीचे बताए गए
 shell-open = खोलें
 shell-open-with = इसके साथ खोलें
@@ -507,10 +518,15 @@ shell-your-folder-this-machine-and-anything-plugged-in = आपका फ़ो�
 shell-linexinbar-s-own-settings-will-live-here = LineXinBar की अपनी सेटिंग यहाँ रहेंगी
 shell-no-applications-in-this-category = इस श्रेणी में कोई ऐप्लिकेशन नहीं
 oled-needs-the-compositor = काला रंग पूरे डिस्प्ले पर बनाया जाता है, कर्सर समेत, इसलिए इसे कंपोज़िटर को बनाना होता है: इस सत्र के कंपोज़िटर को इसका पता नहीं
+always-on-needs-a-display = यह सेटिंग किसी स्क्रीन की है, और किसी भी स्क्रीन ने अपनी जानकारी नहीं दी: हर एक के लिए जो चुना गया था वह रखा जाता है और उसी के साथ लौटता है
 application-scale-needs-a-display = यह सेटिंग किसी स्क्रीन की है, और अभी कोई डिस्प्ले सामने नहीं आया: हर एक के लिए चुना हुआ आकार सँभालकर रखा है और उसी के साथ लौटेगा
 orientation-nested-session = यहाँ कोई भी अपनी तस्वीर का मालिक नहीं: सत्र किसी दूसरे कंपोज़िटर के अंदर चल रहा है, जो तय करता है कि उसकी विंडो किस तरफ़ सीधी है
 placement-nested-or-mirrored = यहाँ किसी का स्थान बदलने को नहीं: सत्र किसी दूसरे कंपोज़िटर के अंदर चल रहा है, या हर स्क्रीन एक ही हिस्सा दिखा रही है, और दोनों में कोई पहली स्क्रीन नहीं होती
 display-order-needs-two-screens = क्रम दो स्क्रीन के बीच होता है। यह पूरी व्यवस्था है, और इसमें खड़े होने की और कोई जगह नहीं
+switching-not-possible = यहाँ कुछ भी बंद नहीं किया जा सकता: सत्र किसी दूसरे कंपोज़िटर के भीतर चल रहा है, और वह खिड़की उसी की है जिसमें यह बनती है
+one-screen-must-stay-in-use = बार को बनने के लिए एक स्क्रीन चाहिए। दूसरी लगाएँ, फिर यह बंद की जा सकेगी
+the-last-screen-in-use-stays-on = उपयोग में बची एकमात्र स्क्रीन। दूसरी चालू करें, फिर यह भी बंद की जा सकेगी
+screen-switching-set-elsewhere = यह स्क्रीन उपयोग में है या नहीं, यह मशीन पर ही तय होता है, और यहाँ किया गया चुनाव अगली साइन-इन तक नहीं टिकेगा
 resolution-nested-session = यहाँ कोई भी कनेक्टर का मालिक नहीं: सत्र किसी दूसरे कंपोज़िटर के अंदर चल रहा है, जो उसकी विंडो का आकार तय करता है
 night-light-nested-session = यहाँ कोई भी रंग-रैंप का मालिक नहीं: सत्र किसी दूसरे कंपोज़िटर के अंदर चल रहा है, जो तय करता है कि उसकी विंडो किस रंग में रँगी है
 hdr-no-display-or-pipeline = कोई जुड़ा डिस्प्ले HDR नहीं बताता, या ड्राइवर के पास उसे देने के लिए रंग-पाइपलाइन नहीं है
@@ -687,7 +703,6 @@ shell-remove-your-cover = अपना कवर हटाएँ
 shell-removing-this-can-take-a-moment = हटाया जा रहा है… इसमें थोड़ा समय लग सकता है।
 shell-renaming-it-to-what-the-game-is-called-may-find-some = इसका नाम गेम के नाम पर रखने से शायद कुछ मिल जाए।
 shell-repair-with-steam = Steam से मरम्मत करें
-shell-retroarch-has-been-removed = RetroArch हटा दिया गया
 shell-retroarch-plays-your-own-game-files = RetroArch आपकी अपनी गेम फ़ाइलें चलाता है।
 shell-saved-in = यहाँ सहेजा गया
 shell-sign-in-to-steam = Steam में साइन इन करें
@@ -730,7 +745,6 @@ shell-that-cannot-be-used-as-a-password = वह पासवर्ड के �
 shell-that-console = वह कंसोल
 shell-that-password-was-not-accepted-try-again = वह पासवर्ड स्वीकार नहीं हुआ। फिर कोशिश करें।
 shell-the-download-has-finished = डाउनलोड पूरा हो गया।
-shell-the-games-themselves-stay = गेम खुद बने रहते हैं।
 shell-the-picture-was-not-kept = तस्वीर नहीं रखी गई
 shell-the-screenshot-could-not-be-saved = स्क्रीनशॉट सहेजा नहीं जा सका।
 shell-the-screenshot-has-been-saved = स्क्रीनशॉट सहेज लिया गया।
@@ -759,7 +773,6 @@ shell-where-should-this-be-unpacked = इसे कहाँ खोला जा
 shell-you-are-offline-on-steam-choose-a-status-above-to-come-back = आप Steam पर ऑफ़लाइन हैं। वापस आने के लिए ऊपर कोई स्थिति चुनें।
 shell-you-can-keep-using-it-in-the-meantime = इस बीच आप इसका उपयोग जारी रख सकते हैं।
 shell-your-device-needs-to-stay-on-while-updating = अपडेट के दौरान आपका डिवाइस चालू रहना चाहिए।
-shell-your-games-are-where-they-were = आपके गेम वहीं हैं जहाँ थे।
 count-items = { $count ->
     [one] { $count } आइटम
    *[other] { $count } आइटम
@@ -912,7 +925,6 @@ shell-preparing-your-updates = आपके अपडेट तैयार ह�
 shell-press-to-download-it = डाउनलोड करने के लिए दबाएँ
 shell-ready-to-update = अपडेट के लिए तैयार
 shell-removing = हटाया जा रहा है…
-shell-removing-retroarch = RetroArch हटाया जा रहा है
 shell-respond = जवाब दें
 shell-restart-now = अभी पुनरारंभ करें
 shell-restart-the-system = सिस्टम पुनरारंभ करें?
@@ -1069,10 +1081,8 @@ shell-white = सफ़ेद
 shell-silver = चाँदी
 shell-black = काला
 shell-configure-retroachievements = RetroAchievements कॉन्फ़िगर करें
-shell-remove-retroarch-question = RetroArch हटाएँ?
 shell-configure-retroachievements-question = RetroAchievements कॉन्फ़िगर करें?
 shell-asking-steam-ellipsis = Steam से पूछा जा रहा है…
-shell-remove-retroarch = RetroArch हटाएँ
 shell-asking-steam = Steam से पूछा जा रहा है
 shell-not-checked-yet = अभी जाँचा नहीं गया
 shell-restarting-ellipsis = पुनरारंभ हो रहा है…
@@ -1084,7 +1094,6 @@ shell-updating-ellipsis = अपडेट हो रहा है…
 shell-updates-installed-full-stop = अपडेट इंस्टॉल हो गए।
 shell-updates-installed = अपडेट इंस्टॉल हो गए
 retroarch-install-explanation = यह मुफ़्त है, और इस मशीन पर और कुछ नहीं बदलता।
-retroarch-remove-explanation = उसने जो कुछ रखा था वह सब उसके साथ जाता है: उसकी सेटिंग, इस शेल ने जो एम्युलेटर डाउनलोड किए, सेव, आपका चुना कोई भी BIOS, और आपके गेम कहाँ हैं।
 rom-folders-explanation = इसके अंदर, हर कंसोल के गेम उस कंसोल के नाम वाले फ़ोल्डर में रखें: psp, nes, snes।
 
 # Lines that share a panel with a name on its own line, and other short forms.
@@ -1472,6 +1481,20 @@ showing-name = दिखाया जा रहा है  { $name }
 
 uninstall-unknown-origin = LineXinBar यह नहीं जान सकता कि इसे किसने इंस्टॉल किया, इसलिए इसे हटा नहीं सकता।
 uninstall-forbidden = आपके पास इस सिस्टम से ऐप्लिकेशन हटाने की अनुमति नहीं है।
+
+# इंटीग्रेशन जिस प्रोग्राम को चलाता है, उसे हटाना।
+remove-name = { $name } हटाएँ
+name-has-been-removed = { $name } हटा दिया गया
+shell-remove-everything = सब कुछ हटाएँ
+shell-what-it-kept-is-still-on-the-disk = इसका डेटा डिस्क पर बना हुआ है, इसलिए दोबारा इंस्टॉल करने पर वह मिल जाएगा।
+steam-remove-what-stays = आपके गेम, डाउनलोड और Steam फ़ोल्डर बने रहेंगे, और आप साइन इन ही रहेंगे।
+steam-remove-everything-explanation = सब कुछ हटाएँ से Steam का अपना फ़ोल्डर भी मिट जाता है: हर इंस्टॉल किया गया गेम और उसकी सेव फ़ाइलें।
+epic-remove-what-stays = आपके Epic गेम जहाँ इंस्टॉल हैं वहीं रहेंगे, और आप साइन इन ही रहेंगे।
+epic-remove-everything-explanation = सब कुछ हटाएँ से Heroic का अपना फ़ोल्डर भी मिट जाता है: उसकी सेटिंग्स, साइन-इन और गेम चलाने के लिए डाउनलोड की गई चीज़ें।
+retroarch-remove-what-stays = आपके गेम और उनका फ़ोल्डर बने रहेंगे।
+retroarch-remove-everything-explanation = सब कुछ हटाएँ से RetroArch का अपना फ़ोल्डर भी मिट जाता है: उसकी सेटिंग्स, उसके लिए डाउनलोड किए गए एमुलेटर, सेव फ़ाइलें और चुना हुआ BIOS।
+ps3-remove-what-stays = आपके फ़ोल्डर की गेम फ़ाइलें बनी रहेंगी।
+ps3-remove-everything-explanation = सब कुछ हटाएँ से RPCS3 का अपना फ़ोल्डर भी मिट जाता है: सिस्टम सॉफ़्टवेयर, पैकेज से इंस्टॉल किए गए गेम, आपकी सेव फ़ाइलें और ट्रॉफ़ियाँ।
 password-could-not-be-checked = इस मशीन से आपका पासवर्ड जाँचने के लिए नहीं कहा जा सका।
 
 # Archives.
@@ -1655,6 +1678,12 @@ retroarch-no-bios-for-console = वहाँ ऐसी कोई फ़ाइल
 retroarch-console-games-need-more = { $console } के गेम को कुछ ऐसा चाहिए जो इस मशीन पर नहीं है।
 retroarch-core-missing-for = { $console } के गेम खेलने के लिए कुछ गायब है।
 retroarch-console-may-need-bios = { $console } के गेम को कंसोल के अपने BIOS की ज़रूरत हो सकती है, जो डाउनलोड नहीं किया जा सकता।
+
+# Settings > Games > RetroArch > Integration.
+retroarch-on-your-games-are-a-column-of-the-bar = चालू — आपकी अपनी गेम्स बार का एक कॉलम हैं
+retroarch-off-retroarch-is-an-application-like-any-other = बंद — RetroArch बाकी ऐप्लिकेशन जैसा ही एक ऐप्लिकेशन है
+retroarch-retroarch-is-an-application-like-any-other-with-its-own-icon = RetroArch बाकी जैसा ही एक ऐप्लिकेशन है, अपने आइकन के साथ
+retroarch-play-your-own-games-from-the-bar = बार से अपनी ही कंसोल गेम्स खेलें
 
 # Updates and the terminal under them.
 terminal-lines-following = { $total } में से पंक्तियाँ { $from }–{ $to } · अनुसरण जारी · पीछे देखने के लिए बाएँ दबाएँ
@@ -2133,6 +2162,10 @@ ps3-trouble-not-a-package = यह फ़ाइल ऐसा PlayStation 3 ग�
 ps3-trouble-package = फ़ाइल खराब हो सकती है, या किसी ऐसे गेम का अपडेट हो सकती है जो इंस्टॉल नहीं है।
 ps3-trouble-other = बाद में फिर से कोशिश करें।
 ps3-where-your-games-are = आपके PlayStation 3 गेम कहाँ हैं
+ps3-on-your-playstation-3-games-are-a-column-of-the-bar = चालू — आपकी PlayStation 3 गेम्स बार का एक कॉलम हैं
+ps3-off-rpcs3-is-an-application-like-any-other = बंद — RPCS3 बाकी ऐप्लिकेशन जैसा ही एक ऐप्लिकेशन है
+ps3-rpcs3-is-an-application-like-any-other-with-its-own-icon = RPCS3 बाकी जैसा ही एक ऐप्लिकेशन है, अपने आइकन के साथ
+ps3-play-your-playstation-3-games-from-the-bar = बार से अपनी PlayStation 3 गेम्स खेलें
 ps3-install-question = यह PlayStation 3 गेम इंस्टॉल करें? इसे कंसोल में कॉपी किया जाता है, और यह फ़ाइल जहाँ है वहीं रहती है।
 ps3-installed-find-it = यह इंस्टॉल हो गया है, और PlayStation 3 कॉलम में खेलने के लिए तैयार है।
 ps3-trophy-platinum = प्लैटिनम
@@ -2202,3 +2235,48 @@ low-end-off-note = सभी इफ़ेक्ट, जितने सुचा
 low-end-on-note = स्थिर वॉलपेपर, सरल इफ़ेक्ट और कम फ़्रेम
 low-end-slow = इस डिवाइस पर शेल धीमा चल रहा है
 low-end-slow-body = सेटिंग > सिस्टम में कमज़ोर हार्डवेयर मोड इसे सुचारु बना सकता है।
+
+# Windows Apps — the games somebody has installed under Proton.
+windows-run-an-exe = कोई Windows प्रोग्राम चलाएँ
+windows-run-an-exe-note = कोई इंस्टॉलर या प्रोग्राम चुनें और उसे अपनी जगह दें
+windows-run-inside-a-prefix = इसके भीतर कुछ चलाएँ
+windows-run-inside-game = { $game } के भीतर चलाएँ
+windows-looking = देखा जा रहा है कि Windows प्रोग्राम किससे चलेंगे
+windows-press-to-set-up = तैयार करने के लिए दबाएँ
+windows-getting-ready = Windows प्रोग्राम चलाने की तैयारी हो रही है
+windows-settling = डाउनलोड की गई चीज़ जाँची जा रही है
+windows-no-games-yet = अभी कोई Windows प्रोग्राम नहीं
+windows-ready = खेलने के लिए तैयार
+windows-install-unfinished = यह इंस्टॉल कभी पूरा नहीं हुआ
+windows-nothing-installed-yet = यहाँ अभी कुछ भी इंस्टॉल नहीं हुआ
+windows-trouble-offline = डाउनलोड तक नहीं पहुँचा जा सका। कनेक्शन जाँचें और फिर कोशिश करें।
+windows-trouble-damaged = डाउनलोड पूरा नहीं आया। फिर कोशिश करें।
+windows-trouble-no-space = डिस्क पर पर्याप्त जगह नहीं है।
+windows-trouble-wrong-machine = इस मशीन के लिए इसका कोई संस्करण नहीं है।
+windows-trouble-in-use = यह अभी चल रहा है। इसे बंद करें और फिर कोशिश करें।
+windows-trouble-other = वह नहीं हो सका। फिर कोशिश करें।
+windows-count-games = { $count ->
+    [one] { $count } Windows प्रोग्राम
+   *[other] { $count } Windows प्रोग्राम
+    }
+windows-set-up-explanation = Windows प्रोग्राम चलाने से पहले एक मुफ़्त डाउनलोड चाहिए। इस मशीन पर और कुछ नहीं बदला जाता।
+windows-what-to-play = चुनें कि क्या चलाना है
+windows-asking-what-is-here = देखा जा रहा है कि इस मशीन में क्या है
+windows-looking-in-the-folder = फ़ोल्डर की फ़ाइलें देखी जा रही हैं
+windows-nothing-looks-like-a-program = यहाँ कुछ भी प्रोग्राम जैसा नहीं दिखता
+windows-uninstall-takes-saves = इस खेल के फ़ोल्डर में जो कुछ है, सहेजे गए खेल सहित, सब चला जाएगा। इसे पलटा नहीं जा सकता।
+windows-copy-this-game-or-app-in = इस फ़ोल्डर का खेल या ऐप्लिकेशन कॉपी करें
+windows-add-a-game-or-app-folder = खेल या ऐप्लिकेशन का फ़ोल्डर जोड़ें
+windows-add-a-game-or-app-folder-note = इस डिस्क पर पहले से मौजूद कोई खेल या ऐप्लिकेशन कॉपी करें
+windows-this-machines-choice = इस मशीन की पसंद
+windows-uninstalling = अनइंस्टॉल किया जा रहा है…
+windows-games-and-apps-folder = खेलों और ऐप्लिकेशन का फ़ोल्डर
+windows-games-and-apps-folder-note = नए खेल और ऐप्लिकेशन कहाँ रखे जाते हैं
+windows-programs-and-games-on-this-machine = इस मशीन पर मौजूद Windows प्रोग्राम और गेम
+windows-on-your-windows-games-and-apps-are-a-column-of-the-bar = चालू — आपकी Windows गेम्स और ऐप्लिकेशन बार का एक कॉलम हैं
+windows-off-nothing-here-runs-windows-programs = बंद — यहाँ कोई Windows प्रोग्राम नहीं चलता
+windows-your-games-and-apps-stay-on-the-disk-and-nothing-reaches-them = आपकी गेम्स और ऐप्लिकेशन डिस्क पर बनी रहती हैं, और बार से उन तक कुछ नहीं पहुँचता
+windows-run-your-windows-games-and-apps-from-the-bar = बार से अपनी Windows गेम्स और ऐप्लिकेशन चलाएँ
+windows-keep-games-and-apps-in-this-folder = नए खेल और ऐप्लिकेशन इस फ़ोल्डर में रखें
+windows-run-inside-a-game = किसी खेल के अंदर चलाएँ
+windows-which-game-to-run-it-in = चुनें कि इसे किस खेल के अंदर चलाना है

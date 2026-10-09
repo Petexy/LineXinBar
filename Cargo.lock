@@ -2401,7 +2401,7 @@ checksum = "112b39cec0b298b6c1999fee3e31427f74f676e4cb9879ed1a121b43661a4154"
 
 [[package]]
 name = "lxb-compositor"
-version = "0.9.3"
+version = "0.9.4"
 dependencies = [
  "anyhow",
  "clap",
@@ -2423,7 +2423,7 @@ dependencies = [
 
 [[package]]
 name = "lxb-desktop"
-version = "0.9.3"
+version = "0.9.4"
 dependencies = [
  "anyhow",
  "async-channel",
@@ -2492,7 +2492,7 @@ dependencies = [
 
 [[package]]
 name = "lxb-heroic"
-version = "0.9.3"
+version = "0.9.4"
 dependencies = [
  "clap",
  "serde",
@@ -2504,7 +2504,7 @@ dependencies = [
 
 [[package]]
 name = "lxb-portal"
-version = "0.9.3"
+version = "0.9.4"
 dependencies = [
  "anyhow",
  "blocking",
@@ -2524,7 +2524,7 @@ dependencies = [
 
 [[package]]
 name = "lxb-protocol"
-version = "0.9.3"
+version = "0.9.4"
 dependencies = [
  "bitflags 2.13.1",
  "wayland-backend",
@@ -2534,8 +2534,22 @@ dependencies = [
 ]
 
 [[package]]
+name = "lxb-proton"
+version = "0.9.4"
+dependencies = [
+ "clap",
+ "libc",
+ "png",
+ "serde",
+ "serde_json",
+ "sha2",
+ "tempfile",
+ "ureq",
+]
+
+[[package]]
 name = "lxb-retroarch"
-version = "0.9.3"
+version = "0.9.4"
 dependencies = [
  "cc",
  "clap",
@@ -2548,7 +2562,7 @@ dependencies = [
 
 [[package]]
 name = "lxb-rpcs3"
-version = "0.9.3"
+version = "0.9.4"
 dependencies = [
  "aes",
  "clap",
@@ -2613,7 +2627,7 @@ dependencies = [
 
 [[package]]
 name = "lxb-steam"
-version = "0.9.3"
+version = "0.9.4"
 dependencies = [
  "anyhow",
  "libc",
@@ -2655,7 +2669,7 @@ dependencies = [
 
 [[package]]
 name = "lxb-updates"
-version = "0.9.3"
+version = "0.9.4"
 dependencies = [
  "anyhow",
  "libc",

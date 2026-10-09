@@ -2344,6 +2344,27 @@ impl crate::state::LxbState {
         self.queue_redraw();
     }
 
+    /// Name the surface one display goes on showing while it is dark, or forget
+    /// it — `lxb_shell_v1.set_always_on_display`.
+    ///
+    /// The redraw is not optional here the way it is for most settings. A
+    /// display that has just been given a clock is a display the backend was
+    /// about to switch off at the connector, or has switched off already; the
+    /// frame this queues is what lights it again and draws the first clock on
+    /// it. One that has just had its clock taken away needs the same frame to
+    /// go dark in.
+    pub(crate) fn set_always_on_display(&mut self, output: &Output, surface: Option<WlSurface>) {
+        if !self.lxb.always_on.name(output, surface) {
+            return;
+        }
+        tracing::debug!(
+            display = %output.name(),
+            showing = self.lxb.always_on.showing(output),
+            "the shell named what this display shows while it is dark"
+        );
+        self.queue_redraw();
+    }
+
     /// Take hold of a floating window on a controller's behalf.
     ///
     /// The same drag a hand makes, with the pointer taken out of it: nothing is

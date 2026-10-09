@@ -73,7 +73,18 @@ one thing that is left:
 The row's menu is the Steam row's: **Refresh the library** (ask Epic for it
 again) and **Sign out** (asked first; installed games stay on the disk), then
 under the rule **Sort**, **Open Heroic** — where the Steam row has Open Steam
-— and Cancel. Heroic's window is only here, never on a game's menu.
+— **Remove Heroic**, and Cancel. Heroic's window is only here, never on a
+game's menu.
+
+**Remove Heroic** takes the program off the machine, and it is last of the band
+because it is the only row here that takes something away. It asks first, with
+two answers: **Remove** leaves Heroic's own folder where it is, and **Remove
+everything** takes that too — its settings, its sign-in to Epic, and what it
+downloaded to run games with. Your Epic games stay installed where Heroic put
+them either way, because that is somewhere else and it is yours. Signing out is
+the row above and a different act. The whole of how a removal works, and what it
+does on a machine where you installed Heroic yourself, is in
+`docs/configuration.md` under *Taking it off again*.
 
 ## Signing in
 

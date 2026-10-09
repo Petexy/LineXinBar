@@ -74,6 +74,15 @@ pub struct Installation {
     /// What it calls itself, when it would say. Shown nowhere; it is in the
     /// log, which is where "why did that core not load" starts being answered.
     pub version: Option<String>,
+    /// The flatpak application id this is, for an installation that is one.
+    ///
+    /// Sent rather than left for the shell to know, because the shell is what
+    /// removes it: a second copy of this string living over there would be two
+    /// places that have to agree about the one word `flatpak uninstall` is
+    /// handed, and they would agree until the day they did not. `None` is an
+    /// installation no flatpak claims.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub id: Option<String>,
 }
 
 /// Which of the two kinds of installation this is.

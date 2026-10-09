@@ -1,0 +1,48 @@
+[package]
+name = "lxb-proton"
+description = "The shell's Windows Apps integration through Proton: which Proton this machine can run a game with, fetching one where it has none, the runtime that Proton asks for, and the prefixes the shell's own Windows games live in"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[[bin]]
+name = "lxb-proton"
+path = "src/main.rs"
+
+[dependencies]
+clap.workspace = true
+serde.workspace = true
+
+# The whole of what passes between this binary and the shell: one JSON object
+# per line on stdout, as `lxb-retroarch`, `lxb-heroic` and `lxb-rpcs3` do.
+serde_json = "1"
+
+# GitHub's release list for the managed Proton, and Valve's open runtime tree
+# at repo.steampowered.com. Blocking, with a TLS stack of its own, for the
+# reason the other helpers give: this process has nothing else to do while it
+# waits. Already in the lock.
+ureq = "3"
+
+# The managed Proton's archive is checked against the `sha512sum` published
+# beside it, exactly as `lxb-heroic` checks the same file; the runtime's is
+# checked against Valve's `SHA256SUMS`. Both digests come from the one crate,
+# which is already in the lock.
+sha2 = "0.10"
+
+# Writing a program's own drawing out beside it, so the shell can put it on
+# the row — see `src/icon.rs`. The encoder only; the pixels come out of the
+# executable by hand, because what is in there is a Windows DIB and no image
+# crate reads one out of a `.exe`. Already in the lock, under the shell.
+png = "0.18"
+
+# Ending what is left of a game's Wine when the game is over: `kill`, and
+# nothing else. Wine is not one process — a `wineserver` holds the prefix open
+# for as long as any client is alive — so an application that leaves one
+# behind has to be signalled rather than waited for. See `prefix::end`.
+# Already in the tree for the shell.
+libc = "0.2"
+
+[dev-dependencies]
+tempfile = "3"

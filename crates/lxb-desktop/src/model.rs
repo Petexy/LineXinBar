@@ -84,8 +84,33 @@ fn settled_within(target: f32) -> f32 {
 /// is reordered: the first that belongs to the list rather than standing over
 /// it. Zero for every column carrying no such row, which is all but the three
 /// shelves of the user's own files.
+///
+/// # The column that is nothing but head rows
+///
+/// The clamp is what keeps this in range, and it decides more than it looks
+/// like it does: on a column that is *only* head rows it hands back the last
+/// of them. For a shelf whose search matched nothing that is exactly right —
+/// the row it lands on is Clear search, the way back out — and it is why the
+/// clamp is written this way.
+///
+/// Windows Apps is the other case. Its two head rows, **Run .exe** and
+/// **Run .exe inside of...**, are the whole column before anybody has
+/// installed a game, and they are not about a list that came up empty: they
+/// are how the list gets its first row at all. Landing on the last of them
+/// would open a brand-new integration on the one row it cannot press, since
+/// there is no prefix to run anything inside.
+///
+/// So a head row may say that it is the one to open an empty column on, and
+/// exactly one does. Everywhere else the clamp is unchanged.
 fn first_row(entries: &[Entry]) -> usize {
-    crate::apps::head_rows(entries).min(entries.len().saturating_sub(1))
+    let heads = crate::apps::head_rows(entries);
+    if heads >= entries.len() {
+        return entries
+            .iter()
+            .position(Entry::opens_an_empty_column)
+            .unwrap_or_else(|| entries.len().saturating_sub(1));
+    }
+    heads
 }
 
 /// How a terminal emulator separates its own options from the program it
@@ -637,6 +662,15 @@ struct LaunchedApp {
     /// are, so a game ending is noticed: what it unlocked is read again. See
     /// [`Lattice::running_through_rpcs3`].
     through_rpcs3: bool,
+    /// The Windows game this is, by the helper's identifier for it.
+    ///
+    /// Named rather than counted, unlike the two above, because what the
+    /// shell has to do when one of these ends is about *that* game: a setup
+    /// that has finished has written a program into its own prefix, and the
+    /// row is a lie until somebody looks. The whole Wine family is under the
+    /// one supervisor, so this process going is the family going. See
+    /// [`Lattice::windows_running`].
+    windows: Option<String>,
 }
 
 /// One game a launched process was playing, and how quickly it stopped.
@@ -783,6 +817,7 @@ impl Lattice {
                     played: None,
                     through_heroic: false,
                     through_rpcs3: false,
+                    windows: None,
                 });
                 Some(pid)
             }
@@ -831,6 +866,7 @@ impl Lattice {
                     played: None,
                     through_heroic: false,
                     through_rpcs3: false,
+                    windows: None,
                 });
                 Some(pid)
             }
@@ -888,6 +924,66 @@ impl Lattice {
             launched.through_heroic = true;
         }
         Some(pid)
+    }
+
+    /// Start one Windows program: the command the helper worked out, in the
+    /// environment it needs, in the folder it has to run from.
+    ///
+    /// Through `open_command` like every other game on this bar, so it gets
+    /// the loading screen, the display it was pressed on and the guide's
+    /// Close. The environment and the working directory travel as `env`
+    /// rather than as fields of `Opening`, because that is the one shape this
+    /// path already takes — and `env -C` is how a working directory is said
+    /// in it, which matters: `proton` changes directory for nobody and a
+    /// great many Windows games read their data relative to theirs.
+    ///
+    /// `id` is the game this is, so the shell knows which one has finished
+    /// when it does — see [`Self::windows_running`].
+    pub fn play_windows(
+        &mut self,
+        id: &str,
+        name: &str,
+        argv: &[String],
+        environment: &[(String, String)],
+        directory: &str,
+    ) -> Option<u32> {
+        if argv.is_empty() {
+            return None;
+        }
+        tracing::info!(game = name, id, "playing, through Proton");
+        let mut whole = vec!["env".to_string()];
+        if !directory.is_empty() {
+            whole.push("-C".to_string());
+            whole.push(directory.to_string());
+        }
+        whole.extend(
+            environment
+                .iter()
+                .map(|(key, value)| format!("{key}={value}")),
+        );
+        whole.extend(argv.iter().cloned());
+        let pid = self.open_command(crate::media::Opening {
+            name: name.to_string(),
+            icon: None,
+            command: crate::retroarch::shell_command(&whole),
+        })?;
+        if let Some(launched) = self.launched_apps.last_mut() {
+            launched.windows = Some(id.to_string());
+        }
+        Some(pid)
+    }
+
+    /// Every Windows game this shell has running, by the helper's
+    /// identifier.
+    ///
+    /// Compared across a reap, the way the two counts above are: what has
+    /// gone from this list has finished, and a setup that has finished is
+    /// the moment the prefix holds something it did not before.
+    pub fn windows_running(&self) -> Vec<String> {
+        self.launched_apps
+            .iter()
+            .filter_map(|app| app.windows.clone())
+            .collect()
     }
 
     /// Start one PlayStation 3 game in RPCS3. A row with no command is a
@@ -1061,6 +1157,7 @@ impl Lattice {
                     played,
                     through_heroic: false,
                     through_rpcs3: false,
+                    windows: None,
                 });
                 Some(pid)
             }
@@ -1104,6 +1201,7 @@ impl Lattice {
                     played: None,
                     through_heroic: false,
                     through_rpcs3: false,
+                    windows: None,
                 });
                 Some(pid)
             }
@@ -6844,5 +6942,85 @@ mod tests {
             cursor.current_entry(&lattice).map(Entry::title),
             Some("one")
         );
+    }
+
+    /// A Windows Apps column on a machine where nothing has been installed
+    /// yet is two rows, both of which stand over the list. The clamp used to
+    /// hand back the last row in range — the second one, which runs something
+    /// inside a prefix, on a machine that has no prefixes — so the very first
+    /// press of the integration landed on its one unpressable row.
+    #[test]
+    fn a_column_of_nothing_but_head_rows_opens_on_the_first_of_them() {
+        // The two rows as the column really builds them: folder rows, the
+        // first of which opens the walk that chooses a Windows program.
+        let run = |executable: bool| {
+            Entry::Folder(crate::apps::Folder {
+                title_message: None,
+                comment_message: None,
+                identity: None,
+                title: String::new(),
+                comment: None,
+                icon: None,
+                entries: Vec::new(),
+                place: Some(crate::files::Place::Volumes(match executable {
+                    true => crate::files::Shows::Executable,
+                    false => crate::files::Shows::Everything,
+                })),
+                chosen: false,
+                over_the_list: true,
+                person: None,
+                portrait: None,
+                used: None,
+            })
+        };
+        let empty = [run(true), run(false)];
+        assert_eq!(
+            crate::apps::head_rows(&empty),
+            2,
+            "both stand over the list"
+        );
+        assert_eq!(
+            first_row(&empty),
+            0,
+            "Run a Windows program, not the row below it"
+        );
+
+        // And with a game there, the head rows are stepped over as they are
+        // everywhere else: the column opens on the game.
+        let with_a_game = [
+            run(true),
+            run(false),
+            Entry::WindowsGame(crate::apps::WindowsGame {
+                id: "stardew-valley".into(),
+                name: "Stardew Valley".into(),
+                note: String::new(),
+                progress: None,
+                ready: true,
+                at: PathBuf::from("/games/stardew-valley"),
+                proton: None,
+                cover: None,
+            }),
+        ];
+        assert_eq!(first_row(&with_a_game), 2);
+
+        // And the rule this is an exception to, pinned beside it: every other
+        // column of nothing but head rows opens on the *last* of them,
+        // because for a shelf whose search matched nothing that row is the
+        // way back out. Breaking this is what the first attempt at the
+        // exception did, and two tests caught it.
+        let searched = [run(false), run(false)];
+        assert_eq!(crate::apps::head_rows(&searched), 2);
+        assert_eq!(
+            first_row(&searched),
+            1,
+            "a column with no Windows walk in it keeps the old answer"
+        );
+    }
+
+    /// The columns that are only head rows are not the only ones the clamp
+    /// touched; an empty column answers zero rather than underflowing.
+    #[test]
+    fn an_empty_column_opens_on_nothing_without_falling_over() {
+        assert_eq!(first_row(&[]), 0);
     }
 }

@@ -1066,19 +1066,52 @@ impl Picker {
         const REACH: usize = 4;
 
         let mut wanted = Vec::new();
-        for column in self.columns() {
-            let level = &self.levels[column.level];
-            let from = level.selected.saturating_sub(REACH);
-            let to = (level.selected + REACH + 1).min(level.rows.len());
-            for row in &level.rows[from..to] {
-                if let Row::File { path, mime, .. } = row {
-                    if crate::media::has_picture(mime) {
-                        wanted.push(path.clone());
-                    }
+        for row in self.rows_near_the_cursors(REACH) {
+            if let Row::File { path, mime, .. } = row {
+                if crate::media::has_picture(mime) {
+                    wanted.push(path.clone());
                 }
             }
         }
         wanted
+    }
+
+    /// And the Windows programs among them, whose drawing comes out of the
+    /// program rather than off the disk.
+    ///
+    /// Apart from [`Self::pictures_worth_having`] because the two are made by
+    /// different things — see `thumbs::Want::Program` — and not because a
+    /// `.exe` met in an application's file panel is any different from one met
+    /// in Files. It is the same file by the other route, and the panel a
+    /// program raises to ask "which file" is exactly where somebody needs to
+    /// be able to tell one `setup.exe` from the next.
+    pub fn programs_worth_having(&self) -> Vec<PathBuf> {
+        /// `Shell::rows_worth_having`'s own number, as above.
+        const REACH: usize = 4;
+
+        let mut wanted = Vec::new();
+        for row in self.rows_near_the_cursors(REACH) {
+            if let Row::File { path, .. } = row {
+                if crate::files::may_carry_its_own_drawing(path) {
+                    wanted.push(path.clone());
+                }
+            }
+        }
+        wanted
+    }
+
+    /// The rows each open column's cursor is standing among, `reach` either
+    /// side of it.
+    ///
+    /// One walk behind both questions above, so the two cannot come to
+    /// different conclusions about which rows are on screen.
+    fn rows_near_the_cursors(&self, reach: usize) -> impl Iterator<Item = &Row> {
+        self.columns().into_iter().flat_map(move |column| {
+            let level = &self.levels[column.level];
+            let from = level.selected.saturating_sub(reach);
+            let to = (level.selected + reach + 1).min(level.rows.len());
+            &level.rows[from..to]
+        })
     }
 
     /// How far along the trail the columns are drawn, eased.
@@ -1227,7 +1260,15 @@ impl Picker {
                 // one would put a worker to work finding nothing slowly. The
                 // explorer's own test, so a photograph met here is previewed on
                 // exactly the terms it is previewed on in Files.
-                preview: crate::media::has_picture(mime).then(|| path.clone()),
+                //
+                // And a Windows program, whose picture is the drawing inside
+                // it: the same rule one step along — a kind the shell can
+                // make a picture of — and the same two tests Files uses, so
+                // one file wears one mark whichever column it is being
+                // looked at from.
+                preview: (crate::media::has_picture(mime)
+                    || crate::files::may_carry_its_own_drawing(path))
+                .then(|| path.clone()),
             },
         }
     }

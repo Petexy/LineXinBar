@@ -113,6 +113,14 @@ pub struct X11Backend {
     focused_windows: HashSet<u32>,
     cursor: CursorState,
     dmabuf_global: Option<DmabufGlobal>,
+    /// How many virtual displays this session was asked for — `--outputs`.
+    ///
+    /// Kept because [`Self::outputs`] is only the ones that exist now, and a
+    /// display switched off has none: without this there would be no way to
+    /// say that `X11-2` is a display this session has and is not drawing on,
+    /// as opposed to one that was never asked for. It is what makes the
+    /// Screens-in-use page testable without a second monitor.
+    count: usize,
 }
 
 impl X11Backend {
@@ -271,6 +279,96 @@ fn replug(state: &mut LxbState, number: usize) {
     state.refresh_modes();
     state.refresh_transforms();
     state.refresh_places();
+    state.refresh_connectors();
+}
+
+/// The name a virtual display `number` goes by.
+fn virtual_name(number: usize) -> String {
+    format!("X11-{number}")
+}
+
+/// Every virtual display this session was asked for, lit or dark.
+///
+/// Built from the count rather than from the windows that exist, because a
+/// display switched off has no window — and saying so is the whole purpose of
+/// the list. This is what lets the Screens-in-use page, and switching a screen
+/// off and back on, be driven on a machine with one monitor.
+pub fn connectors(state: &LxbState) -> Vec<super::Connector> {
+    let super::Backend::X11(x11) = &state.backend else {
+        return Vec::new();
+    };
+    (1..=x11.count)
+        .map(|number| {
+            let name = virtual_name(number);
+            let lit = x11.outputs.values().any(|o| o.output.name() == name);
+            let switching = match state.lxb.config.enabled_is_pinned(&name) {
+                true => super::Switching::SetElsewhere,
+                false => super::Switching::Allowed,
+            };
+            super::Connector {
+                name,
+                lit,
+                switching,
+            }
+        })
+        .collect()
+}
+
+/// Switch one virtual display off, or back on. `true` when it went through.
+///
+/// The same two acts a cable going out and in already are here — see the
+/// `CloseRequested` arm and [`replug`] — which is what makes this backend an
+/// honest stand-in for the hardware one rather than a separate code path that
+/// happens to agree.
+pub fn set_connector_enabled(state: &mut LxbState, name: &str, on: bool) -> bool {
+    if on {
+        let Some(number) = name
+            .strip_prefix("X11-")
+            .and_then(|number| number.parse::<usize>().ok())
+        else {
+            return false;
+        };
+        let known = match &state.backend {
+            super::Backend::X11(x11) => number >= 1 && number <= x11.count,
+            _ => false,
+        };
+        if !known {
+            return false;
+        }
+        replug(state, number);
+        return matches!(&state.backend, super::Backend::X11(x11)
+            if x11.outputs.values().any(|o| o.output.name() == name));
+    }
+
+    let taken = {
+        let super::Backend::X11(x11) = &mut state.backend else {
+            return false;
+        };
+        let Some(&window_id) = x11
+            .outputs
+            .iter()
+            .find(|(_, o)| o.output.name() == name)
+            .map(|(id, _)| id)
+        else {
+            return false;
+        };
+        x11.focused_windows.remove(&window_id);
+        x11.outputs.remove(&window_id)
+    };
+    let Some(virtual_output) = taken else {
+        return false;
+    };
+    tracing::info!(output = %virtual_output.output.name(), "switched this virtual display off");
+    state.display_unplugged(&virtual_output.output);
+    state
+        .lxb
+        .display_handle
+        .remove_global::<LxbState>(virtual_output.global.clone());
+    // Dropped here, which unmaps the window: the display is gone from the host
+    // as well as from the session, which is what a screen going dark looks
+    // like when the screen is somebody else's window.
+    drop(virtual_output);
+    true
 }
 
 /// Bring up the compositor with `count` nested windows.
@@ -331,6 +429,7 @@ pub fn init(
             focused_windows: HashSet::new(),
             cursor: CursorState::new(),
             dmabuf_global: None,
+            count,
         })),
         config,
         socket_name,
@@ -569,8 +668,12 @@ fn render_output(state: &mut LxbState, window_id: u32) -> anyhow::Result<()> {
     // session going dark runs the path a handheld's does, which is the only way
     // that path is ever run without one — it is how a shell left waiting on a
     // dark display was reproduced. See [`crate::render::WHILE_DARK`].
+    // The same exception the udev backend makes: a display the shell has asked
+    // to go on showing something while it is dark is drawn rather than left
+    // alone, or there would be nothing for the clock to appear on. See
+    // [`crate::always_on`].
     let now = std::time::Instant::now();
-    if state.lxb.blackouts.is_off(&output, now) {
+    if state.lxb.blackouts.is_off(&output, now) && !state.lxb.always_on.showing(&output) {
         if virtual_output.dark.is_none() {
             tracing::info!(display = %output.name(), "switched the display off");
         }

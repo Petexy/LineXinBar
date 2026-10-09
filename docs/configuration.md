@@ -497,44 +497,98 @@ nothing at all — the menu folded away and the bar sat there.
 
 The same menu — **Remove RetroArch**, below the rule with *Open RetroArch*, and
 last of the three because it is the only row there that takes something away.
-It asks first, and the question names what goes.
+It is on every integration's own row in the same place and on the same terms:
+**Remove Steam** on the Steam row, **Remove Heroic** on Epic Games, **Remove
+RPCS3** on PlayStation 3. Windows Apps has none, because that integration
+installs no program: Proton is what a Windows game is run *with*, so there is
+nothing to take off.
 
-What goes is the application and everything kept for it:
+It asks first, and the question has **two answers**, because there are two
+questions and only you can answer the second:
 
-* the flatpak itself, `flatpak uninstall --user --delete-data`, which takes
-  `~/.var/app/org.libretro.RetroArch` with it — RetroArch's own configuration,
-  every core this shell downloaded into it, the assets, the playlists, the save
-  files, and any BIOS that was put there;
-* the filesystem permission the shell granted for the games folder, which
-  survives an uninstall otherwise and would be silently inherited by a
-  reinstall;
-* this shell's own cache of the cover art fetched from libretro, which lives
-  under the *shell's* cache rather than RetroArch's and so is out of
-  `--delete-data`'s reach;
-* the scratch directory a core's files land in while it is being asked what it
-  can be set to;
-* and the one line in the shell's own settings that belongs to this integration
-  and nothing else: where the games are.
+* **Remove** takes the program and leaves its own folder where it is. Install it
+  again and it comes back to what it was — its settings, its downloads, your
+  saves.
+* **Remove everything** takes the folder as well, which is what starting again
+  from nothing means.
 
-**The games are not touched**, and neither is the folder they are in. This
-removes a program and what the program kept.
+The second is a separate button rather than part of the first because a
+program's own folder is its settings on one machine and your whole library on
+the next. Steam keeps every game it has installed under its; RPCS3 keeps a
+console's system software, saves and trophies under its. The panel names what
+each answer costs before either is pressed, and rests on Cancel.
 
-Everything the shell had read off it goes at the same moment, and that is not
-tidying up: the shelf of games, the emulators' settings pages and the firmware
-rows are all built out of the last scan and the last ask, so leaving them
-standing would draw a column of games nothing can play and settings pages for
-emulators that are no longer installed. The row then asks the machine again, and
-comes back offering to download it — which is where a fresh machine starts.
+**Whatever is in your own folders is never touched, either way.** Your ROMs,
+your PlayStation 3 discs and packages, the games Heroic installed where you told
+it to, and the folder each of them is in. This removes a program and what the
+program kept.
 
-**Only the `--user` flatpak.** That is the one this shell installs and the only
-one it can remove without a password: a system-wide flatpak's uninstall needs
-root and a distribution package needs the package manager. Both are somebody
-else's decision to undo, and the panel says so rather than raising a password
-prompt over a television.
+#### It works however the program got here
+
+The shell hands the program back to whatever installed it, so this row does the
+same job on a machine where you installed it yourself as on one where the shell
+downloaded it:
+
+* a **flatpak in your own installation** — what the shell installs — comes off
+  with nobody's permission at all;
+* a **flatpak installed for the whole machine** goes through the system's own
+  authentication, which is the panel asking for a password that mounting a disk
+  or installing an update already uses;
+* a **distribution package** goes through your package manager, which needs
+  root, so the shell asks for your password on its own panel and nothing is run
+  until the password is accepted;
+* **RPCS3 as an AppImage** — a single program file you downloaded — is deleted,
+  because nothing installed it and deleting that file is the whole of removing
+  it.
+
+Where the shell cannot work out what installed something, it says so and offers
+nothing further. That is the same answer the Uninstall row on an ordinary
+application's menu gives, for the same reason: guessing is not a thing to do
+with the one command that deletes software.
+
+#### What else goes with it
+
+Each integration keeps things *outside* the program, which no package manager
+and no `--delete-data` reaches, and those go whichever button was pressed:
+
+* the filesystem permission the shell granted so a sandboxed program could read
+  the folder your games are in, which survives an uninstall otherwise and would
+  be silently inherited by a reinstall;
+* the shell's own cache of the artwork it fetched — libretro's covers, Epic's
+  box art, the pictures taken out of each PlayStation 3 game, the grey copies of
+  locked trophies;
+* the scratch directories a core's files and an unpacked package land in.
+
+And **Remove everything** adds the program's own folder: for a flatpak that is
+`flatpak uninstall --delete-data`, and for a distribution package it is the
+directory under your home that a package manager has never owned —
+`~/.config/retroarch`, `~/.config/rpcs3`.
+
+One setting goes with **Remove everything** and with nothing else: the line that
+says where your games are. After the other answer the program's folder is still
+on the disk, so a machine that installs it again finds what it had, and
+forgetting where you keep your games would be the one thing that did not come
+back.
+
+Everything the shell had read off the program goes at the same moment, and that
+is not tidying up: the shelf of games, the emulators' settings pages, the
+firmware rows and the trophies are all built out of the last scan and the last
+ask, so leaving them standing would draw a column of games nothing can play and
+settings pages for programs that are no longer installed. The row then asks the
+machine again, and comes back offering to download it — which is where a fresh
+machine starts.
+
+**Steam is the one that is different**, because the shell did not install its
+package and does not need it to work. Your library stays on the bar after the
+client goes: this shell signs in to Steam itself and lists your games over the
+network, so what changes is that the rows stop offering to play them, which is
+what they say on a machine that never had a client. You stay signed in — that is
+*Sign out*, the row above — and your Steam folder, with every game in it, is
+behind **Remove everything** and named there.
 
 The row exists because the setup is a sequence of first-time questions — where
-the games are, which cores to fetch, where a BIOS is — and every one of them can
-otherwise only be seen once per machine.
+the games are, which cores to fetch, where a BIOS is, which account — and every
+one of them can otherwise only be seen once per machine.
 
 ### A missing BIOS
 
@@ -1228,7 +1282,7 @@ from inside a running compositor.
 | `position`      | `[x, y]`          | Pins the output. Without it, `output_layout` decides. |
 | `scale`         | float             | Fractional scale, e.g. `1.5`. |
 | `transform`     | string            | `normal`, `90`, `180`, `270`, `flipped`, `flipped-90`, `flipped-180`, `flipped-270`. |
-| `enabled`       | boolean           | `false` leaves the display unlit and out of the layout. |
+| `enabled`       | boolean           | `false` leaves the display unlit and out of the layout. Setting it here takes the display off Settings → Display → Screens in use; see below. |
 | `adaptive_sync` | boolean           | Parsed, but not yet applied. |
 | `hdr`           | boolean           | Drive this display in high dynamic range. Default `false`. |
 | `hdr_sdr_brightness` | integer      | Luminance plain white is sent at, in cd/m². Default `200`. |
@@ -1288,6 +1342,32 @@ across a session. The rest are written to `displays.toml` because coming up in
 the wrong one costs a modeset, which is a black screen; an arrangement costs a
 relayout, and at login there is nothing laid out yet. So the shell keeps it and
 sends it when it connects.
+
+### Whether a display is used at all
+
+`enabled` does to Settings → Display → Screens in use what `position` does to
+Display order. Settings can switch a screen off and back on while the session
+runs — the connector goes dark, the screen leaves the arrangement, and what was
+on it moves to the screens that are left — and what it chose is remembered in
+`displays.toml`, with the mode and the colour pipeline and for the same reason:
+it has to be known before a shell exists, or a screen somebody switched off
+would light for a moment at every login and then go dark again.
+
+A connector this file states `enabled` for is answered by this file instead, at
+every login. So that screen is not offered a switch at all: its row says the
+choice is made on the machine itself, rather than taking a press that would
+work until morning. The same goes for every display at once when the key is on
+the `"*"` entry, because `"*"` is what a connector with no section of its own
+is answered by.
+
+Two things the compositor will not do, whatever is written here or chosen
+there. It never switches off the last display still lit — there has to be
+somewhere to draw the page that would switch it back — and if a session would
+otherwise come up with no display at all, one that `displays.toml` switched off
+is lit anyway, for that session, without the file being changed. A display this
+*config* file disables is left alone in both cases: that is a deliberate
+instruction about this hardware, and the compositor says it has no display to
+use rather than overruling it.
 
 ### High dynamic range
 

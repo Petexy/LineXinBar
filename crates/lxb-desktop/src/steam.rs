@@ -2023,6 +2023,22 @@ impl Steam {
         self.client.client_at().is_some()
     }
 
+    /// Where Valve's client is, for the row that takes it off — see
+    /// [`crate::uninstall::Installed`]. `None` on a machine with none, and
+    /// while the client is installing itself, which is the one stretch where
+    /// removing it would be racing a download of it.
+    pub fn installed_where(&self) -> Option<crate::uninstall::Installed> {
+        if self.setting_up() {
+            return None;
+        }
+        Some(match self.client.client_at()?.installed() {
+            lxb_steam::client::Installed::Flatpak(id) => {
+                crate::uninstall::Installed::Flatpak(id.to_string())
+            }
+            lxb_steam::client::Installed::Package(at) => crate::uninstall::Installed::At(at),
+        })
+    }
+
     /// Whether what is up is waiting to be typed into, which is what decides
     /// that keys are letters rather than buttons.
     pub fn field_wanted(&self) -> bool {
@@ -2037,6 +2053,22 @@ impl Steam {
     /// keyboard on a console is a field that cannot be filled in.
     pub fn password_wanted(&self) -> bool {
         matches!(self.signing_in, Some(Stage::Password { .. }))
+    }
+
+    /// Valve's client has just been removed; look again now rather than at the
+    /// next tick of the clock that usually asks.
+    ///
+    /// The one thing this shell has to do about it, and it is small on purpose.
+    /// The column is not the client's: this shell signs in to Steam itself and
+    /// lists the library over the network, so a machine with no client still
+    /// has its games on the bar and the rows simply stop offering to play them
+    /// — which is exactly what they say on a machine that never had one. There
+    /// is nothing to forget and nothing to take off the bar.
+    ///
+    /// Returns whether the column has to be drawn again.
+    pub fn look_for_the_client_again(&mut self) -> bool {
+        self.asked_after_the_client = Instant::now();
+        self.client.recheck_client()
     }
 
     /// Take in everything the worker has said. Returns what has to be redrawn.

@@ -513,6 +513,97 @@ pub fn tell(
     }
 }
 
+/// RPCS3 has gone; take what this integration kept for it.
+///
+/// The other end of [`run`], and the half of a removal that is nobody else's to
+/// do. **Removing RPCS3 itself is the shell's job**, because only the shell can
+/// ask for a password: it knows how this one was installed and hands it back to
+/// whatever installed it — a `--user` flatpak with nobody's permission, a
+/// system-wide one through polkit, a distribution package through `sudo` and a
+/// panel, and an AppImage by deleting the file, since nothing installed it.
+/// What is left over is everything *outside* that program, and no package
+/// manager and no `--delete-data` reaches any of it.
+///
+/// What goes, always: the filesystem permission granted to the sandbox so a
+/// flatpak RPCS3 could read somebody's games folder, which outlives the
+/// application and would be silently inherited by a reinstall; and this
+/// shell's own cache — the artwork taken out of each game, the grey copies of
+/// locked trophies made for it, and the scratch directory a package is
+/// unpacked in.
+///
+/// And with `data`, which is the shell's **Remove everything**: RPCS3's own
+/// configuration directory outside any sandbox, `~/.config/rpcs3`. A flatpak's
+/// own went with it, because the shell passed `--delete-data`; a distribution
+/// package's and an AppImage's never had anybody to take them.
+///
+/// **That directory is the one worth being careful about**, which is why it is
+/// behind the second button and named on the panel before it is pressed: it is
+/// RPCS3's settings and the PlayStation 3's own drives together, so the system
+/// software, the games installed from packages, the saves and the trophies are
+/// all in there. The game files in somebody's own folder — their discs, their
+/// packages — are not, and are never touched.
+///
+/// Every failure is reported and none of them stops the rest: RPCS3 is already
+/// gone by the time this runs.
+pub fn forget(out: &mut impl Write, data: bool) -> bool {
+    tell(out, Stage::Installing, None, None, "clearing up");
+    reset();
+    let mut gone = Vec::new();
+    if let Some(cache) = crate::art::cache_root() {
+        gone.push(cache);
+    }
+    if data {
+        if let Some(config) = own_config() {
+            gone.push(config);
+        }
+    }
+    for at in gone {
+        match std::fs::remove_dir_all(&at) {
+            Ok(()) => eprintln!("forget: removed {}", at.display()),
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => {}
+            Err(err) => eprintln!("forget: {} could not be removed: {err}", at.display()),
+        }
+    }
+    tell(out, Stage::Done, Some(1.0), None, "RPCS3 has been removed");
+    true
+}
+
+/// Give back the filesystem permission the shell granted — see [`permit`],
+/// which is the one that writes it.
+///
+/// Only this user's own overrides, because a `--user` override is the only one
+/// anything here ever wrote: a system-wide installation's are per-installation
+/// and need root, and are somebody else's to undo.
+fn reset() {
+    let out = Command::new("flatpak")
+        .args(["override", "--user", "--reset", FLATPAK_ID])
+        .env("LC_ALL", "C")
+        .stdin(Stdio::null())
+        .output();
+    match out {
+        Ok(out) if out.status.success() => eprintln!("forget: permissions reset"),
+        Ok(out) => eprintln!(
+            "forget: permissions were not reset: {}",
+            said(&out.stderr).unwrap_or_else(|| "flatpak refused".to_string())
+        ),
+        Err(err) => eprintln!("forget: flatpak could not be run: {err}"),
+    }
+}
+
+/// RPCS3's own configuration directory on a machine where it was not a flatpak
+/// — the one [`rpcs3::config_dir`] answers with for a distribution package or
+/// an AppImage, worked out here without an installation because by now there is
+/// none.
+fn own_config() -> Option<std::path::PathBuf> {
+    Some(
+        std::env::var_os("XDG_CONFIG_HOME")
+            .map(std::path::PathBuf::from)
+            .filter(|dir| dir.is_absolute())
+            .or_else(|| rpcs3::home().map(|home| home.join(".config")))?
+            .join("rpcs3"),
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

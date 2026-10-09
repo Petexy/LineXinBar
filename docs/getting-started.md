@@ -112,6 +112,8 @@ one feature:
 | `lxb-heroic` (a package of its own, needing `flatpak`) | [Epic Games](epic.md): a row under Steam, a sign-in by phone or on the screen, and a column of your Epic library to install and play | The shell never mentions Epic Games at all — no row, no column, no page under Settings |
 | `lxb-rpcs3` (a package of its own) | [PlayStation 3](ps3.md): a row under RetroArch, and a column of your PlayStation 3 games — discs, packages and installed games — with their previews and trophies | The shell never mentions the PlayStation 3 at all — no row, no column, no page under Settings |
 | `flatpak`, with `lxb-rpcs3` installed | Installing RPCS3 from the shell | The row says there is nothing to install RPCS3 with; any RPCS3 already on the machine is used either way |
+| `lxb-proton` (a package of its own) | [Windows Apps](windows.md): a row under Steam, and a column of your Windows games, each with a Windows installation of its own | The shell never mentions Windows at all — no row, no column, no page under Settings |
+| `steam`, with `lxb-proton` installed | Running Windows games under the Protons Valve's client already keeps up to date, and choosing between them per game | The package fetches one Proton of its own into your data directory, and a game's menu has no Compatibility row to choose between |
 
 ### Permissions
 

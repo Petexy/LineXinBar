@@ -105,6 +105,15 @@ pub struct Installation {
     pub version: Option<String>,
     /// Heroic's own configuration directory, as this machine spells it.
     pub config: String,
+    /// The flatpak application id this is, for an installation that is one.
+    ///
+    /// Sent rather than left for the shell to know, because the shell is what
+    /// removes it: a second copy of this string living over there would be two
+    /// places that have to agree about the one word `flatpak uninstall` is
+    /// handed, and they would agree until the day they did not. `None` is an
+    /// installation no flatpak claims.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub id: Option<String>,
 }
 
 /// Which flatpak installation it is in.

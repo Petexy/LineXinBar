@@ -1,0 +1,27 @@
+Package: lxb-proton
+Version: @VERSION@-1
+Architecture: @ARCH@
+Maintainer: Piotr Lewandowski <piotr.petexiness@gmail.com>
+Section: x11
+Priority: optional
+Depends: @SHLIB_DEPENDS@, lxb-desktop (= @VERSION@-1), tar, xz-utils
+Suggests: steam
+Installed-Size: @INSTALLED_SIZE@
+Homepage: https://github.com/Petexy/LineXinBar
+Description: Windows games for the LineXinBar shell, through Proton
+ Adds Windows games to the LineXinBar shell, through Proton and Valve's
+ container runtime: a row under Steam in the Games column, and a column of the
+ user's Windows games. Each one gets a Windows installation of its own, so a
+ game that needs an old library cannot break the game beside it, and taking
+ one off takes nothing else with it.
+ .
+ Three ways in: an installer or a game picked off the disk, a folder copied
+ in whole for a game that came without an installer, and a way to reach into
+ a game that is already set up to run its settings program or its patcher.
+ .
+ The shell looks for this package on PATH and mentions Windows only when it
+ is installed. On a machine with Steam it runs games under the Protons the
+ client already keeps up to date; on a machine without, it fetches one and
+ the container runtime it asks for into the user's own data directory,
+ checking each download against the digest published beside it. Nothing is
+ installed as root and no account is signed in to.

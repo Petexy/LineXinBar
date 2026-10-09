@@ -69,14 +69,15 @@ grep -Fqx 'pkgver=@VERSION@' "$PACKAGING_DIR/arch/PKGBUILD.in" \
     || package_die "arch/PKGBUILD.in no longer reads its version from VERSION"
 grep -Fq 'builtins.readFile ../../VERSION' "$PACKAGING_DIR/nix/package.nix" \
     || package_die "nix/package.nix no longer reads its version from VERSION"
-for control in control.in control-compositor.in control-retroarch.in control-heroic.in control-rpcs3.in; do
+for control in control.in control-compositor.in control-retroarch.in control-heroic.in \
+    control-rpcs3.in control-proton.in; do
     grep -Fq 'Version: @VERSION@-1' "$PACKAGING_DIR/debian/$control" \
         || package_die "debian/$control no longer reads its version from VERSION"
 done
 # The two binaries read the same file, and each says so for itself: a build
 # script that has stopped looking is a `--version` free to drift from the
 # package it ships in, which is what this whole section exists to prevent.
-for component in lxb-compositor lxb-desktop lxb-retroarch lxb-heroic lxb-rpcs3; do
+for component in lxb-compositor lxb-desktop lxb-retroarch lxb-heroic lxb-rpcs3 lxb-proton; do
     build_script="$PROJECT_ROOT/crates/$component/build.rs"
     [[ -f "$build_script" ]] \
         || package_die "crates/$component/build.rs is gone, and with it the check that it builds as the version in VERSION"
@@ -94,6 +95,8 @@ grep -Fq 'lxb-desktop (= @VERSION@-1)' "$PACKAGING_DIR/debian/control-heroic.in"
     || package_die "debian/control-heroic.in no longer depends on the matching lxb-desktop"
 grep -Fq 'lxb-desktop (= @VERSION@-1)' "$PACKAGING_DIR/debian/control-rpcs3.in" \
     || package_die "debian/control-rpcs3.in no longer depends on the matching lxb-desktop"
+grep -Fq 'lxb-desktop (= @VERSION@-1)' "$PACKAGING_DIR/debian/control-proton.in" \
+    || package_die "debian/control-proton.in no longer depends on the matching lxb-desktop"
 grep -Fq '"lxb-desktop=$pkgver-$pkgrel"' "$PACKAGING_DIR/arch/PKGBUILD.in" \
     || package_die "arch/PKGBUILD.in no longer version-locks lxb-retroarch to the shell"
 grep -Fq '"lxb-compositor=$pkgver-$pkgrel"' "$PACKAGING_DIR/arch/PKGBUILD.in" \
@@ -138,14 +141,19 @@ cleanup() {
 trap cleanup EXIT
 
 stage="$work/stage"
+# Every component there is, named once. Everything below counts, stages and
+# compares from this one list rather than from a copy of it: the partition
+# check used to carry a hand-written list of every *pair*, which is ten for
+# five components and fifteen for six, and a pair left out of it is a file
+# two packages fight over at install time that nothing notices.
+components=(compositor desktop retroarch heroic rpcs3 proton)
+
 # No --target-dir: install.sh already follows CARGO_TARGET_DIR, which is where
 # the build above put the binaries.
 "$PACKAGING_DIR/install.sh" --destdir "$stage"
-"$PACKAGING_DIR/install.sh" --destdir "$work/compositor" --component compositor
-"$PACKAGING_DIR/install.sh" --destdir "$work/desktop" --component desktop
-"$PACKAGING_DIR/install.sh" --destdir "$work/retroarch" --component retroarch
-"$PACKAGING_DIR/install.sh" --destdir "$work/heroic" --component heroic
-"$PACKAGING_DIR/install.sh" --destdir "$work/rpcs3" --component rpcs3
+for component in "${components[@]}"; do
+    "$PACKAGING_DIR/install.sh" --destdir "$work/$component" --component "$component"
+done
 
 package_note "checking the staged desktop and session payload"
 for binary in lxb lxb-desktop lxb-updates lxb-session; do
@@ -279,7 +287,7 @@ grep -q 'pub const SLEEP_FLAG: &str = "--sleep-now";' \
     "$PROJECT_ROOT/crates/lxb-desktop/src/machine_power.rs" \
     || package_die "the shell no longer names --sleep-now as its privileged flag"
 
-package_note "checking the five components partition the payload"
+package_note "checking the ${#components[@]} components partition the payload"
 # The compositor is a package of its own so a display manager can depend on a
 # Wayland session without pulling in this project's shell, and the RetroArch
 # integration is one so that a machine which will never emulate a console does
@@ -290,23 +298,27 @@ staged_paths() {
     (cd "$1" && find . -mindepth 1 \( -type f -o -type l \) -printf '%P\n' | sort)
 }
 staged_paths "$stage" > "$work/all.list"
-for component in compositor desktop retroarch heroic rpcs3; do
+lists=()
+for component in "${components[@]}"; do
     staged_paths "$work/$component" > "$work/$component.list"
+    lists+=("$work/$component.list")
 done
 
-for pair in "compositor desktop" "compositor retroarch" "desktop retroarch" \
-    "compositor heroic" "desktop heroic" "retroarch heroic" \
-    "compositor rpcs3" "desktop rpcs3" "retroarch rpcs3" "heroic rpcs3"; do
-    read -r one other <<< "$pair"
-    comm -12 "$work/$one.list" "$work/$other.list" > "$work/both.list"
-    if [[ -s "$work/both.list" ]]; then
-        package_die "$one and $other both install: $(tr '\n' ' ' < "$work/both.list")"
-    fi
+# Every pair, worked out rather than written down. See the note on
+# `components` above for what the written-down version cost.
+for ((one = 0; one < ${#components[@]}; one++)); do
+    for ((other = one + 1; other < ${#components[@]}; other++)); do
+        first="${components[one]}"
+        second="${components[other]}"
+        comm -12 "$work/$first.list" "$work/$second.list" > "$work/both.list"
+        if [[ -s "$work/both.list" ]]; then
+            package_die "$first and $second both install: $(tr '\n' ' ' < "$work/both.list")"
+        fi
+    done
 done
-sort -u "$work/compositor.list" "$work/desktop.list" "$work/retroarch.list" \
-    "$work/heroic.list" "$work/rpcs3.list" > "$work/union.list"
+sort -u "${lists[@]}" > "$work/union.list"
 if ! diff -q "$work/all.list" "$work/union.list" >/dev/null; then
-    package_die "--component all differs from the five components together: $(
+    package_die "--component all differs from the ${#components[@]} components together: $(
         diff "$work/all.list" "$work/union.list" | tr '\n' ' ')"
 fi
 
@@ -365,6 +377,12 @@ grep -Fq 'lxb:shape' "$work/heroic/usr/share/lxb/glyphs/epic.svg" 2>/dev/null \
     || package_die "the rpcs3 component does not stage lxb-rpcs3"
 grep -Fq 'lxb:shape' "$work/rpcs3/usr/share/lxb/glyphs/ps3.svg" 2>/dev/null \
     || package_die "the rpcs3 component does not stage its mark as the shape of itself"
+[[ ! -e "$work/desktop/usr/bin/lxb-proton" ]] \
+    || package_die "the desktop component stages lxb-proton, which is a package of its own"
+[[ -x "$work/proton/usr/bin/lxb-proton" ]] \
+    || package_die "the proton component does not stage lxb-proton"
+grep -Fq 'lxb:shape' "$work/proton/usr/share/lxb/glyphs/windows.svg" 2>/dev/null \
+    || package_die "the proton component does not stage its mark as the shape of itself"
 session="$stage/usr/share/wayland-sessions/lxb.desktop"
 [[ -f "$session" ]] || package_die "Wayland session entry was not staged"
 for line in Exec=lxb-session TryExec=lxb-session DesktopNames=LineXinBar; do
@@ -438,7 +456,12 @@ grep -q 'KERNEL=="uinput".*TAG+="uaccess"' "$rules" \
     || package_die "the rules no longer grant /dev/uinput to the seat"
 grep -q 'OPTIONS+="static_node=uinput"' "$rules" \
     || package_die "the uinput rule would not apply before the module is loaded"
-grep -q '28de.*1304.*TAG+="uaccess"' "$rules" \
+# The id is matched as a range in the rule — 1302 to 1305, the four a 2026
+# Valve controller reports itself as — so the pattern has to accept the range
+# as well as the bare number it was written against. Checked for 1304, the
+# Steam Controller 2's own id and the one inside that range that the shell
+# would be unable to read without this.
+grep -qE '28de.*(1304|130\[2-5\]).*TAG\+="uaccess"' "$rules" \
     || package_die "the rules no longer grant the Steam Controller's hidraw to the seat"
 grep -q '28de.*1205.*TAG+="uaccess"' "$rules" \
     || package_die "the rules no longer grant the Steam Deck's hidraw to the seat"

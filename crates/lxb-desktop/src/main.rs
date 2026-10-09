@@ -73,6 +73,7 @@ mod polkit;
 mod power;
 mod power_bus;
 mod preview;
+mod proton;
 mod ps3;
 mod ps3_settings;
 mod resolution;
@@ -149,6 +150,7 @@ use crate::controller::ControllerInput;
 use crate::gpu::Gpu;
 use crate::guide::{Guide, Item, Mode};
 use crate::icons::IconLoader;
+use crate::menu::Program;
 use crate::model::{Action, Cursor, Lattice};
 use crate::pointer::{Prefs, Stick};
 use crate::system::{Knob, Quick};
@@ -537,6 +539,33 @@ const OVERVIEW_FOCUS_SHELL_VERSION: u32 = 46;
 /// turned 270° — the turn its portrait panel is drawn at. See
 /// [`settings::Turn`].
 const MOUNTING_SHELL_VERSION: u32 = 47;
+
+/// First version that can switch a screen off and back on: the `connector` and
+/// `connectors_done` events, and `set_connector_enabled`. Being the newest this
+/// shell knows of, it is also the version it asks to bind.
+///
+/// Below it a shell hears nothing about a screen that is switched off, which is
+/// what every shell before it assumed: that a screen it cannot see is a screen
+/// with its cable out. Settings > Display > Screens in use is drawn from these
+/// events alone, so on an older compositor it has nothing to list and says so.
+const SWITCHING_SHELL_VERSION: u32 = 48;
+
+/// First version that can be asked to go on showing something on a display that
+/// has gone dark: `set_always_on_display`. Being the newest this shell knows of,
+/// it is also the version it asks to bind.
+///
+/// Below it a dark screen is a screen with nothing on it, which is what every
+/// shell before this one assumed — and what every screen still does until
+/// somebody turns Settings > Display > Always on display on.
+const ALWAYS_ON_SHELL_VERSION: u32 = 49;
+
+/// The newest version this shell knows of is the one it asks to bind, and the
+/// numbers only ever go up by one. Said here so that two branches each claiming
+/// "the next version" cannot both be merged — the easy mistake, and one that
+/// otherwise shows up as a shell silently never being sent an event. The
+/// compositor keeps the same chain against the same accident.
+const _: () = assert!(SWITCHING_SHELL_VERSION == MOUNTING_SHELL_VERSION + 1);
+const _: () = assert!(ALWAYS_ON_SHELL_VERSION == SWITCHING_SHELL_VERSION + 1);
 
 /// What `answer_pick` says when no kind of file was in force. The protocol's
 /// own number for it, quoted here so the two halves cannot disagree about which
@@ -999,6 +1028,12 @@ struct Cli {
     #[arg(long, hide = true)]
     rpcs3_helper: Option<std::path::PathBuf>,
 
+    /// Use this program as the Windows Apps integration instead of looking
+    /// for `lxb-proton` beside the shell or on `PATH` — the same development
+    /// aid as the three above.
+    #[arg(long, hide = true)]
+    proton_helper: Option<std::path::PathBuf>,
+
     /// Read the battery out of this directory instead of the kernel's own
     /// `/sys/class/power_supply`.
     ///
@@ -1321,7 +1356,11 @@ fn main() -> anyhow::Result<()> {
     // bar at all — and its mark has to be in the atlas with the rest rather
     // than being asked for on the first frame that draws it.
     let retroarch_helper = retroarch::look_for_helper(cli.retroarch_helper.clone());
-    if retroarch_helper.is_some() {
+    // And only while the integration is switched on. Off, RetroArch is an
+    // application like any other: its own entry stays on the bar and no row
+    // stands in for it — the same pair of questions Steam's two lines above
+    // ask, and Epic's below. See [`settings::retroarch_integration`].
+    if retroarch_helper.is_some() && settings::retroarch_integration() {
         // RetroArch's own entry goes before the shell's row arrives to stand in
         // for it, so the bar is never drawn with both.
         apps::hide_retroarch_client(&mut categories);
@@ -1356,7 +1395,21 @@ fn main() -> anyhow::Result<()> {
     if let Some(helper) = &ps3_helper {
         ps3::bring_the_mark(helper);
     }
-    if ps3_helper.is_some() {
+    // And the Windows Apps integration's. Nothing of anybody else's comes
+    // off the bar for this one: Proton is not a program with a window and a
+    // desktop entry, it is what a Windows game is run with.
+    let proton_helper = proton::look_for_helper(cli.proton_helper.clone());
+    if let Some(helper) = &proton_helper {
+        proton::bring_the_mark(helper);
+    }
+    if proton_helper.is_some() && settings::windows_integration() {
+        apps::offer_windows(
+            &mut categories,
+            Some(crate::i18n::text("windows-looking").to_string()),
+            None,
+        );
+    }
+    if ps3_helper.is_some() && settings::ps3_integration() {
         apps::hide_rpcs3_client(&mut categories);
         apps::offer_ps3(
             &mut categories,
@@ -1430,17 +1483,29 @@ fn main() -> anyhow::Result<()> {
     // The same shape again, and started here for the same reason: the probe
     // runs `flatpak info` twice and walks `PATH`, and the first frame is
     // several hundred milliseconds of GPU setup away.
+    //
+    // Each on both halves of its own answer, as Heroic's has always been: the
+    // package being here, and the switch under Settings > Games saying yes. An
+    // integration that is off starts no worker, so nothing in this process
+    // walks somebody's ROM folder, asks RPCS3 what it is set to, or looks at
+    // what Windows games are installed.
     let retroarch = match retroarch_helper {
-        Some(at) => retroarch::RetroArch::start(at.to_path_buf()),
-        None => retroarch::RetroArch::absent(),
+        Some(at) if settings::retroarch_integration() => {
+            retroarch::RetroArch::start(at.to_path_buf())
+        }
+        _ => retroarch::RetroArch::absent(),
     };
     let heroic = match heroic_helper {
         Some(at) if settings::epic_integration() => heroic::Heroic::start(at),
         _ => heroic::Heroic::absent(),
     };
     let ps3 = match ps3_helper {
-        Some(at) => ps3::Ps3::start(at),
-        None => ps3::Ps3::absent(),
+        Some(at) if settings::ps3_integration() => ps3::Ps3::start(at),
+        _ => ps3::Ps3::absent(),
+    };
+    let proton = match proton_helper {
+        Some(at) if settings::windows_integration() => proton::Proton::start(at),
+        _ => proton::Proton::absent(),
     };
 
     // Whether the games on the bar are somebody's actual library, which is
@@ -1487,7 +1552,7 @@ fn main() -> anyhow::Result<()> {
     // LineXinBar's own protocol, which carries the guide binding and lets the
     // overlay close an application. Absent on every other compositor, where the
     // shell simply falls back to what it can do as an ordinary client.
-    let shell_control = match globals.bind::<LxbShellV1, _, _>(&qh, 1..=MOUNTING_SHELL_VERSION, ())
+    let shell_control = match globals.bind::<LxbShellV1, _, _>(&qh, 1..=ALWAYS_ON_SHELL_VERSION, ())
     {
         Ok(control) => Some(control),
         Err(err) => {
@@ -1563,6 +1628,14 @@ fn main() -> anyhow::Result<()> {
         compat_menu: None,
         epic_looked: None,
         epic_compat_menu: None,
+        windows_choose_menu: None,
+        windows_asked_remove: None,
+        windows_compat_menu: None,
+        windows_removing: false,
+        windows_run_inside_row: None,
+        windows_run_inside_for: None,
+        windows_settling: None,
+        windows_launches_on_their_way: 0,
         ways_menu: None,
         remember_the_way: false,
         open_with: Vec::new(),
@@ -1643,6 +1716,8 @@ fn main() -> anyhow::Result<()> {
         epic_asked: None,
         epic_signing_here: false,
         ps3,
+        proton,
+        proton_looked: None,
         ps3_looked: None,
         ps3_setup_panel: false,
         ps3_asked_remove: None,
@@ -1683,6 +1758,8 @@ fn main() -> anyhow::Result<()> {
         steam_windows: HashMap::new(),
         asked_which_game: HashMap::new(),
         pending_unseen: Vec::new(),
+        pending_connectors: Vec::new(),
+        connectors: Vec::new(),
         unseen_windows: Vec::new(),
         unseen_since: HashMap::new(),
         letting_through: HashSet::new(),
@@ -1863,9 +1940,19 @@ fn main() -> anyhow::Result<()> {
         event_queue.dispatch_pending(&mut shell)?;
         let running = shell.lattice.running_roms();
         let through_heroic = shell.lattice.running_through_heroic();
+        let windows_was = shell.lattice.windows_running();
         let failed = shell.lattice.reap_children();
         if running != shell.lattice.running_roms() {
             shell.retroachievements.refresh();
+        }
+        // A Windows game — or the setup for one — has finished. The whole
+        // Wine family runs under one supervisor, so this is the family, and
+        // what it leaves behind is a prefix the shell has not looked in
+        // since before it started.
+        if !windows_was.is_empty() {
+            for id in launches_that_ended(&windows_was, &shell.lattice.windows_running()) {
+                shell.a_windows_launch_ended(&id);
+            }
         }
         // An Epic game has ended — Heroic has written its playtime and gone —
         // so the column is read off the disk again, and the row says how long
@@ -1960,6 +2047,7 @@ fn main() -> anyhow::Result<()> {
             shell.sync_retroarch();
             shell.sync_heroic();
             shell.sync_ps3();
+            shell.sync_proton();
             shell.sync_retroachievements();
             shell.sync_updates();
         }
@@ -2080,6 +2168,11 @@ fn main() -> anyhow::Result<()> {
         // why it is last and why it takes the clock this pass was started with:
         // a display rests because five seconds have gone by.
         shell.sync_screen_rest(now);
+        // Straight after it, because what it decides is exactly what this one
+        // reads: a display that has just been rested is a display that may now
+        // have a clock to show, and one that has just woken has one to take
+        // away.
+        shell.sync_always_on_display(now);
         // And its neighbour, which is the same shape of answer about
         // applications rather than screens, and moves on its own clock too.
         shell.sync_media_awake(now);
@@ -2628,9 +2721,52 @@ impl StartupIcons {
 /// button while it is up, so there is never a second answer to the question of
 /// what is being removed.
 struct Uninstall {
-    app: apps::App,
+    removing: Removing,
     survey: uninstall::Survey,
     stage: Stage,
+    /// Which of the two buttons was pressed, so the end of it knows whether the
+    /// shell's own leftovers go too. Carried rather than re-asked: the plan was
+    /// worked out from it, and a removal that read it again afterwards could
+    /// read something else.
+    data: uninstall::ItsData,
+}
+
+/// What one removal is removing.
+///
+/// Two kinds of thing, and the shell has to tell them apart at exactly one
+/// moment — when it is over — because what has to happen then is different:
+/// an application's tile goes by looking at the disk again, and a program an
+/// integration drives takes a row, a column and everything read off it with it.
+/// Everything in between is the same panel asking the same questions, which is
+/// why there is one removal and not two.
+enum Removing {
+    /// An application on the bar, from the Uninstall row of its own menu.
+    ///
+    /// What it was called and what it wore, rather than the row itself. By the
+    /// time this is read the application has been deleted and the bar has been
+    /// walked again, so a row held across that would be a row about a desktop
+    /// entry that is not on the disk any more — and the two things the panels
+    /// need are the two things that stay true.
+    Application { name: String, icon: Option<String> },
+    /// The program one of the integrations drives, from that integration's own
+    /// row at the head of Games.
+    Program(Program),
+}
+
+impl Removing {
+    fn name(&self) -> String {
+        match self {
+            Removing::Application { name, .. } => name.clone(),
+            Removing::Program(program) => program.name().to_string(),
+        }
+    }
+
+    fn icon(&self) -> Option<String> {
+        match self {
+            Removing::Application { icon, .. } => icon.clone(),
+            Removing::Program(program) => Some(program.mark()),
+        }
+    }
 }
 
 /// The steps a removal goes through, in the order it goes through them.
@@ -2644,7 +2780,7 @@ enum Stage {
     /// drawn from a count of characters and nothing else — see
     /// [`dialog::Line::Secret`] — and this goes away with the stage.
     Asking {
-        removal: uninstall::Removal,
+        doing: uninstall::Doing,
         password: secret::Secret,
     },
     /// The removal itself is running.
@@ -3188,6 +3324,32 @@ struct Panel {
     /// full rate behind it, which is the one part of that feature that costs
     /// something and shows nothing. See [`Shell::sync_wallpaper`].
     drew_the_wallpaper: bool,
+    /// Whether this display has been named to the compositor as one that goes
+    /// on showing the time while it is dark — see
+    /// [`Shell::sync_always_on_display`], which is the only writer.
+    ///
+    /// Kept so the request is sent on the change rather than every pass, and so
+    /// that a display which has woken is un-named: the name is what holds its
+    /// connector on.
+    showing_the_time: bool,
+    /// The minute this display's always-on clock last drew, so it is drawn
+    /// again when the minute turns and not before. `None` for a display that is
+    /// not showing one, which is what makes a display coming back to the dark
+    /// draw at once instead of waiting out a minute it spent awake.
+    clock_minute: Option<u32>,
+    /// Whether the last frame this display drew was a clock rather than a bar.
+    ///
+    /// The witness [`Shell::sync_always_on_display`] names the surface on: the
+    /// surface carrying the clock is the one carrying the bar, so it may only
+    /// be lifted over the compositor's black once it is known to hold the
+    /// former. Separate from [`Panel::clock_minute`], which is the pacing gate
+    /// and is deliberately not set while the clock is still fading in.
+    drew_a_clock: bool,
+    /// When this display's always-on clock began arriving, so it can be faded
+    /// up out of the black — see [`ALWAYS_ON_FADE`]. `None` while the display
+    /// is not showing one, which is what starts the fade again from nothing
+    /// the next time it goes dark.
+    clock_since: Option<Instant>,
     /// How long this display has been drawing its wallpaper behind an
     /// application that covers it, which it should never do for long — see
     /// [`Behind`].
@@ -4366,6 +4528,22 @@ enum Owning<'a> {
     Game(u32),
 }
 
+/// What a loading screen is built from, read off the display before
+/// anything starts.
+///
+/// A record rather than a tuple because it is read in one place and written
+/// in another, and because one of its three is a list of window ids that
+/// means nothing without its name.
+struct OpensFrom {
+    /// The tile the screen grows out of.
+    from: [f32; 4],
+    /// The windows already on this display, so the new one can be told from
+    /// them.
+    known: Vec<u32>,
+    /// What was in front before the press.
+    foreground: String,
+}
+
 struct Shell {
     registry_state: RegistryState,
     seat_state: SeatState,
@@ -4645,6 +4823,54 @@ struct Shell {
     /// The Epic game whose Compatibility list is up and waiting for Heroic to
     /// be asked what it can run games with — the twin of `compat_menu`.
     epic_compat_menu: Option<String>,
+    /// Which Windows game the open menu asked what to play for, so an answer
+    /// that lands after somebody has moved on cannot write over the menu
+    /// they are in now. [`Shell::epic_compat_menu`]'s job, for its reason.
+    windows_choose_menu: Option<String>,
+    /// The Windows game the uninstall question on screen is about.
+    windows_asked_remove: Option<String>,
+    /// Which Windows game the open Compatibility list is about, for the same
+    /// reason [`Shell::windows_choose_menu`] exists.
+    windows_compat_menu: Option<String>,
+    /// Whether the panel on screen is the one holding while a game comes off
+    /// the disk, so only that one is taken down when the answer arrives.
+    windows_removing: bool,
+    /// What [`Shell::windows_run_inside_for`] was when the Windows Apps
+    /// column was last built.
+    ///
+    /// The row the walk hangs off is drawn from the first of those, and
+    /// nothing else in the shell would ever notice it changing — the column
+    /// is rebuilt when the *helper* says something, and this is the shell's
+    /// own business. Compared each frame, which is one comparison, and the
+    /// column is built again only when the answer differs.
+    windows_run_inside_row: Option<String>,
+    /// The Windows game a walk of the disk is choosing something to run
+    /// inside of, where one is.
+    ///
+    /// Taken off the row the walk was opened from, because that is the last
+    /// moment it is under the cursor: what follows is somebody's own disk,
+    /// several columns deep, and by the time they press a file the bar
+    /// underneath has been rebuilt more than once. The same reason
+    /// `note_bios_question` holds a console. Cleared the moment the walk is
+    /// left, however it is left.
+    windows_run_inside_for: Option<String>,
+    /// The Windows game whose setup has just finished, and which is being
+    /// asked what that setup left behind.
+    ///
+    /// Apart from [`Shell::windows_choose_menu`] because the two mean
+    /// opposite things about the same answer: that one is a list somebody is
+    /// standing in front of, and this one is nobody looking — a setup ended
+    /// while the person was somewhere else entirely, and the answer names
+    /// what the game plays rather than being drawn. See
+    /// [`Shell::a_windows_launch_ended`].
+    windows_settling: Option<String>,
+    /// How many Windows launches have been asked for and not yet answered.
+    ///
+    /// Starting one is a round trip to the helper, and a launch in that gap
+    /// is running nowhere and listed nowhere — see
+    /// [`nothing_is_using_this_windows_game`], which is the one question that
+    /// has to know about it.
+    windows_launches_on_their_way: usize,
     /// And which Steam title the open menu is waiting for a list of *ways to
     /// start* about. The twin of [`Shell::compat_menu`], held apart for the
     /// same reason the two lists are: a menu waiting for one of them is not
@@ -5083,6 +5309,11 @@ struct Shell {
     ps3: ps3::Ps3,
     /// When the package was last looked for — see [`ps3::look_again`].
     ps3_looked: Option<Instant>,
+    /// The optional Windows Apps integration, through Proton. Empty on a
+    /// machine without the `lxb-proton` package. See [`proton`].
+    proton: proton::Proton,
+    /// When that package was last looked for — see [`proton::look_again`].
+    proton_looked: Option<Instant>,
     /// Whether the panel over the PlayStation 3 setup is up, so a line of
     /// progress arriving after somebody put it away does not bring it back.
     ps3_setup_panel: bool,
@@ -5296,6 +5527,16 @@ struct Shell {
     /// tells the two apart without reading a word Valve wrote.
     pending_unseen: Vec<UnseenWindow>,
     unseen_windows: Vec<UnseenWindow>,
+    /// Every screen the session has, lit or dark, as the compositor last named
+    /// them, and the batch being assembled.
+    ///
+    /// Not per display, and it cannot be: half of what arrives here is screens
+    /// with no `wl_output` for this shell to have bound, so there is no
+    /// [`Panel`] to hang it on. It is the only list in this shell that knows a
+    /// screen somebody switched off is still there — see
+    /// [`Shell::refresh_connectors`], which hands it to Settings.
+    pending_connectors: Vec<settings::Connector>,
+    connectors: Vec<settings::Connector>,
     unseen_since: HashMap<u32, Instant>,
     /// The hidden windows this shell has asked for anyway, by id. Kept so that
     /// each is asked for once rather than once a frame, and so that one which
@@ -5766,6 +6007,10 @@ impl Shell {
             // The first pass settles it either way, and a film that waited one
             // pass to start is a film nobody was looking at yet.
             drew_the_wallpaper: false,
+            showing_the_time: false,
+            clock_minute: None,
+            clock_since: None,
+            drew_a_clock: false,
             wallpaper_behind: Behind::default(),
             blur_linear: 0.0,
             depth_linear: 0.0,
@@ -6728,6 +6973,14 @@ impl Shell {
         // And whether there is a press to answer — see [`Shell::answering`].
         let answering = std::mem::take(&mut self.answering);
 
+        // Before the renderer is borrowed, because nothing below may reach for
+        // `self` again: how far into its lap the always-on clock's drift has
+        // walked. See [`always_on_drift`].
+        let since_start = now.duration_since(self.start);
+        // And the time on its own, for whichever displays have gone dark
+        // showing it. Read once a pass like the corner's, so every screen
+        // showing it agrees about what the time is.
+        let always_on_time = always_on_clock();
         let Some(gpu) = self.gpu.as_mut() else {
             self.next_frame_deadline = now + FRAME_CALLBACK_WATCHDOG;
             return;
@@ -6779,6 +7032,35 @@ impl Shell {
             // compositor's black is all the way down over this display, which
             // outranks everything else about whether it draws.
             let rested = panel.is_rested(now);
+            // And whether this one goes on showing the time while it is dark.
+            // Only a screen that is *already* dark — the clock belongs on the
+            // black, not over a picture the sheet is still fading across — and
+            // only one somebody has asked it of. See
+            // [`settings::always_on_for`].
+            let showing_the_time = rested && settings::always_on_for(&panel.name);
+            // The clock the fade is measured from. Started the moment this
+            // display begins showing the time and cleared the moment it stops,
+            // so a screen that wakes and goes dark again comes up out of the
+            // black afresh rather than snapping straight back to full.
+            match showing_the_time {
+                true => panel.clock_since.get_or_insert(now),
+                false => {
+                    panel.clock_since = None;
+                    &now
+                }
+            };
+            let clock_arrived = panel
+                .clock_since
+                .map_or(0.0, |since| {
+                    now.saturating_duration_since(since).as_secs_f32()
+                        / ALWAYS_ON_FADE.as_secs_f32()
+                })
+                .clamp(0.0, 1.0);
+            // Still coming up, so this display wants every frame it can have
+            // until it has arrived — the once-a-minute pacing below is for a
+            // clock that is standing still, and a fade drawn at that rate would
+            // be one step a minute.
+            let fading_in = showing_the_time && clock_arrived < 1.0;
             let Some(target) = panel.target.as_mut() else {
                 panel.was_visible = visible;
                 panel.drew_the_wallpaper = false;
@@ -6885,7 +7167,13 @@ impl Shell {
                 || launch_moving[index]
                 || (palette_moving && visible)
                 || (moving_here && index == focused_panel);
-            let draw_now = should_draw(rested, visible, settling, panel.was_visible);
+            let draw_now = should_draw(
+                rested,
+                visible,
+                settling,
+                panel.was_visible,
+                showing_the_time,
+            );
             // Low-end hardware mode draws a still display far less often, and
             // a moving one, or one with a press to answer, on the display's own
             // beat — see [`low_end_next`]. A frame held back here is drawn on a
@@ -6893,7 +7181,24 @@ impl Shell {
             // when the display answers the last frame, or at the moment it
             // names.
             panel.cadence.set_low_end(low_end);
-            let next = if low_end && draw_now {
+            let next = if fading_in && draw_now {
+                cadence::Next::Now
+            } else if showing_the_time && draw_now {
+                // Once a minute, on the minute, and that is the whole of this
+                // feature's cost. The clock changes once a minute and the drift
+                // moves with it — see [`always_on_drift`] — so there is nothing
+                // a frame in between could show that the last one did not. A
+                // screen left dark all night is drawn a few hundred times
+                // rather than a few million, which is the difference between
+                // protecting a panel and quietly cooking it.
+                match always_on_time {
+                    Some((_, minute, second)) if panel.clock_minute == Some(minute) => {
+                        let until = 60u64.saturating_sub(second as u64).max(1);
+                        cadence::Next::At(now + Duration::from_secs(until))
+                    }
+                    _ => cadence::Next::Now,
+                }
+            } else if low_end && draw_now {
                 low_end_next(&panel.cadence, panel.last_drawn, now, settling || answering)
             } else {
                 cadence::Next::Now
@@ -6982,6 +7287,15 @@ impl Shell {
             }
             drew = true;
             panel.last_drawn = Some(now);
+            // Which minute this display's clock is showing, so the next pass
+            // knows there is nothing new to draw until the minute turns. Only
+            // while it is showing one: a display that wakes and comes back to
+            // the dark draws its clock at once rather than waiting out a minute
+            // it spent awake.
+            panel.drew_a_clock = showing_the_time;
+            panel.clock_minute = (showing_the_time && !fading_in)
+                .then(|| always_on_time.as_ref().map(|(_, minute, _)| *minute))
+                .flatten();
             panel.cadence.drew(now, settling);
             // From here on this display has shown something, so its arrival has
             // a frame to start from.
@@ -7115,7 +7429,29 @@ impl Shell {
 
             // The bar, wherever the start screen currently is: the whole
             // display, its card, or somewhere between the two mid-flight.
-            let mut scene = if board_only {
+            let mut scene = if showing_the_time {
+                // Nothing of the bar, and nothing of the wallpaper either: the
+                // surface this is drawn on is lifted over the compositor's
+                // black, so everything this scene leaves clear is that black
+                // showing through, and everything it draws is the only thing on
+                // the screen. See `lxb_shell_v1.set_always_on_display`.
+                ui::always_on_scene(
+                    width as f32,
+                    height as f32,
+                    always_on_time
+                        .as_ref()
+                        .map(|(time, _, _)| time.as_str())
+                        .unwrap_or_default(),
+                    always_on_drift(since_start),
+                    smoothstep(clock_arrived),
+                    &Slots {
+                        gpu,
+                        art,
+                        avatars,
+                        drained,
+                    },
+                )
+            } else if board_only {
                 ui::Scene::default()
             } else {
                 ui::build(
@@ -9853,6 +10189,15 @@ impl Shell {
                 if self.press_game_picture_pick() {
                     return;
                 }
+                // And an executable pressed in the walk that is choosing a
+                // Windows program, which is the same shape again: the file is
+                // the answer rather than the subject, and opening it in
+                // whatever the desktop would open an `.exe` with is the one
+                // thing that must not happen.
+                if self.press_windows_program_pick() {
+                    self.answer_choice(ChosenFeedback::Kept, Screen::Start);
+                    return;
+                }
                 // And a file pressed in the walk that is choosing somebody's
                 // own picture, which is the same thing again about an account.
                 if self.press_portrait_pick() {
@@ -9958,6 +10303,34 @@ impl Shell {
                     // Heroic, and the rest are Heroic's to be told.
                     if let settings::Setting::Epic(value) = setting {
                         self.carry_out_epic(value);
+                    }
+                    // And the other three integrations' switches, on exactly
+                    // those terms: each turns the half of the shell that
+                    // drives one program on or off, now, and `settings` only
+                    // writes down which way the switch was thrown.
+                    match setting {
+                        settings::Setting::RetroArchIntegration(on) => {
+                            self.retroarch_integration_changed(on);
+                        }
+                        settings::Setting::Ps3Integration(on) => {
+                            self.ps3_integration_changed(on);
+                        }
+                        settings::Setting::WindowsIntegration(on) => {
+                            self.windows_integration_changed(on);
+                        }
+                        _ => {}
+                    }
+                    // And switching a screen off or on, which is the one
+                    // display row that cannot be a diff on the next loop pass:
+                    // the screen it names may have no panel to diff against,
+                    // and the screen the press was made on may be about to
+                    // stop existing. See [`Shell::switch_screen`].
+                    if let settings::Setting::Display {
+                        display,
+                        value: settings::DisplayValue::Enabled(on),
+                    } = setting
+                    {
+                        self.switch_screen(display, on);
                     }
                     // The night light is the one page in this tree whose
                     // *shape* depends on what was just chosen: asking it to
@@ -10774,6 +11147,32 @@ impl Shell {
             Some((_, true)) => return self.press_epic_game(),
             _ => {}
         }
+        // The Windows Apps row, and a game of its column that was never
+        // finished installing. The row walks the setup or steps into the
+        // column; an unfinished game cannot be started, so its press says so
+        // rather than running nothing.
+        //
+        // The two rows at the head of that column are not here: they are
+        // folder rows, and a press on one of those opens the column it leads
+        // to through the navigation every other folder row uses.
+        match self.panels.get(self.focused_panel).and_then(|panel| {
+            panel.cursor.current_entry(&self.lattice).map(|entry| {
+                (
+                    entry.windows().is_some(),
+                    entry.windows_game().is_some_and(|game| !game.ready),
+                )
+            })
+        }) {
+            Some((true, _)) => return self.press_windows_row(),
+            Some((_, true)) => return self.press_unfinished_windows_game(),
+            _ => {}
+        }
+        // A Windows game that is ready. Answered here rather than left to
+        // fall through, because nothing else on this bar knows how to start
+        // one: the helper works the command out and the shell runs it.
+        if self.selected_windows_game().is_some() {
+            return self.play_selected_windows_game();
+        }
         // The PlayStation 3 row, and a game of its column that is a package to
         // install or a disc whose key has not been fetched. The row walks the
         // setup; the game does what it needs before it can start.
@@ -10848,6 +11247,22 @@ impl Shell {
         // the archive's own question, which would unpack it.
         if let Some(path) = self.ps3_package_under_cursor() {
             return self.offer_to_install_ps3_package(path);
+        }
+        // And a Windows program pressed in Files, where this machine runs
+        // them: the press runs it, which is what pressing a program means
+        // everywhere else on this bar. A file already inside a game runs in
+        // that game's Windows and anything else gets a place of its own —
+        // the walk from the column's own row is answered earlier and
+        // elsewhere, by [`Shell::press_windows_program_pick`], so nothing
+        // here can fire inside that picker.
+        //
+        // Before the archive's question below, as the package above is. A
+        // `.exe` is not one of Extract's types, so the two cannot actually
+        // collide; it is here because the order of this ladder is what says
+        // which reading of a file wins, and "a program this machine can run"
+        // is a stronger reading than anything left under it.
+        if let Some(exe) = self.windows_program_under_cursor() {
+            return self.press_windows_program_in_files(exe);
         }
         // An archive whose handler is the shell's own Extract, which is every
         // archive until somebody says otherwise. Nothing is forked for this
@@ -11125,17 +11540,62 @@ impl Shell {
         // Where it is being launched from, before it is started, so the answer
         // cannot be overtaken by the window itself.
         self.sync_launch_output(self.focused_panel);
-        let Some(panel) = self.panels.get(self.focused_panel) else {
+        let Some(opens_from) = self.what_a_launch_opens_from() else {
             return;
         };
-        let from = ui::launch_origin(panel.width as f32, panel.height as f32);
-        let known: Vec<u32> = panel.windows.iter().map(|window| window.id).collect();
-        let foreground = panel.foreground.clone().unwrap_or_default();
-
         let Some(pid) = start(&mut self.lattice) else {
             // Nothing was forked; the launcher has already said why.
             return;
         };
+        self.raise_a_loading_screen(name, icon, Some(pid), opens_from);
+    }
+
+    /// How many pixels across and down the display a launch would open on
+    /// has, for the one integration that has to be told.
+    ///
+    /// A Windows setup opens on a Wine desktop, and a desktop has to be made
+    /// some size — see `lxb-proton`'s `launch`. The helper runs on a machine
+    /// and the shell runs on a screen, so this is the shell's half of the
+    /// answer: the display the press was made on, which is the same one
+    /// [`Shell::sync_launch_output`] is about to tell the compositor the
+    /// application opens on.
+    fn how_big_a_launch_opens(&self) -> Option<(u32, u32)> {
+        let panel = self.panels.get(self.focused_panel)?;
+        match panel.width > 0 && panel.height > 0 {
+            true => Some((panel.width, panel.height)),
+            // Before the first configure there is no size to pass, and a
+            // desktop of nothing is worse than Wine's own guess.
+            false => None,
+        }
+    }
+
+    /// What a loading screen has to be told about the display before
+    /// anything is started: the tile it opens out of, and what was already
+    /// on the screen, so the application's own window can be told from them.
+    fn what_a_launch_opens_from(&self) -> Option<OpensFrom> {
+        let panel = self.panels.get(self.focused_panel)?;
+        Some(OpensFrom {
+            from: ui::launch_origin(panel.width as f32, panel.height as f32),
+            known: panel.windows.iter().map(|window| window.id).collect(),
+            foreground: panel.foreground.clone().unwrap_or_default(),
+        })
+    }
+
+    /// Put the loading screen up.
+    ///
+    /// `pid` is `None` for a launch whose process does not exist yet — see
+    /// [`Shell::play_selected_windows_game`], where the press and the fork
+    /// are a round trip to another program apart. A splash with no process
+    /// waits on its window the way a Steam game's does, and
+    /// [`Shell::a_windows_launch_has_its_process`] gives it one when there
+    /// is one to give.
+    fn raise_a_loading_screen(
+        &mut self,
+        name: String,
+        icon: Option<String>,
+        pid: Option<u32>,
+        opens_from: OpensFrom,
+    ) {
         self.needs_redraw = true;
         self.sounds.launch();
         let Some(here) = self.display_at(self.focused_panel) else {
@@ -11145,12 +11605,12 @@ impl Shell {
             name,
             icon,
             here,
-            from,
-            Some(pid),
+            opens_from.from,
+            pid,
             Instant::now(),
             launch::Before {
-                windows: &known,
-                foreground: &foreground,
+                windows: &opens_from.known,
+                foreground: &opens_from.foreground,
             },
         );
         self.begin_launch(splash);
@@ -12464,6 +12924,8 @@ impl Shell {
         // [`Shell::steam_said_what_runs_it`].
         self.compat_menu = None;
         self.epic_compat_menu = None;
+        self.windows_choose_menu = None;
+        self.windows_compat_menu = None;
         self.ways_menu = None;
         let trophies = entries
             .iter()
@@ -12570,7 +13032,14 @@ impl Shell {
                         crate::i18n::text("shell-sort"),
                     )
                     .glyph(icons::SORT)];
-                    if retroarch::offered() {
+                    // The package, and the integration switched on with it.
+                    // `offered` alone would go on offering this row all
+                    // session — it is answered once, before the catalogue is
+                    // built, and cannot change — so a press on it with the
+                    // integration off would reach a worker that is not there
+                    // and do nothing at all on the screen. See
+                    // [`settings::retroarch_integration`].
+                    if retroarch::offered() && settings::retroarch_integration() {
                         rows.push(
                             menu::Entry::new(
                                 menu::Command::RetroAchievementsConfigure,
@@ -12650,6 +13119,17 @@ impl Shell {
         // it is Heroic's to start rather than a package's.
         if self.selected_epic().is_some() {
             return self.epic_entry_menu();
+        }
+        if self.selected_windows_game().is_some() {
+            return self.windows_game_entry_menu();
+        }
+        if self
+            .panels
+            .get(self.focused_panel)
+            .and_then(|panel| panel.cursor.current_entry(&self.lattice))
+            .is_some_and(|entry| entry.windows().is_some())
+        {
+            return self.windows_entry_menu();
         }
         if self.selected_epic_game().is_some() {
             return self.epic_game_entry_menu();
@@ -12821,6 +13301,18 @@ impl Shell {
             return Some(resolution::Subject::Application {
                 key: format!("epic:{}", game.app_name),
                 names: vec![heroic::WINDOW_CLASS.to_string()],
+            });
+        }
+        // A Windows game. Its windows are Wine's, named after the executable
+        // rather than after an app id — this integration deliberately sets no
+        // `SteamAppId`, because `proton` reads one to decide which per-title
+        // workarounds to apply — so the answer is filed under the game and
+        // sent on the way into its own launch, the arrangement an Epic game
+        // and a ROM folder both use.
+        if let Some(game) = self.selected_windows_game() {
+            return Some(resolution::Subject::Application {
+                key: proton::key(&game.id),
+                names: vec![proton::WINDOW_CLASS.to_string()],
             });
         }
         if let Some(game) = self.selected_game() {
@@ -13009,7 +13501,14 @@ impl Shell {
         Some((
             anchor,
             Some(file.title.clone()),
-            media_rows(trash::is_the_users_own(&file.path), false, self.show_hidden),
+            // A shelf holds songs, films and photographs and nothing else,
+            // so there is never a Windows program on one to run.
+            media_rows(
+                trash::is_the_users_own(&file.path),
+                false,
+                self.show_hidden,
+                false,
+            ),
         ))
     }
 
@@ -13047,6 +13546,7 @@ impl Shell {
                 trash::is_the_users_own(&file.path),
                 self.inside_a_folder(),
                 self.show_hidden,
+                self.a_windows_game_could_run_this(&file.path),
             ),
         ))
     }
@@ -17086,6 +17586,8 @@ impl Shell {
         // [`Shell::toggle_context_menu`].
         self.compat_menu = None;
         self.epic_compat_menu = None;
+        self.windows_choose_menu = None;
+        self.windows_compat_menu = None;
         self.ways_menu = None;
         if self
             .context_menu
@@ -17445,6 +17947,8 @@ impl Shell {
         // [`Shell::toggle_context_menu`].
         self.compat_menu = None;
         self.epic_compat_menu = None;
+        self.windows_choose_menu = None;
+        self.windows_compat_menu = None;
         self.ways_menu = None;
         if self.context_menu.open_selecting(
             anchor,
@@ -17762,6 +18266,8 @@ impl Shell {
         // [`Shell::toggle_context_menu`].
         self.compat_menu = None;
         self.epic_compat_menu = None;
+        self.windows_choose_menu = None;
+        self.windows_compat_menu = None;
         self.ways_menu = None;
         if self.context_menu.open_at(
             anchor,
@@ -19026,8 +19532,10 @@ impl Shell {
             menu::Command::Rename => self.begin_rename(),
             menu::Command::ConfirmUninstall => self.begin_uninstall(),
             menu::Command::InstallRetroArch => self.install_retroarch(),
-            menu::Command::RemoveRetroArch => self.offer_to_remove_retroarch(),
-            menu::Command::ReallyRemoveRetroArch => self.remove_retroarch(),
+            menu::Command::RemoveProgram(program) => self.offer_to_remove_program(program),
+            menu::Command::ReallyRemoveProgram(program, everything) => {
+                self.begin_removing_program(program, everything)
+            }
             menu::Command::GetCore => self.get_core(),
             menu::Command::ChooseRomsFolder => self.open_roms_picker(),
             menu::Command::ChooseBiosFolder => self.open_bios_picker(),
@@ -19054,6 +19562,76 @@ impl Shell {
             menu::Command::EpicOpenHeroic => self.open_heroic(),
             menu::Command::Ps3OfferSetUp => self.offer_to_set_up_ps3(),
             menu::Command::Ps3SetUp => self.set_up_ps3(),
+            menu::Command::WindowsSetUp => {
+                self.proton.send(proton::Ask::Fetch);
+                self.needs_redraw = true;
+            }
+            menu::Command::WindowsPlay => self.play_selected_windows_game(),
+            menu::Command::WindowsCompatibility => {
+                if let Some(game) = self.selected_windows_game() {
+                    let id = game.id.clone();
+                    let entries = self.proton.compatibility_rows(&id);
+                    let title = Some(menu::Title::new(crate::i18n::text("label-compatibility")));
+                    if !self.context_menu.descend(title, entries) {
+                        return;
+                    }
+                    // Asked again now the list is up, so a Proton installed
+                    // since this session started is on it: the answer lands
+                    // in [`Shell::windows_said_what_runs_it`], which writes
+                    // it over this list and nothing else.
+                    self.windows_compat_menu = Some(id);
+                    self.proton.send(proton::Ask::Tools);
+                    self.needs_redraw = true;
+                }
+            }
+            menu::Command::WindowsUnder(proton) => {
+                if let Some(game) = self.selected_windows_game() {
+                    self.proton.run_under(&game.id.clone(), proton);
+                    self.needs_redraw = true;
+                }
+            }
+            menu::Command::WindowsChoose => self.choose_what_a_windows_game_plays(),
+            menu::Command::WindowsPlayThis(at) => self.windows_game_plays(at),
+            menu::Command::WindowsRunInside => self.open_windows_run_inside_picker(),
+            menu::Command::WindowsRunInsideAGame => {
+                let entries = self.windows_games_to_run_this_inside();
+                self.context_menu.descend(
+                    Some(menu::Title::new(crate::i18n::text(
+                        "windows-which-game-to-run-it-in",
+                    ))),
+                    entries,
+                );
+            }
+            menu::Command::WindowsRunThisInside(id) => self.run_this_inside_a_windows_game(id),
+            menu::Command::WindowsOfferRemove => self.offer_to_uninstall_windows_game(),
+            menu::Command::WindowsRemove => self.uninstall_windows_game(),
+            menu::Command::WindowsSort => {
+                let entries = windows_sort_rows(self.proton.sort());
+                self.context_menu
+                    .descend(Some(menu::Title::new(proton::TITLE)), entries);
+            }
+            menu::Command::WindowsSortBy(sort) => {
+                if self.proton.sort_by(sort) {
+                    self.rebuild_proton();
+                    // The cursor stands on a row that has just moved. Resting
+                    // it on the first row is what every other column's Sort
+                    // does: the alternative is a cursor that appears to jump,
+                    // because the row under it is a different game now.
+                    {
+                        if let Some(panel) =
+                            self.panels.get_mut(self.focused_panel).filter(|panel| {
+                                panel.cursor.depth() == 0
+                                    && panel
+                                        .cursor
+                                        .current_category(&self.lattice)
+                                        .is_some_and(|column| column.id == apps::windows_column())
+                            })
+                        {
+                            panel.cursor.rest_on_first_row(&self.lattice);
+                        }
+                    }
+                }
+            }
             menu::Command::Ps3Open => self.open_rpcs3(),
             menu::Command::Ps3Rescan => self.ps3.rescan(),
             menu::Command::Ps3Play => self.press_ps3_game_or_play(),
@@ -19656,9 +20234,16 @@ impl Shell {
         };
         tracing::info!(application = %app.name, entry = ?app.path, "removal confirmed");
         self.uninstalling = Some(Uninstall {
-            app,
+            removing: Removing::Application {
+                name: app.name.clone(),
+                icon: app.icon.clone(),
+            },
             survey,
             stage: Stage::Surveying,
+            // The bar's Uninstall row removes an application and has never
+            // claimed to do more, so there is no second button on its question
+            // and nothing to carry.
+            data: uninstall::ItsData::Kept,
         });
         // Something has to be on screen while the survey finishes, on the rare
         // frames where it has not. Put it up first and then look: the usual
@@ -19684,12 +20269,12 @@ impl Shell {
             }
             // Taken out whole, so the password moves to the worker rather than
             // being copied out of a field the panel is still drawing from.
-            let Stage::Asking { removal, password } =
+            let Stage::Asking { doing, password } =
                 std::mem::replace(&mut state.stage, Stage::Done)
             else {
                 return;
             };
-            state.stage = Stage::Working(uninstall::Run::start(removal, Some(password)));
+            state.stage = Stage::Working(uninstall::Run::start(doing, Some(password)));
             true
         };
         if started {
@@ -19711,18 +20296,18 @@ impl Shell {
         let step = match &mut state.stage {
             Stage::Surveying => match state.survey.plan() {
                 None => Step::Nothing,
-                Some(plan) => match (plan.removal, plan.authority) {
+                Some(plan) => match (plan.doing, plan.authority) {
                     (None, _) => Step::CannotPlace,
                     (Some(_), uninstall::Authority::Forbidden) => Step::Forbidden,
-                    (Some(removal), uninstall::Authority::NeedsPassword) => {
+                    (Some(doing), uninstall::Authority::NeedsPassword) => {
                         state.stage = Stage::Asking {
-                            removal,
+                            doing,
                             password: secret::Secret::default(),
                         };
                         Step::AskPassword { retry: false }
                     }
-                    (Some(removal), _) => {
-                        state.stage = Stage::Working(uninstall::Run::start(removal, None));
+                    (Some(doing), _) => {
+                        state.stage = Stage::Working(uninstall::Run::start(doing, None));
                         Step::Removing
                     }
                 },
@@ -19742,11 +20327,10 @@ impl Shell {
                 // has not been attempted.
                 Some(uninstall::Outcome::WrongPassword) => match state.survey.plan() {
                     Some(uninstall::Plan {
-                        removal: Some(removal),
-                        ..
+                        doing: Some(doing), ..
                     }) => {
                         state.stage = Stage::Asking {
-                            removal,
+                            doing,
                             password: secret::Secret::default(),
                         };
                         Step::AskPassword { retry: true }
@@ -19763,7 +20347,17 @@ impl Shell {
         if matches!(step, Step::Nothing) {
             return;
         }
-        let Some(app) = self.uninstalling.as_ref().map(|state| state.app.clone()) else {
+        let Some((name, icon, program, data)) = self.uninstalling.as_ref().map(|state| {
+            (
+                state.removing.name(),
+                state.removing.icon(),
+                match &state.removing {
+                    Removing::Application { .. } => None,
+                    Removing::Program(program) => Some(*program),
+                },
+                state.data,
+            )
+        }) else {
             return;
         };
         match step {
@@ -19771,9 +20365,9 @@ impl Shell {
             Step::CannotPlace => {
                 self.finish_uninstall();
                 self.say_and_acknowledge(
-                    &app,
+                    icon,
                     vec![
-                        dialog::Line::Heading(app.name.clone()),
+                        dialog::Line::Heading(name),
                         dialog::Line::Note(
                             crate::i18n::text("uninstall-unknown-origin").to_string(),
                         ),
@@ -19784,39 +20378,46 @@ impl Shell {
             Step::Forbidden => {
                 self.finish_uninstall();
                 self.say_and_acknowledge(
-                    &app,
+                    icon,
                     vec![
-                        dialog::Line::Heading(app.name.clone()),
+                        dialog::Line::Heading(name),
                         dialog::Line::Note(crate::i18n::text("uninstall-forbidden").to_string()),
                         dialog::Line::Rule,
                     ],
                 );
             }
-            Step::AskPassword { retry } => self.ask_for_password(&app, retry),
+            Step::AskPassword { retry } => self.ask_for_password(retry),
             Step::Removing => self.say_working(crate::i18n::text("shell-removing")),
             Step::Removed => {
                 self.finish_uninstall();
-                // The tile has to go with it. Everything on the bar is built
-                // from the desktop entries on disk, and one of those has just
-                // been deleted, so the honest way to take the application off
-                // the bar is to look again.
-                self.scan_the_bar_again();
-                self.say_and_acknowledge(
-                    &app,
-                    vec![
-                        dialog::Line::Heading(app.name.clone()),
-                        dialog::Line::Note(crate::i18n::text("shell-has-been-removed").to_string()),
-                        dialog::Line::Rule,
-                    ],
-                );
+                match program {
+                    // The tile has to go with it. Everything on the bar is
+                    // built from the desktop entries on disk, and one of those
+                    // has just been deleted, so the honest way to take the
+                    // application off the bar is to look again.
+                    None => {
+                        self.scan_the_bar_again();
+                        self.say_and_acknowledge(
+                            icon,
+                            vec![
+                                dialog::Line::Heading(name),
+                                dialog::Line::Note(
+                                    crate::i18n::text("shell-has-been-removed").to_string(),
+                                ),
+                                dialog::Line::Rule,
+                            ],
+                        );
+                    }
+                    Some(program) => self.program_removed(program, data),
+                }
             }
             Step::Failed(why) => {
                 self.finish_uninstall();
                 self.say_and_acknowledge(
-                    &app,
+                    icon,
                     vec![
                         dialog::Line::Heading(
-                            crate::message!("could-not-remove-name", "name" => app.name.as_str()),
+                            crate::message!("could-not-remove-name", "name" => name.as_str()),
                         ),
                         dialog::Line::Note(why),
                         dialog::Line::Rule,
@@ -19843,7 +20444,7 @@ impl Shell {
         // stopped being watched, which is worth a line, because the application
         // will disappear from the bar the next time the shell looks.
         if matches!(state.stage, Stage::Working(_)) {
-            tracing::warn!(application = %state.app.name, why, "left a removal running");
+            tracing::warn!(removing = %state.removing.name(), why, "left a removal running");
         }
         self.dismiss_password_board();
     }
@@ -19859,8 +20460,8 @@ impl Shell {
     /// Put up a panel with nothing to press, because the shell is busy behind
     /// it and there is nothing useful to offer until it is not.
     fn say_working(&mut self, note: &str) {
-        let (app, icon) = match self.uninstalling.as_ref() {
-            Some(state) => (state.app.name.clone(), state.app.icon.clone()),
+        let (name, icon) = match self.uninstalling.as_ref() {
+            Some(state) => (state.removing.name(), state.removing.icon()),
             None => return,
         };
         let from = self.dialog_origin();
@@ -19868,7 +20469,7 @@ impl Shell {
             from,
             icon,
             vec![
-                dialog::Line::Heading(app),
+                dialog::Line::Heading(name),
                 dialog::Line::Note(note.to_string()),
             ],
         );
@@ -19876,11 +20477,11 @@ impl Shell {
 
     /// Put up a panel that says something and has one button to say it has been
     /// read.
-    fn say_and_acknowledge(&mut self, app: &apps::App, lines: Vec<dialog::Line>) {
+    fn say_and_acknowledge(&mut self, icon: Option<String>, lines: Vec<dialog::Line>) {
         let from = self.dialog_origin();
         self.dialog.ask(
             from,
-            app.icon.clone(),
+            icon,
             lines,
             vec![menu::Entry::new(menu::Command::Dismiss, "OK")],
             0,
@@ -19888,19 +20489,24 @@ impl Shell {
     }
 
     /// Put up the field that collects the password, with the keyboard.
-    fn ask_for_password(&mut self, app: &apps::App, retry: bool) {
+    fn ask_for_password(&mut self, retry: bool) {
         let from = self.dialog_origin();
+        let Some((name, icon)) = self
+            .uninstalling
+            .as_ref()
+            .map(|state| (state.removing.name(), state.removing.icon()))
+        else {
+            return;
+        };
         let typed = match self.uninstalling.as_ref().map(|state| &state.stage) {
             Some(Stage::Asking { password, .. }) => password.typed(),
             _ => 0,
         };
         self.dialog.ask(
             from,
-            app.icon.clone(),
+            icon,
             vec![
-                dialog::Line::Heading(
-                    crate::message!("removing-name", "name" => app.name.as_str()),
-                ),
+                dialog::Line::Heading(crate::message!("removing-name", "name" => name.as_str())),
                 dialog::Line::Note(if retry {
                     crate::i18n::text("shell-that-password-was-not-accepted-try-again").to_string()
                 } else {
@@ -20671,6 +21277,14 @@ impl Shell {
         self.rebuild_retroarch();
         self.rebuild_heroic();
         self.rebuild_ps3();
+        // And the Windows Apps row and column, which were missing from this
+        // list: a walk over the disk cannot find a Windows game any more than
+        // it can find a ROM, so a rescan left the row and the column off the
+        // bar until something else happened to put them back. The integration
+        // switch is what made it visible — turning it on rebuilds the bar, and
+        // the row has to arrive on that rebuild — but any rescan at all had it,
+        // a package installed or an application removed included.
+        self.rebuild_proton();
         // And every cursor put back where it was standing, now that the bar is
         // the whole of what it is going to be. Nothing between here and the
         // footings above may be trusted to have left one where it was:
@@ -20828,7 +21442,7 @@ impl Shell {
     /// since left is dropped on the floor here rather than uploaded — it cost
     /// nothing to make the second time, because it is on the disk now.
     fn sync_thumbnails(&mut self) {
-        let (mut files, mut games) = self.rows_worth_having();
+        let (mut files, programs, mut games) = self.rows_worth_having();
         // The game in the corner of the open menu is worth a picture wherever
         // its row happens to be — nobody has to be standing on it, and the
         // whole reason the card exists is that they are somewhere else. Its
@@ -20853,6 +21467,30 @@ impl Shell {
                 .is_some_and(|gpu| gpu.thumbnail(path).is_none())
             {
                 self.thumbs.want(path, thumbs::Want::Thumbnail);
+            }
+        }
+        // And the Windows programs among them, which are asked for the other
+        // way: the same band of the same atlas, under the same key, but made
+        // by the Windows Apps helper out of the program rather than by a
+        // decoder out of the file. See [`thumbs::Want::Program`].
+        //
+        // Not asked at all where there is no helper to ask, and that is not
+        // only about saving a question. A want that comes back with nothing
+        // is remembered as hopeless for the rest of the session — so a folder
+        // looked at before the package was installed would keep its pages
+        // until somebody walked out of it and back in. The package is found
+        // again every five seconds, so this follows it.
+        let programs = match proton::runs_windows_programs() {
+            true => programs,
+            false => HashSet::new(),
+        };
+        for path in &programs {
+            if self
+                .gpu
+                .as_ref()
+                .is_some_and(|gpu| gpu.thumbnail(path).is_none())
+            {
+                self.thumbs.want(path, thumbs::Want::Program);
             }
         }
         // A cover the atlas already holds is not asked for again — the whole
@@ -21038,6 +21676,9 @@ impl Shell {
         let fetched = self.art.take();
         let arrived_faces = self.avatars.take();
         let mut wanted = files;
+        // The programs' drawings share the thumbnail band, so they have to be
+        // said to be wanted or the next pass gives their cells away.
+        wanted.extend(programs);
         for app_id in &games {
             if let Some(path) = self.art.cover(*app_id) {
                 wanted.insert(path.to_path_buf());
@@ -21065,7 +21706,11 @@ impl Shell {
         gpu.retain_logos(&logos);
         for (path, made) in made {
             let put = match &made {
-                thumbs::Made::Thumbnail(picture)
+                // A Windows program's own drawing goes in beside them, under
+                // the program's own path: it is the picture of that row, and
+                // what tells it apart from a photograph is only how it is
+                // drawn. See [`thumbs::Made::Program`].
+                thumbs::Made::Thumbnail(picture) | thumbs::Made::Program(picture)
                     if wanted.contains(&path) && gpu.thumbnail(&path).is_none() =>
                 {
                     gpu.put_thumbnail(&path, picture)
@@ -21214,11 +21859,20 @@ impl Shell {
     /// file of the user's own, which is a path; the same file met in the folder
     /// it lives in, which is the same path by another route; and a game, which
     /// is an app id whose picture may not be on this machine at all yet.
-    fn rows_worth_having(&self) -> (HashSet<PathBuf>, HashSet<u32>) {
+    ///
+    /// The paths come back in two sets rather than one, and the division is
+    /// *who makes the picture* rather than what kind of row it is: the first
+    /// are read and decoded here, and the second are Windows programs, whose
+    /// drawing is inside the program and comes out of the Windows Apps
+    /// helper. Both end up in the same band of the atlas under their own
+    /// path — see [`thumbs::Want::Program`].
+    #[allow(clippy::type_complexity)]
+    fn rows_worth_having(&self) -> (HashSet<PathBuf>, HashSet<PathBuf>, HashSet<u32>) {
         /// How many rows either side of the cursor are worth having ready.
         const REACH: usize = 4;
 
         let mut files = HashSet::new();
+        let mut programs = HashSet::new();
         let mut games = HashSet::new();
         for panel in &self.panels {
             // The rows the cursor has stepped *through* as well as the ones it
@@ -21274,6 +21928,12 @@ impl Shell {
                     Entry::Ps3Game(game) => {
                         files.extend(game.cover.clone());
                     }
+                    // And a Windows program's own icon, read out of the
+                    // `.exe` by the helper and written beside the game, on
+                    // exactly the same terms.
+                    Entry::WindowsGame(game) => {
+                        files.extend(game.cover.clone());
+                    }
                     _ => {
                         if let Some(file) = entry.media().filter(|file| file.kind.has_picture()) {
                             files.insert(file.path.clone());
@@ -21287,6 +21947,21 @@ impl Shell {
                             entry.file().filter(|file| media::has_picture(file.mime))
                         {
                             files.insert(file.path.clone());
+                        }
+                        // And a Windows program met in a folder, whose
+                        // picture is the drawing its own author put inside
+                        // it. Asked on exactly the terms the photograph
+                        // above is — the rows around the cursor and nothing
+                        // else — and only for the two endings that could be
+                        // carrying one, so a folder of launcher scripts
+                        // starts no processes. Where the integration is not
+                        // installed nothing comes back, and the row keeps
+                        // the mark it had.
+                        if let Some(file) = entry
+                            .file()
+                            .filter(|file| files::may_carry_its_own_drawing(&file.path))
+                        {
+                            programs.insert(file.path.clone());
                         }
                         // And an account's own picture, which is the same
                         // question about a row that is not a file: it is a path
@@ -21305,8 +21980,9 @@ impl Shell {
         // question a chooser is there to answer: *which* picture is this.
         if let Some(picker) = self.file_question.as_ref() {
             files.extend(picker.pictures_worth_having());
+            programs.extend(picker.programs_worth_having());
         }
-        (files, games)
+        (files, programs, games)
     }
 
     /// Whether the display is deliberately showing nothing of its own, because
@@ -25386,14 +26062,28 @@ impl Shell {
         match found {
             Some(helper) => {
                 tracing::info!(at = %helper.display(), "the PlayStation 3 integration has been installed");
-                self.ps3 = ps3::Ps3::start(helper);
+                // And only where it is switched on, as the Epic poll does it:
+                // a package installed under an integration somebody turned off
+                // is a package, not a column. See
+                // [`settings::ps3_integration`].
+                if settings::ps3_integration() {
+                    self.ps3 = ps3::Ps3::start(helper);
+                }
             }
             None => {
                 tracing::info!("the PlayStation 3 integration has been taken off this machine");
                 self.ps3 = ps3::Ps3::absent();
+                // Nothing can answer for RPCS3's own settings once the helper
+                // that found them has gone — see [`Self::ps3_integration_changed`].
+                ps3_settings::known_config(None);
             }
         }
         self.scan_the_bar_again();
+        // A package coming or going changes which trophies there are, as the
+        // Epic poll has always said. Without this a package taken off leaves
+        // its games in the Trophies column until something else happens to
+        // rebuild it.
+        self.rebuild_trophies();
         self.needs_redraw = true;
     }
 
@@ -25690,6 +26380,180 @@ impl Shell {
         ps3::holds_a_package(&file.path).then(|| file.path.clone())
     }
 
+    /// A Windows program the cursor is standing on in Files, where this
+    /// machine is one that runs them.
+    ///
+    /// The integration's own presence is the gate, as it is for a
+    /// PlayStation 3 package met the same way — see
+    /// [`Shell::ps3_package_under_cursor`] — and [`Shell::selected_file`] is
+    /// what makes it Files and not a shelf. Where the package is not
+    /// installed, or the integration is switched off, this answers `None`
+    /// and the press is exactly what it was before any of this existed.
+    ///
+    /// Readiness is deliberately *not* asked here. A machine with the
+    /// package and no Proton yet still draws the Windows mark on the row, so
+    /// the press has to be answered — see
+    /// [`Shell::press_windows_program_in_files`], which answers all four
+    /// states the way the Windows Apps row itself does.
+    fn windows_program_under_cursor(&self) -> Option<PathBuf> {
+        if !proton::runs_windows_programs() {
+            return None;
+        }
+        let file = self.selected_file()?;
+        files::is_a_windows_program(&file.path).then(|| file.path.clone())
+    }
+
+    /// Whether this file could be run inside a Windows game that is already
+    /// set up — which is what decides whether its menu carries
+    /// **Run inside a game**.
+    ///
+    /// Three things, and all three have to be true. It has to be a Windows
+    /// program; this machine has to run them; and there has to be a game
+    /// whose Windows it could be run in. The last is the one worth naming:
+    /// what the row opens is a list of games, so on a machine with none it
+    /// would open an empty list — and that is the machine where somebody is
+    /// just starting, where the press on the file itself is what makes the
+    /// first game.
+    ///
+    /// Readiness of the *games* is not asked. A game whose install was
+    /// interrupted is exactly the one somebody needs this for: the way to
+    /// finish it is to run the same installer again inside the half-built
+    /// Windows, which is what this row is. See
+    /// [`Shell::press_unfinished_windows_game`], whose doc says the same
+    /// thing from the game's end.
+    fn a_windows_game_could_run_this(&self, path: &Path) -> bool {
+        files::is_a_windows_program(path)
+            && proton::runs_windows_programs()
+            && !self.proton.games().is_empty()
+    }
+
+    /// The games the file this menu is open over could be run inside of, in
+    /// the order the column lists them.
+    ///
+    /// Nothing is ticked, unlike Compatibility's list and unlike **Choose
+    /// what to play**: both of those are settings, where one of the rows is
+    /// the answer in force, and this is a thing to do once. Open with's list
+    /// ticks nothing either, for the same reason.
+    ///
+    /// Cancel at the foot, because a list without a way past itself is a list
+    /// somebody is stuck in — and because `descend` refuses one with no row
+    /// that can be pressed.
+    fn windows_games_to_run_this_inside(&self) -> Vec<menu::Entry> {
+        let mut rows: Vec<menu::Entry> = self
+            .proton
+            .games_in_order()
+            .into_iter()
+            .map(|game| {
+                menu::Entry::new(
+                    menu::Command::WindowsRunThisInside(settings::intern(&game.id)),
+                    game.name.clone(),
+                )
+            })
+            .collect();
+        rows.push(
+            menu::Entry::new(menu::Command::Dismiss, crate::i18n::text("shell-cancel")).group(1),
+        );
+        rows
+    }
+
+    /// They chose one: run the file the menu is open over inside that game's
+    /// Windows.
+    ///
+    /// The file is read off the cursor again rather than remembered from when
+    /// the list was raised, which is what [`menu::Command::Open`] does and for
+    /// its reason: the menu has had every button since it went up, so the row
+    /// it is titled after is still the row the cursor is on.
+    fn run_this_inside_a_windows_game(&mut self, id: &'static str) {
+        let Some(exe) = self.windows_program_under_cursor() else {
+            return;
+        };
+        if self.proton.game(id).is_none() {
+            return;
+        }
+        self.run_a_windows_program(exe, Some(id));
+    }
+
+    /// A press on one. The same four answers the Windows Apps row gives,
+    /// because the same four things can be true of the machine.
+    ///
+    /// Not a question on a panel, unlike the PlayStation 3 package beside
+    /// it. That one is *copied into* the console and changes what is on the
+    /// disk, so it asks first; this one runs a program, which is what
+    /// pressing a program means everywhere else on this bar.
+    fn press_windows_program_in_files(&mut self, exe: PathBuf) {
+        match self.proton.press() {
+            // Ask again rather than do nothing, as the row does: a press
+            // that does nothing twice is a press somebody stops making.
+            proton::Press::Waiting => self.proton.send(proton::Ask::Probe),
+            proton::Press::Working => {
+                self.say_about_windows(crate::i18n::text("windows-getting-ready"))
+            }
+            proton::Press::SetUp => self.offer_to_set_up_windows(),
+            proton::Press::Enter => self.run_a_windows_program(exe, None),
+        }
+    }
+
+    /// Run a Windows program that is not a game of this bar's: a `.exe` in a
+    /// folder, pressed, or aimed at one game's Windows from that file's own
+    /// menu.
+    ///
+    /// **One rule, and it is read off the path**: a file already inside a
+    /// game's folder belongs to that game and runs in its Windows, and
+    /// anything else is a program this machine has not got, so it is given a
+    /// place of its own. The very rule the walk from the column's own row
+    /// follows — see [`Shell::press_windows_program_pick`], whose doc writes
+    /// out why the path is what decides rather than which row was pressed.
+    ///
+    /// `inside` overrules it, and is what **Run inside a game** answers
+    /// with: somebody who aimed a mod's setup at Cemu means inside Cemu,
+    /// wherever on their disk that setup is sitting.
+    ///
+    /// No picker is left on the way out, which is the one thing that differs
+    /// from the walk: this press was made in a folder somebody is standing
+    /// in, and the loading screen grows out of the column they are in.
+    fn run_a_windows_program(&mut self, exe: PathBuf, inside: Option<&str>) {
+        let inside = which_windows_game_runs_this(inside, self.proton.games(), &exe);
+        // What to call it while it starts. Inside a game it is that game;
+        // anywhere else the only name anybody has is the file that was
+        // pressed, which is the one the person is looking at. The game gets
+        // its real name a moment later, out of the executable itself.
+        let called = match &inside {
+            Some(id) => self
+                .proton
+                .game(id)
+                .map(|game| game.name.clone())
+                .unwrap_or_else(|| proton::TITLE.to_string()),
+            None => exe
+                .file_stem()
+                .map(|stem| stem.to_string_lossy().into_owned())
+                .unwrap_or_else(|| proton::TITLE.to_string()),
+        };
+        match inside {
+            Some(id) => {
+                tracing::info!(id, exe = %exe.display(), "running a Windows program inside a game, from Files");
+                self.windows_launches_on_their_way += 1;
+                self.proton.send(proton::Ask::Start {
+                    id,
+                    inside: Some(exe),
+                    compatibility: None,
+                    desktop: self.how_big_a_launch_opens(),
+                });
+            }
+            None => {
+                tracing::info!(exe = %exe.display(), "a Windows program pressed in Files is to be given a place of its own");
+                self.proton.send(proton::Ask::New {
+                    exe,
+                    name: None,
+                    desktop: self.how_big_a_launch_opens(),
+                });
+            }
+        }
+        self.sync_launch_output(self.focused_panel);
+        if let Some(opens_from) = self.what_a_launch_opens_from() {
+            self.raise_a_loading_screen(called, Some(proton::mark().to_string()), None, opens_from);
+        }
+    }
+
     /// Ask whether to install a package pressed in Files.
     fn offer_to_install_ps3_package(&mut self, path: PathBuf) {
         let name = path
@@ -25938,6 +26802,129 @@ impl Shell {
     }
 
     /// Take the focused display to the PlayStation 3 column.
+    /// A press on the Windows Apps row.
+    fn press_windows_row(&mut self) {
+        match self.proton.press() {
+            proton::Press::Waiting => self.proton.send(proton::Ask::Probe),
+            proton::Press::Working => {
+                self.say_about_windows(crate::i18n::text("windows-getting-ready"))
+            }
+            proton::Press::SetUp => self.offer_to_set_up_windows(),
+            proton::Press::Enter => {
+                if self.step_to_windows_column() {
+                    self.sounds.step();
+                }
+            }
+        }
+    }
+
+    /// A press on a game with nothing named to play.
+    ///
+    /// **A press that only says no is a press worth nothing**, and that is
+    /// what this was: a panel reading *This was never finished installing*,
+    /// on a game whose installer had in fact finished perfectly well and
+    /// filled the prefix. The shell had simply never looked again — see
+    /// [`Shell::a_windows_launch_ended`], which is the other half of this.
+    ///
+    /// So where something has run in there, the press goes and looks: the
+    /// same **What to play** list the game's own menu offers, which is the
+    /// answer to *why can I not press this*. Somebody is standing in front
+    /// of it, so the list is offered to be chosen from rather than settled
+    /// quietly, which is what a setup ending with nobody watching gets.
+    ///
+    /// Where nothing has ever run in there, nothing has been written and
+    /// there is nothing to look at, so the sentence is still the answer.
+    fn press_unfinished_windows_game(&mut self) {
+        let Some(id) = self.selected_windows_game().map(|game| game.id.clone()) else {
+            return;
+        };
+        // Whether anything has ever run in there is a fact about the prefix
+        // rather than about the row, so it is asked of the helper's own
+        // listing — see [`proton::GameRow::prefix_built`].
+        if !self.proton.game(&id).is_some_and(|game| game.prefix_built) {
+            self.say_about_windows(crate::i18n::text("windows-install-unfinished"));
+            return;
+        }
+        let Some(panel) = self.panels.get(self.focused_panel) else {
+            return;
+        };
+        let anchor = ui::launch_origin(panel.width as f32, panel.height as f32);
+        let rows = ui::context_menu_rows_that_fit(panel.height as f32);
+        if !self.context_menu.open_at(
+            anchor,
+            Some(menu::Title::new(crate::i18n::text("windows-what-to-play"))),
+            looking_in_the_folder(),
+            rows,
+        ) {
+            return;
+        }
+        self.only_one_walk_is_waited_on();
+        self.windows_choose_menu = Some(id.clone());
+        self.proton.send(proton::Ask::FoundIn { id });
+        self.needs_redraw = true;
+    }
+
+    /// Offer to fetch what a Windows program needs to run.
+    ///
+    /// What is downloaded is said as what it does, not as a Proton and a
+    /// container runtime, which are the log's business.
+    fn offer_to_set_up_windows(&mut self) {
+        let from = self.dialog_origin();
+        self.dialog.ask(
+            from,
+            Some(proton::mark().to_string()),
+            vec![
+                dialog::Line::Heading(proton::TITLE.to_string()),
+                dialog::Line::Note(crate::i18n::text("windows-set-up-explanation").to_string()),
+                dialog::Line::Rule,
+            ],
+            vec![
+                menu::Entry::new(menu::Command::Dismiss, crate::i18n::text("shell-not-now")),
+                menu::Entry::new(
+                    menu::Command::WindowsSetUp,
+                    crate::i18n::text("shell-install"),
+                ),
+            ],
+            // On Not now, which is the answer drawn first: this one spends
+            // somebody's line and their disk.
+            0,
+        );
+        self.needs_redraw = true;
+    }
+
+    /// One line about Windows Apps, on the panel the other integrations use.
+    fn say_about_windows(&mut self, line: &str) {
+        let from = self.dialog_origin();
+        self.dialog.ask(
+            from,
+            Some(proton::mark().to_string()),
+            vec![
+                dialog::Line::Heading(proton::TITLE.to_string()),
+                dialog::Line::Note(line.to_string()),
+                dialog::Line::Rule,
+            ],
+            vec![menu::Entry::new(
+                menu::Command::Dismiss,
+                crate::i18n::text("shell-close"),
+            )],
+            0,
+        );
+        self.needs_redraw = true;
+    }
+
+    fn step_to_windows_column(&mut self) -> bool {
+        let Some(at) = self.windows_column() else {
+            return false;
+        };
+        let lattice = &self.lattice;
+        let Some(panel) = self.panels.get_mut(self.focused_panel) else {
+            return false;
+        };
+        panel.cursor.go_to_own_column(at, lattice);
+        self.needs_redraw = true;
+        true
+    }
+
     fn step_to_ps3_column(&mut self) -> bool {
         let Some(at) = self.ps3_column() else {
             return false;
@@ -25949,6 +26936,908 @@ impl Shell {
         panel.cursor.go_to_own_column(at, lattice);
         self.needs_redraw = true;
         true
+    }
+
+    /// Everything the Windows Apps integration has to say this frame.
+    fn sync_proton(&mut self) {
+        self.look_for_the_windows_package();
+        // A walk somebody has stepped out of without choosing anything is a
+        // question nobody is asking any more. Noticed here rather than in a
+        // Back handler because there is more than one way out of a column —
+        // Back, the guide, an application taking the screen — and a game
+        // left waiting here would catch the *next* program picked from the
+        // column's own row and run it in a prefix nobody asked for.
+        if self.windows_run_inside_for.is_some() && !self.choosing_a_windows_program() {
+            self.windows_run_inside_for = None;
+        }
+        // And the row that walk hangs off goes back to being everybody's,
+        // however the walk was left — a pick, a Back, an application taking
+        // the screen.
+        if self.windows_run_inside_for != self.windows_run_inside_row {
+            self.rebuild_proton();
+            self.needs_redraw = true;
+        }
+        let change = self.proton.poll();
+        // Before anything else this poll does with the answer: a launch that
+        // has been answered is no longer one the tidy-up has to hold off for.
+        self.windows_launches_on_their_way = self
+            .windows_launches_on_their_way
+            .saturating_sub(change.launches_answered);
+        if change.rows {
+            self.rebuild_proton();
+            self.needs_redraw = true;
+        }
+        if let Some(starting) = change.start {
+            let name = self
+                .proton
+                .games()
+                .iter()
+                .find(|game| game.id == starting.id)
+                .map(|game| game.name.clone())
+                .unwrap_or_else(|| proton::TITLE.to_string());
+            let started = self.lattice.play_windows(
+                &starting.id,
+                &name,
+                &starting.argv,
+                &starting.environment,
+                &starting.directory,
+            );
+            self.a_windows_launch_has_its_process(started);
+            self.needs_redraw = true;
+        }
+        if let Some((id, candidates)) = change.candidates {
+            // One walk of a game's folder answers two different questions,
+            // and only the field holding the identifier says which was
+            // asked: what this game *is* from now on, or — with nobody
+            // looking at all — what a setup that has just finished left
+            // behind.
+            match self.windows_settling.as_deref() == Some(id.as_str()) {
+                true => {
+                    self.windows_settling = None;
+                    self.windows_setup_left(&id, &candidates);
+                }
+                false => self.windows_found_what_could_be_played(&id, &candidates),
+            }
+        }
+        // The Protons have arrived for a Compatibility list that is on screen
+        // saying it is still asking. Only that list, and only while it is
+        // still up: see [`Shell::windows_said_what_runs_it`].
+        if change.tools {
+            self.windows_said_what_runs_it();
+        }
+        if let Some(finished) = change.finished {
+            match finished {
+                // A prefix made and its setup started: the launch above is
+                // already on its way, so there is nothing to say.
+                proton::Finished::Made(_) => {}
+                proton::Finished::Removed(_) => self.windows_game_removed(None),
+                proton::Finished::Fetched => {
+                    self.needs_redraw = true;
+                }
+                // A removal that failed takes its own panel down and puts the
+                // sentence up in its place; anything else just says it.
+                proton::Finished::Failed(why) if self.windows_removing => {
+                    self.windows_game_removed(Some(&why))
+                }
+                proton::Finished::Failed(why) => {
+                    // A launch that never happened takes its loading screen
+                    // with it, rather than leaving one standing over the
+                    // panel that says what went wrong.
+                    self.a_windows_launch_has_its_process(None);
+                    self.say_about_windows(&why);
+                }
+            }
+        }
+    }
+
+    /// Look for the package again every five seconds, so installing or
+    /// removing it while a session runs grows or drops the column without
+    /// anybody having to sign out — [`Shell::look_for_the_ps3_package`]'s
+    /// act, for its reason.
+    fn look_for_the_windows_package(&mut self) {
+        let due = self
+            .proton_looked
+            .is_none_or(|at| at.elapsed() >= Duration::from_secs(5));
+        if !due {
+            return;
+        }
+        self.proton_looked = Some(Instant::now());
+        if !proton::look_again() {
+            return;
+        }
+        match proton::helper() {
+            Some(helper) => {
+                tracing::info!(at = %helper.display(), "the Windows Apps integration has been installed");
+                // And only where it is switched on — the PlayStation 3 poll's
+                // guard, for its reason. See
+                // [`settings::windows_integration`].
+                if settings::windows_integration() {
+                    self.proton = proton::Proton::start(helper);
+                }
+            }
+            None => {
+                tracing::info!("the Windows Apps integration has been taken off this machine");
+                self.proton = proton::Proton::absent();
+            }
+        }
+        self.rebuild_proton();
+        self.needs_redraw = true;
+    }
+
+    /// Put the Windows Apps row and column back on the bar from what the
+    /// integration knows, every display left on the game it was on.
+    fn rebuild_proton(&mut self) {
+        let shifted = apps::offer_windows(
+            &mut self.lattice.categories,
+            self.proton.note(),
+            self.proton.arriving(),
+        );
+        self.absorb(shifted);
+        let standing: Vec<Option<String>> = match self.windows_column() {
+            Some(at) => self
+                .panels
+                .iter()
+                .map(|panel| {
+                    Some(
+                        panel
+                            .cursor
+                            .entry_in_column(&self.lattice, at)?
+                            .windows_game()?
+                            .id
+                            .clone(),
+                    )
+                })
+                .collect(),
+            None => Vec::new(),
+        };
+        // Which game a walk of the disk is for, so the row that walk hangs
+        // off says so by name. Remembered beside the column as it is built,
+        // because nothing else would notice it changing: see
+        // [`Shell::windows_run_inside_row`].
+        self.windows_run_inside_row = self.windows_run_inside_for.clone();
+        let rows = self.proton.rows(self.windows_run_inside_for.as_deref());
+        let shifted = apps::shelve_windows(&mut self.lattice.categories, rows);
+        self.absorb(shifted);
+        if let Some(at) = self.windows_column() {
+            let lattice = &self.lattice;
+            for (panel, was) in self.panels.iter_mut().zip(standing) {
+                let Some(id) = was else {
+                    continue;
+                };
+                panel.cursor.keep_on_row(lattice, at, |entry| {
+                    entry.windows_game().is_some_and(|game| game.id == id)
+                });
+            }
+        }
+    }
+
+    /// Whether the focused display is walking the disk to choose a Windows
+    /// program.
+    ///
+    /// Read off the folder the column was opened from, as every other picker
+    /// is: what a listing is *for* travels with the place, and the rows
+    /// cannot tell you — an `.exe` in this walk and the same `.exe` in Files
+    /// are the same row.
+    fn choosing_a_windows_program(&self) -> bool {
+        let Some(panel) = self.panels.get(self.focused_panel) else {
+            return false;
+        };
+        matches!(
+            panel.cursor.open_from(&self.lattice),
+            Some(apps::Entry::Folder(under))
+                if under.place.as_ref().map(files::Place::shows)
+                    == Some(files::Shows::Executable)
+        )
+    }
+
+    /// A press on an executable in that walk. Three different intentions end
+    /// here and they mean different things.
+    ///
+    /// - The walk was opened from a game's **Run something inside**. Then it
+    ///   runs in *that* game's prefix, wherever on the disk the file came
+    ///   from — a mod's setup lives in somebody's Downloads, which is the
+    ///   whole reason that row walks the disk rather than listing the
+    ///   prefix. Nothing is created and nothing the game plays changes.
+    /// - The walk was opened from the column's own row, and the file is
+    ///   already inside a game's folder. Then it is that game's, read off
+    ///   where the file is — a person who walked into a prefix meant the
+    ///   prefix.
+    /// - Anything else is a program this machine has not got yet, so it is
+    ///   given a place of its own and run there.
+    ///
+    /// Reading it off the path rather than remembering which row was pressed
+    /// is deliberate: the two walks are several columns deep by the time one
+    /// is answered, the rows behind them have been rebuilt more than once,
+    /// and a walk that started in one place can be walked into the other.
+    /// The path cannot be wrong about where it is.
+    ///
+    /// For the second case, whether what was pressed is an installer or a
+    /// game that needs none is not asked, because it does not have to be:
+    /// both want a fresh prefix and both want running once. What it was
+    /// becomes clear afterwards, from what is in the prefix when it exits —
+    /// see the helper's `found`.
+    fn press_windows_program_pick(&mut self) -> bool {
+        if !self.choosing_a_windows_program() {
+            return false;
+        }
+        let Some(exe) = self.selected_file().map(|file| file.path.clone()) else {
+            return false;
+        };
+        if !files::is_a_windows_program(&exe) {
+            return false;
+        }
+        // Which game this is to run in, if any. The game whose menu opened
+        // the walk comes first and overrules everything: somebody who asked
+        // to run a mod's setup inside Cemu means inside Cemu, wherever on
+        // their disk that setup happens to be sitting. Only where the walk
+        // was opened from the column itself does *where the file is* decide
+        // — a file already inside a game belongs to that game, and anything
+        // else is a program this machine has not got yet.
+        let inside = which_windows_game_runs_this(
+            self.windows_run_inside_for.as_deref(),
+            self.proton.games(),
+            &exe,
+        );
+        // What to call it while it starts. Inside a game it is that game;
+        // anywhere else the only name anybody has is the file that was just
+        // pressed, which is also the one the person chose and will
+        // recognise. The game gets its real name a moment later, out of the
+        // executable itself — see the helper's `pe` module.
+        let called = match &inside {
+            Some(id) => self
+                .proton
+                .game(id)
+                .map(|game| game.name.clone())
+                .unwrap_or_else(|| proton::TITLE.to_string()),
+            None => exe
+                .file_stem()
+                .map(|stem| stem.to_string_lossy().into_owned())
+                .unwrap_or_else(|| proton::TITLE.to_string()),
+        };
+        match inside {
+            Some(id) => {
+                tracing::info!(id, exe = %exe.display(), "running something inside a Windows game");
+                self.windows_launches_on_their_way += 1;
+                self.proton.send(proton::Ask::Start {
+                    id,
+                    inside: Some(exe),
+                    compatibility: None,
+                    desktop: self.how_big_a_launch_opens(),
+                });
+            }
+            None => {
+                tracing::info!(exe = %exe.display(), "a Windows program is to be given a place of its own");
+                self.proton.send(proton::Ask::New {
+                    exe,
+                    name: None,
+                    desktop: self.how_big_a_launch_opens(),
+                });
+            }
+        }
+        self.leave_the_windows_picker();
+        // After leaving the picker, so the screen grows out of the column
+        // the walk hung off rather than out of a row that is on its way out.
+        // An installer is the slowest press on this bar — a prefix is built
+        // before its first window — so this is the one that most needs it.
+        self.sync_launch_output(self.focused_panel);
+        if let Some(opens_from) = self.what_a_launch_opens_from() {
+            self.raise_a_loading_screen(called, Some(proton::mark().to_string()), None, opens_from);
+        }
+        true
+    }
+
+    /// Come back out of however many folders the picker was walked into, as
+    /// far as the column that asked — [`Shell::leave_the_wallpaper_picker`]'s
+    /// act, step by step through the same exit every Left uses.
+    fn leave_the_windows_picker(&mut self) {
+        self.windows_run_inside_for = None;
+        for _ in 0..self.column_depth() {
+            if !self.choosing_a_windows_program() {
+                break;
+            }
+            let Some(panel) = self.panels.get_mut(self.focused_panel) else {
+                return;
+            };
+            if !panel.cursor.navigate(Action::Left, &self.lattice) {
+                break;
+            }
+        }
+        self.needs_redraw = true;
+    }
+
+    /// Start the Windows game under the cursor.
+    ///
+    /// The helper works the command out and the shell runs it, so the game
+    /// gets the loading screen, the display it was pressed on and the guide's
+    /// Close — the same bargain every other integration here makes.
+    fn play_selected_windows_game(&mut self) {
+        let Some(game) = self.selected_windows_game() else {
+            return;
+        };
+        if !game.ready {
+            return self.press_unfinished_windows_game();
+        }
+        let id = game.id.clone();
+        let name = game.name.clone();
+        tracing::info!(id, "starting a Windows game");
+        // Before the ask, and the *before* is the whole point. Every Windows
+        // game's windows carry the one class `proton::WINDOW_CLASS`, so the
+        // last thing said about that class is what the next game gets —
+        // which is why this is sent on the way into each launch rather than
+        // once. A ROM out of somebody's folder is played under its
+        // emulator's name for the same reason.
+        //
+        // Here rather than in `start_selection` beside the other three: this
+        // game is started from two places, a press on the row and Play on its
+        // menu, and only one of them goes through there.
+        self.push_resolution_for_a_launch();
+        // The loading screen goes up *here*, on the press, and not where the
+        // process is finally forked. Everything else on this bar forks on
+        // the press and can raise it afterwards; this one is a round trip to
+        // another program first — it has to read every Proton on the machine
+        // to know what to run the game with — and measured on this machine
+        // that took over two seconds with nothing on screen to show for it.
+        // A press that does nothing for two seconds is a press somebody
+        // makes twice.
+        //
+        // So it is raised with no process to point at, the way a Steam
+        // game's is: it waits on the game's window. The process is given to
+        // it in [`Shell::a_windows_launch_has_its_process`] when there is
+        // one, so a launch that dies still takes its screen down with it.
+        self.sync_launch_output(self.focused_panel);
+        if let Some(opens_from) = self.what_a_launch_opens_from() {
+            self.raise_a_loading_screen(name, Some(proton::mark().to_string()), None, opens_from);
+        }
+        self.windows_launches_on_their_way += 1;
+        self.proton.send(proton::Ask::Start {
+            id,
+            inside: None,
+            compatibility: None,
+            // The game itself, which is run against the display rather than
+            // on a desktop of its own — see `lxb-proton`'s `launch`. Sent all
+            // the same, so one place decides and the helper's rule is the
+            // only rule.
+            desktop: self.how_big_a_launch_opens(),
+        });
+        self.needs_redraw = true;
+    }
+
+    /// The launch the loading screen is waiting for has a process now, or
+    /// never will.
+    ///
+    /// Only the screen on this display and only one with no process yet: a
+    /// launch that already has one is a different press, and writing over it
+    /// would hand this game's death to somebody else's loading screen.
+    fn a_windows_launch_has_its_process(&mut self, pid: Option<u32>) {
+        let Some(here) = self.display_at(self.focused_panel) else {
+            return;
+        };
+        match pid {
+            Some(pid) => {
+                if let Some(splash) = self
+                    .launching
+                    .iter_mut()
+                    .find(|splash| splash.display == here && splash.pid.is_none())
+                {
+                    splash.pid = Some(pid);
+                }
+            }
+            // Nothing was forked. The loading screen would otherwise stand
+            // there until its patience ran out and then say the game had not
+            // started, which is true but is a minute late.
+            None => self.end_launch(here),
+        }
+    }
+
+    /// A Windows game, or the setup for one, has finished.
+    ///
+    /// **Everything the shell knows about that game is now out of date**, and
+    /// nothing else would ever have said so: the games are read once at
+    /// startup, and a setup writes its whole program into the prefix after
+    /// that. A Notepad++ installer run end to end on this machine left a
+    /// finished installation and a row that said *This was never finished
+    /// installing*, which could not be pressed — the install had worked and
+    /// the shell had simply never looked again.
+    ///
+    /// So the column is read again, and a game with nothing named to play is
+    /// given something: a setup that has just run is the one moment the
+    /// prefix is known to hold a program it did not hold before.
+    ///
+    /// **And nothing of its Windows is left running.** This is the one place
+    /// that promise is kept, because it is the one moment both ways of
+    /// finishing arrive at: the person closed the application themselves, or
+    /// they pressed **Close** on the guide and the compositor ended the
+    /// family — either way the launch this shell forked is over, and either
+    /// way a `wineserver` can still be holding the prefix open behind it.
+    /// Wine is not one process; see `lxb-proton`'s `prefix::end` for what
+    /// outlives what, and why a supervisor that is *killed* cannot take its
+    /// family with it.
+    ///
+    /// Asked only when nothing else of this game is running, because a game
+    /// and something run inside it are two launches in one prefix — a mod's
+    /// setup finishing must not end the game it was installing into.
+    fn a_windows_launch_ended(&mut self, id: &str) {
+        tracing::info!(id, "a Windows launch has ended");
+        // Both of these are things the row says and neither is true any
+        // more: whether Proton has built the prefix, and how long the game
+        // has been there.
+        self.proton.reread();
+        if a_launch_that_ended_was_a_setup(self.proton.game(id)) {
+            self.only_one_walk_is_waited_on();
+            self.windows_settling = Some(id.to_string());
+            self.proton
+                .send(proton::Ask::FoundIn { id: id.to_string() });
+        }
+        // Last of the three, because the helper answers one ask at a time and
+        // this is the only one nobody is waiting for. It returns in no time
+        // when there is nothing to end, which is nearly always; the one run
+        // that takes its grace is the one where something is stuck, and that
+        // is exactly the run that must not hold up the row somebody is
+        // looking at.
+        if nothing_is_using_this_windows_game(
+            id,
+            &self.lattice.windows_running(),
+            self.windows_launches_on_their_way,
+        ) {
+            self.proton.send(proton::Ask::End { id: id.to_string() });
+        }
+        self.needs_redraw = true;
+    }
+
+    /// What a setup left behind, for the game it was a setup for.
+    ///
+    /// The likeliest program in the prefix becomes what this game plays, on
+    /// the same terms a folder somebody imports is named by: *a game that
+    /// lands with nothing to play is a row that cannot be pressed*, and the
+    /// ranking that chooses is the ranking **What to play** offers, so a
+    /// wrong guess is one press from being corrected rather than a dead end.
+    /// It is never the installer — that lives outside the prefix — and never
+    /// simply the first file found; see `install::rank`, which puts
+    /// `unins000.exe` and the redistributables last.
+    ///
+    /// A setup somebody cancelled leaves nothing that looks like a program,
+    /// and the row goes on saying so, which is the truth.
+    fn windows_setup_left(&mut self, id: &str, found: &[proton::Candidate]) {
+        let Some(best) = found.first() else {
+            tracing::info!(id, "a setup finished and left nothing anybody can play");
+            return;
+        };
+        tracing::info!(id, plays = %best.at, "a setup finished, and this is what it installed");
+        self.proton.send(proton::Ask::Target {
+            id: id.to_string(),
+            at: best.at.clone(),
+            name: None,
+        });
+        self.needs_redraw = true;
+    }
+
+    /// Nothing is waiting on a walk of a game's folder but the thing about
+    /// to ask for one.
+    ///
+    /// One answer comes back for two different questions and only these two
+    /// fields say which was asked, so exactly one of them may be set: a
+    /// setup that finished with nobody watching must not write itself over
+    /// a list somebody is standing in front of, and a list somebody
+    /// abandoned must not be waiting when the next setup ends.
+    fn only_one_walk_is_waited_on(&mut self) {
+        self.windows_choose_menu = None;
+        self.windows_settling = None;
+    }
+
+    /// Walk the disk for a program to run inside this game's own Windows
+    /// installation.
+    ///
+    /// **A walk of the whole disk, not a list of what is already in the
+    /// prefix** — that was the first attempt and it answered the wrong
+    /// question. The thing somebody wants to run here is almost never
+    /// already in there: it is a mod's setup, a patcher, a tool that wants
+    /// the game installed before it will run. It is in their Downloads.
+    ///
+    /// Nothing is created and nothing the game plays is changed; the
+    /// program is run in the prefix this game already has. The walk is the
+    /// one the column's own **Run a Windows program** row opens — the same
+    /// rows, the same walk — and which of the two opened it is remembered
+    /// in [`Shell::windows_run_inside_for`], because by the time a file is
+    /// pressed the row that asked is columns behind.
+    ///
+    /// Opened the way the PlayStation 3 folder picker is opened from its
+    /// own menu: stand on the row the walk hangs off, read it, step in. See
+    /// [`Shell::open_ps3_picker`], whose order this keeps.
+    fn open_windows_run_inside_picker(&mut self) {
+        let Some(id) = self.selected_windows_game().map(|game| game.id.clone()) else {
+            return;
+        };
+        // The column itself and not whichever subcolumn of it somebody is
+        // standing in — [`Shell::open_ps3_picker`]'s order, for its reason.
+        if !self.step_to_windows_column() {
+            return;
+        }
+        let Some(at) = self.windows_column() else {
+            return;
+        };
+        let Some(row) = self.lattice.categories.get(at).and_then(|column| {
+            column.entries.iter().position(|entry| {
+                entry
+                    .folder()
+                    .is_some_and(|folder| folder.identity.as_deref() == Some(proton::RUN_A_PROGRAM))
+            })
+        }) else {
+            return;
+        };
+        tracing::info!(
+            id,
+            "walking the disk for something to run inside a Windows game"
+        );
+        // Before the column is built, because the row the walk hangs off is
+        // about to say this game's name — and before the cursor is put on
+        // that row, because building the column replaces every row in it.
+        self.windows_run_inside_for = Some(id);
+        self.rebuild_proton();
+        let lattice = &self.lattice;
+        let Some(panel) = self.panels.get_mut(self.focused_panel) else {
+            return;
+        };
+        panel.cursor.select_category(at, lattice);
+        panel.cursor.point_at_row(row, lattice);
+        self.read_selected_place();
+        if let Some(panel) = self.panels.get_mut(self.focused_panel) {
+            panel.cursor.enter(&self.lattice);
+        }
+        self.needs_redraw = true;
+    }
+
+    /// Ask what inside this game's folder could be the game, for the menu
+    /// that lets somebody correct a guess.
+    ///
+    /// Unlike Compatibility, this list cannot be had in advance — it is a
+    /// walk of the game's own folder, and what is in there changes every time
+    /// an installer runs — so the press asks, steps into a panel that says it
+    /// is looking, and the answer is written over that panel in
+    /// [`Shell::windows_found_what_could_be_played`]. What that panel is
+    /// made of, and why it carries a Cancel, is in [`looking_in_the_folder`]
+    /// — which [`Shell::press_unfinished_windows_game`] raises as well, that
+    /// being the same question asked by somebody who pressed the game
+    /// instead of its menu.
+    fn choose_what_a_windows_game_plays(&mut self) {
+        let Some(game) = self.selected_windows_game() else {
+            return;
+        };
+        let id = game.id.clone();
+        let stepped = self.context_menu.descend(
+            Some(menu::Title::new(crate::i18n::text("windows-what-to-play"))),
+            looking_in_the_folder(),
+        );
+        if !stepped {
+            return;
+        }
+        self.only_one_walk_is_waited_on();
+        self.windows_choose_menu = Some(id.clone());
+        self.proton.send(proton::Ask::FoundIn { id });
+        self.needs_redraw = true;
+    }
+
+    /// The executables inside a game's folder have arrived. Write them over
+    /// the panel that asked, and only that one: an answer that lands after
+    /// somebody has moved on must not take the rows out from under them.
+    fn windows_found_what_could_be_played(&mut self, id: &str, found: &[proton::Candidate]) {
+        if self.windows_choose_menu.as_deref() != Some(id) || !self.context_menu.is_open() {
+            return;
+        }
+        self.windows_choose_menu = None;
+        let playing = self.proton.game(id).and_then(|game| game.play.clone());
+        let mut rows: Vec<menu::Entry> = found
+            .iter()
+            .map(|candidate| {
+                chosen_when(
+                    menu::Entry::new(
+                        menu::Command::WindowsPlayThis(settings::intern(&candidate.at)),
+                        candidate.name.clone(),
+                    ),
+                    playing.as_deref() == Some(candidate.at.as_str()),
+                )
+            })
+            .collect();
+        if rows.is_empty() {
+            rows.push(
+                menu::Entry::new(
+                    menu::Command::Dismiss,
+                    crate::i18n::text("windows-nothing-looks-like-a-program"),
+                )
+                .reading(),
+            );
+        }
+        // Cancel is why this list can be written at all when the folder held
+        // nothing: it is the one row anybody can stand on, and `replace`
+        // refuses a list without one, which would leave the waiting panel up
+        // for ever. See [`Shell::choose_what_a_windows_game_plays`].
+        rows.push(
+            menu::Entry::new(menu::Command::Dismiss, crate::i18n::text("shell-cancel")).group(1),
+        );
+        let title = self
+            .proton
+            .game(id)
+            .map(|game| menu::Title::new(game.name.clone()));
+        self.context_menu.replace(title, rows);
+        self.needs_redraw = true;
+    }
+
+    /// The Protons on this machine have arrived. Swap them into the
+    /// Compatibility list that asked, and only while it is still up: a list
+    /// written over a menu somebody has moved on in is a list taking the rows
+    /// out from under a press. [`Shell::steam_said_what_runs_it`]'s act.
+    fn windows_said_what_runs_it(&mut self) {
+        let Some(id) = self.windows_compat_menu.clone() else {
+            return;
+        };
+        if !self.context_menu.is_open() {
+            self.windows_compat_menu = None;
+            return;
+        }
+        let rows = self.proton.compatibility_rows(&id);
+        let title = Some(menu::Title::new(
+            crate::i18n::text("label-compatibility").to_string(),
+        ));
+        self.context_menu.replace(title, rows);
+        self.needs_redraw = true;
+    }
+
+    /// That one is the game from now on.
+    fn windows_game_plays(&mut self, at: &'static str) {
+        let Some(game) = self.selected_windows_game() else {
+            return;
+        };
+        let id = game.id.clone();
+        tracing::info!(id, at, "a Windows game has been told what to play");
+        self.proton.send(proton::Ask::Target {
+            id,
+            at: at.to_string(),
+            name: None,
+        });
+        self.needs_redraw = true;
+    }
+
+    /// Ask whether to take a Windows game off the disk.
+    ///
+    /// The one press on a game here that cannot be taken back, and it takes
+    /// more with it than a Steam uninstall does: the Windows installation and
+    /// anything the game wrote beside it live inside the same folder, so the
+    /// saves go too. That is said in the question in so many words, because
+    /// somebody who finds out afterwards has lost them.
+    fn offer_to_uninstall_windows_game(&mut self) {
+        let Some(game) = self.selected_windows_game() else {
+            return;
+        };
+        let name = game.name.clone();
+        let id = game.id.clone();
+        let from = self.dialog_origin();
+        self.dialog.ask(
+            from,
+            Some(proton::mark().to_string()),
+            vec![
+                dialog::Line::Heading(name),
+                dialog::Line::Note(crate::i18n::text("windows-uninstall-takes-saves").to_string()),
+                dialog::Line::Rule,
+            ],
+            vec![
+                menu::Entry::new(menu::Command::Dismiss, crate::i18n::text("shell-keep-it")),
+                menu::Entry::new(
+                    menu::Command::WindowsRemove,
+                    crate::i18n::text("shell-uninstall"),
+                )
+                .grave(),
+            ],
+            // On Keep it, which is drawn first: the harmless answer is the
+            // one the cursor starts on, as it is on a PlayStation 3 game.
+            0,
+        );
+        self.windows_asked_remove = Some(id);
+        self.needs_redraw = true;
+    }
+
+    /// Take the game the question was about off the disk. What goes and what
+    /// stays is the helper's (`lxb-proton remove`), which refuses while
+    /// anything is still running in that prefix.
+    ///
+    /// **A Windows nobody is in is emptied first.** That refusal is a real
+    /// one — files cannot be pulled out from under a running Wine — but it
+    /// has to be a refusal somebody can do something about, and a Wine left
+    /// over by a session that crashed is not something anybody can reach from
+    /// the bar: nothing on this column ends one, and the only thing that
+    /// would is a launch of this very game finishing. So the prefix is
+    /// emptied on the way in, and because the helper answers one ask at a
+    /// time this is finished before the removal is tried.
+    ///
+    /// Not for a game *this* shell is running, which is the case the refusal
+    /// exists for and the one where "close it first" is the right answer.
+    fn uninstall_windows_game(&mut self) {
+        let Some(id) = self.windows_asked_remove.take() else {
+            return;
+        };
+        tracing::info!(id, "uninstalling a Windows game");
+        let name = self
+            .proton
+            .game(&id)
+            .map(|game| game.name.clone())
+            .unwrap_or_else(|| proton::TITLE.to_string());
+        if nothing_is_using_this_windows_game(
+            &id,
+            &self.lattice.windows_running(),
+            self.windows_launches_on_their_way,
+        ) {
+            self.proton.send(proton::Ask::End { id: id.clone() });
+        }
+        self.proton.send(proton::Ask::Remove { id });
+        // A panel that holds the screen while it happens, as a PlayStation 3
+        // game's does. Deleting a prefix is a Windows installation's worth of
+        // files, and a question that simply vanished would leave somebody
+        // watching a row that has not gone yet.
+        self.windows_removing = true;
+        let from = self.dialog_origin();
+        self.dialog.wait(
+            from,
+            Some(proton::mark().to_string()),
+            vec![
+                dialog::Line::Heading(name),
+                dialog::Line::Note(crate::i18n::text("windows-uninstalling").to_string()),
+                dialog::Line::Waiting,
+            ],
+        );
+        self.needs_redraw = true;
+    }
+
+    /// A removal has ended, one way or the other: take the panel down, and
+    /// say so where it did not work.
+    fn windows_game_removed(&mut self, trouble: Option<&str>) {
+        let panel_up = std::mem::take(&mut self.windows_removing);
+        if panel_up && self.dialog.is_open() {
+            self.dialog.close();
+        }
+        if let Some(why) = trouble {
+            self.say_about_windows(why);
+        }
+        self.needs_redraw = true;
+    }
+
+    /// New Windows games go in there from now on.
+    ///
+    /// Told to the helper rather than written down here: it keeps the setting
+    /// in a file of its own and reads it on every launch, and the games
+    /// already installed stay where they are and are still found. The helper
+    /// answers with a fresh probe, which is what puts the new folder on the
+    /// row — see [`crate::proton::folder`].
+    fn windows_folder_chosen(&mut self, at: &Path) {
+        tracing::info!(at = %at.display(), "new Windows games go in there from now on");
+        // Out of the picker first, for the reason the PlayStation 3 folder
+        // does it: the walk hangs off the page that answering rebuilds.
+        self.leave_the_picker();
+        self.proton.send(proton::Ask::Folder {
+            dir: at.to_path_buf(),
+        });
+        self.answer_choice(ChosenFeedback::Kept, Screen::Start);
+    }
+
+    /// The folder holding a game has been chosen: copy it into a prefix of
+    /// its own.
+    fn windows_game_folder_chosen(&mut self, at: &Path) {
+        tracing::info!(at = %at.display(), "a Windows game is to be copied in from there");
+        // Out of the picker first: it hangs off the column that answering
+        // rebuilds, which is the PlayStation 3 folder's reason.
+        self.leave_the_picker();
+        self.proton.send(proton::Ask::Import {
+            dir: at.to_path_buf(),
+            name: None,
+        });
+        self.needs_redraw = true;
+    }
+
+    /// The menu over the Windows Apps row: what the press would do, and the
+    /// order its column is listed in.
+    ///
+    /// Short on purpose. The two walks this column offers — a program to
+    /// install and a folder to copy in — are rows at its head rather than
+    /// menu entries, so a menu repeating them would be two ways to the same
+    /// place; what is here is what the rows cannot offer.
+    fn windows_entry_menu(&self) -> Option<([f32; 4], Option<String>, Vec<menu::Entry>)> {
+        let panel = self.panels.get(self.focused_panel)?;
+        let mut rows = Vec::new();
+        if self.proton.press() == proton::Press::SetUp {
+            rows.push(menu::Entry::new(
+                menu::Command::WindowsSetUp,
+                crate::i18n::text("shell-install"),
+            ));
+        }
+        rows.push(
+            menu::Entry::new(menu::Command::WindowsSort, crate::i18n::text("shell-sort"))
+                .glyph(icons::SORT)
+                .group(1),
+        );
+        rows.push(
+            menu::Entry::new(menu::Command::Dismiss, crate::i18n::text("shell-cancel")).group(1),
+        );
+        let anchor = ui::launch_origin(panel.width as f32, panel.height as f32);
+        Some((anchor, Some(proton::TITLE.to_string()), rows))
+    }
+
+    /// The menu over a Windows game: Play, what it runs with, what it plays,
+    /// Uninstall, Resolution, Sort.
+    fn windows_game_entry_menu(&self) -> Option<([f32; 4], Option<String>, Vec<menu::Entry>)> {
+        let panel = self.panels.get(self.focused_panel)?;
+        let game = self.selected_windows_game()?;
+        let mut rows = Vec::new();
+        if game.ready {
+            rows.push(
+                menu::Entry::new(menu::Command::WindowsPlay, crate::i18n::text("shell-play"))
+                    .glyph(icons::LAUNCH),
+            );
+        }
+        // What inside the folder is the game. Always offered, not only for an
+        // unfinished setup: an installer that put three executables in a
+        // folder is a guess that can be wrong on a game that starts perfectly
+        // well, and this is the row that corrects it.
+        rows.push(menu::Entry::new(
+            menu::Command::WindowsChoose,
+            crate::i18n::text("windows-what-to-play"),
+        ));
+        // And the same folder, asked the other question: run one of these
+        // once and change nothing. It was a row at the head of the column
+        // until somebody pointed out that it stood above every game, every
+        // day, for something done once a year — see [`proton::Proton::rows`].
+        // Here it has lost a step as well: the game is the one this menu is
+        // open over, so there is no list of games to get past first.
+        rows.push(menu::Entry::new(
+            menu::Command::WindowsRunInside,
+            crate::i18n::text("windows-run-inside-a-prefix"),
+        ));
+        // What it runs with, only while Valve's client is here. Without it
+        // this machine has the one Proton this package fetched, and a list of
+        // one is a question with no answer in it.
+        if self.proton.steam_here() {
+            rows.push(menu::Entry::new(
+                menu::Command::WindowsCompatibility,
+                crate::i18n::text("label-compatibility"),
+            ));
+        }
+        rows.push(
+            menu::Entry::new(
+                menu::Command::WindowsOfferRemove,
+                crate::i18n::text("shell-uninstall"),
+            )
+            .glyph(icons::UNINSTALL)
+            .grave(),
+        );
+        rows.push(
+            menu::Entry::new(
+                menu::Command::Resolution,
+                crate::i18n::text("shell-resolution"),
+            )
+            .glyph(icons::SETTING_RESOLUTION),
+        );
+        rows.push(
+            menu::Entry::new(menu::Command::WindowsSort, crate::i18n::text("shell-sort"))
+                .glyph(icons::SORT)
+                .group(1),
+        );
+        rows.push(
+            menu::Entry::new(menu::Command::Dismiss, crate::i18n::text("shell-cancel")).group(1),
+        );
+        let anchor = ui::launch_origin(panel.width as f32, panel.height as f32);
+        Some((anchor, Some(game.name.clone()), rows))
+    }
+
+    /// The Windows game the focused display is standing on, if it is on one.
+    fn selected_windows_game(&self) -> Option<&apps::WindowsGame> {
+        self.panels
+            .get(self.focused_panel)?
+            .cursor
+            .current_entry(&self.lattice)?
+            .windows_game()
+    }
+
+    fn windows_column(&self) -> Option<usize> {
+        self.lattice
+            .categories
+            .iter()
+            .position(|column| column.id == apps::windows_column())
     }
 
     fn ps3_column(&self) -> Option<usize> {
@@ -25993,6 +27882,21 @@ impl Shell {
                     menu::Command::Ps3Open,
                     crate::i18n::text("ps3-open-rpcs3"),
                 ));
+                // Last, because it is the only row here that takes something
+                // away — where the Steam, Epic Games and RetroArch menus put
+                // theirs. What it takes is spelt out in a panel before anything
+                // happens; see [`Shell::offer_to_remove_program`]. The games in
+                // somebody's own folder are not among it, either way.
+                if self.ps3.installed_where().is_some() {
+                    rows.push(
+                        menu::Entry::new(
+                            menu::Command::RemoveProgram(Program::Rpcs3),
+                            crate::message!("remove-name", "name" => "RPCS3"),
+                        )
+                        .glyph(icons::UNINSTALL)
+                        .grave(),
+                    );
+                }
             }
             _ => {}
         }
@@ -26691,51 +28595,204 @@ impl Shell {
         self.show_installing_retroarch();
     }
 
-    /// Offer to take it off again, saying exactly what goes.
+    /// Offer to take one of the integrations' programs off, saying exactly
+    /// what goes.
     ///
-    /// The one row on this menu that takes something away, so it is a question
-    /// and the question names the things: a person pressing it is very likely
-    /// meaning to start again from nothing, and a person pressing it by mistake
-    /// has to be able to see what they are about to lose before they answer.
+    /// The one row on each of those menus that takes something away, so it is a
+    /// question and the question names the things: a person pressing it is very
+    /// likely meaning to start again from nothing, and a person pressing it by
+    /// mistake has to be able to see what they are about to lose before they
+    /// answer.
     ///
-    /// What it does *not* take is said too, because it is the thing anybody
-    /// would worry about: somebody's games are theirs, and this removes a
-    /// program and what the program kept.
-    fn offer_to_remove_retroarch(&mut self) {
+    /// **Two answers rather than one**, because there are genuinely two
+    /// questions and only the user can answer the second. A program's own
+    /// folder is the program's settings on one machine and somebody's whole
+    /// games library on the next — Steam keeps every game it has installed
+    /// under its, RPCS3 keeps a console's saves and trophies under its — so a
+    /// removal that always took it would be a removal that deleted somebody's
+    /// games to take a program off, and one that never took it could not put a
+    /// machine back to nothing. **Remove** takes the program and leaves its
+    /// folder; **Remove everything** takes both. Each is spelt out in its own
+    /// sentence above the buttons, named for the program this one is.
+    ///
+    /// Cancel is drawn first and the panel rests on it, as every question that
+    /// destroys something does.
+    fn offer_to_remove_program(&mut self, program: Program) {
         let from = self.dialog_origin();
         self.dialog.ask(
             from,
-            Some(retroarch::mark().to_string()),
+            Some(program.mark()),
             vec![
                 dialog::Line::Heading(
-                    crate::i18n::text("shell-remove-retroarch-question").to_string(),
+                    crate::message!("remove-name-question", "name" => program.name()),
                 ),
-                dialog::Line::Note(crate::i18n::text("retroarch-remove-explanation").to_string()),
-                dialog::Line::Note(
-                    crate::i18n::text("shell-the-games-themselves-stay").to_string(),
-                ),
+                dialog::Line::Note(crate::i18n::text(program.what_stays()).to_string()),
+                dialog::Line::Note(crate::i18n::text(program.what_its_folder_holds()).to_string()),
                 dialog::Line::Rule,
             ],
             vec![
-                menu::Entry::new(menu::Command::Dismiss, crate::i18n::text("shell-no")),
+                menu::Entry::new(menu::Command::Dismiss, crate::i18n::text("shell-cancel")),
                 menu::Entry::new(
-                    menu::Command::ReallyRemoveRetroArch,
+                    menu::Command::ReallyRemoveProgram(program, false),
                     crate::i18n::text("shell-remove"),
-                ),
+                )
+                .grave(),
+                menu::Entry::new(
+                    menu::Command::ReallyRemoveProgram(program, true),
+                    crate::i18n::text("shell-remove-everything"),
+                )
+                .grave(),
             ],
-            // On No, for the reason the install offer opens on it: this one
-            // spends something the user cannot get back without downloading it
-            // again.
             0,
         );
+        self.needs_redraw = true;
     }
 
-    /// They said yes to that.
-    fn remove_retroarch(&mut self) {
-        tracing::info!("removing RetroArch");
-        self.retroarch.remove();
-        self.rebuild_retroarch();
-        self.show_installing_retroarch();
+    /// They read that panel and pressed one of the two.
+    ///
+    /// From here it is the bar's own removal, every step of it: the same
+    /// survey, the same password panel where a system-wide installation needs
+    /// one, the same running panel and the same ending — see
+    /// [`Shell::advance_uninstall`]. That is the whole point of routing it
+    /// here. These programs arrive as a flatpak the shell installed on most
+    /// machines and as the distribution's own package on plenty of others, and
+    /// an integration that could only undo the first would be an integration
+    /// whose Remove row refused on exactly the machines where somebody had
+    /// chosen for themselves.
+    fn begin_removing_program(&mut self, program: Program, everything: bool) {
+        let Some(installed) = self.where_the_program_is(program) else {
+            // The row is not offered without one, so this is the race between
+            // the menu being raised and the helper noticing it had gone.
+            tracing::warn!(
+                ?program,
+                "a removal was confirmed for a program that is not here"
+            );
+            return;
+        };
+        let data = match everything {
+            true => uninstall::ItsData::Gone,
+            false => uninstall::ItsData::Kept,
+        };
+        tracing::info!(?program, ?installed, ?data, "removal confirmed");
+        self.uninstalling = Some(Uninstall {
+            removing: Removing::Program(program),
+            survey: uninstall::Survey::of(installed, data),
+            stage: Stage::Surveying,
+            data,
+        });
+        self.say_working(crate::i18n::text("label-checking"));
+        self.advance_uninstall();
+    }
+
+    /// Where the program behind one of these rows actually is, which is the one
+    /// thing the removal has to be told and the one thing only the integration
+    /// knows. `None` takes the row away.
+    fn where_the_program_is(&self, program: Program) -> Option<uninstall::Installed> {
+        match program {
+            Program::Steam => self.steam.installed_where(),
+            Program::Heroic => self.heroic.installed_where(),
+            Program::RetroArch => self.retroarch.installed_where(),
+            Program::Rpcs3 => self.ps3.installed_where(),
+        }
+    }
+
+    /// It has gone. Forget everything that was read off it, and say so.
+    ///
+    /// Everything read off it goes with it, and that is not tidying up: the
+    /// shelf of games, the emulators' settings pages, the firmware rows and the
+    /// trophies are all built out of what the last scan and the last ask found,
+    /// and a shell that left them standing would go on drawing a column of
+    /// games nothing can play and settings pages for programs that are not
+    /// there.
+    ///
+    /// What *this shell* put somewhere else goes at the same time, and that is
+    /// the half no package manager and no `--delete-data` can reach: the cover
+    /// art fetched into the shell's own cache, the scratch directories, and the
+    /// filesystem permission granted to a sandbox, which outlives the
+    /// application and would otherwise be silently inherited by a reinstall.
+    /// Each integration's helper knows where its own are; the shell asks and
+    /// does not wait, because the program is already gone and a panel that said
+    /// "it could not be removed" over a leftover cache would be saying the
+    /// opposite of what happened.
+    ///
+    /// The one line in the shell's own settings that belongs to an integration
+    /// and to nothing else — where the games are — goes only with **Remove
+    /// everything**. After the other answer the program's folder is still
+    /// there, so a machine that installs it again finds what it had, and
+    /// forgetting where somebody keeps their games would be the one thing that
+    /// did not come back.
+    fn program_removed(&mut self, program: Program, data: uninstall::ItsData) {
+        let everything = matches!(data, uninstall::ItsData::Gone);
+        tracing::info!(?program, everything, "the program has been removed");
+        match program {
+            Program::Steam => {
+                // Nothing to forget. The shell signs in to Steam itself and
+                // lists the library over the network, so the column stands
+                // without a client and the account stays signed in — what
+                // changes is that every row stops offering to play, which is
+                // what a row says on a machine that never had a client. The
+                // column is built again for it here rather than at the next
+                // tick of the clock that usually asks, so the change is on
+                // screen behind the panel that says it happened.
+                if self.steam.look_for_the_client_again() {
+                    let rows = self.steam.rows();
+                    tracing::info!(games = rows.len(), "the Steam column, with no client");
+                    self.shelve_games(rows);
+                }
+            }
+            Program::Heroic => {
+                self.heroic.forget_what_it_kept(everything);
+                self.heroic.reprobe();
+                self.rebuild_heroic();
+                self.rebuild_trophies();
+            }
+            Program::RetroArch => {
+                self.retroarch.forget_what_it_kept(everything);
+                self.retroarch.forget();
+                self.retroachievements.removed();
+                if everything {
+                    settings::forget_roms_folder();
+                }
+                // What comes back after this is a machine that has never had
+                // one, so the settings this shell gives a fresh install are
+                // looked at again.
+                self.retroarch_defaults = false;
+                self.retroarch_setup = false;
+                // And ask the machine again what is on it, which is what turns
+                // the row back into the one that offers to download it.
+                self.retroarch.reprobe();
+                self.rebuild_retroarch();
+            }
+            Program::Rpcs3 => {
+                self.ps3.forget_what_it_kept(everything);
+                self.ps3.forget();
+                if everything {
+                    settings::forget_ps3_folder();
+                }
+                self.ps3.reprobe();
+                self.rebuild_ps3();
+                self.rebuild_trophies();
+            }
+        }
+        // The page under Settings > Games is built from the same answers, and
+        // it grows and shrinks with the integration exactly as these rows do.
+        settings::refresh(&mut self.lattice.categories);
+        self.say_and_acknowledge(
+            Some(program.mark()),
+            vec![
+                dialog::Line::Heading(
+                    crate::message!("name-has-been-removed", "name" => program.name()),
+                ),
+                dialog::Line::Note(
+                    crate::i18n::text(match everything {
+                        true => "shell-everything-it-kept-has-gone-with-it",
+                        false => "shell-what-it-kept-is-still-on-the-disk",
+                    })
+                    .to_string(),
+                ),
+                dialog::Line::Note(crate::i18n::text(program.what_stays()).to_string()),
+            ],
+        );
     }
 
     /// The panel that stands while it downloads — or while it is taken off
@@ -26763,17 +28820,18 @@ impl Shell {
         );
     }
 
-    /// The install — or the removal — is over, one way or the other.
+    /// The install is over, one way or the other.
+    ///
+    /// Only an install: taking RetroArch off again is the bar's own removal
+    /// now, with its own panels, and it reaches this module only to be told to
+    /// forget what it was holding — see [`Shell::program_removed`].
     fn retroarch_ended(&mut self, worked: bool) {
-        let (note, removing) = self
+        let note = self
             .retroarch
             .installing()
-            .map(|installing| (installing.note.clone(), installing.removing))
+            .map(|installing| installing.note.clone())
             .unwrap_or_default();
         self.retroarch.installed();
-        if removing {
-            return self.retroarch_removed(worked, note);
-        }
         self.rebuild_retroarch();
         if !worked {
             tracing::warn!(%note, "RetroArch was not installed");
@@ -26791,55 +28849,6 @@ impl Shell {
         // said "done" and left somebody on an empty column would be a console
         // that had finished half a job.
         self.ask_where_the_games_are();
-    }
-
-    /// It has been taken off, or it has not.
-    ///
-    /// Everything read off it goes with it. That is not tidying up: the shelf
-    /// of games, the emulators' settings pages and the firmware rows are all
-    /// built out of what the last scan and the last ask found, and a shell that
-    /// left them standing would go on drawing a column of games nothing can
-    /// play and settings pages for emulators that are not there.
-    ///
-    /// The folder somebody's games are in goes too, and that is the one thing
-    /// here worth arguing about. It is kept for exactly one purpose — this
-    /// integration reads it and nothing else does — and leaving it behind would
-    /// mean a machine that had been taken back to nothing still answered the
-    /// first question of the setup. Their games are where they always were.
-    fn retroarch_removed(&mut self, worked: bool, note: String) {
-        if !worked {
-            tracing::warn!(%note, "RetroArch was not removed");
-            self.rebuild_retroarch();
-            self.say_about_retroarch(vec![
-                dialog::Line::Heading("RetroArch".to_string()),
-                dialog::Line::Note(crate::i18n::text("shell-it-could-not-be-removed").to_string()),
-                dialog::Line::Note(note),
-            ]);
-            return;
-        }
-        tracing::info!("RetroArch has been removed");
-        self.retroarch.forget();
-        self.retroachievements.removed();
-        settings::forget_roms_folder();
-        // What comes back after this is a machine that has never had one, so
-        // the settings this shell gives a fresh install are looked at again.
-        self.retroarch_defaults = false;
-        // And ask the machine again what is on it, which is what turns the row
-        // back into the one that offers to download it.
-        self.retroarch.reprobe();
-        self.retroarch_setup = false;
-        self.rebuild_retroarch();
-        self.say_about_retroarch(vec![
-            dialog::Line::Heading(
-                crate::i18n::text("shell-retroarch-has-been-removed").to_string(),
-            ),
-            dialog::Line::Note(
-                crate::i18n::text("shell-everything-it-kept-has-gone-with-it").to_string(),
-            ),
-            dialog::Line::Note(
-                crate::i18n::text("shell-your-games-are-where-they-were").to_string(),
-            ),
-        ]);
     }
 
     /// Ask where somebody keeps their games, and say what the folder has to
@@ -27208,6 +29217,8 @@ impl Shell {
                 self.answer_choice(ChosenFeedback::Kept, Screen::Start);
             }
             settings::Picking::Ps3Folder => self.ps3_folder_chosen(&pick.at),
+            settings::Picking::WindowsFolder => self.windows_folder_chosen(&pick.at),
+            settings::Picking::WindowsGameFolder => self.windows_game_folder_chosen(&pick.at),
         }
     }
 
@@ -27707,7 +29718,10 @@ impl Shell {
 
     /// Refresh the trophy column while keeping each display on the same game and achievement.
     fn configure_retroachievements(&mut self) {
-        if !retroarch::offered() {
+        // Both halves, as the row that leads here is offered on both — the
+        // press may arrive from elsewhere, and an integration that is off has
+        // no RetroAchievements to configure.
+        if !retroarch::offered() || !settings::retroarch_integration() {
             return;
         }
         if self.retroarch.command().is_none() {
@@ -28544,6 +30558,7 @@ impl Shell {
             &self.retroarch.press(),
             self.retroarch.missing_cores().len(),
             crate::settings::roms_folder().is_some(),
+            self.retroarch.installed_where().is_some(),
         );
         // Nothing to offer is no menu at all, rather than a panel of one row
         // saying Cancel. See the list's own note.
@@ -28799,6 +30814,7 @@ impl Shell {
             // withholds. See [`Shell::steam_hand_over`].
             self.steam.has_client() && !self.steam.setting_up(),
             self.steam.reach().online(),
+            self.steam.installed_where().is_some(),
         );
         Some((
             anchor,
@@ -32745,6 +34761,8 @@ impl Shell {
         // [`Shell::toggle_context_menu`].
         self.compat_menu = None;
         self.epic_compat_menu = None;
+        self.windows_choose_menu = None;
+        self.windows_compat_menu = None;
         self.ways_menu = None;
         self.context_menu.open_at(
             anchor,
@@ -33540,6 +35558,77 @@ impl Shell {
             self.needs_redraw = true;
             if let Err(err) = self.conn.flush() {
                 tracing::warn!(?err, "could not rest a display");
+            }
+        }
+    }
+
+    /// Name the surface each dark display goes on showing the time on, and take
+    /// the name back when it wakes — `lxb_shell_v1.set_always_on_display`.
+    ///
+    /// The surface named is the panel's own, the one the bar is drawn on. It
+    /// does not need one of its own: while a display is showing the time it is
+    /// drawing nothing else at all — see [`should_draw`], which is what keeps
+    /// the bar off a dark screen — so the surface carries the clock and nothing
+    /// to hide. A second surface would be a second swapchain for every display
+    /// on the machine, bought for a handful of near-black pixels.
+    ///
+    /// Diffed per display like everything else sent per display, and the diff
+    /// is load-bearing in one direction: the name is what keeps that display's
+    /// connector lit, so a display that has woken must be un-named promptly or
+    /// it goes on costing what a lit panel costs with nothing on it.
+    fn sync_always_on_display(&mut self, now: Instant) {
+        let Some(control) = self.shell_control.clone() else {
+            return;
+        };
+        if control.version() < ALWAYS_ON_SHELL_VERSION {
+            return;
+        }
+        let mut sent = false;
+        for panel in self.panels.iter_mut() {
+            // Named only once this display has actually drawn a clock into that
+            // surface, and that is what stops the start screen flashing up.
+            //
+            // The surface the clock is drawn on is the one the bar is drawn on,
+            // and while a display is awake it holds the bar. Naming it the
+            // moment the display goes dark lifted *that* over the black — one
+            // frame of the start screen on a screen that had just gone to
+            // sleep — because the clock had not been drawn yet. So the order is
+            // the other way round: the shell draws the clock first, where
+            // nobody can see it under the compositor's black, and only then
+            // asks for the surface to be lifted over it.
+            //
+            // `drew_a_clock` is the witness, because it is set by the frame
+            // that draws a clock and cleared by the first frame that draws
+            // anything else — which is what takes the name back before the bar
+            // can be lifted on the way out. Deliberately not `clock_minute`,
+            // which is the pacing gate and stays unset through the whole fade:
+            // naming on that one would hold the surface down until the clock
+            // had finished arriving, and the arrival is the part worth seeing.
+            //
+            // This runs before the drawing, so the name is always one pass
+            // behind the frame — a few milliseconds, and the fade covers it.
+            let wanted =
+                panel.is_rested(now) && settings::always_on_for(&panel.name) && panel.drew_a_clock;
+            if panel.showing_the_time == wanted {
+                continue;
+            }
+            control.set_always_on_display(&panel.output, wanted.then(|| panel.layer.wl_surface()));
+            panel.showing_the_time = wanted;
+            sent = true;
+            tracing::info!(
+                display = %panel.name,
+                showing = wanted,
+                "a display was given the time to show while it is dark"
+            );
+        }
+        if sent {
+            // The display this names has just been taken out of the dark the
+            // compositor was about to leave it in, or put back into it, and
+            // either way the picture on it is about to change on a screen that
+            // had stopped asking for frames.
+            self.needs_redraw = true;
+            if let Err(err) = self.conn.flush() {
+                tracing::warn!(?err, "could not say what a dark display shows");
             }
         }
     }
@@ -35757,6 +37846,196 @@ impl Shell {
         self.rebuild_trophies();
     }
 
+    /// The RetroArch integration was switched on or off.
+    ///
+    /// Off, the half of the shell that drives RetroArch goes: whatever it was
+    /// in the middle of is let go of, the worker ends with the handle, and the
+    /// bar is read off the disk again — which is what gives RetroArch's own
+    /// `.desktop` entry back and takes the row, the column and the
+    /// RetroAchievements trophies away. On, it is started again, as a session
+    /// coming up starts it.
+    ///
+    /// **Nothing on the disk is touched either way.** This is not the removal
+    /// at [`Self::retroarch_was_removed`]: the ROM folder stays chosen, the
+    /// RetroAchievements account stays signed in, the cores and the artwork
+    /// stay where they were fetched to, and switching it back on finds all of
+    /// it. Somebody turning an integration off is saying "not through this
+    /// shell", which is a different sentence from "take it off my machine".
+    fn retroarch_integration_changed(&mut self, on: bool) {
+        tracing::info!(on, "the RetroArch integration was switched");
+        if on {
+            if let Some(helper) = retroarch::helper() {
+                self.retroarch = retroarch::RetroArch::start(helper.to_path_buf());
+            }
+        } else {
+            // Before the handle is swapped, while there is still a worker to
+            // tell — the order [`Self::steam_integration_changed`] keeps, and
+            // for its reason.
+            self.give_up_on_retroarch();
+            self.retroarch = retroarch::RetroArch::absent();
+        }
+        self.scan_the_bar_again();
+        self.rebuild_trophies();
+    }
+
+    /// Let go of everything the RetroArch half of the shell was in the middle
+    /// of — [`Self::give_up_on_steam`]'s act, for its reason: each of these is
+    /// something waiting on an answer from a worker that is about to be
+    /// dropped, and a wait left standing would run its patience out and then
+    /// blame the game.
+    fn give_up_on_retroarch(&mut self) {
+        // A half-typed RetroAchievements sign-in and any request behind it.
+        // `cancel` and never `removed`: the account stays signed in, as
+        // everything else here stays. See
+        // [`Self::retroarch_integration_changed`].
+        self.retroachievements.cancel();
+        // The disc helper's own child, and the module statics the Settings
+        // tree reads through free functions. There is no `impl Drop` on
+        // [`retroarch::RetroArch`], so a handle merely replaced would leave a
+        // disc being served with its child unreaped and nobody letting the
+        // mount go, and would strand the emulators' own answers in statics
+        // nothing would ever clear. `forget` is the one call that does both —
+        // and it is not the removal: it says "RetroArch has nothing to play
+        // right now", which is exactly true here. See
+        // [`Self::retroarch_was_removed`], which calls it and then goes on to
+        // the destructive half this must not.
+        self.retroarch.forget();
+        // A core somebody has been asked about, a game waiting on that core or
+        // on a BIOS, the walk open to find one, and the panel each of those
+        // writes its progress into.
+        self.retroarch_offer = None;
+        self.retroarch_play = None;
+        self.retroarch_bios_play = None;
+        self.retroarch_bios = None;
+        self.retroarch_walk = None;
+        self.retroarch_panel = false;
+        // And the once-per-folder-answer flag, so that switching the
+        // integration back on does not fetch a collection's cores again
+        // without being asked. See [`Shell::retroarch_setup`].
+        self.retroarch_setup = false;
+    }
+
+    /// The PlayStation 3 integration was switched on or off — the RetroArch
+    /// switch's act, for its reasons.
+    ///
+    /// Nothing on the disk is touched: the games folder stays chosen, the
+    /// installed games stay installed, and the saves and trophies RPCS3 keeps
+    /// are its own. A game running through RPCS3 is left running, which is the
+    /// rule every switch in this tree keeps — somebody reading a settings page
+    /// may be in the middle of playing something.
+    ///
+    /// A setup still downloading RPCS3 and the console's system software is
+    /// given up on, as the Windows switch gives up a copy — see
+    /// [`Self::windows_integration_changed`], where that is argued. Nothing
+    /// half-written is left behind: the setup installs RPCS3 and the firmware
+    /// each in one act, and one that never got there is one that never
+    /// started, which is what the row says afterwards.
+    fn ps3_integration_changed(&mut self, on: bool) {
+        tracing::info!(on, "the PlayStation 3 integration was switched");
+        if on {
+            if let Some(helper) = ps3::helper() {
+                self.ps3 = ps3::Ps3::start(helper);
+            }
+        } else {
+            self.give_up_on_ps3();
+            self.ps3 = ps3::Ps3::absent();
+            // What RPCS3 is set to is read out of a path the probe found, and
+            // the probe was the worker's. Left standing it would keep the nine
+            // RPCS3 rows on a page whose integration is off, each of them
+            // writing into RPCS3's own file when pressed. The probe is the only
+            // thing that can fill it again, and starting again above is what
+            // runs one.
+            ps3_settings::known_config(None);
+        }
+        self.scan_the_bar_again();
+        self.rebuild_trophies();
+    }
+
+    /// Let go of everything the PlayStation 3 half was in the middle of —
+    /// [`Self::give_up_on_retroarch`]'s act, for its reason.
+    ///
+    /// A setup that was downloading RPCS3 and the console's system software is
+    /// the one that matters most: it is minutes of work whose end is reported
+    /// by a worker about to be dropped, so the panel over it goes now rather
+    /// than counting up for the rest of the session.
+    fn give_up_on_ps3(&mut self) {
+        self.ps3_setup_panel = false;
+        self.ps3_after_setup = false;
+        self.ps3_asked_remove = None;
+        self.ps3_asked_clear = None;
+        self.ps3_play_once_keyed = None;
+        self.ps3_from_files = None;
+        // And the film and the music of whichever game was highlighted, which
+        // belong to a column that is going. Only the PlayStation 3's: a PSP
+        // ROM's own film and music come through the same path and are
+        // RetroArch's — see [`Self::sync_game_preview`].
+        if self.selected_ps3_game().is_some() {
+            self.preview.stop();
+        }
+    }
+
+    /// The Windows Apps integration was switched on or off — the two switches
+    /// above it, for their reasons.
+    ///
+    /// The one of the three whose Off takes no application back onto the bar,
+    /// because none came off for it: Proton is what a Windows game is run
+    /// with, not a program with a window of its own. So what Off does is take
+    /// the row and the column away and stop the worker; the games stay
+    /// installed exactly as they were, and switching it on finds every one of
+    /// them again.
+    ///
+    /// **What it does cost is work in flight**, which is the one way this is
+    /// unlike [`Self::steam_integration_changed`]: a Proton coming down or a
+    /// game folder being copied in ends with the handle, because
+    /// [`proton::Proton`] stops its child as it is dropped. Epic's switch is
+    /// the precedent and says the same of a download — a setting somebody
+    /// pressed is an answer about this machine, and the shell takes it at its
+    /// word rather than holding the switch for a copy nobody mentioned. A
+    /// game whose copy was cut short comes back saying its setup never
+    /// finished, which is what the column already says about one, and pressing
+    /// it offers to finish it.
+    ///
+    /// A Windows game that is **already running** is left running, and goes on
+    /// running to its end: nothing on that path asks the integration. It is
+    /// simply no longer watched, so the shell stops re-reading its folder.
+    fn windows_integration_changed(&mut self, on: bool) {
+        tracing::info!(on, "the Windows Apps integration was switched");
+        if on {
+            if let Some(helper) = proton::helper() {
+                self.proton = proton::Proton::start(helper);
+            }
+        } else {
+            self.give_up_on_windows();
+            self.proton = proton::Proton::absent();
+        }
+        self.scan_the_bar_again();
+    }
+
+    /// Let go of everything the Windows half was in the middle of —
+    /// [`Self::give_up_on_retroarch`]'s act, for its reason. An import or an
+    /// installer still running is the case this is for: what would have said it
+    /// had finished is the worker being dropped.
+    fn give_up_on_windows(&mut self) {
+        // Said out loud first, because the handle about to be dropped is what
+        // would have reported the end: a Proton coming down or a game folder
+        // being copied in stops here, and the log is where that is answered
+        // for. See the note on this method's caller.
+        if let Some(doing) = self.proton.doing() {
+            tracing::info!(
+                stage = ?doing.stage,
+                about = doing.about.as_deref().unwrap_or("the machine"),
+                "the Windows Apps integration was turned off part way through a job"
+            );
+        }
+        self.windows_choose_menu = None;
+        self.windows_asked_remove = None;
+        self.windows_compat_menu = None;
+        self.windows_run_inside_row = None;
+        self.windows_run_inside_for = None;
+        self.windows_settling = None;
+        self.windows_removing = false;
+    }
+
     fn carry_out_steam(&mut self, value: settings::SteamValue) {
         match value {
             settings::SteamValue::Integration(on) => self.steam_integration_changed(on),
@@ -36728,6 +39007,81 @@ impl Shell {
         }
     }
 
+    /// Ask the compositor to switch one screen off, or back on.
+    ///
+    /// Sent the moment it is pressed rather than diffed on the next loop pass,
+    /// which every other display setting is. Two reasons, and both are about
+    /// the screen rather than about the setting. The screen being switched on
+    /// has no panel to diff against — that is what being switched off means —
+    /// and the screen being switched off may be the one the press was made on,
+    /// which is about to stop existing and cannot be left holding control.
+    ///
+    /// Nothing is written down here. What the page marks is what the compositor
+    /// says it is doing, which comes back as a `connector` event; a request
+    /// that cannot be carried out comes back as the session unchanged, so a
+    /// refusal can never be drawn as success.
+    fn switch_screen(&mut self, name: &str, on: bool) {
+        let Some(control) = self.shell_control.clone() else {
+            return;
+        };
+        if control.version() < SWITCHING_SHELL_VERSION {
+            return;
+        }
+
+        // Control leaves the screen before the screen leaves the session. The
+        // sound that answers this press, the cursor and the column it is
+        // standing in all belong to whichever display is focused, and a screen
+        // going dark under them would take the answer to the press with it —
+        // the user would press a row and see nothing happen anywhere. Moving
+        // first puts the answer on a screen that stays, still standing on the
+        // page that was pressed.
+        if !on {
+            let leaving = self
+                .panels
+                .iter()
+                .position(|panel| panel.name == name)
+                .filter(|index| *index == self.focused_panel);
+            if leaving.is_some() {
+                let stays = (0..self.panels.len()).find(|index| self.panels[*index].name != name);
+                if let Some(stays) = stays {
+                    self.focus_panel(stays);
+                }
+            }
+            // And anything that was opening on it is ended rather than left to
+            // be dropped in silence when the display goes. A loading screen
+            // whose display has gone is a press that was never answered
+            // anywhere, which is the one thing a loading screen exists to stop.
+            if let Some(display) = self
+                .panels
+                .iter()
+                .find(|panel| panel.name == name)
+                .map(|panel| panel.id)
+            {
+                self.end_launch(display);
+            }
+        }
+
+        control.set_connector_enabled(name.to_string(), on as u32);
+        if let Err(err) = self.conn.flush() {
+            tracing::warn!(?err, "could not ask for a screen to be switched");
+        }
+        tracing::info!(screen = name, on, "asked for this screen to be switched");
+    }
+
+    /// Hand the Settings column every screen the session has, lit or dark, and
+    /// rebuild it if that changed.
+    ///
+    /// The one of these that is not built from `self.panels`, and it is the
+    /// whole reason the list exists: a screen that has been switched off has no
+    /// panel, so every other page in that column has already lost it. This is
+    /// where it is still named, and so where it can be switched back on.
+    fn refresh_connectors(&mut self) {
+        if settings::note_connectors(self.connectors.clone()) {
+            self.rebuild_settings();
+            self.needs_redraw = true;
+        }
+    }
+
     /// Hand the Settings column the mode lists, and rebuild it if they
     /// changed.
     ///
@@ -37064,6 +39418,7 @@ fn steam_service_menu_rows(
     has_column: bool,
     has_client: bool,
     online: bool,
+    removable: bool,
 ) -> Vec<menu::Entry> {
     let mut rows = Vec::new();
     if signed_in {
@@ -37150,6 +39505,26 @@ fn steam_service_menu_rows(
         .glyph(icons::SETTING_INFO)
         .group(1),
     );
+    // Last of the band, because it is the only row on this menu that takes
+    // something away — the same place RetroArch's, Epic's and the PlayStation
+    // 3's stand on theirs. What it takes is spelt out in a panel before
+    // anything happens; see [`Shell::offer_to_remove_program`].
+    //
+    // It is about Valve's client and nothing else. Signing out is the row
+    // above, the account is this shell's and stays signed in, and the column
+    // stays on the bar: this shell lists somebody's library itself, over the
+    // network, so what changes is that the games stop offering to be played.
+    if removable {
+        rows.push(
+            menu::Entry::new(
+                menu::Command::RemoveProgram(Program::Steam),
+                crate::message!("remove-name", "name" => "Steam"),
+            )
+            .glyph(icons::UNINSTALL)
+            .grave()
+            .group(1),
+        );
+    }
     rows.push(menu::Entry::new(menu::Command::Dismiss, crate::i18n::text("shell-cancel")).group(1));
     rows
 }
@@ -38011,6 +40386,146 @@ fn chosen_when(row: menu::Entry, chosen: bool) -> menu::Entry {
 /// that the answer has not arrived; here the other five orders are ones half
 /// this column could never answer at all, whatever arrived — see
 /// [`trophies::Sort`].
+/// Which Windows game, if any, this executable lives inside.
+///
+/// The whole of how the two `.exe` walks are told apart — see
+/// [`Shell::press_windows_program_pick`], where what each of them means is
+/// written out. A path under a game's own folder belongs to that game; one
+/// from anywhere else belongs to nothing yet.
+fn windows_game_an_exe_is_inside(games: &[proton::GameRow], exe: &Path) -> Option<String> {
+    games.iter().find_map(|game| {
+        exe.strip_prefix(Path::new(&game.at))
+            .ok()
+            .map(|_| game.id.clone())
+    })
+}
+
+/// Which Windows game an executable picked in the walk is to be run inside
+/// of, or `None` for one that is to be given a place of its own.
+///
+/// `asked_for` is the game whose **Run something inside** opened the walk,
+/// where that is how it was opened, and it **overrules where the file is**.
+/// Somebody who asked to run a mod's setup inside Cemu means inside Cemu,
+/// and that setup is in their Downloads — if this read the path instead it
+/// would answer "nowhere", build the mod's installer a prefix of its own,
+/// and install the mod into an empty Windows with no game in it.
+///
+/// Where the walk was opened from the column's own row there is nobody to
+/// ask, so the path decides: a file already inside a game's folder belongs
+/// to that game, and anything else is a program this machine has not got.
+fn which_windows_game_runs_this(
+    asked_for: Option<&str>,
+    games: &[proton::GameRow],
+    exe: &Path,
+) -> Option<String> {
+    asked_for
+        .filter(|id| games.iter().any(|game| game.id == *id))
+        .map(str::to_string)
+        .or_else(|| windows_game_an_exe_is_inside(games, exe))
+}
+
+/// Whether nothing of this game is running and nothing of it is about to be.
+///
+/// **A game and something run inside it are two launches in one Windows.**
+/// Somebody who runs a mod's setup while the game is up has both going at
+/// once, and the setup finishing is not the game finishing — ending the
+/// prefix then would take the game down with the installer that was
+/// installing into it.
+///
+/// **And a launch that has been asked for is not yet a launch that is
+/// running.** Starting a Windows game is a round trip to the helper, and in
+/// that gap the game is in no list of running things at all: press Play on a
+/// game a setup is already running inside, let the setup finish while the
+/// press is still in the air, and a prefix emptied on the way past would take
+/// out the launch that was starting. Counted rather than listed, because what
+/// matters is only whether the helper owes an answer — the id is not known
+/// for one of the two ways in until the answer arrives.
+fn nothing_is_using_this_windows_game(
+    id: &str,
+    still_running: &[String],
+    launches_on_their_way: usize,
+) -> bool {
+    launches_on_their_way == 0 && !still_running.iter().any(|running| running == id)
+}
+
+/// Which Windows games have stopped running, out of what was running before
+/// a reap and what is still running after it.
+///
+/// Counted rather than compared, because the same game can be running twice
+/// — somebody who pressed Play, went away and pressed it again — and one of
+/// the two ending is still a prefix worth looking in. Each game is named
+/// once however many copies of it ended.
+fn launches_that_ended(before: &[String], after: &[String]) -> Vec<String> {
+    let count = |of: &[String], id: &String| of.iter().filter(|had| *had == id).count();
+    let mut ended: Vec<String> = Vec::new();
+    for id in before {
+        if count(after, id) < count(before, id) && !ended.contains(id) {
+            ended.push(id.clone());
+        }
+    }
+    ended
+}
+
+/// The panel **What to play** stands on while the folder is being walked.
+///
+/// **Cancel is what makes it possible**, and it is not decoration.
+/// `menu::Menu::descend` refuses a list with no row anybody can stand on,
+/// and a press that descends into nothing folds the menu away instead — so
+/// a panel of one line of text would close on the press and the answer
+/// would arrive with nothing left to write on. It is also the right row to
+/// offer somebody who did not mean to press this.
+///
+/// Shared by the two ways in — the game's own menu, and a press on a game
+/// that cannot be played yet — because they are the same question asked
+/// from two places and must not drift apart.
+fn looking_in_the_folder() -> Vec<menu::Entry> {
+    vec![
+        menu::Entry::new(
+            menu::Command::Dismiss,
+            crate::i18n::text("windows-looking-in-the-folder"),
+        )
+        .reading(),
+        menu::Entry::new(menu::Command::Dismiss, crate::i18n::text("shell-cancel")).group(1),
+    ]
+}
+
+/// Whether a Windows launch that has just ended was a setup rather than a
+/// game: whether its prefix is worth looking in for something to play.
+///
+/// **The rule is "nothing is named yet", and the gate matters more than it
+/// looks.** Without it every quit would send the shell looking again and
+/// name whatever the ranking liked best this time — so a person who used
+/// **What to play** to pick the right one of three executables would have
+/// their choice undone the first time they closed the game. A game that
+/// already plays something has not just been installed.
+fn a_launch_that_ended_was_a_setup(game: Option<&proton::GameRow>) -> bool {
+    game.is_some_and(|game| game.play.is_none())
+}
+
+/// The rows of the Windows Apps column's Sort list: its three orders, the one
+/// in force ticked.
+///
+/// Three, and nothing greyed out. The Steam list greys an order this library
+/// cannot be asked for, which says out loud that an answer has not arrived
+/// yet; here the other five orders are ones this column could never answer at
+/// all, whatever arrived — see [`proton::Sort`].
+fn windows_sort_rows(now: proton::Sort) -> Vec<menu::Entry> {
+    let mut rows: Vec<menu::Entry> = proton::SORTS
+        .iter()
+        .map(|sort| {
+            chosen_when(
+                menu::Entry::new(
+                    menu::Command::WindowsSortBy(*sort),
+                    crate::i18n::builtin(sort.label()),
+                ),
+                *sort == now,
+            )
+        })
+        .collect();
+    rows.push(menu::Entry::new(menu::Command::Dismiss, crate::i18n::text("shell-cancel")).group(1));
+    rows
+}
+
 fn trophies_sort_rows(now: trophies::Sort) -> Vec<menu::Entry> {
     let mut rows: Vec<menu::Entry> = trophies::SORTS
         .iter()
@@ -38990,6 +41505,205 @@ mod steam_game_menu_tests {
         );
     }
 
+    fn windows_game_at(id: &str, at: &str) -> proton::GameRow {
+        proton::GameRow {
+            id: id.to_string(),
+            name: id.to_string(),
+            state: proton::GameState::Ready,
+            proton: None,
+            at: at.to_string(),
+            play: None,
+            prefix_built: true,
+            cover: None,
+        }
+    }
+
+    /// The whole of how the two `.exe` walks are told apart. An executable
+    /// under a game's own folder is something to run *in that prefix*; one
+    /// from anywhere else is a program to give a place of its own.
+    ///
+    /// Read off the path rather than off which row opened the walk, because
+    /// by the time either is answered the rows behind it have been rebuilt
+    /// more than once — and a walk started in one place can be walked into
+    /// the other.
+    #[test]
+    fn an_exe_inside_a_game_belongs_to_that_game_and_one_outside_belongs_to_nothing() {
+        let games = [
+            windows_game_at("stardew-valley", "/games/stardew-valley"),
+            windows_game_at("hollow-knight", "/games/hollow-knight"),
+        ];
+        assert_eq!(
+            windows_game_an_exe_is_inside(
+                &games,
+                Path::new("/games/stardew-valley/pfx/drive_c/Games/Stardew/config.exe"),
+            )
+            .as_deref(),
+            Some("stardew-valley"),
+        );
+        assert_eq!(
+            windows_game_an_exe_is_inside(&games, Path::new("/home/someone/Downloads/setup.exe")),
+            None,
+            "a program from the disk at large is one this machine has not got yet"
+        );
+    }
+
+    /// A Notepad++ installer was run end to end on this machine, it worked,
+    /// and the row went on saying *This was never finished installing* and
+    /// could not be pressed. Nothing was wrong with the install: the games
+    /// are read once at startup, a setup writes its program into the prefix
+    /// long after that, and nothing ever looked again.
+    ///
+    /// **Nothing of a game's Windows is left running once its last launch
+    /// has ended** — but only once its *last* one has.
+    ///
+    /// A game and something run inside it are two launches in one Windows:
+    /// somebody running a mod's setup while the game is up has both going,
+    /// and ending the prefix when the setup finishes would take the game down
+    /// with the installer that was installing into it.
+    #[test]
+    fn the_prefix_is_only_ended_once_the_last_launch_in_it_is_over() {
+        assert!(
+            nothing_is_using_this_windows_game("notepad", &[], 0),
+            "the ordinary way: one launch, and it is over"
+        );
+        assert!(
+            nothing_is_using_this_windows_game("notepad", &["stardew-valley".to_string()], 0),
+            "somebody else's game is no reason to leave this one running"
+        );
+        assert!(
+            !nothing_is_using_this_windows_game("cemu", &["cemu".to_string()], 0),
+            "the game is still up and only the setup inside it has finished"
+        );
+    }
+
+    /// **A launch that has been asked for is not yet a launch that is
+    /// running**, and in that gap it is in no list at all.
+    ///
+    /// Press Play on a game a mod's setup is already running inside, and let
+    /// the setup finish while the press is still on its way to the helper:
+    /// the game has not been forked yet, so nothing that looks at what is
+    /// running can see it, and a prefix emptied on the way past would take
+    /// out the launch that was starting.
+    #[test]
+    fn a_launch_still_on_its_way_holds_the_prefix_as_firmly_as_a_running_one() {
+        assert!(
+            !nothing_is_using_this_windows_game("cemu", &[], 1),
+            "nothing is running, but one launch is on its way"
+        );
+        assert!(
+            nothing_is_using_this_windows_game("cemu", &[], 0),
+            "and once it has been answered, the question is the plain one again"
+        );
+    }
+
+    /// So a launch that ends is noticed, and this is the pair of questions
+    /// that follow from it.
+    #[test]
+    fn a_setup_that_has_finished_is_noticed_and_a_game_that_merely_ended_is_not() {
+        let was = ["notepad".to_string(), "stardew-valley".to_string()];
+        let still = ["stardew-valley".to_string()];
+        assert_eq!(launches_that_ended(&was, &still), ["notepad"]);
+        assert!(
+            launches_that_ended(&was, &was).is_empty(),
+            "nothing ended, so nothing to look at"
+        );
+
+        // The same game running twice, one copy ending: the prefix is still
+        // worth looking in, and the game is named once.
+        let twice = ["notepad".to_string(), "notepad".to_string()];
+        let once = ["notepad".to_string()];
+        assert_eq!(launches_that_ended(&twice, &once), ["notepad"]);
+
+        // And which of those endings was a setup. A game that already plays
+        // something has not just been installed — without this, quitting
+        // Notepad++ would send the shell off to choose again and undo
+        // whatever somebody had picked in **What to play**.
+        let mut installed = windows_game_at("notepad", "/games/notepad");
+        assert!(
+            a_launch_that_ended_was_a_setup(Some(&installed)),
+            "nothing named to play: the setup has just run"
+        );
+        installed.play = Some("pfx/drive_c/Program Files/Notepad++/notepad++.exe".into());
+        assert!(
+            !a_launch_that_ended_was_a_setup(Some(&installed)),
+            "it plays something already, so this was somebody using it"
+        );
+        assert!(
+            !a_launch_that_ended_was_a_setup(None),
+            "and a game the shell no longer has is nothing to go looking in"
+        );
+    }
+
+    /// **A mod's setup is in somebody's Downloads, not in the prefix.**
+    ///
+    /// That is the whole of why **Run something inside** walks the disk, and
+    /// the whole of why the game that asked overrules where the file is. The
+    /// first attempt at this offered a list of what was already inside the
+    /// prefix, which answers a question nobody has: whatever you want to run
+    /// in a game's Windows is, by definition, not in there yet.
+    #[test]
+    fn the_game_that_asked_runs_the_program_wherever_on_the_disk_it_came_from() {
+        let games = [
+            windows_game_at("cemu", "/games/cemu"),
+            windows_game_at("stardew-valley", "/games/stardew-valley"),
+        ];
+        let downloaded = Path::new("/home/someone/Downloads/graphics-pack-setup.exe");
+
+        assert_eq!(
+            which_windows_game_runs_this(Some("cemu"), &games, downloaded).as_deref(),
+            Some("cemu"),
+            "asked for inside Cemu, so inside Cemu — not a prefix of its own"
+        );
+        assert_eq!(
+            which_windows_game_runs_this(None, &games, downloaded),
+            None,
+            "and with nobody asking, a program from the disk at large is new"
+        );
+
+        // It overrules the path even when the path says another game: the
+        // walk is the whole disk, and a person can walk into one game's
+        // folder while the menu that opened the walk was another game's.
+        let inside_the_other = Path::new("/games/stardew-valley/pfx/drive_c/tool.exe");
+        assert_eq!(
+            which_windows_game_runs_this(Some("cemu"), &games, inside_the_other).as_deref(),
+            Some("cemu"),
+            "the game whose menu opened the walk is the one that was asked for"
+        );
+        assert_eq!(
+            which_windows_game_runs_this(None, &games, inside_the_other).as_deref(),
+            Some("stardew-valley"),
+            "and with nobody asking, where the file is decides"
+        );
+
+        // A game that went off the disk while somebody was walking it is not
+        // a prefix to run anything in.
+        assert_eq!(
+            which_windows_game_runs_this(Some("uninstalled-since"), &games, downloaded),
+            None,
+        );
+    }
+
+    /// A folder whose name merely *starts* with a game's is not inside it.
+    ///
+    /// `/games/stardew-valley-2` begins with `/games/stardew-valley`, and a
+    /// comparison made on the text rather than on the path would run the
+    /// sequel inside the first game's prefix.
+    #[test]
+    fn a_game_whose_name_is_a_prefix_of_another_is_still_a_different_game() {
+        let games = [
+            windows_game_at("stardew-valley", "/games/stardew-valley"),
+            windows_game_at("stardew-valley-2", "/games/stardew-valley-2"),
+        ];
+        assert_eq!(
+            windows_game_an_exe_is_inside(
+                &games,
+                Path::new("/games/stardew-valley-2/pfx/drive_c/game.exe"),
+            )
+            .as_deref(),
+            Some("stardew-valley-2"),
+        );
+    }
+
     /// The client's windows are recognised by the names the compositor is asked
     /// to hide by, folded the same way — an X11 class is conventionally
     /// capitalised where a Wayland app id would not be.
@@ -39321,7 +42035,11 @@ mod steam_game_menu_tests {
     }
 
     fn service(signed_in: bool, has_column: bool, has_client: bool) -> Vec<String> {
-        steam_service_menu_rows(signed_in, has_column, has_client, true)
+        // Whether the client can be removed follows whether there is one, which
+        // is the ordinary machine. The two coming apart is a session that has
+        // not placed it, and has its own test — see
+        // `a_client_nothing_claims_is_not_offered_to_be_removed`.
+        steam_service_menu_rows(signed_in, has_column, has_client, true, has_client)
             .into_iter()
             .map(|row| row.label)
             .collect()
@@ -39332,7 +42050,7 @@ mod steam_game_menu_tests {
     /// waiting out its five seconds had nothing anybody could press.
     #[test]
     fn offline_the_refresh_row_is_the_retry() {
-        let offline: Vec<String> = steam_service_menu_rows(true, true, true, false)
+        let offline: Vec<String> = steam_service_menu_rows(true, true, true, false, true)
             .into_iter()
             .map(|row| row.label)
             .collect();
@@ -39344,7 +42062,7 @@ mod steam_game_menu_tests {
 
         // The same command either way: what changes is the sentence, not what
         // pressing it does.
-        let rows = steam_service_menu_rows(true, true, true, false);
+        let rows = steam_service_menu_rows(true, true, true, false, true);
         assert_eq!(rows[0].command, menu::Command::SteamRefresh);
     }
 
@@ -39362,11 +42080,12 @@ mod steam_game_menu_tests {
                 "Open Steam",
                 "Open Steam (Client)",
                 "Steam diagnostics",
+                "Remove Steam",
                 "Cancel"
             ]
         );
 
-        let rows = steam_service_menu_rows(true, true, true, true);
+        let rows = steam_service_menu_rows(true, true, true, true, true);
         let opens: Vec<menu::Command> = rows
             .iter()
             .filter(|row| matches!(row.command, menu::Command::SteamDo(_)))
@@ -39419,8 +42138,9 @@ mod steam_game_menu_tests {
             for has_column in [true, false] {
                 for has_client in [true, false] {
                     for online in [true, false] {
-                        let rows =
-                            steam_service_menu_rows(signed_in, has_column, has_client, online);
+                        let rows = steam_service_menu_rows(
+                            signed_in, has_column, has_client, online, has_client,
+                        );
                         assert!(
                             rows.iter()
                                 .any(|row| row.command == menu::Command::SteamDiagnostics),
@@ -39438,6 +42158,40 @@ mod steam_game_menu_tests {
                 }
             }
         }
+    }
+
+    /// There is nothing to remove until there is a client, and nothing to
+    /// remove while one is arriving.
+    ///
+    /// The second is the one worth pinning. Valve packages a launcher, and the
+    /// client proper is half a gigabyte that launcher fetches the first time
+    /// anybody runs it — so there is a stretch, minutes of it, where this shell
+    /// is installing Steam and a row offering to remove it would be racing the
+    /// download it is watching. `Steam::installed_where` answers `None` for
+    /// exactly that stretch, and this is what it buys.
+    #[test]
+    fn steam_is_not_offered_to_be_removed_while_it_is_arriving() {
+        let removes = |has_client: bool, removable: bool| {
+            steam_service_menu_rows(true, true, has_client, true, removable)
+                .iter()
+                .any(|row| row.command == menu::Command::RemoveProgram(menu::Program::Steam))
+        };
+        assert!(removes(true, true), "an ordinary machine with a client");
+        assert!(!removes(false, false), "no client at all");
+        assert!(!removes(true, false), "a client installing itself");
+        // And it is below the rule, with the rows that are about the client
+        // rather than about the account — and last of them, because it is the
+        // only one that takes something away.
+        let rows = steam_service_menu_rows(true, true, true, true, true);
+        assert!(rows
+            .iter()
+            .filter(|row| row.command == menu::Command::RemoveProgram(menu::Program::Steam))
+            .all(|row| row.group == 1));
+        let at = rows
+            .iter()
+            .position(|row| row.command == menu::Command::RemoveProgram(menu::Program::Steam))
+            .expect("the row is there");
+        assert_eq!(at, rows.len() - 2, "it stands directly above Cancel");
     }
 }
 
@@ -39823,7 +42577,22 @@ struct Kept {
 /// rows that carry it somewhere else are of any use — see
 /// [`Shell::inside_a_folder`]. Unlike the other two, `carriable` decides
 /// whether the rows are *there*, not whether they are lit.
-fn media_rows(deletable: bool, carriable: bool, hidden: bool) -> Vec<menu::Entry> {
+///
+/// `run_inside` is the same kind of condition as `carriable`: whether this is
+/// a Windows program, on a machine that runs them, with at least one Windows
+/// game already set up for it to be run inside of. All three have to be true
+/// before the row means anything — a list of games to choose from is the
+/// whole of what it opens, and a machine with none has nothing to put in it.
+/// So the row is absent rather than greyed, which is also the honest answer
+/// on the machine where somebody is just starting: the first `.exe` they
+/// press *makes* the first game, so a row that could only ever say no would
+/// be standing in front of them until it did.
+fn media_rows(
+    deletable: bool,
+    carriable: bool,
+    hidden: bool,
+    run_inside: bool,
+) -> Vec<menu::Entry> {
     let delete = menu::Entry::new(menu::Command::Delete, crate::i18n::text("shell-delete"))
         .glyph(icons::UNINSTALL)
         .grave();
@@ -39862,6 +42631,30 @@ fn media_rows(deletable: bool, carriable: bool, hidden: bool) -> Vec<menu::Entry
             .group(1),
         menu::Entry::new(menu::Command::Dismiss, crate::i18n::text("shell-cancel")).group(1),
     ];
+    // Over Delete and under the two general ways to open the file, because
+    // that is what it is: a third way to open it, and the most particular of
+    // the three. Open runs the program; Open with hands the file to something
+    // on this machine; this one runs it inside a Windows that is already
+    // there. It wears the Windows mark, which is the one word on the row
+    // saying which of those three worlds it belongs to.
+    //
+    // Placed against Delete rather than at an index, for the reason the rows
+    // below are placed against Sort: an index counted into this list is an
+    // index that moves the next time anybody adds a row.
+    if run_inside {
+        let at = rows
+            .iter()
+            .position(|row| row.command == menu::Command::Delete)
+            .unwrap_or(rows.len());
+        rows.insert(
+            at,
+            menu::Entry::new(
+                menu::Command::WindowsRunInsideAGame,
+                crate::i18n::text("windows-run-inside-a-game"),
+            )
+            .glyph(proton::mark()),
+        );
+    }
     if carriable {
         // Both of these are placed against Sort rather than against the ends of
         // the list, because Sort is the rule: it is the first row of the band
@@ -39898,8 +42691,18 @@ fn media_rows(deletable: bool, carriable: bool, hidden: bool) -> Vec<menu::Entry
         // place it has always had rather than the two rows being put in front of
         // it and pushing it under the hand. Inserted rather than appended for
         // the same reason: the order is the whole statement.
+        //
+        // Read off where Delete *is* rather than written as the index it used
+        // to be at, which was 3 and meant "after Delete" only for as long as
+        // nothing above Delete ever changed. A Windows program's own row goes
+        // in above it, and the day that happened the two that carry the file
+        // would have landed in front of Delete instead of behind it.
+        let under_delete = rows
+            .iter()
+            .position(|row| row.command == menu::Command::Delete)
+            .map_or(rows.len(), |at| at + 1);
         rows.splice(
-            3..3,
+            under_delete..under_delete,
             [
                 transfer_row(
                     menu::Command::Copy,
@@ -42154,8 +44957,65 @@ fn picture_behind(entry: &Entry) -> Option<&Path> {
 /// should be by then, since the arithmetic goes on without the drawing. The
 /// compositor puts what is on that display to sleep at the same moment; see
 /// [`Panel::is_rested`] and the compositor's `blackout`.
-fn should_draw(rested: bool, visible: bool, settling: bool, was_visible: bool) -> bool {
-    !rested && (visible || settling || was_visible)
+/// How far the always-on clock creeps from the middle of the screen, in pixels
+/// either way.
+///
+/// Small enough that nobody watching it notices the clock is not where it was,
+/// and large enough that no pixel of a stroke is lit for more than a few
+/// minutes at a time — which is the whole of what it is for. The page this
+/// belongs to exists because a still picture burns into a panel, and a clock
+/// left in one place all night is a still picture.
+const ALWAYS_ON_DRIFT: f32 = 12.0;
+
+/// How long the always-on clock takes to come up out of the black.
+///
+/// It starts once the screen is already fully dark — the sheet takes
+/// [`REST_FADE`] to come down and nothing is shown until it has — so this is
+/// not a cross-fade with anything. It is the one thing on the screen arriving,
+/// and arriving slowly enough to read as the screen settling rather than as
+/// something having gone wrong with it.
+///
+/// Longer than the sheet's own fall, deliberately. A clock that arrived as fast
+/// as the black did would read as part of the same movement; this one reads as
+/// what is left when that movement is over.
+const ALWAYS_ON_FADE: Duration = Duration::from_millis(1400);
+
+/// How long the clock takes to walk all the way round that drift once.
+///
+/// Slow enough that two frames of it are never visibly different — the clock
+/// has to look still — and short enough that one lap is over well inside the
+/// hours a screen is left dark. Seven minutes is also deliberately not a whole
+/// number of minutes into an hour, so the path does not come back to the same
+/// place at the same time each hour.
+const ALWAYS_ON_LAP: Duration = Duration::from_secs(7 * 60);
+
+/// Where the always-on clock stands this moment, as an offset from the middle.
+///
+/// A circle rather than a line, so every pixel the run passes over is lit for
+/// the same share of the lap: a clock sliding left and right would wear a band
+/// twice as hard at each end, where it turns round and stops. Walked against
+/// the wall clock rather than against a frame counter, so a screen that has
+/// been dark for an hour is where an hour says it should be rather than where
+/// however many frames it was given says.
+fn always_on_drift(since_start: Duration) -> [f32; 2] {
+    let lap = ALWAYS_ON_LAP.as_secs_f32();
+    let round = (since_start.as_secs_f32() % lap / lap) * std::f32::consts::TAU;
+    [ALWAYS_ON_DRIFT * round.cos(), ALWAYS_ON_DRIFT * round.sin()]
+}
+
+fn should_draw(
+    rested: bool,
+    visible: bool,
+    settling: bool,
+    was_visible: bool,
+    showing_the_time: bool,
+) -> bool {
+    // A fifth answer rather than a looser `rested`, and that is the whole care
+    // here: a rested display that draws is drawing its clock and must never be
+    // drawing its bar. Loosening `rested` would have put the start screen back
+    // on a screen that had gone dark — which is the thing the display went dark
+    // to stop being burnt into it.
+    showing_the_time || (!rested && (visible || settling || was_visible))
 }
 
 /// Why a display is drawing — the reason [`Shell::panel_is_visible`] found,
@@ -42996,6 +45856,27 @@ fn wall_clock() -> Option<String> {
         "month" => (tm.tm_mon + 1).to_string(),
         "day" => tm.tm_mday.to_string(),
         "time" => i18n::time_of_day(tm.tm_hour.clamp(0, 23) as u32, tm.tm_min.clamp(0, 59) as u32),
+    ))
+}
+
+/// The time on its own, for the always-on display, with how far into the minute
+/// it is.
+///
+/// Not [`wall_clock`], which is the start screen corner's compact form and
+/// carries the date with it: a screen that has gone dark shows the time and
+/// nothing else, which is what was asked for and is also the fewest lit pixels
+/// that answer the question anybody glances at a dark screen to ask.
+///
+/// The seconds come back with it because they are what paces the drawing: this
+/// is redrawn once a minute, on the minute, and the caller needs to know when
+/// the next one is. They are never shown.
+fn always_on_clock() -> Option<(String, u32, u32)> {
+    let tm = local_time()?;
+    let minute = tm.tm_min.clamp(0, 59) as u32;
+    Some((
+        i18n::time_of_day(tm.tm_hour.clamp(0, 23) as u32, minute),
+        minute,
+        tm.tm_sec.clamp(0, 60) as u32,
     ))
 }
 
@@ -44710,6 +47591,45 @@ impl Dispatch<LxbShellV1, ()> for Shell {
                 }
                 state.unseen_windows = windows;
             }
+            // Every screen the session has, lit or dark. Not routed through
+            // `display_state_of` like every other per-display event, and it
+            // must not be: that holds an event for the panel it belongs to and
+            // replays it when the panel arrives, and a screen that is switched
+            // off has no panel and never will. It would be held for ever.
+            lxb_shell_v1::Event::Connector {
+                name,
+                lit,
+                switching,
+            } => {
+                let switching = match switching.into_result() {
+                    Ok(lxb_shell_v1::ConnectorSwitching::Allowed) => settings::Switching::Allowed,
+                    Ok(lxb_shell_v1::ConnectorSwitching::LastOneOn) => {
+                        settings::Switching::LastOneOn
+                    }
+                    Ok(lxb_shell_v1::ConnectorSwitching::SetElsewhere) => {
+                        settings::Switching::SetElsewhere
+                    }
+                    // Not possible, and anything a later compositor may mean by
+                    // a number this shell does not know: a screen it cannot
+                    // offer a switch for is the answer that cannot strand
+                    // anybody.
+                    _ => settings::Switching::NotPossible,
+                };
+                state.pending_connectors.push(settings::Connector {
+                    name,
+                    lit: lit == 1,
+                    switching,
+                });
+            }
+            lxb_shell_v1::Event::ConnectorsDone => {
+                let screens = std::mem::take(&mut state.pending_connectors);
+                if state.connectors == screens {
+                    return;
+                }
+                tracing::debug!(count = screens.len(), "which screens there are changed");
+                state.connectors = screens;
+                state.refresh_connectors();
+            }
             lxb_shell_v1::Event::OutputWindowsDone { output } => {
                 let Some(index) = state.panels.iter().position(|p| p.output == output) else {
                     return;
@@ -45686,19 +48606,20 @@ mod flight_tests {
     #[test]
     fn a_display_draws_one_last_frame_after_it_is_covered() {
         const RESTED: bool = true;
+        const CLOCK: bool = true;
         // Visible, then covered with nothing left to animate: one more frame.
         let mut was_visible = true;
-        assert!(should_draw(!RESTED, false, false, was_visible));
+        assert!(should_draw(!RESTED, false, false, was_visible, !CLOCK));
 
         // Having drawn it, and only then, it goes quiet.
         was_visible = false;
-        assert!(!should_draw(!RESTED, false, false, was_visible));
+        assert!(!should_draw(!RESTED, false, false, was_visible, !CLOCK));
 
         // An animation still running keeps it drawing until it settles, so
         // the frame left behind is never a half-finished one.
-        assert!(should_draw(!RESTED, false, true, false));
+        assert!(should_draw(!RESTED, false, true, false, !CLOCK));
         // And a visible display always draws, settled or not.
-        assert!(should_draw(!RESTED, true, false, false));
+        assert!(should_draw(!RESTED, true, false, false, !CLOCK));
     }
 
     /// Under OLED protection's black, all the way down, nothing is drawn at
@@ -45707,15 +48628,35 @@ mod flight_tests {
     #[test]
     fn a_rested_display_draws_nothing_until_it_is_woken() {
         const RESTED: bool = true;
+        const CLOCK: bool = true;
         for visible in [false, true] {
             for settling in [false, true] {
                 for was_visible in [false, true] {
-                    assert!(!should_draw(RESTED, visible, settling, was_visible));
+                    assert!(!should_draw(RESTED, visible, settling, was_visible, !CLOCK));
                 }
             }
         }
         // Woken, it draws again on the ordinary terms.
-        assert!(should_draw(!RESTED, false, true, false));
+        assert!(should_draw(!RESTED, false, true, false, !CLOCK));
+    }
+
+    /// Unless it has been asked to go on showing the time, which is the one
+    /// thing a dark screen draws — and it draws it whatever else is true of
+    /// that display, because none of the other reasons to draw can be true of a
+    /// screen with the compositor's black all the way down over it.
+    #[test]
+    fn a_rested_display_showing_the_time_draws_it() {
+        const RESTED: bool = true;
+        const CLOCK: bool = true;
+        for visible in [false, true] {
+            for settling in [false, true] {
+                for was_visible in [false, true] {
+                    assert!(should_draw(RESTED, visible, settling, was_visible, CLOCK));
+                }
+            }
+        }
+        // And a screen nobody has asked it of goes on drawing nothing.
+        assert!(!should_draw(RESTED, false, false, false, !CLOCK));
     }
 
     /// And what that last frame is allowed to carry, which is the other half of
@@ -48651,7 +51592,7 @@ mod file_menu_tests {
     /// included — and neither of the three under it does.
     #[test]
     fn the_file_menu_puts_the_rule_above_sort_with_the_column_rows_under_it() {
-        let rows = media_rows(true, true, false);
+        let rows = media_rows(true, true, false, false);
         assert_eq!(
             labels(&rows),
             [
@@ -48705,7 +51646,7 @@ mod file_menu_tests {
         // shell says it is not the one in force.
         assert_eq!(rows[9].glyph, None);
         assert_eq!(
-            media_rows(true, true, true)[9].glyph,
+            media_rows(true, true, true, false)[9].glyph,
             Some(icons::CHOSEN),
             "and the tick is there when they are being listed"
         );
@@ -48722,6 +51663,62 @@ mod file_menu_tests {
         );
         // And the archive's row wears the mark of what it makes.
         assert_eq!(rows[6].glyph, Some(icons::COMPRESS));
+    }
+
+    /// A Windows program's own row stands over Delete, under the two general
+    /// ways to open the file — and the two rows that carry the file stay
+    /// *under* Delete with it there.
+    ///
+    /// That second half is the whole reason this test exists. Copy and Move
+    /// used to be spliced in at a written-down index 3, which meant "after
+    /// Delete" only for as long as nothing above Delete ever changed; the
+    /// first row ever added above it would have put them in front of Delete
+    /// and pushed the one row nobody may hit by accident down under the hand.
+    #[test]
+    fn a_windows_programs_own_row_goes_in_above_delete_and_moves_nothing_under_it() {
+        let rows = media_rows(true, true, false, true);
+        assert_eq!(
+            labels(&rows),
+            [
+                "Open",
+                "Open with",
+                "Run inside a game",
+                "Delete",
+                "Copy",
+                "Move",
+                "Rename",
+                "Compress",
+                "Select multiple",
+                "Sort",
+                "Show hidden files",
+                "Cancel"
+            ]
+        );
+        // The band it is in is the one that acts on the file, with the rule
+        // still falling above Sort.
+        let bands: Vec<u8> = rows.iter().map(|row| row.group).collect();
+        assert_eq!(bands, [0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1]);
+        // Warm under the highlight is Delete's alone, and it still is: this
+        // row runs a program, which is what every press on a program does.
+        let grave: Vec<bool> = rows.iter().map(|row| row.grave).collect();
+        assert_eq!(
+            grave,
+            [false, false, false, true, false, false, false, false, false, false, false, false]
+        );
+        // And it wears the Windows mark, which is the one word on the row
+        // saying which world the program is run in.
+        assert_eq!(
+            rows[2].command,
+            menu::Command::WindowsRunInsideAGame,
+            "{:?}",
+            commands(&rows)
+        );
+        assert_eq!(rows[2].glyph, Some(proton::mark()));
+
+        // On a shelf there is no Windows program to run and nothing standing
+        // in a folder either, so neither row is there.
+        let shelved = media_rows(true, false, false, false);
+        assert!(!labels(&shelved).contains(&"Run inside a game"));
     }
 
     /// The one row that can be unavailable is drawn greyed rather than left
@@ -48741,7 +51738,7 @@ mod file_menu_tests {
     /// exactly the case somebody needs it for.
     #[test]
     fn a_row_that_cannot_be_taken_here_is_still_drawn() {
-        let rows = media_rows(false, false, false);
+        let rows = media_rows(false, false, false, false);
         assert_eq!(labels(&rows).len(), 6);
         let enabled: Vec<bool> = rows.iter().map(|row| row.enabled).collect();
         assert_eq!(enabled, [true, true, false, true, true, true]);
@@ -48760,7 +51757,7 @@ mod file_menu_tests {
     /// answer to give rather than the menu's to guess.
     #[test]
     fn a_file_that_is_not_the_users_own_can_still_be_carried_out_of_a_folder() {
-        let rows = media_rows(false, true, false);
+        let rows = media_rows(false, true, false, false);
         assert_eq!(labels(&rows).len(), 11);
         let enabled: Vec<bool> = rows.iter().map(|row| row.enabled).collect();
         assert_eq!(
@@ -49399,7 +52396,7 @@ mod file_menu_tests {
     /// that does not belong on this menu.
     #[test]
     fn a_shelved_file_is_offered_no_way_to_carry_it_anywhere() {
-        let rows = media_rows(true, false, false);
+        let rows = media_rows(true, false, false, false);
         assert_eq!(
             labels(&rows),
             ["Open", "Open with", "Delete", "Rename", "Sort", "Cancel"]

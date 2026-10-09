@@ -27,6 +27,68 @@ pub enum ImportError {
     Failed(String),
 }
 
+/// Whether switching one display off or on is this session's to do, and if
+/// not, why not. The `connector_switching` enum of `lxb_shell_v1`.
+///
+/// Reported per display and before anybody presses anything, so that a page
+/// never offers a press it would have to refuse. The three refusals are
+/// genuinely different and a shell has a different thing to say about each.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Switching {
+    /// It can be switched either way.
+    Allowed,
+    /// It is the only display left on, so it stays on. There has to be
+    /// somewhere to draw the page that would switch it back.
+    LastOneOn,
+    /// A hand-written config file answers for this display itself — see
+    /// [`crate::config::Config::enabled_is_pinned`]. A press here would work
+    /// until the next login and then be overruled, which is worse than not
+    /// offering it.
+    SetElsewhere,
+    /// This session cannot switch a display at all: the one nested window a
+    /// winit session is, which has nothing to switch off and no way back.
+    NotPossible,
+}
+
+impl Switching {
+    /// What goes on the wire.
+    pub fn as_protocol(self) -> lxb_protocol::server::lxb_shell_v1::ConnectorSwitching {
+        use lxb_protocol::server::lxb_shell_v1::ConnectorSwitching as Wire;
+        match self {
+            Self::Allowed => Wire::Allowed,
+            Self::LastOneOn => Wire::LastOneOn,
+            Self::SetElsewhere => Wire::SetElsewhere,
+            Self::NotPossible => Wire::NotPossible,
+        }
+    }
+}
+
+/// One display this session has, whether or not anything is drawn on it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Connector {
+    /// The connector's own name — `DP-1`, `HDMI-A-1`. The same string
+    /// `wl_output.name` gives while the display is lit, and the only name it
+    /// has at all while it is not.
+    pub name: String,
+    /// Whether it is being driven now.
+    pub lit: bool,
+    /// Whether that is the shell's to change.
+    pub switching: Switching,
+}
+
+/// What came of asking for a display to be switched.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Switched {
+    /// It was switched, and the session has changed.
+    Done,
+    /// It was already that way; nothing happened and nothing is wrong.
+    Already,
+    /// It was not switched. Never reported to the client as such — the
+    /// connector event says what the session is actually doing, which is the
+    /// one answer a shell must not present as success.
+    Refused,
+}
+
 impl Backend {
     /// Seat name to advertise. Nested backends make one up; udev uses the real
     /// libseat seat.
@@ -238,5 +300,103 @@ impl crate::state::LxbState {
             self.queue_redraw();
         }
         turned
+    }
+
+    /// Every display this session has, lit or dark, in the order the backend
+    /// knows them.
+    ///
+    /// The list the shell's Screens-in-use page is built from, and the only
+    /// list in this compositor that includes a display nobody is driving. A
+    /// lit display appears here *and* as a `wl_output`; a dark one appears
+    /// only here, because there is nothing to drive and so nothing for a
+    /// client to bind.
+    pub fn connectors(&self) -> Vec<Connector> {
+        let mut found = match &self.backend {
+            Backend::Udev(_) => udev::connectors(self),
+            Backend::X11(_) => x11::connectors(self),
+            // One window, no second one to fall back to, and no path that
+            // could take it away and give it back. Reported as a display that
+            // exists and cannot be switched, rather than left out: a page that
+            // said nothing here would read as a session with no displays.
+            Backend::Winit(_) => self
+                .lxb
+                .space
+                .outputs()
+                .map(|output| Connector {
+                    name: output.name(),
+                    lit: true,
+                    switching: Switching::NotPossible,
+                })
+                .collect(),
+        };
+        // The floor, applied once and in one place rather than in each backend:
+        // the last display on cannot be switched off, whatever the backend
+        // would otherwise allow. Counted over this list rather than over the
+        // space, so that it agrees exactly with what is reported — a display
+        // the backend has only just taken down is already dark here.
+        let lit = found.iter().filter(|entry| entry.lit).count();
+        if lit <= 1 {
+            for entry in &mut found {
+                if entry.lit && entry.switching == Switching::Allowed {
+                    entry.switching = Switching::LastOneOn;
+                }
+            }
+        }
+        found
+    }
+
+    /// Switch one display off, or back on, naming it as the shell names it.
+    ///
+    /// The floor lives here rather than in any one backend, and is taken again
+    /// at the moment the request runs: the shell decided against the session it
+    /// could see, and by now the other display's cable may already be out.
+    /// Requests and hot-plug events share the one event loop thread, so the
+    /// count taken here is the only one that cannot be stale.
+    pub fn set_connector_enabled(&mut self, name: &str, on: bool) -> Switched {
+        let known = self.connectors();
+        let Some(entry) = known.iter().find(|entry| entry.name == name) else {
+            tracing::debug!(display = name, "no such display to switch");
+            return Switched::Refused;
+        };
+        if entry.lit == on {
+            return Switched::Already;
+        }
+        match entry.switching {
+            Switching::Allowed => {}
+            refusal => {
+                tracing::info!(
+                    display = name,
+                    ?refusal,
+                    "this display is not this session's to switch"
+                );
+                return Switched::Refused;
+            }
+        }
+
+        let switched = match &self.backend {
+            Backend::Udev(_) => udev::set_connector_enabled(self, name, on),
+            Backend::X11(_) => x11::set_connector_enabled(self, name, on),
+            Backend::Winit(_) => false,
+        };
+        if !switched {
+            return Switched::Refused;
+        }
+
+        // The session's own answer, which is what every later hot-plug, device
+        // rescan and return from a text console reads — the config is loaded
+        // once and never written, so without this the display would be lit
+        // again by the next thing that asked.
+        self.lxb.outputs.switch(name, on);
+        // And the next session's. Only on a change that went through: a
+        // request this compositor would not carry out is never written down as
+        // if it had been. Never the `"*"` entry either — `output_for` falls
+        // back to it, so one answer there would be an answer about every
+        // display on the machine — but a wildcard is pinned by the config and
+        // was refused above, so there is nothing further to check here.
+        crate::remembered::remember(name, |entry| entry.enabled = Some(on));
+
+        tracing::info!(display = name, on, "a display was switched");
+        self.refresh_connectors();
+        Switched::Done
     }
 }

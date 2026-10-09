@@ -518,6 +518,17 @@ is, is written on the row in words. Dotfiles
 are left out: nobody's photographs are in `~/.cache`, and the shell's own
 settings are a column of their own.
 
+A photograph and a short film are drawn as themselves rather than as a mark —
+the picture goes in the round hole the mark would have had, for the rows around
+the cursor, and arrives a frame or two after the column does. So is a Windows
+program, by the same rule one step along: with the
+[Windows Apps](windows.md) package installed, an `.exe` wears the icon its own
+author put inside it and runs when it is pressed, and its menu carries
+**Run inside a game**. An icon is fitted whole rather than cropped into the
+circle a photograph fills — it is a drawing with its own edges, not a picture
+of something. Without the package a `.exe` is a page like any other file the
+shell has no opinion about.
+
 Every column here carries the same field at its head that the three shelves do,
 and it means the same thing: `A` on it raises the on-screen keyboard, what is
 typed goes onto the row itself, and the column narrows as each letter lands. A

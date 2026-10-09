@@ -11,11 +11,12 @@
 //! RetroArch has no PlayStation 3 core, which is why this is a package of its
 //! own rather than a console in RetroArch's column.
 //!
-//! ## Ten questions
+//! ## Eleven questions
 //!
 //! ```text
 //! lxb-rpcs3 probe            is RPCS3 here, and has it the PS3's system software
 //! lxb-rpcs3 setup            install whichever of the two is missing
+//! lxb-rpcs3 forget           it has been removed; forget what was kept for it
 //! lxb-rpcs3 scan [DIR]       the installed games, and the ones in the PS3 folder
 //! lxb-rpcs3 key IMAGE        fetch an encrypted disc's key, where it has none
 //! lxb-rpcs3 add PATH...      install packages (a game, then its updates)
@@ -72,6 +73,25 @@ enum Asked {
     /// the system software from Sony where RPCS3 has none. One line per
     /// change, ending on `done` or `failed`.
     Setup,
+    /// RPCS3 has been taken off this machine; forget what this integration
+    /// kept for it.
+    ///
+    /// **Removing RPCS3 itself is the shell's job**, because only the shell can
+    /// ask for a password — a `--user` flatpak comes off with nobody's
+    /// permission, a system-wide one through polkit, a distribution package
+    /// through `sudo`, and an AppImage by deleting the file. What is left is
+    /// everything outside the program: the filesystem permission granted to its
+    /// sandbox, and this shell's own cache of artwork, grey trophies and
+    /// unpacked packages. With `--data`, which is the shell's **Remove
+    /// everything**, RPCS3's own configuration directory outside any sandbox
+    /// goes as well — which is the PlayStation 3's drives too, so the system
+    /// software, the games installed from packages, the saves and the trophies.
+    /// The game files in somebody's own folder are never touched.
+    Forget {
+        /// Take RPCS3's own configuration directory as well.
+        #[arg(long)]
+        data: bool,
+    },
     /// The games RPCS3 has installed, and the ones in this folder.
     Scan {
         #[arg(value_name = "DIR")]
@@ -166,6 +186,7 @@ fn main() -> ExitCode {
             )
         }
         Asked::Setup => ended(setup::run(&mut out)),
+        Asked::Forget { data } => ended(setup::forget(&mut out, data)),
         Asked::Scan { folder } => {
             let art = art::art_root();
             let mut library = scan::library(folder.as_deref(), console.as_ref(), art.as_deref());

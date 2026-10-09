@@ -128,6 +128,61 @@ pub enum Setting {
     /// carried out by the shell for [`Setting::Steam`]'s reason, and the
     /// last of them by Heroic's helper.
     Epic(EpicValue),
+    /// Whether this shell drives RetroArch at all — Settings > Games >
+    /// RetroArch > Integration.
+    ///
+    /// **On.** A machine that installed the `lxb-retroarch` package asked for
+    /// the integration, which is the argument [`EpicValue::Integration`] is
+    /// on, and it is the same argument: the package is the asking.
+    ///
+    /// Off, none of it exists and RetroArch is an application like any other:
+    /// no RetroArch row at the head of Games, no column of somebody's own
+    /// games, no RetroAchievements, no cores fetched and no artwork, and
+    /// RetroArch's own `.desktop` entry back on the bar wearing the icon its
+    /// package ships. Which is the right answer for a machine that wants
+    /// RetroArch's own interface and not this one's, and for one where the
+    /// integration is simply not wanted.
+    ///
+    /// A flat variant rather than a `RetroArchValue` of its own, and the same
+    /// goes for the two below it: there is one question to ask about each of
+    /// these three programs, where Steam and Heroic have three each. An enum
+    /// holding a single value is a name for nothing. The settings RetroArch
+    /// *does* have are already flat here — see [`Setting::Emulator`] and
+    /// [`Setting::CoreOption`] — because they are the emulator's own rather
+    /// than this shell's, and this one is beside them.
+    ///
+    /// Carried out by the shell rather than by [`apply_with`], on
+    /// [`Setting::Steam`]'s terms: what has to happen is a worker being
+    /// started or stopped and a bar being built again, and neither is a thing
+    /// this module does.
+    RetroArchIntegration(bool),
+    /// Whether this shell drives RPCS3 at all — Settings > Games >
+    /// PlayStation 3 > Integration. On, for
+    /// [`Setting::RetroArchIntegration`]'s reason.
+    ///
+    /// Off, there is no PlayStation 3 row and no column of PS3 games, no
+    /// trophies read out of RPCS3's records, no preview film or music, no
+    /// Install offered over a `.pkg` in Files, and RPCS3's own `.desktop`
+    /// entry is back on the bar. The `ps3` folder of somebody's ROM
+    /// collection goes back to being RetroArch's to list, which is where it
+    /// was before this package existed — see [`crate::ps3::is_ps3_folder`].
+    Ps3Integration(bool),
+    /// Whether this shell plays Windows games at all — Settings > Games >
+    /// Windows Apps > Integration. On, for
+    /// [`Setting::RetroArchIntegration`]'s reason.
+    ///
+    /// Off, there is no Windows Apps row and no column: a game already
+    /// installed stays on the disk untouched and comes back the moment this is
+    /// switched on again, because what is turned off here is the shell's half
+    /// and not the games.
+    ///
+    /// It is the **Windows Apps** integration and nothing else. Steam's own
+    /// compatibility tool — see [`SteamValue::OtherTitles`] — and the Proton
+    /// Heroic runs Epic games under — see [`EpicValue::Tool`] — are two other
+    /// programs' settings, kept in those programs' own files, and this does
+    /// not reach either of them. A machine with this off goes on playing every
+    /// Steam and Epic game it played before.
+    WindowsIntegration(bool),
     /// Set one of an emulator core's own settings — PPSSPP's rendering
     /// resolution, Mesen's overclock.
     ///
@@ -576,6 +631,14 @@ pub enum DisplayValue {
     /// whether a screen does that is a fact about the screen. A television and
     /// an OLED handheld beside it are not the same question.
     OledProtection(bool),
+    /// Go on showing the time on this display while it is dark.
+    ///
+    /// Per display like the switch above it, and not the same question however
+    /// close the two sit: that one asks whether a screen nobody is watching
+    /// goes dark, and this asks what it shows once it has — whichever reason
+    /// took it there, a screen resting while another is used or the machine
+    /// being left alone altogether.
+    AlwaysOnDisplay(bool),
     /// Draw every application on this display this much larger than life, in
     /// per cent of its own size. 100 is one to one, and the least it can be.
     ///
@@ -593,6 +656,21 @@ pub enum DisplayValue {
     ///
     /// [`Entry::Bar`]: crate::apps::Entry::Bar
     ApplicationScale(u16),
+    /// Draw on this display at all, or leave it dark.
+    ///
+    /// The one value here that is not about a display's picture but about
+    /// whether there is one: a screen switched off leaves the arrangement, its
+    /// windows move to the screens that are left, and the shell stops drawing
+    /// on it altogether. Everything else it was ever set to is kept, so
+    /// switching it back on brings it back the way it was left — see
+    /// [`PLACE`] and the maps beside it, none of which is cleared by this.
+    ///
+    /// Carried out entirely by the compositor, like the mode and the
+    /// arrangement, and remembered by the compositor too rather than in this
+    /// shell's own file: it has to be known before a shell exists, or a screen
+    /// somebody switched off would light for a moment at every login and then
+    /// go dark again.
+    Enabled(bool),
 }
 
 /// One thing that can be changed about the session's pointing devices.
@@ -1414,6 +1492,40 @@ impl NightLight {
 /// How many minutes a day has, which both ends of every window are counted in.
 const MINUTES_IN_DAY: u16 = 24 * 60;
 
+/// Whether switching one screen off or on is this session's to do, and if not,
+/// why not — the `connector_switching` enum of `lxb_shell_v1`.
+///
+/// Reported per screen and before anybody presses anything, so that the page
+/// never offers a press the compositor would refuse. The three refusals are
+/// genuinely different and the page has a different thing to say about each.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Switching {
+    /// It can be switched either way.
+    Allowed,
+    /// The only screen still in use, so it stays in use: there has to be
+    /// somewhere to draw the page that would switch it back.
+    LastOneOn,
+    /// The machine itself answers for this screen, and would answer again at
+    /// the next sign-in. A press here would appear to work and then be
+    /// overruled, which is worse than not offering it.
+    SetElsewhere,
+    /// This session cannot switch a screen at all: it is running inside
+    /// another compositor, which owns the window it draws in.
+    NotPossible,
+}
+
+/// One screen the session has, lit or dark, as the compositor reports it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Connector {
+    /// The screen's own name — the same one every other page here files it
+    /// under, and the only name it has at all while nothing is drawn on it.
+    pub name: String,
+    /// Whether the bar is drawing on it now.
+    pub lit: bool,
+    /// Whether that is this shell's to change.
+    pub switching: Switching,
+}
+
 /// What one display turns out to be able to do, as reported by the compositor.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct Support {
@@ -1512,6 +1624,23 @@ static TURN: Mutex<BTreeMap<String, Orientation>> = Mutex::new(BTreeMap::new());
 /// order of the list.
 static PLACED: Mutex<Vec<(String, u32)>> = Mutex::new(Vec::new());
 
+/// Every screen the session has, whether or not anything is drawn on it, in the
+/// order the compositor named them.
+///
+/// The one list here that is not built from the displays the shell can see. A
+/// screen somebody has switched off has no `wl_output` — there is nothing being
+/// driven, so there is nothing for this shell to have bound — which means it is
+/// absent from [`SUPPORT`], [`MODES`], [`TURNED`] and [`PLACED`] alike, exactly
+/// as a screen with its cable out is. Without this the page that offers to
+/// switch it back on would have no row to offer.
+///
+/// Empty on a session whose compositor is too old to be asked, which is a
+/// different thing from a session with no screens and is why the page tells the
+/// two apart: [`Switching::NotPossible`] arrives for a compositor that answers
+/// and cannot switch anything, and nothing at all arrives for one that does not
+/// answer.
+static CONNECTORS: Mutex<Vec<Connector>> = Mutex::new(Vec::new());
+
 /// The arrangement the user asked for: every display's place, counted from
 /// zero, as of the last time anybody moved one.
 ///
@@ -1545,6 +1674,20 @@ static NIGHT: Mutex<BTreeMap<String, NightLight>> = Mutex::new(BTreeMap::new());
 /// rest is never rested, which is the setting's own default and is never the
 /// wrong answer for a display this file has never heard of.
 static OLED: Mutex<BTreeMap<String, bool>> = Mutex::new(BTreeMap::new());
+
+/// Which screens go on showing the time while they are dark, for the screens
+/// somebody has answered the question on.
+///
+/// Filed beside [`OLED`] and kept on exactly its terms — a plain switch per
+/// connector, with nothing inherited behind it, because a screen nobody has
+/// asked this of showing nothing while it is dark is never the wrong answer.
+///
+/// Deliberately not the same question as the one above it, however close they
+/// sit on the page. OLED protection asks whether a screen nobody is watching
+/// should go dark; this asks what it shows once it has, whichever reason took
+/// it there — that one, or the machine being left alone altogether. A screen
+/// can be answered either way on each.
+static ALWAYS_ON: Mutex<BTreeMap<String, bool>> = Mutex::new(BTreeMap::new());
 
 /// What was read out of the settings file for displays it says nothing about.
 ///
@@ -1767,6 +1910,10 @@ static EPIC_AFTER_A_GAME: Mutex<bool> = Mutex::new(false);
 /// Steam's. See [`epic_sort`].
 static EPIC_SORT: Mutex<Option<String>> = Mutex::new(None);
 
+/// The order the Windows Apps column is listed in. Three names of its own
+/// rather than Steam's eight — see [`crate::proton::Sort`].
+static WINDOWS_SORT: Mutex<Option<String>> = Mutex::new(None);
+
 /// Whether the shell drives Heroic: the Epic Games row, its column and its
 /// achievements. Off, Heroic is an application like any other.
 pub fn epic_integration() -> bool {
@@ -1783,6 +1930,55 @@ pub fn epic_left_after_a_game() -> bool {
     epic_integration() && *EPIC_AFTER_A_GAME.lock().unwrap()
 }
 
+/// Whether the shell drives each of the three optional emulator and Proton
+/// packages — Settings > Games > RetroArch, PlayStation 3 and Windows Apps,
+/// each page's own Integration switch.
+///
+/// All three on, like [`EPIC_INTEGRATION`] above them and for its argument: a
+/// machine that installed the package asked for the integration, and a switch
+/// that defaulted to off would leave somebody who had just installed
+/// `lxb-retroarch` looking at a bar with nothing new on it.
+///
+/// One switch each and no more, where Steam and Heroic have three. The other
+/// two of theirs are about a *client this shell keeps running* — started with
+/// the session, left up after a game — and none of these three is one of
+/// those: RetroArch and RPCS3 are started for a game and end with it, and
+/// Proton is not a program with a window at all. Questions nobody can answer
+/// are not asked. See [`Setting::RetroArchIntegration`].
+static RETROARCH_INTEGRATION: Mutex<bool> = Mutex::new(true);
+static PS3_INTEGRATION: Mutex<bool> = Mutex::new(true);
+static WINDOWS_INTEGRATION: Mutex<bool> = Mutex::new(true);
+
+/// Whether the shell drives RetroArch: the RetroArch row, its column, its
+/// achievements, the cores it fetches and the artwork. Off, RetroArch is an
+/// application like any other.
+///
+/// The setting alone, without asking whether the package is here. The two are
+/// separate questions and every caller wants a different pair of them: the bar
+/// asks both, Settings asks whether the package is here to decide whether
+/// there is a page, and the page then asks this to decide what is on it. See
+/// [`crate::retroarch::offered`].
+pub fn retroarch_integration() -> bool {
+    *RETROARCH_INTEGRATION.lock().unwrap()
+}
+
+/// Whether the shell drives RPCS3: the PlayStation 3 row, its column, its
+/// trophies, the preview film and the Install over a package in Files. Off,
+/// RPCS3 is an application like any other.
+pub fn ps3_integration() -> bool {
+    *PS3_INTEGRATION.lock().unwrap()
+}
+
+/// Whether the shell plays Windows games: the Windows Apps row and its
+/// column. Off, the games stay on the disk and nothing on the bar reaches
+/// them.
+///
+/// Steam's compatibility tool and Heroic's Proton are not this question — see
+/// [`Setting::WindowsIntegration`].
+pub fn windows_integration() -> bool {
+    *WINDOWS_INTEGRATION.lock().unwrap()
+}
+
 /// Remember the order the Epic Games column is listed in.
 pub fn remember_epic_sort(sort: lxb_steam::library::Sort) {
     *EPIC_SORT.lock().unwrap() = Some(sort.key().to_string());
@@ -1794,6 +1990,18 @@ pub fn remember_epic_sort(sort: lxb_steam::library::Sort) {
 pub fn epic_sort() -> Option<lxb_steam::library::Sort> {
     let held = EPIC_SORT.lock().unwrap();
     lxb_steam::library::Sort::from_key(held.as_deref()?)
+}
+
+pub fn remember_windows_sort(sort: crate::proton::Sort) {
+    *WINDOWS_SORT.lock().unwrap() = Some(sort.key().to_string());
+    save(&stored());
+}
+
+/// What the settings file says the Windows Apps column is listed in, if it
+/// says anything; an order this shell does not have is nothing.
+pub fn windows_sort() -> Option<crate::proton::Sort> {
+    let held = WINDOWS_SORT.lock().unwrap();
+    crate::proton::Sort::from_key(held.as_deref()?)
 }
 
 /// Every library the Steam this session drives lists, as the shell last read
@@ -2527,6 +2735,19 @@ pub fn ps3_folder() -> Option<PathBuf> {
     PS3_FOLDER.lock().unwrap().clone()
 }
 
+/// Forget where they are, because the thing that read it has gone.
+///
+/// [`forget_roms_folder`]'s act for the other emulator, on its terms: the only
+/// line in this file that belongs to the PlayStation 3 integration and to
+/// nothing else, forgotten when somebody answers **Remove everything** to the
+/// question that takes RPCS3 off. Their games are not touched and the folder is
+/// not touched; what is forgotten is one line saying where to look.
+pub fn forget_ps3_folder() {
+    *PS3_FOLDER.lock().unwrap() = None;
+    save(&stored());
+    tracing::info!("the PlayStation 3 folder is forgotten");
+}
+
 /// Their PlayStation 3 games are in there from now on.
 pub fn choose_ps3_folder(at: &Path) {
     *PS3_FOLDER.lock().unwrap() = Some(at.to_path_buf());
@@ -2560,6 +2781,21 @@ pub enum Picking {
     /// PlayStation 3, and the question the PlayStation 3 row asks the first
     /// time there is nothing to show. See [`crate::ps3`].
     Ps3Folder,
+    /// Where new Windows games are kept: Settings > Games > Windows Apps.
+    ///
+    /// The one setting of this integration that is not the helper's to
+    /// decide alone — and it is still kept by the helper rather than in this
+    /// file, because the helper reads it on every launch and a second copy
+    /// here would be a second answer. See [`crate::proton::folder`].
+    WindowsFolder,
+    /// A folder holding a game somebody already has, to be copied into a
+    /// prefix of its own: the way in for a game that came without an
+    /// installer. See [`crate::proton`].
+    ///
+    /// The only one of these that is not a setting. The folder chosen is
+    /// acted on once and never written down — the game is copied in, and
+    /// where it was copied from is of no further interest.
+    WindowsGameFolder,
 }
 
 impl Picking {
@@ -2572,6 +2808,10 @@ impl Picking {
             Picking::SteamLibrary => crate::i18n::text("steam-add-library-here"),
             Picking::EpicFolder => crate::i18n::text("epic-install-games-here"),
             Picking::Ps3Folder => crate::i18n::text("shell-look-for-games-in-this-folder"),
+            Picking::WindowsFolder => {
+                crate::i18n::text("windows-keep-games-and-apps-in-this-folder")
+            }
+            Picking::WindowsGameFolder => crate::i18n::text("windows-copy-this-game-or-app-in"),
         }
     }
 }
@@ -3168,6 +3408,22 @@ pub fn note_places(reported: Vec<(String, u32)>) -> bool {
     true
 }
 
+/// Every screen the session has, lit or dark, in the order it named them.
+pub fn connectors() -> Vec<Connector> {
+    CONNECTORS.lock().unwrap().clone()
+}
+
+/// Record every screen the compositor says it has. `true` when it is a change,
+/// as [`note_places`].
+pub fn note_connectors(reported: Vec<Connector>) -> bool {
+    let mut held = CONNECTORS.lock().unwrap();
+    if *held == reported {
+        return false;
+    }
+    *held = reported;
+    true
+}
+
 /// The same screens read the other way round: the arrangement itself, first
 /// screen first.
 ///
@@ -3218,6 +3474,17 @@ pub fn night_light_for(display: &str) -> NightLight {
 /// has never been visited should do.
 pub fn oled_protection_for(display: &str) -> bool {
     OLED.lock().unwrap().get(display).copied().unwrap_or(false)
+}
+
+/// Whether this screen goes on showing the time while it is dark. Off for a
+/// screen nobody has answered for, which is every screen until somebody does.
+pub fn always_on_for(display: &str) -> bool {
+    ALWAYS_ON
+        .lock()
+        .unwrap()
+        .get(display)
+        .copied()
+        .unwrap_or(false)
 }
 
 /// What the compositor should be asked for on one display *now*: whether the
@@ -3462,7 +3729,19 @@ pub fn sun_today() -> Option<crate::sun::Sun> {
 /// shell but the programs the console is for — and it is in front of System
 /// because a setting about the games is one somebody came looking for.
 ///
-/// Users follows Games because it is the first page here about *people* rather
+/// Windows Apps follows Games, on a machine that has its package, and is a
+/// page of this column rather than a row under Games — which is where it
+/// started. It is not a games integration: a Windows program somebody
+/// installs through it is as likely to be a tool, a patcher or a launcher as
+/// a game, and the column it puts on the bar is called Windows Apps for the
+/// same reason. Filed under Games it would have been telling the user that
+/// the only thing this machine runs Windows programs for is playing, which is
+/// not true and is not what the page does. It stands beside Games rather than
+/// anywhere else because the two are neighbours in what they are about — the
+/// programs the machine runs — and because somebody looking for one is
+/// standing next to the other.
+///
+/// Users follows it because it is the first page here about *people* rather
 /// than about the machine or the programs on it — and it is in front of System
 /// for the reason Games is: somebody who came to make an account for the person
 /// they live with came looking for it, and a page somebody comes looking for
@@ -3478,7 +3757,7 @@ pub fn sun_today() -> Option<crate::sun::Sun> {
 /// and how large the programs on the machine draw themselves is a setting they
 /// go looking for.
 pub fn column(bar: &[crate::apps::Column]) -> Vec<Entry> {
-    vec![
+    let mut rows = vec![
         updates(),
         appearance(),
         language(),
@@ -3489,10 +3768,17 @@ pub fn column(bar: &[crate::apps::Column]) -> Vec<Entry> {
         bluetooth(),
         input(),
         games(),
-        users(),
-        storage(),
-        system(bar),
-    ]
+    ];
+    // The one page in this column that is not on every machine — see the
+    // paragraph above for why it is here rather than under Games, and
+    // [`crate::proton::offered`] for why it is only sometimes anywhere. The
+    // package alone decides that, never the Integration switch on the page:
+    // a page gated on its own switch is a switch nobody could throw back.
+    if crate::proton::offered() {
+        rows.push(windows());
+    }
+    rows.extend([users(), storage(), system(bar)]);
+    rows
 }
 
 fn language() -> Entry {
@@ -3962,13 +4248,22 @@ fn accent_colour() -> Entry {
 /// with them. Application scaling closes that group: the three above it say how
 /// much room a screen has, and it says how much of that room one application's
 /// interface takes — which is the next question anybody asks about a television
-/// they have just set to 4K and cannot read. The order comes after those four
-/// because it is the one page here that is not about a single screen's picture
-/// at all — it is about where the screens stand relative to one another — and a
-/// user with one display never needs it. The last three describe the picture
-/// those carry, and in that order: the night light is the one every display can
-/// do and the one somebody comes looking for at ten in the evening, HDR is the
-/// one only some hardware has, and the panel's own protection is last.
+/// they have just set to 4K and cannot read.
+///
+/// Then the two pages that are not about a single screen's picture at all but
+/// about which screens there are and how they stand, and in that order: which
+/// screens are used comes before where they stand, because a screen nobody is
+/// drawing on has no place in an arrangement to be moved to. Neither is ever
+/// needed by a user with one display, which is why both come after the four
+/// above them rather than at the head of the column.
+///
+/// The last four describe the picture those carry, and in that order: the night
+/// light is the one every display can do and the one somebody comes looking for
+/// at ten in the evening, and HDR is the one only some hardware has. Then the
+/// two about a screen with no picture at all, which is where a column about
+/// pictures ends: what a dark screen still shows, and then the panel's own
+/// protection, which is the one nobody comes to this column looking for until
+/// they own the screen that needs it.
 fn display() -> Entry {
     folder(
         crate::i18n::text("shell-display"),
@@ -3979,11 +4274,115 @@ fn display() -> Entry {
             refresh_rate(),
             orientation(),
             application_scale(),
+            screens_in_use(),
             display_order(),
             night_light(),
             high_dynamic_range(),
+            always_on_display(),
             oled_protection(),
         ],
+    )
+}
+
+/// Always on display: what a screen goes on showing once it has gone dark.
+///
+/// The one page under Display that is about a screen with nothing on it. Every
+/// other page here describes a picture; this one describes the little that is
+/// left when there is no picture — the time, in the middle of the screen, in
+/// the grey of something that is barely lit at all.
+///
+/// Beside OLED protection rather than inside it, and that is a question worth
+/// answering because the two are so close. OLED protection asks whether a
+/// screen nobody is watching should go dark. This asks what it shows once it
+/// has, and a screen can arrive there two ways: that switch, or the machine
+/// being left alone until Settings > Power turns the screens off. A row that
+/// only appeared under OLED protection would be a row that did nothing on the
+/// second of those, which is the one most people meet.
+///
+/// The same three shapes the pages around it have, built from the same list
+/// [`oled_protection`] is built from: the screens the compositor reports. A
+/// screen that is not being drawn on cannot be given a clock, which is why this
+/// is not built from [`connectors`].
+fn always_on_display() -> Entry {
+    let screens = support();
+    if screens.is_empty() {
+        return folder(
+            crate::i18n::text("shell-always-on-display"),
+            crate::i18n::text("shell-what-a-dark-screen-still-shows"),
+            icons::SETTING_ALWAYS_ON,
+            vec![nothing_can_show_the_time()],
+        );
+    }
+    match screens.as_slice() {
+        // One screen, so there is no screen to choose — and the page above it
+        // says which screen it is and what the switch is set to.
+        [(name, _)] => folder(
+            crate::i18n::text("shell-always-on-display"),
+            &format!("{name} — {}", showing_of(name)),
+            icons::SETTING_ALWAYS_ON,
+            always_on_controls(name),
+        ),
+        _ => folder(
+            crate::i18n::text("shell-always-on-display"),
+            crate::i18n::text("shell-what-a-dark-screen-still-shows"),
+            icons::SETTING_ALWAYS_ON,
+            screens
+                .iter()
+                .map(|(name, _)| {
+                    folder(
+                        name,
+                        &showing_of(name),
+                        icons::SETTING_DISPLAY,
+                        always_on_controls(name),
+                    )
+                })
+                .collect(),
+        ),
+    }
+}
+
+/// The controls, for one screen — shared by the screen list and by the session
+/// that has only one screen, the way [`oled_protection_controls`] is.
+fn always_on_controls(name: &str) -> Vec<Entry> {
+    vec![always_on_switch(intern(name), always_on_for(name))]
+}
+
+/// What one screen's switch is set to, in the few words a row's comment has.
+fn showing_of(display: &str) -> String {
+    match always_on_for(display) {
+        true => crate::i18n::text("shell-on").to_string(),
+        false => crate::i18n::text("shell-off").to_string(),
+    }
+}
+
+/// The switch itself, on or off.
+fn always_on_switch(display: &'static str, on: bool) -> Entry {
+    folder(
+        crate::i18n::text("shell-always-on-display"),
+        crate::i18n::text("shell-show-the-time-on-this-screen-while-it-is-dark"),
+        icons::SETTING_ALWAYS_ON,
+        vec![
+            value(
+                crate::i18n::text("shell-off"),
+                None,
+                !on,
+                setting(display, DisplayValue::AlwaysOnDisplay(false)),
+            ),
+            value(
+                crate::i18n::text("shell-on"),
+                None,
+                on,
+                setting(display, DisplayValue::AlwaysOnDisplay(true)),
+            ),
+        ],
+    )
+}
+
+/// The row that stands in for the screen list when no screen can show anything.
+fn nothing_can_show_the_time() -> Entry {
+    reading(
+        crate::i18n::text("shell-no-screen-can-show-the-time"),
+        crate::i18n::text("always-on-needs-a-display"),
     )
 }
 
@@ -4558,6 +4957,125 @@ fn place_values(name: &str, standing: u32, order: &[String]) -> Vec<Entry> {
 /// into a list. Nobody calls their leftmost monitor the zeroth one.
 fn place_title(place: usize) -> String {
     crate::message!("display-number", "number" => (place + 1).to_string())
+}
+
+/// Screens in use: which screens the bar draws on, and which are left dark.
+///
+/// The second page under Display that is about the screens rather than about a
+/// screen, and it stands immediately before the other one because it asks the
+/// question that comes first: a screen nobody is drawing on has no place in an
+/// arrangement to be moved to. Everything above these two describes one
+/// screen's picture; these two are about which screens there are and how they
+/// stand.
+///
+/// The same three shapes the pages above it have. A single screen does not
+/// collapse to a switch, because there is nothing to switch: the bar has to
+/// have somewhere to draw, so the one screen a session has is the one screen it
+/// keeps, and the row says so rather than offering a press that would be
+/// refused.
+///
+/// The screens are every screen the compositor says it has — see [`CONNECTORS`]
+/// — which is a longer list than any other page here shows, because it is the
+/// only one that includes a screen nothing is drawn on. That is the whole point
+/// of it: a screen that has been switched off is invisible to every other page
+/// in this tree, and this is where it is switched back on.
+fn screens_in_use() -> Entry {
+    let screens = connectors();
+    match screens.as_slice() {
+        [] => folder(
+            crate::i18n::text("shell-screens-in-use"),
+            crate::i18n::text("shell-which-screens-the-bar-draws-on"),
+            icons::SETTING_SCREEN_USE,
+            vec![nothing_can_be_switched()],
+        ),
+        // One screen, and it is the one the bar is drawn on. The comment names
+        // it, the way the Display order page's does, so the column says which
+        // screen it is talking about without being opened.
+        [only] => folder(
+            crate::i18n::text("shell-screens-in-use"),
+            &crate::message!("only-screen", "name" => &only.name),
+            icons::SETTING_SCREEN_USE,
+            vec![one_screen_must_stay_in_use()],
+        ),
+        _ => folder(
+            crate::i18n::text("shell-screens-in-use"),
+            crate::i18n::text("shell-which-screens-the-bar-draws-on"),
+            icons::SETTING_SCREEN_USE,
+            screens
+                .iter()
+                .map(|screen| {
+                    folder(
+                        &screen.name,
+                        in_use_of(screen),
+                        icons::SETTING_DISPLAY,
+                        in_use_controls(screen),
+                    )
+                })
+                .collect(),
+        ),
+    }
+}
+
+/// What one screen's row says about itself, in the few words a comment has.
+fn in_use_of(screen: &Connector) -> &'static str {
+    match screen.lit {
+        true => crate::i18n::text("shell-in-use"),
+        false => crate::i18n::text("shell-not-in-use"),
+    }
+}
+
+/// The controls, for one screen: the switch, or the reason there is none.
+///
+/// Only [`Switching::Allowed`] opens onto a switch. The other three are
+/// readings, which carry no [`Setting`] and so cannot be chosen and move no
+/// mark — a row that describes something true must not be one the user can
+/// un-choose. That is the page's own half of the guard against somebody
+/// switching off the screen they are reading it on; the compositor refuses it
+/// again when the press arrives, because this list can be one event stale.
+fn in_use_controls(screen: &Connector) -> Vec<Entry> {
+    let display = intern(&screen.name);
+    match screen.switching {
+        Switching::Allowed => vec![
+            value(
+                crate::i18n::text("shell-not-in-use"),
+                None,
+                !screen.lit,
+                setting(display, DisplayValue::Enabled(false)),
+            ),
+            value(
+                crate::i18n::text("shell-in-use"),
+                None,
+                screen.lit,
+                setting(display, DisplayValue::Enabled(true)),
+            ),
+        ],
+        Switching::LastOneOn => vec![reading(
+            crate::i18n::text("shell-this-screen-stays-in-use"),
+            crate::i18n::text("the-last-screen-in-use-stays-on"),
+        )],
+        Switching::SetElsewhere => vec![reading(
+            crate::i18n::text("shell-set-on-this-machine"),
+            crate::i18n::text("screen-switching-set-elsewhere"),
+        )],
+        Switching::NotPossible => vec![nothing_can_be_switched()],
+    }
+}
+
+/// The row that stands in for the screen list when no screen can be switched.
+fn nothing_can_be_switched() -> Entry {
+    reading(
+        crate::i18n::text("shell-no-screen-can-be-switched"),
+        crate::i18n::text("switching-not-possible"),
+    )
+}
+
+/// And the row for the ordinary machine: one screen, which the bar has to go on
+/// being drawn on.
+fn one_screen_must_stay_in_use() -> Entry {
+    reading(
+        crate::i18n::text("shell-only-one-display"),
+        crate::i18n::text("one-screen-must-stay-in-use"),
+    )
 }
 
 /// The row that stands in for the screen list when nothing has a place.
@@ -8407,28 +8925,72 @@ fn steam_after_a_game_switch() -> Entry {
 /// would then be two programs' settings in one list with nothing saying which
 /// was whose.
 fn retroarch() -> Entry {
-    let mut rows = vec![crate::retroachievements::settings_row()];
-    // The emulators first, one page each, because a person who came to this
-    // page came about a game — and what a game looks like is the emulator
-    // running it, not the frontend around it. A machine with no core yet has
-    // none of these and the page is the shorter for it.
-    for core in crate::retroarch::tunables() {
-        rows.push(core_page(&core));
+    // The integration's own switch first and always, the shape Steam's page
+    // and Epic's have: everything under it is a setting belonging to an
+    // emulator this shell is driving, and a shell that is not driving one has
+    // no answer for any of them. See [`steam`], where that shape is argued.
+    let mut rows = vec![retroarch_integration_switch()];
+    if retroarch_integration() {
+        rows.push(crate::retroachievements::settings_row());
+        // The emulators first, one page each, because a person who came to this
+        // page came about a game — and what a game looks like is the emulator
+        // running it, not the frontend around it. A machine with no core yet has
+        // none of these and the page is the shorter for it.
+        for core in crate::retroarch::tunables() {
+            rows.push(core_page(&core));
+        }
+        // Then the settings that belong to no core: they are true of every game
+        // at once, which is exactly why they come after the pages that are true
+        // of one console each.
+        rows.push(aspect_ratio());
+        rows.push(video_driver());
+        rows.push(integer_scale());
+        rows.push(vertical_sync());
+        rows.push(roms_path());
+        rows.push(game_art());
     }
-    // Then the settings that belong to no core: they are true of every game at
-    // once, which is exactly why they come after the pages that are true of
-    // one console each.
-    rows.push(aspect_ratio());
-    rows.push(video_driver());
-    rows.push(integer_scale());
-    rows.push(vertical_sync());
-    rows.push(roms_path());
-    rows.push(game_art());
     folder(
         RETROARCH_PAGE,
         crate::i18n::text("shell-your-own-games-and-how-they-are-played"),
         crate::retroarch::mark(),
         rows,
+    )
+}
+
+/// Whether this shell drives RetroArch at all — see
+/// [`Setting::RetroArchIntegration`], which is where the whole of it is
+/// argued.
+///
+/// It wears the mark of the RetroArch *column*, as Steam's switch wears
+/// Steam's and Epic's wears Heroic's: the column is the visible half of what
+/// the switch decides.
+fn retroarch_integration_switch() -> Entry {
+    let on = retroarch_integration();
+    folder(
+        crate::i18n::text("shell-integration"),
+        match on {
+            true => crate::i18n::text("retroarch-on-your-games-are-a-column-of-the-bar"),
+            false => crate::i18n::text("retroarch-off-retroarch-is-an-application-like-any-other"),
+        },
+        crate::retroarch::mark(),
+        vec![
+            value(
+                crate::i18n::text("shell-off"),
+                Some(crate::i18n::text(
+                    "retroarch-retroarch-is-an-application-like-any-other-with-its-own-icon",
+                )),
+                !on,
+                Setting::RetroArchIntegration(false),
+            ),
+            value(
+                crate::i18n::text("shell-on"),
+                Some(crate::i18n::text(
+                    "retroarch-play-your-own-games-from-the-bar",
+                )),
+                on,
+                Setting::RetroArchIntegration(true),
+            ),
+        ],
     )
 }
 
@@ -8440,31 +9002,148 @@ fn retroarch() -> Entry {
 /// RPCS3's own settings, written into its own file, and the controller's
 /// buttons, which are the shell's: see [`crate::ps3_settings`].
 fn ps3() -> Entry {
-    let Entry::Folder(mut row) = crate::ps3::folder_row() else {
-        unreachable!("it is a folder");
-    };
-    row.over_the_list = false;
-    row.identity = Some("ps3-games-folder".into());
-    let mut rows = vec![Entry::Folder(row)];
-    // RPCS3's own settings, where there is an RPCS3 to have them — read out of
-    // its own file every time the page is built, so this page and RPCS3's
-    // window say the same thing. See [`crate::ps3_settings`].
-    if let Some(now) = crate::ps3_settings::read() {
-        rows.push(ps3_resolution(&now));
-        rows.push(ps3_aspect_ratio(&now));
-        rows.push(ps3_video_driver(&now));
-        rows.push(ps3_frame_limit(&now));
-        rows.push(ps3_vertical_sync(&now));
-        rows.push(ps3_performance_overlay(&now));
-        rows.push(ps3_language(&now));
-        rows.push(ps3_trophy_notices(&now));
-        rows.push(ps3_controller_buttons());
+    // The integration's own switch first and always, as RetroArch's page and
+    // Steam's have it. Everything under it is about games this shell is
+    // playing, the folder they are in included: a shell that is not playing
+    // them has no business asking where they are.
+    let mut rows = vec![ps3_integration_switch()];
+    if ps3_integration() {
+        let Entry::Folder(mut row) = crate::ps3::folder_row() else {
+            unreachable!("it is a folder");
+        };
+        row.over_the_list = false;
+        row.identity = Some("ps3-games-folder".into());
+        rows.push(Entry::Folder(row));
+        // RPCS3's own settings, where there is an RPCS3 to have them — read out
+        // of its own file every time the page is built, so this page and
+        // RPCS3's window say the same thing. See [`crate::ps3_settings`].
+        if let Some(now) = crate::ps3_settings::read() {
+            rows.push(ps3_resolution(&now));
+            rows.push(ps3_aspect_ratio(&now));
+            rows.push(ps3_video_driver(&now));
+            rows.push(ps3_frame_limit(&now));
+            rows.push(ps3_vertical_sync(&now));
+            rows.push(ps3_performance_overlay(&now));
+            rows.push(ps3_language(&now));
+            rows.push(ps3_trophy_notices(&now));
+            rows.push(ps3_controller_buttons());
+        }
     }
     folder(
         crate::ps3::TITLE,
         crate::i18n::text("ps3-where-your-games-are"),
         crate::ps3::mark(),
         rows,
+    )
+}
+
+/// Whether this shell drives RPCS3 at all — see [`Setting::Ps3Integration`].
+fn ps3_integration_switch() -> Entry {
+    let on = ps3_integration();
+    folder(
+        crate::i18n::text("shell-integration"),
+        match on {
+            true => crate::i18n::text("ps3-on-your-playstation-3-games-are-a-column-of-the-bar"),
+            false => crate::i18n::text("ps3-off-rpcs3-is-an-application-like-any-other"),
+        },
+        crate::ps3::mark(),
+        vec![
+            value(
+                crate::i18n::text("shell-off"),
+                Some(crate::i18n::text(
+                    "ps3-rpcs3-is-an-application-like-any-other-with-its-own-icon",
+                )),
+                !on,
+                Setting::Ps3Integration(false),
+            ),
+            value(
+                crate::i18n::text("shell-on"),
+                Some(crate::i18n::text(
+                    "ps3-play-your-playstation-3-games-from-the-bar",
+                )),
+                on,
+                Setting::Ps3Integration(true),
+            ),
+        ],
+    )
+}
+
+/// The page belonging to the Windows Apps integration, on a machine that has
+/// its package: whether the shell runs Windows programs at all, and where new
+/// ones are kept.
+///
+/// **A page of the Settings column itself, beside Games rather than inside
+/// it.** It began under Games, with the other four, and that was wrong about
+/// what it is: the other four are each a way of playing games and nothing
+/// else, and this one runs Windows *programs* — a tool, a patcher, a
+/// launcher, an installer — of which games are the common case and not the
+/// whole. Filed under Games it told somebody that playing is the only reason
+/// this machine runs a Windows program, which is not true and is not what the
+/// page does. It is called Windows Apps on the bar for the same reason. See
+/// [`column`], where the place it took is argued.
+///
+/// Two rows, and that is the whole page on purpose. Everything else about a
+/// Windows program belongs to that program — what it plays, what it runs
+/// under, what resolution it wants — and lives on its own menu, where the
+/// thing it is about is on the screen beside it. A page of settings that each
+/// needed a program chosen first would be a page you cannot use from here.
+fn windows() -> Entry {
+    // The integration's own switch first and always, as the two pages above it
+    // have it. The row under it asks where new games are kept, which is a
+    // question only a shell that is installing them has.
+    let mut rows = vec![windows_integration_switch()];
+    if windows_integration() {
+        let Entry::Folder(row) = crate::proton::folder_row() else {
+            unreachable!("it is a folder");
+        };
+        rows.push(Entry::Folder(row));
+    }
+    folder(
+        crate::proton::TITLE,
+        crate::i18n::text("windows-programs-and-games-on-this-machine"),
+        crate::proton::mark(),
+        rows,
+    )
+}
+
+/// Whether this shell plays Windows games at all — see
+/// [`Setting::WindowsIntegration`].
+///
+/// The one of the five whose Off says nothing about an application coming back
+/// to the bar, because there is no application: Proton is not a program with a
+/// window and a `.desktop` entry of its own, it is what a Windows game is run
+/// with. So what Off says instead is what is true — the games stay on the disk
+/// and nothing on the bar reaches them — rather than borrowing a sentence from
+/// the pages beside it that would not be true here.
+fn windows_integration_switch() -> Entry {
+    let on = windows_integration();
+    folder(
+        crate::i18n::text("shell-integration"),
+        match on {
+            true => {
+                crate::i18n::text("windows-on-your-windows-games-and-apps-are-a-column-of-the-bar")
+            }
+            false => crate::i18n::text("windows-off-nothing-here-runs-windows-programs"),
+        },
+        crate::proton::mark(),
+        vec![
+            value(
+                crate::i18n::text("shell-off"),
+                Some(crate::i18n::text(
+                    "windows-your-games-and-apps-stay-on-the-disk-and-nothing-reaches-them",
+                )),
+                !on,
+                Setting::WindowsIntegration(false),
+            ),
+            value(
+                crate::i18n::text("shell-on"),
+                Some(crate::i18n::text(
+                    "windows-run-your-windows-games-and-apps-from-the-bar",
+                )),
+                on,
+                Setting::WindowsIntegration(true),
+            ),
+        ],
     )
 }
 
@@ -11132,6 +11811,15 @@ pub fn preview(setting: Option<Setting>) {
             // screen and put it back, twice, on the way down a list of two.
             | Setting::Steam(_)
             | Setting::Epic(_)
+            // Nor the other three integrations' switches, for the Steam
+            // switch's reason exactly: each of them rebuilds the bar, so each
+            // *could* be shown, and a cursor walking past Off would take
+            // somebody's own games, their PlayStation 3 games or their Windows
+            // games off the screen and put them back, twice, on the way down a
+            // list of two.
+            | Setting::RetroArchIntegration(_)
+            | Setting::Ps3Integration(_)
+            | Setting::WindowsIntegration(_)
             | Setting::SoundDevice { .. }
             | Setting::Network(_)
             | Setting::Bluetooth(_)
@@ -11679,6 +12367,29 @@ fn apply_with(setting: Setting, persist: impl FnOnce(&Stored)) -> bool {
         }
         // Heroic's to remember, through its helper — see the variant.
         Setting::Epic(EpicValue::Tool(_)) => {}
+        // The other three integrations' own switches, on exactly the terms the
+        // two above are on: this module's whole part in them is remembering
+        // which way each was thrown, and the doing — a worker started or
+        // stopped, a bar built again — is the shell's. See
+        // `Shell::retroarch_integration_changed` and the two beside it.
+        //
+        // Written down whether or not the package is installed today, for the
+        // reason the Steam keys are written on a machine with no Steam: what
+        // they answer is what *this shell* does, and a machine that takes the
+        // package off for a month and puts it back should find the answer it
+        // gave.
+        Setting::RetroArchIntegration(on) => {
+            *RETROARCH_INTEGRATION.lock().unwrap() = on;
+            tracing::info!(on, "the RetroArch integration");
+        }
+        Setting::Ps3Integration(on) => {
+            *PS3_INTEGRATION.lock().unwrap() = on;
+            tracing::info!(on, "the PlayStation 3 integration");
+        }
+        Setting::WindowsIntegration(on) => {
+            *WINDOWS_INTEGRATION.lock().unwrap() = on;
+            tracing::info!(on, "the Windows Apps integration");
+        }
         Setting::Steam(SteamValue::AtStartup(on)) => {
             *STEAM_AT_STARTUP.lock().unwrap() = on;
             tracing::info!(on, "Steam is started with the shell");
@@ -11996,6 +12707,27 @@ fn apply_with(setting: Setting, persist: impl FnOnce(&Stored)) -> bool {
                 DisplayValue::OledProtection(on) => {
                     OLED.lock().unwrap().insert(screen.to_string(), on);
                 }
+                // And what it shows once it is dark, on its own again and for
+                // the same reason the four above it are: a screen somebody has
+                // asked to go on showing the time has not thereby been given a
+                // mode, a turn, a warmth or a colour pipeline.
+                DisplayValue::AlwaysOnDisplay(on) => {
+                    ALWAYS_ON.lock().unwrap().insert(screen.to_string(), on);
+                }
+                // The one row under Display that writes nothing into this
+                // shell's own file, and deliberately. Whether a screen is drawn
+                // on has to be known before a shell exists at all, or a screen
+                // somebody switched off would light for a moment at every login
+                // and then go dark again — a modeset to get back out of, twice,
+                // for nothing. So the compositor remembers this one, as it
+                // remembers a mode and a colour pipeline, and the shell only
+                // asks.
+                //
+                // Nothing is kept here either. What the page marks is what the
+                // compositor says it is doing, which arrives in the same breath
+                // as the change, so a copy of the answer on this side could
+                // only ever disagree with it.
+                DisplayValue::Enabled(_) => {}
                 // And the application scale, for the fifth time: a screen
                 // somebody has set the size of applications on has not thereby
                 // been rested, warmed, turned or given a mode.
@@ -12035,7 +12767,9 @@ fn apply_with(setting: Setting, persist: impl FnOnce(&Stored)) -> bool {
                         | DisplayValue::NightLightFrom(_)
                         | DisplayValue::NightLightUntil(_)
                         | DisplayValue::OledProtection(_)
-                        | DisplayValue::ApplicationScale(_) => {}
+                        | DisplayValue::ApplicationScale(_)
+                        | DisplayValue::Enabled(_)
+                        | DisplayValue::AlwaysOnDisplay(_) => {}
                     }
                 }
             }
@@ -12188,6 +12922,7 @@ fn adopt(stored: Stored) {
     *STEAM_SORT.lock().unwrap() = stored.steam_sort;
     *TROPHIES_SORT.lock().unwrap() = stored.trophies_sort;
     *EPIC_SORT.lock().unwrap() = stored.epic_sort;
+    *WINDOWS_SORT.lock().unwrap() = stored.windows_sort;
     if let Some(on) = stored.epic_integration {
         *EPIC_INTEGRATION.lock().unwrap() = on;
     }
@@ -12196,6 +12931,19 @@ fn adopt(stored: Stored) {
     }
     if let Some(on) = stored.epic_after_a_game {
         *EPIC_AFTER_A_GAME.lock().unwrap() = on;
+    }
+    // And a file that says nothing about the other three leaves all three
+    // integrations on, which is where a session that has never been asked has
+    // them and what every file written before these switches existed says by
+    // saying nothing at all. See [`Setting::RetroArchIntegration`].
+    if let Some(on) = stored.retroarch_integration {
+        *RETROARCH_INTEGRATION.lock().unwrap() = on;
+    }
+    if let Some(on) = stored.ps3_integration {
+        *PS3_INTEGRATION.lock().unwrap() = on;
+    }
+    if let Some(on) = stored.windows_integration {
+        *WINDOWS_INTEGRATION.lock().unwrap() = on;
     }
     // Whatever it says, without asking the disk whether the folder is still
     // there. A collection on a drive that is not plugged in this morning is
@@ -12433,6 +13181,7 @@ fn adopt(stored: Stored) {
     let mut places = PLACE.lock().unwrap();
     let mut nights = NIGHT.lock().unwrap();
     let mut rests = OLED.lock().unwrap();
+    let mut clocks = ALWAYS_ON.lock().unwrap();
     let mut scales = SCALE.lock().unwrap();
     held.clear();
     modes.clear();
@@ -12440,6 +13189,7 @@ fn adopt(stored: Stored) {
     places.clear();
     nights.clear();
     rests.clear();
+    clocks.clear();
     scales.clear();
     for (name, display) in stored.display {
         // A line that is not a mode is dropped with a word about it rather
@@ -12575,6 +13325,13 @@ fn adopt(stored: Stored) {
         // is what the setting does when nobody has answered it.
         if let Some(rest) = display.oled_protection {
             rests.insert(name.clone(), rest);
+        }
+        // And whether it goes on showing the time once it is dark, which is the
+        // same shape again and on the same terms: a section that says nothing
+        // leaves that screen showing nothing, which is what the setting does
+        // until somebody turns it on.
+        if let Some(clock) = display.always_on_display {
+            clocks.insert(name.clone(), clock);
         }
         // And how large applications are drawn on it, which needs the same
         // care as nothing above it and the same clamp as the flat key it
@@ -12865,9 +13622,24 @@ struct Stored {
     /// The Epic Games column's order and Settings > Games > Epic Games' three
     /// switches, above the maps for [`Stored::steam_sort`]'s reason.
     epic_sort: Option<String>,
+    /// The Windows Apps column's order, above the maps for the same reason.
+    windows_sort: Option<String>,
     epic_integration: Option<bool>,
     epic_at_startup: Option<bool>,
     epic_after_a_game: Option<bool>,
+    /// Whether this shell drives each of the other three optional packages —
+    /// Settings > Games > RetroArch, PlayStation 3 and Windows Apps, each
+    /// page's Integration switch. On unless the key says false, including for
+    /// every file written before the switches existed.
+    ///
+    /// Written on every machine, including one that has none of the three
+    /// packages, for the reason [`Stored::steam_integration`] is written on a
+    /// machine with no Steam: what they answer is what *this shell* does, and
+    /// a package taken off and put back should find the answer somebody gave.
+    /// Above the two maps for [`Stored::steam_sort`]'s reason.
+    retroarch_integration: Option<bool>,
+    ps3_integration: Option<bool>,
+    windows_integration: Option<bool>,
     /// The three switches under Settings > Games > Steam: whether this shell
     /// drives Valve's client at all, whether it starts one as the session comes
     /// up, and whether it leaves one running once a game has ended.
@@ -12988,6 +13760,13 @@ struct StoredDisplay {
     /// which is the setting's own default and is what a screen plugged in for
     /// the first time should do.
     oled_protection: Option<bool>,
+    /// Go on showing the time on this display while it is dark.
+    ///
+    /// Nothing stands behind it either, and for the reason above: a display
+    /// this file has never heard of shows nothing while it is dark, which is
+    /// the setting's own default and what a screen plugged in for the first
+    /// time should do.
+    always_on_display: Option<bool>,
     /// How large every application on this display draws its own interface, in
     /// per cent of the size it chose. 100 is one to one and is the least it can
     /// be.
@@ -13055,6 +13834,7 @@ fn stored() -> Stored {
     let places = PLACE.lock().unwrap();
     let nights = NIGHT.lock().unwrap();
     let rests = OLED.lock().unwrap();
+    let clocks = ALWAYS_ON.lock().unwrap();
     let scales = SCALE.lock().unwrap();
 
     // A screen may have been given one of these and not the others, so the
@@ -13081,6 +13861,9 @@ fn stored() -> Stored {
     }
     for (name, rest) in rests.iter() {
         display.entry(name.clone()).or_default().oled_protection = Some(*rest);
+    }
+    for (name, clock) in clocks.iter() {
+        display.entry(name.clone()).or_default().always_on_display = Some(*clock);
     }
     for (name, percent) in scales.iter() {
         display.entry(name.clone()).or_default().application_scale = Some(*percent);
@@ -13164,9 +13947,13 @@ fn stored() -> Stored {
         steam_sort: STEAM_SORT.lock().unwrap().clone(),
         trophies_sort: TROPHIES_SORT.lock().unwrap().clone(),
         epic_sort: EPIC_SORT.lock().unwrap().clone(),
+        windows_sort: WINDOWS_SORT.lock().unwrap().clone(),
         epic_integration: Some(*EPIC_INTEGRATION.lock().unwrap()),
         epic_at_startup: Some(*EPIC_AT_STARTUP.lock().unwrap()),
         epic_after_a_game: Some(*EPIC_AFTER_A_GAME.lock().unwrap()),
+        retroarch_integration: Some(*RETROARCH_INTEGRATION.lock().unwrap()),
+        ps3_integration: Some(*PS3_INTEGRATION.lock().unwrap()),
+        windows_integration: Some(*WINDOWS_INTEGRATION.lock().unwrap()),
         // Written back out so that a file which named a place goes on naming
         // it: everything here is built from the live values, and a key the
         // writer could not see is one the next change to anything else drops.
@@ -13583,6 +14370,24 @@ const PREAMBLE: &str = "\
 # there when a game is pressed — a drive unplugged today — or that has not the
 # room is asked about instead, and the key is kept for when it is back.
 #
+# retroarch-integration, ps3-integration, windows-integration: whether this
+# shell drives each of the three optional packages — Settings > Games >
+# RetroArch, PlayStation 3 and Windows Apps, each page's own Integration
+# switch. All three on unless the key says false, including for a file written
+# before the switches existed. Off, that integration does not exist and its
+# program is an application like any other: no row at the head of Games, no
+# column of its own, no trophies or achievements of its kind, and the
+# program's own .desktop entry back wherever the scan filed it wearing the icon
+# its package ships. Each takes effect on the press rather than at the next
+# start. Nothing on the disk is touched either way — the games, the ROMs, the
+# saves and the trophies are all still there, and switching the integration on
+# again finds them. Written on every machine, including one that has none of
+# the three packages: what they answer is what this shell does, so a package
+# taken off for a month and put back finds the answer somebody gave.
+# windows-integration is the Windows Apps integration alone — it does not
+# reach the Proton Steam runs its own games under, which is steam's setting,
+# nor the one Heroic runs Epic games under, which is Heroic's.
+#
 # start-music: whether the Start screen plays its background music, which is
 # Settings > Sounds > Start music. It plays unless this says false. Turning it
 # off leaves every other sound the shell makes exactly as loud as it was; how
@@ -13855,6 +14660,26 @@ const PREAMBLE: &str = "\
 # somewhere, whatever it is: a game, a film, a browser or an emulator all count
 # equally. A film somebody paused is deliberately not spared: a paused film is
 # a still picture, which is the thing this exists for.
+#
+# always-on-display is Settings > Display > Always on display: go on showing
+# the time on this screen while it is dark. Off unless this says true, with no
+# top-level default behind it for the reason oled-protection has none — a
+# display this file has never heard of shows nothing.
+#
+# Not the same question as the key above it, however close the two sit. That
+# one decides whether a screen nobody is watching goes dark; this decides what
+# it shows once it has, and a screen arrives there two ways: that switch, or
+# the machine being left alone until the screens go off. It is the time and
+# nothing else, in the middle of the screen, in a grey barely above the black
+# it stands on, and it creeps a few pixels every minute so that no pixel of it
+# is ever lit for long — which is the same thing oled-protection is for, said
+# about the one thing left on the screen.
+#
+# It costs the display staying on. A screen the machine switches off is
+# normally taken down at its connector, which on a panel is the backlight going
+# out; a screen showing this is left lit instead, because there is nothing to
+# show a clock on once the backlight has gone. On an OLED that is a handful of
+# near-black pixels and very little else; on an LCD it is the whole backlight.
 #
 # application-scale, in a display's own section, is Settings > Display >
 # Application scaling for that screen: how large every application on it draws
@@ -14192,9 +15017,11 @@ mod tests {
         reported_turns: Vec<(String, Turn)>,
         turn: BTreeMap<String, Orientation>,
         reported_places: Vec<(String, u32)>,
+        reported_connectors: Vec<Connector>,
         place: BTreeMap<String, u32>,
         night: BTreeMap<String, NightLight>,
         oled: BTreeMap<String, bool>,
+        always_on: BTreeMap<String, bool>,
         scale: BTreeMap<String, u16>,
         screen_rest: bool,
         sound: Level,
@@ -14212,6 +15039,9 @@ mod tests {
         steam_integration: bool,
         steam_at_startup: bool,
         steam_after_a_game: bool,
+        retroarch_integration: bool,
+        ps3_integration: bool,
+        windows_integration: bool,
         steam_install_to: Option<String>,
         steam_libraries: Vec<lxb_steam::library::Listed>,
         steam_games: BTreeMap<String, Vec<StoredGame>>,
@@ -14243,9 +15073,11 @@ mod tests {
             reported_turns: turned(),
             turn: TURN.lock().unwrap().clone(),
             reported_places: placed(),
+            reported_connectors: connectors(),
             place: PLACE.lock().unwrap().clone(),
             night: NIGHT.lock().unwrap().clone(),
             oled: OLED.lock().unwrap().clone(),
+            always_on: ALWAYS_ON.lock().unwrap().clone(),
             scale: SCALE.lock().unwrap().clone(),
             screen_rest: screen_rest_available(),
             sound: *SOUND.lock().unwrap(),
@@ -14265,6 +15097,9 @@ mod tests {
             steam_integration: *STEAM_INTEGRATION.lock().unwrap(),
             steam_at_startup: *STEAM_AT_STARTUP.lock().unwrap(),
             steam_after_a_game: *STEAM_AFTER_A_GAME.lock().unwrap(),
+            retroarch_integration: *RETROARCH_INTEGRATION.lock().unwrap(),
+            ps3_integration: *PS3_INTEGRATION.lock().unwrap(),
+            windows_integration: *WINDOWS_INTEGRATION.lock().unwrap(),
             steam_install_to: STEAM_INSTALL_TO.lock().unwrap().clone(),
             steam_libraries: STEAM_LIBRARIES.lock().unwrap().clone(),
             steam_games: STEAM_GAMES.lock().unwrap().clone(),
@@ -14291,6 +15126,7 @@ mod tests {
         PLACE.lock().unwrap().clear();
         NIGHT.lock().unwrap().clear();
         OLED.lock().unwrap().clear();
+        ALWAYS_ON.lock().unwrap().clear();
         SCALE.lock().unwrap().clear();
         // A compositor that can rest a screen, which is what the session ships
         // with. The page that says otherwise is tested by asking for it — see
@@ -14333,6 +15169,7 @@ mod tests {
         *PLACE.lock().unwrap() = saved.place;
         *NIGHT.lock().unwrap() = saved.night;
         *OLED.lock().unwrap() = saved.oled;
+        *ALWAYS_ON.lock().unwrap() = saved.always_on;
         *SCALE.lock().unwrap() = saved.scale;
         note_screen_rest(saved.screen_rest);
         *SOUND.lock().unwrap() = saved.sound;
@@ -14350,6 +15187,9 @@ mod tests {
         *STEAM_INTEGRATION.lock().unwrap() = saved.steam_integration;
         *STEAM_AT_STARTUP.lock().unwrap() = saved.steam_at_startup;
         *STEAM_AFTER_A_GAME.lock().unwrap() = saved.steam_after_a_game;
+        *RETROARCH_INTEGRATION.lock().unwrap() = saved.retroarch_integration;
+        *PS3_INTEGRATION.lock().unwrap() = saved.ps3_integration;
+        *WINDOWS_INTEGRATION.lock().unwrap() = saved.windows_integration;
         *STEAM_INSTALL_TO.lock().unwrap() = saved.steam_install_to;
         *STEAM_LIBRARIES.lock().unwrap() = saved.steam_libraries;
         *STEAM_GAMES.lock().unwrap() = saved.steam_games;
@@ -14370,6 +15210,7 @@ mod tests {
         note_modes(saved.offered);
         note_turned(saved.reported_turns);
         *PLACED.lock().unwrap() = saved.reported_places;
+        *CONNECTORS.lock().unwrap() = saved.reported_connectors;
         note_devices(saved.devices);
         note_network(saved.network);
         note_bluetooth(saved.bluetooth);
@@ -14577,6 +15418,205 @@ mod tests {
         if let Err(panic) = outcome {
             std::panic::resume_unwind(panic);
         }
+    }
+
+    /// And again for the screens themselves: every screen the compositor says
+    /// it has, lit or dark, and whether switching each is the shell's to do.
+    ///
+    /// Takes the whole list, like [`with_places`] and for the same reason: what
+    /// arrives is a batch, and a harness that added one screen at a time could
+    /// write down a session no compositor can report — two screens both the
+    /// last one on, or a dark screen on a session with nothing lit.
+    fn with_connectors(screens: &[(&str, bool, Switching)], body: impl FnOnce()) {
+        let _held = LOCK.lock().unwrap_or_else(|held| held.into_inner());
+
+        let saved = take_settings();
+        note_connectors(
+            screens
+                .iter()
+                .map(|(name, lit, switching)| Connector {
+                    name: name.to_string(),
+                    lit: *lit,
+                    switching: *switching,
+                })
+                .collect(),
+        );
+
+        let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(body));
+
+        put_back(saved);
+        if let Err(panic) = outcome {
+            std::panic::resume_unwind(panic);
+        }
+    }
+
+    /// The Screens in use page as it stands.
+    fn screens_page() -> Vec<Entry> {
+        page("Screens in use")
+    }
+
+    /// A session whose compositor has never heard of switching a screen says
+    /// so, rather than showing an empty column — the bar refuses to step into
+    /// one, and a page that could not be opened would read as a page that was
+    /// not there.
+    #[test]
+    fn a_session_that_cannot_switch_a_screen_says_so() {
+        with_connectors(&[], || {
+            let rows = screens_page();
+            assert_eq!(rows.len(), 1);
+            assert_eq!(rows[0].title(), "No screen can be switched off");
+            assert!(
+                rows[0].setting().is_none(),
+                "a row describing something true cannot be chosen"
+            );
+        });
+    }
+
+    /// One screen is not a list of screens to choose between: the bar has to
+    /// have somewhere to draw, so the one screen a session has is the one it
+    /// keeps, and the row says so instead of offering a press.
+    #[test]
+    fn one_screen_is_never_offered_a_switch() {
+        with_connectors(&[(FIRST, true, Switching::LastOneOn)], || {
+            let rows = screens_page();
+            assert_eq!(rows.len(), 1);
+            assert_eq!(rows[0].title(), "Only one display");
+            assert!(rows[0].setting().is_none());
+        });
+    }
+
+    /// Two screens, both the shell's to switch: each gets a row saying what it
+    /// is now, opening onto the two answers with the mark on the one in force.
+    #[test]
+    fn each_screen_says_what_it_is_and_opens_onto_both_answers() {
+        with_connectors(
+            &[
+                (FIRST, true, Switching::Allowed),
+                (SECOND, false, Switching::Allowed),
+            ],
+            || {
+                let rows = screens_page();
+                assert_eq!(
+                    rows.iter().map(Entry::title).collect::<Vec<_>>(),
+                    [FIRST, SECOND],
+                    "every screen the session has, lit or dark"
+                );
+                assert_eq!(rows[0].comment(), Some("In use"));
+                assert_eq!(rows[1].comment(), Some("Not in use"));
+
+                for (row, lit) in rows.iter().zip([true, false]) {
+                    let values = row.entries().unwrap();
+                    assert_eq!(
+                        values.iter().map(Entry::title).collect::<Vec<_>>(),
+                        ["Not in use", "In use"],
+                        "off before on, as every switch in this tree is drawn"
+                    );
+                    assert_eq!(values[0].chosen(), !lit);
+                    assert_eq!(values[1].chosen(), lit);
+                }
+            },
+        );
+    }
+
+    /// The press carries the screen it was made on and the answer it asks for,
+    /// and nothing is written into this shell's own file: the compositor is
+    /// what remembers this one.
+    #[test]
+    fn switching_a_screen_asks_the_compositor_and_files_nothing() {
+        with_connectors(
+            &[
+                (FIRST, true, Switching::Allowed),
+                (SECOND, true, Switching::Allowed),
+            ],
+            || {
+                let values = screens_page()[1].entries().unwrap().to_vec();
+                let Some(chosen @ Setting::Display { display, value }) = values[0].setting() else {
+                    panic!("the off row sets nothing");
+                };
+                assert_eq!(display, SECOND);
+                assert_eq!(value, DisplayValue::Enabled(false));
+
+                let before = stored();
+                assert!(apply_with(chosen, |_| {}));
+                assert_eq!(
+                    stored(),
+                    before,
+                    "whether a screen is drawn on is the compositor's to remember"
+                );
+            },
+        );
+    }
+
+    /// The three refusals each say their own thing, and none of them can be
+    /// pressed. A page that offered a switch the compositor would refuse would
+    /// be a press that reads as having failed.
+    #[test]
+    fn a_screen_that_cannot_be_switched_says_why_and_offers_nothing() {
+        with_connectors(
+            &[
+                (FIRST, true, Switching::LastOneOn),
+                (SECOND, false, Switching::SetElsewhere),
+                (AWKWARD, false, Switching::NotPossible),
+            ],
+            || {
+                let rows = screens_page();
+                let said = [
+                    "This screen stays in use",
+                    "Set on this machine",
+                    "No screen can be switched off",
+                ];
+                for (row, said) in rows.iter().zip(said) {
+                    let values = row.entries().unwrap();
+                    assert_eq!(values.len(), 1, "one row, and it is not a switch");
+                    assert_eq!(values[0].title(), said);
+                    assert!(
+                        values[0].setting().is_none(),
+                        "{said} must not be a row that can be chosen"
+                    );
+                }
+            },
+        );
+    }
+
+    /// A screen switched off keeps everything else it was ever set to, so that
+    /// switching it back on brings it back the way it was left rather than at
+    /// somebody else's resolution, the wrong way up and unwarmed.
+    #[test]
+    fn a_screen_switched_off_keeps_what_it_was_set_to() {
+        with_connectors(
+            &[
+                (FIRST, true, Switching::Allowed),
+                (SECOND, true, Switching::Allowed),
+            ],
+            || {
+                // Set on the screen that is about to go dark.
+                assert!(apply_with(
+                    setting(
+                        intern(SECOND),
+                        DisplayValue::Orientation(Orientation::Portrait)
+                    ),
+                    |_| {}
+                ));
+                assert!(apply_with(
+                    setting(intern(SECOND), DisplayValue::OledProtection(true)),
+                    |_| {}
+                ));
+                let turn = turn_for(SECOND);
+                let rest = oled_protection_for(SECOND);
+
+                assert!(apply_with(
+                    setting(intern(SECOND), DisplayValue::Enabled(false)),
+                    |_| {}
+                ));
+
+                assert_eq!(turn_for(SECOND), turn, "the turn it was left at is kept");
+                assert_eq!(
+                    oled_protection_for(SECOND),
+                    rest,
+                    "and so is everything else about it"
+                );
+            },
+        );
     }
 
     /// The place the shell is asking one display to stand in, if it has ever
@@ -14979,7 +16019,9 @@ mod tests {
                             | DisplayValue::NightLightFrom(_)
                             | DisplayValue::NightLightUntil(_)
                             | DisplayValue::OledProtection(_)
-                            | DisplayValue::ApplicationScale(_) => {
+                            | DisplayValue::ApplicationScale(_)
+                            | DisplayValue::Enabled(_)
+                            | DisplayValue::AlwaysOnDisplay(_) => {
                                 unreachable!()
                             }
                         }
@@ -15685,6 +16727,7 @@ mod tests {
                     night_light_from: Some(21),
                     night_light_until: Some(7),
                     oled_protection: Some(true),
+                    always_on_display: Some(true),
                     application_scale: Some(150),
                 },
             )]),
@@ -16993,9 +18036,11 @@ hdr-peak-brightness = 600
                         "Refresh rate",
                         "Orientation",
                         "Application scaling",
+                        "Screens in use",
                         "Display order",
                         "Night light",
                         "HDR",
+                        "Always on display",
                         "OLED protection"
                     ],
                     "the shape of the picture comes before what it carries"
@@ -18261,6 +19306,91 @@ hdr = true
             .bar()
             .expect("and that one row is the bar")
             .clone()
+    }
+
+    /// Every screen can be asked to go on showing the time, on exactly the
+    /// terms every other per-screen switch is offered on: a list where there
+    /// are screens to choose between, and the switch itself where there is one.
+    #[test]
+    fn every_screen_can_show_the_time() {
+        with_displays(&[(FIRST, warmable()), (SECOND, capable(PEAK))], || {
+            let listed: Vec<String> = page("Always on display")
+                .iter()
+                .map(|entry| entry.title().to_string())
+                .collect();
+            assert_eq!(listed, [FIRST, SECOND]);
+        });
+
+        // One screen, so there is no screen to choose between: the row says
+        // whose it is and what it is set to, as OLED protection's does.
+        with_displays(&[(AWKWARD, warmable())], || {
+            let row = display_row("Always on display");
+            assert_eq!(row.comment(), Some(&format!("{AWKWARD} — Off")[..]));
+        });
+
+        // And a session with no display at all explains itself rather than
+        // opening onto an empty column, which the bar refuses to step into.
+        with_displays(&[], || {
+            let rows = page("Always on display");
+            assert_eq!(rows.len(), 1);
+            assert_eq!(rows[0].title(), "No screen can show the time");
+            assert!(rows[0].setting().is_none());
+        });
+    }
+
+    /// Off until somebody asks for it, on every screen — a setting that turned
+    /// itself on would put a clock on the screens of everybody who had already
+    /// chosen OLED protection and never asked for this.
+    #[test]
+    fn no_screen_shows_the_time_until_it_is_asked() {
+        with_displays(&[(FIRST, warmable()), (SECOND, capable(PEAK))], || {
+            assert!(!always_on_for(FIRST));
+            assert!(!always_on_for(SECOND));
+
+            // And it is its own answer, not OLED protection's: turning that on
+            // for a screen leaves this one alone.
+            assert!(apply_with(
+                setting(intern(FIRST), DisplayValue::OledProtection(true)),
+                |_| {}
+            ));
+            assert!(oled_protection_for(FIRST));
+            assert!(!always_on_for(FIRST), "a rested screen is not a lit one");
+
+            // Turned on, it is on for that screen and no other.
+            assert!(apply_with(
+                setting(intern(FIRST), DisplayValue::AlwaysOnDisplay(true)),
+                |_| {}
+            ));
+            assert!(always_on_for(FIRST));
+            assert!(!always_on_for(SECOND));
+        });
+    }
+
+    /// It is written down per screen and read back per screen, so a screen set
+    /// to show the time comes back showing it — including a screen that was not
+    /// plugged in when the file was read.
+    #[test]
+    fn showing_the_time_survives_the_file() {
+        with_displays(&[(FIRST, warmable())], || {
+            assert!(apply_with(
+                setting(intern(FIRST), DisplayValue::AlwaysOnDisplay(true)),
+                |_| {}
+            ));
+            let written = stored();
+            assert_eq!(
+                written.display.get(FIRST).and_then(|d| d.always_on_display),
+                Some(true),
+            );
+            // And a screen nobody answered for is not written down as off: a
+            // key nobody chose is a key that should not be in the file.
+            assert_eq!(
+                written
+                    .display
+                    .get(SECOND)
+                    .and_then(|d| d.always_on_display),
+                None,
+            );
+        });
     }
 
     /// An evening: the light on, between two hours the user chose.
@@ -20341,10 +21471,13 @@ hdr = true
         let page = retroarch();
         let rows = page.entries().expect("RetroArch opens a column");
         let titles: Vec<&str> = rows.iter().map(Entry::title).collect();
-        // No core has answered in a test, so this is the whole page.
+        // No core has answered in a test, so this is the whole page — the
+        // integration's own switch at the head of it, as Steam's page and
+        // Epic's have theirs. See [`retroarch_integration_switch`].
         assert_eq!(
             titles,
             vec![
+                "Integration",
                 "RetroAchievements",
                 "Aspect ratio",
                 "Video driver",
@@ -20355,7 +21488,12 @@ hdr = true
             ]
         );
 
-        let aspect = &rows[1];
+        // Named rather than counted to, so the row the rest of this is about
+        // does not move the next time something joins the head of the page.
+        let aspect = rows
+            .iter()
+            .find(|row| row.title() == "Aspect ratio")
+            .expect("the list above has one");
         assert_eq!(
             aspect.comment(),
             Some("As the console had it"),
@@ -20371,6 +21509,63 @@ hdr = true
             }),
             "4:3 is index 0 in RetroArch's own table"
         );
+    }
+
+    /// Windows Apps is a page of the Settings column beside Games, and never a
+    /// row inside it — see [`windows`], where that is argued. On a machine
+    /// without the package it is not anywhere.
+    #[test]
+    fn windows_apps_stands_beside_games_and_not_inside_it() {
+        // Whether this machine has the package is one static for the whole
+        // binary, and the explorer reads it too — a `.exe` in a folder wears
+        // the Windows mark only where one can be run. See
+        // [`crate::proton::PRETENDING`].
+        let _pretending = crate::proton::PRETENDING
+            .lock()
+            .unwrap_or_else(|err| err.into_inner());
+        with_displays(&[], || {
+            // Both answers gathered before anything is asserted, so a failure
+            // cannot leave the whole suite believing this machine has the
+            // package. It is one static for every test in the binary.
+            let without: Vec<String> = column().iter().map(|row| row.title().into()).collect();
+            crate::proton::pretend_installed(Some("/usr/bin/lxb-proton".into()));
+            let with: Vec<String> = column().iter().map(|row| row.title().into()).collect();
+            let games_page: Vec<String> = column()
+                .iter()
+                .find(|row| row.title() == "Games")
+                .and_then(Entry::entries)
+                .expect("Games opens a column")
+                .iter()
+                .map(|row| row.title().into())
+                .collect();
+            crate::proton::pretend_installed(None);
+
+            assert!(
+                !without.iter().any(|title| title == crate::proton::TITLE),
+                "no package, no page anywhere: {without:?}"
+            );
+            let at = |titles: &[String], title: &str| {
+                titles
+                    .iter()
+                    .position(|had| had == title)
+                    .unwrap_or_else(|| panic!("the Settings column has a {title} row: {titles:?}"))
+            };
+            assert_eq!(
+                at(&with, crate::proton::TITLE),
+                at(&with, "Games") + 1,
+                "it stands directly after Games: {with:?}"
+            );
+            assert!(
+                at(&with, crate::proton::TITLE) < at(&with, "Users"),
+                "and in front of the pages about people and the machine: {with:?}"
+            );
+            // The half that is the whole point of the move: a Windows program
+            // is not necessarily a game, so the page is not filed under them.
+            assert!(
+                !games_page.iter().any(|title| title == crate::proton::TITLE),
+                "and nowhere inside Games: {games_page:?}"
+            );
+        });
     }
 
     /// Games is a page of its own, in front of System, and Steam is what is on
@@ -20593,6 +21788,125 @@ hdr = true
             assert!(steam_at_startup(), "a silent file answers nothing");
             assert!(!steam_left_after_a_game());
             assert!(steam_integration(), "and the default is on");
+        });
+    }
+
+    /// The other three integrations' switches are remembered the way Steam's
+    /// are, and all three default to on.
+    ///
+    /// The pages themselves are not reached through [`column`] here, because
+    /// each exists only on a machine that has that optional package and the
+    /// machine the tests run on may have none of them — see [`games`], which
+    /// gates each page on `offered`. The builders are called directly instead,
+    /// which is the whole of what the switch decides about the page.
+    #[test]
+    fn the_other_three_integrations_are_remembered() {
+        with_displays(&[], || {
+            // On where nobody has said otherwise, which is where a machine
+            // that has just installed one of the packages has it.
+            assert!(retroarch_integration(), "the default is on");
+            assert!(ps3_integration(), "the default is on");
+            assert!(windows_integration(), "the default is on");
+
+            let mut persisted = None;
+            assert!(apply_with(Setting::RetroArchIntegration(false), |stored| {
+                persisted = stored.retroarch_integration;
+            }));
+            assert!(!retroarch_integration());
+            assert_eq!(persisted, Some(false), "and it is written down");
+            assert!(apply_with(Setting::Ps3Integration(false), |_| {}));
+            assert!(apply_with(Setting::WindowsIntegration(false), |_| {}));
+            assert!(!ps3_integration());
+            assert!(!windows_integration());
+
+            // Each is its own answer: three packages, three questions, and
+            // throwing one must not move another.
+            assert!(apply_with(Setting::Ps3Integration(true), |_| {}));
+            assert!(ps3_integration());
+            assert!(!retroarch_integration(), "which is still off");
+            assert!(!windows_integration(), "and so is this one");
+
+            // And they survive the file, under the keys the file names them by.
+            let body = toml::to_string_pretty(&stored()).unwrap();
+            assert!(body.contains("retroarch-integration"), "{body}");
+            assert!(body.contains("ps3-integration"), "{body}");
+            assert!(body.contains("windows-integration"), "{body}");
+            *RETROARCH_INTEGRATION.lock().unwrap() = true;
+            *PS3_INTEGRATION.lock().unwrap() = false;
+            *WINDOWS_INTEGRATION.lock().unwrap() = true;
+            adopt(toml::from_str(&body).unwrap());
+            assert!(!retroarch_integration(), "they come back as they were");
+            assert!(ps3_integration());
+            assert!(!windows_integration());
+
+            // And a file that says nothing about them changes nothing at all
+            // — which, with the three defaults asserted at the top of this
+            // test, is the whole of how a settings file written before these
+            // switches existed keeps the integrations a shell has always had.
+            // Asserted over a mixed set, so it is "says nothing, changes
+            // nothing" in both directions and not a default being written
+            // twice. See [`adopt`].
+            assert_eq!(Stored::default().retroarch_integration, None);
+            assert_eq!(Stored::default().ps3_integration, None);
+            assert_eq!(Stored::default().windows_integration, None);
+            adopt(Stored::default());
+            assert!(!retroarch_integration(), "a silent file answers nothing");
+            assert!(ps3_integration(), "and takes nothing away either");
+            assert!(!windows_integration());
+        });
+    }
+
+    /// Each of the three pages is its own switch and nothing else while that
+    /// switch is off — the shape Steam's page and Epic's have, and for their
+    /// reason: everything under it is a setting belonging to a program this
+    /// shell is not driving.
+    #[test]
+    fn an_integration_that_is_off_offers_only_its_switch() {
+        with_displays(&[], || {
+            for (off, on, page) in [
+                (
+                    Setting::RetroArchIntegration(false),
+                    Setting::RetroArchIntegration(true),
+                    retroarch as fn() -> Entry,
+                ),
+                (
+                    Setting::Ps3Integration(false),
+                    Setting::Ps3Integration(true),
+                    ps3 as fn() -> Entry,
+                ),
+                (
+                    Setting::WindowsIntegration(false),
+                    Setting::WindowsIntegration(true),
+                    windows as fn() -> Entry,
+                ),
+            ] {
+                assert!(apply_with(off, |_| {}));
+                let rows = page().entries().expect("it opens onto a page").to_vec();
+                assert_eq!(
+                    rows.iter().map(Entry::title).collect::<Vec<_>>(),
+                    ["Integration"],
+                    "{off:?}: and nothing about a program this shell is not driving"
+                );
+                // The switch itself always offers both answers, with the mark
+                // on the one in force — otherwise there would be no way back.
+                let answers = rows[0].entries().expect("the switch opens onto two");
+                assert_eq!(
+                    answers.iter().map(Entry::title).collect::<Vec<_>>(),
+                    ["Off", "On"],
+                    "{off:?}"
+                );
+                assert_eq!(answers[0].setting(), Some(off), "{off:?}");
+                assert_eq!(answers[1].setting(), Some(on), "{off:?}");
+
+                // And on, the page is longer than its switch again. The rows
+                // under it are each read off a machine this test's machine may
+                // not have, so what is asserted is that there is more than the
+                // switch and not what it says.
+                assert!(apply_with(on, |_| {}));
+                let rows = page().entries().expect("it opens onto a page").to_vec();
+                assert_eq!(rows[0].title(), "Integration", "{on:?}: still first");
+                assert!(rows.len() > 1, "{on:?}: and no longer the whole page");
+            }
         });
     }
 

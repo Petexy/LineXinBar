@@ -259,9 +259,15 @@ pub fn discover() -> Vec<Source> {
         Provider::Firmware,
         "fwupd · BIOS/UEFI excluded",
     ));
-    // Second, after the system: listed only where some of the family is
-    // installed in a way no repository of this system will ever update.
-    if !crate::releases::find(&host).is_empty() {
+    // Second, after the system: listed where some of the family is
+    // installed in a way no repository of this system will ever update —
+    // and where the Windows Apps package has fetched a Proton of its own,
+    // which is that same thing by a different route. A LineXinBar installed
+    // wholly from a distribution's repositories still has that tree under
+    // its own data home, and nothing else on this page would ever offer to
+    // update it. The question is directories rather than the network, about
+    // a millisecond, which is what makes it affordable here.
+    if !crate::releases::find(&host).is_empty() || crate::proton::installed() {
         let after_system = usize::from(sources.first().is_some_and(|s| s.id == SourceId::System));
         sources.insert(
             after_system,

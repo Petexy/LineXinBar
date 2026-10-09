@@ -238,6 +238,13 @@ pub struct ShellControlState {
     /// The windows being kept out of sight, session-wide rather than per
     /// display for the reason [`UnseenEntry`] carries no display.
     unseen_windows: Vec<UnseenEntry>,
+    /// Every display the session has, lit or dark, as last broadcast.
+    ///
+    /// Session-wide and not per display, for the reason the unseen windows
+    /// above it are: half of what is in it has no `wl_output` to hang off. It
+    /// is the one list here that includes a display nobody is driving, and the
+    /// only way the shell can offer to switch one back on.
+    connectors: Vec<crate::backend::Connector>,
     /// Last floating window list broadcast per display, likewise — and diffed
     /// harder than most, because these rectangles move: a window being dragged
     /// is a new list every frame, and one standing still is the same list
@@ -690,9 +697,28 @@ const OVERVIEW_FOCUS_SINCE: u32 = 46;
 /// machine: a Steam Deck standing up the way it is built reads as 270°.
 const MOUNTING_SINCE: u32 = 47;
 
+/// First version that can switch a display off and back on: the `connector`
+/// and `connectors_done` events, and `set_connector_enabled`.
+///
+/// The one request here that names a display by its own name rather than by a
+/// `wl_output`, because it is the only one that has to be able to name a
+/// display nobody is driving — and a display nobody is driving has no
+/// `wl_output` for anybody to bind. Below this version a shell is told
+/// nothing about a display that is off, which is what every shell before it
+/// assumed: that a display it cannot see is one with its cable out.
+const SWITCHING_SINCE: u32 = 48;
+
+/// First version that can be asked to go on showing something on a display
+/// that has gone dark: `set_always_on_display`.
+///
+/// Below it a dark display is a display with nothing on it, which is what every
+/// shell before this assumed — and what every display still does until somebody
+/// turns the setting on.
+const ALWAYS_ON_SINCE: u32 = 49;
+
 /// The version advertised, and so the highest a shell can bind. Every request
 /// below it is still served, so an older shell keeps working.
-const CURRENT_VERSION: u32 = MOUNTING_SINCE;
+const CURRENT_VERSION: u32 = ALWAYS_ON_SINCE;
 
 /// Each constant above names the one feature that arrived in its version, and
 /// the numbers only ever go up by one. Said here so that two branches each
@@ -724,6 +750,8 @@ const _: () = assert!(APP_RESOLUTION_SINCE == PER_DISPLAY_APP_SCALE_SINCE + 1);
 const _: () = assert!(POWER_SINCE == APP_RESOLUTION_SINCE + 1);
 const _: () = assert!(OVERVIEW_FOCUS_SINCE == POWER_SINCE + 1);
 const _: () = assert!(MOUNTING_SINCE == OVERVIEW_FOCUS_SINCE + 1);
+const _: () = assert!(SWITCHING_SINCE == MOUNTING_SINCE + 1);
+const _: () = assert!(ALWAYS_ON_SINCE == SWITCHING_SINCE + 1);
 
 /// What a client allowed onto this protocol is allowed to do with it.
 ///
@@ -943,6 +971,7 @@ impl ShellControlState {
             output_app_id: Vec::new(),
             output_windows: Vec::new(),
             unseen_windows: Vec::new(),
+            connectors: Vec::new(),
             output_pip: Vec::new(),
             output_hdr: Vec::new(),
             output_modes: Vec::new(),
@@ -1540,6 +1569,23 @@ impl ShellControlState {
         }
     }
 
+    /// Publish every display the session has, lit or dark.
+    ///
+    /// Diffed whole rather than per display, because the batch is the answer:
+    /// a display missing from it is one the session does not have, so a shell
+    /// cannot be sent half a list and work out the rest. One display changing
+    /// resends all of them, which is a handful of events on a change that only
+    /// ever happens because somebody pressed something or moved a cable.
+    fn broadcast_connectors(&mut self, current: Vec<crate::backend::Connector>) {
+        if self.connectors == current {
+            return;
+        }
+        self.connectors = current;
+        for instance in &self.instances {
+            send_connectors(instance, &self.connectors);
+        }
+    }
+
     /// Publish the floating windows on each display, so a shell with no pointer
     /// has something to point its own controls at.
     fn broadcast_output_pip(&mut self, current: Vec<(Output, Vec<FloatingEntry>)>) {
@@ -1723,6 +1769,11 @@ impl ShellControlState {
         // thing that makes this a wasted call: its answer is deliberately not
         // the one returned.
         send_unseen_windows(shell, &self.unseen_windows);
+        // Likewise not per display, and likewise not the answer returned: half
+        // of this list is displays with no `wl_output` for the shell to have
+        // bound, so whether it arrived says nothing about whether the shell is
+        // ready to be told about the displays that do.
+        send_connectors(shell, &self.connectors);
         self.send_displays(shell, |_| true)
     }
 
@@ -2170,6 +2221,26 @@ fn send_unseen_windows(shell: &LxbShellV1, windows: &[UnseenEntry]) {
         shell.unseen_window(entry.id, entry.app_id.clone(), entry.title.clone());
     }
     shell.unseen_windows_done();
+}
+
+/// Tell one shell every display the session has, lit or dark.
+///
+/// The done event is sent even when there is nothing before it, deliberately:
+/// that is how a shell tells "no display can be switched here" from "the
+/// answer has not come yet", and it is what lets the page be drawn at once
+/// rather than waiting on a list that may never have anything in it.
+fn send_connectors(shell: &LxbShellV1, connectors: &[crate::backend::Connector]) {
+    if shell.version() < SWITCHING_SINCE {
+        return;
+    }
+    for entry in connectors {
+        shell.connector(
+            entry.name.clone(),
+            entry.lit as u32,
+            entry.switching.as_protocol(),
+        );
+    }
+    shell.connectors_done();
 }
 
 fn send_output_windows(shell: &LxbShellV1, output: &Output, windows: &[OverviewEntry]) -> bool {
@@ -3302,6 +3373,22 @@ impl LxbState {
         self.lxb.shell_control.broadcast_output_place(places);
     }
 
+    /// Hand the shell every display this session has, lit or dark, and which
+    /// of them it may switch.
+    ///
+    /// Asked of the backend each time rather than kept, because the backend is
+    /// the only thing that knows: on hardware it is the connector scan, and in
+    /// a nested session it is how many windows were asked for. The floor — that
+    /// the last display on stays on — is applied there too, so what the shell
+    /// is told is always what the compositor would actually do.
+    pub fn refresh_connectors(&mut self) {
+        if !self.lxb.shell_control.has_shell() {
+            return;
+        }
+        let connectors = self.connectors();
+        self.lxb.shell_control.broadcast_connectors(connectors);
+    }
+
     /// The window an overview id names, if it is still mapped.
     pub(crate) fn window_by_overview_id(&self, id: u32) -> Option<Window> {
         self.lxb
@@ -3852,6 +3939,13 @@ impl GlobalDispatch<LxbShellV1, ()> for LxbState {
         state.refresh_modes();
         state.refresh_transforms();
         state.refresh_places();
+        // And which displays there are to switch at all, for that reason and
+        // one more: this is the only one of them whose list includes a display
+        // nobody is driving, so for a session that came up with a display
+        // already switched off there is no plug event even in principle. Said
+        // here or the Screens in use page has nothing to list and reads as a
+        // session that cannot switch anything.
+        state.refresh_connectors();
         // And what the keyboard is set to, which no other process in the
         // session can find out: it is this compositor's own configuration file,
         // and the shell's settings page would otherwise have nothing to mark
@@ -4513,6 +4607,35 @@ impl Dispatch<LxbShellV1, ()> for LxbState {
                 match Output::from_resource(&output) {
                     Some(output) => state.cover_output_in_black(&output, covered == 1),
                     None => tracing::debug!("a display that is gone was asked to rest"),
+                }
+            }
+            lxb_shell_v1::Request::SetAlwaysOnDisplay { output, surface } => {
+                // Named per display, unlike the menu surface this follows,
+                // because several displays can be dark at once and each shows
+                // its own clock. A display that is gone is nothing to name, and
+                // a shell holding a name for one is answered by silence rather
+                // than by an error: the display went while the request was in
+                // flight, which is nobody's mistake.
+                match Output::from_resource(&output) {
+                    Some(output) => state.set_always_on_display(&output, surface),
+                    None => tracing::debug!("a display that is gone was given a clock"),
+                }
+            }
+            lxb_shell_v1::Request::SetConnectorEnabled { name, enabled } => {
+                // Named by a string, unlike every other per-display request
+                // here, because this is the only one that has to be able to
+                // name a display nobody is driving — and such a display has no
+                // `wl_output` for a client to have bound. So the name is
+                // checked against the displays this compositor actually has,
+                // rather than trusted: a name is not a capability.
+                //
+                // Whatever comes of it, the shell is told what the session is
+                // now doing rather than what it asked for. A refusal is a
+                // connector event saying the display is still as it was, which
+                // is the one answer a page must not draw as success.
+                let switched = state.set_connector_enabled(&name, enabled == 1);
+                if switched == crate::backend::Switched::Refused {
+                    state.refresh_connectors();
                 }
             }
             lxb_shell_v1::Request::Quit => {

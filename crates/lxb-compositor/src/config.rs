@@ -18,6 +18,20 @@ pub struct Config {
     pub outputs: Vec<OutputConfig>,
     /// `"Super+Q" = "close"` style bindings.
     pub keybindings: std::collections::HashMap<String, String>,
+    /// The displays whose `enabled` key this file states itself, as it stated
+    /// them before anything remembered was folded in under them. See
+    /// [`Self::enabled_is_pinned`], which is the only reader, and
+    /// [`Self::note_enabled_pins`], which is the only writer.
+    ///
+    /// Not read from the file — it is a note about the file — so it is kept
+    /// out of the parse. `deny_unknown_fields` means a key by this name in
+    /// somebody's config would be refused, which is the right answer: there is
+    /// no such setting.
+    /// Public like every other field here only so that the struct can still
+    /// be built literally — several tests do. [`Self::enabled_is_pinned`] is
+    /// what reads it; nothing outside this file should.
+    #[serde(skip)]
+    pub enabled_pinned: std::collections::HashSet<String>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -337,12 +351,48 @@ impl Config {
     /// machine whose config pins `hdr = false` stays in SDR however many times
     /// the shell is asked for HDR, which is what pinning it meant.
     pub fn remember_displays(&mut self, remembered: Vec<OutputConfig>) {
+        self.note_enabled_pins();
         for entry in remembered {
             match self.outputs.iter_mut().find(|o| o.name == entry.name) {
                 Some(existing) => existing.fill_from(entry),
                 None => self.outputs.push(entry),
             }
         }
+    }
+
+    /// Write down which displays this file answers the on-or-off question for
+    /// itself, before anything remembered is folded in underneath.
+    ///
+    /// It has to be done here, at the seam, because afterwards there is no
+    /// telling the two apart: [`OutputConfig::fill_from`] leaves a key this
+    /// file states exactly as it found it, so a merged entry saying
+    /// `enabled = false` may have got that from the person who wrote the file
+    /// or from the display's own last session, and only one of those is a
+    /// switch a shell may move.
+    fn note_enabled_pins(&mut self) {
+        self.enabled_pinned = self
+            .outputs
+            .iter()
+            .filter(|entry| entry.enabled.is_some())
+            .map(|entry| entry.name.clone())
+            .collect();
+    }
+
+    /// Whether this file answers for itself whether `name` is driven.
+    ///
+    /// True for a connector the config names with an `enabled` key of its own,
+    /// and for every connector at all where that key is on the `"*"` entry —
+    /// because [`Self::output_for`] falls back to the wildcard, so a wildcard
+    /// `enabled` is an answer about every display on the machine.
+    ///
+    /// What it is for: a shell that offered to switch such a display would be
+    /// offering a press that works until the next login and is then overruled
+    /// by the file, which is the one outcome worse than not offering it. So the
+    /// page says the choice is made elsewhere instead, and says it before
+    /// anybody presses anything. The same refusal the arrangement already
+    /// makes for a display pinned to a `position`.
+    pub fn enabled_is_pinned(&self, name: &str) -> bool {
+        self.enabled_pinned.contains(name) || self.enabled_pinned.contains("*")
     }
 }
 

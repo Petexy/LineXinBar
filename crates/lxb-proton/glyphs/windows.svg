@@ -1,0 +1,35 @@
+<!--
+  The Windows Apps row, column and every game without a picture of its own:
+  four square panes with a cross of space between them, the shape the machine
+  it stands for has worn since 2021 — flat against the glass, no perspective,
+  the four panes equal.
+
+  The console set's rule is the machine rather than its logo, and this set is
+  the exception that rule already allows for: there is no machine here. What
+  a person is looking for in this column is the thing their game was written
+  for, and the four panes are what says it at a glance and at sixteen pixels.
+
+  Drawn anew on this set's grid rather than traced, to the proportions the
+  mark itself keeps: a pane is 10.5 units and the cross between them 1.4, and
+  only the four corners on the outside are rounded — 1.2 units, about an
+  eighth of a pane. The inside corners stay square, which is what keeps the
+  four panes reading as one window with a cross cut through it rather than as
+  four tiles that happen to sit together.
+
+  22.4 units across the 32 of the cell, a little tighter than the marks it
+  stands beside: a solid square carries more weight than a drawn one of the
+  same width, and at the row size this has to sit under the pad and beside
+  the monitor without shouting over either.
+
+  It ships in the lxb-proton package and is read at startup out of
+  share/lxb/glyphs as lxb:windows.
+
+  lxb:shape
+-->
+
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32">
+  <path fill="#ffffff" d="M6 4.8H15.3V15.3H4.8V6A1.2 1.2 0 0 1 6 4.8Z"/>
+  <path fill="#ffffff" d="M16.7 4.8H26A1.2 1.2 0 0 1 27.2 6V15.3H16.7Z"/>
+  <path fill="#ffffff" d="M4.8 16.7H15.3V27.2H6A1.2 1.2 0 0 1 4.8 26Z"/>
+  <path fill="#ffffff" d="M16.7 16.7H27.2V26A1.2 1.2 0 0 1 26 27.2H16.7Z"/>
+</svg>

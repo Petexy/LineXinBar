@@ -215,6 +215,27 @@ pub struct OutputManager {
     /// tiled to instead — asked at exactly the same moment, in exactly the same
     /// call. See [`crate::pip`], which is where the shape of it is argued.
     pip: crate::pip::Pip,
+    /// Which displays a shell has switched off, and which it has switched back
+    /// on — `lxb_shell_v1.set_connector_enabled`.
+    ///
+    /// The running answer, and the one [`Self::is_enabled`] reads first. It has
+    /// to live here rather than in the config, because the config is read once
+    /// at startup and never written again: a display switched off by a press
+    /// would otherwise be lit again by the next hot-plug, the next device
+    /// rescan or the next return from a text console, each of which asks the
+    /// config what to do and would get the answer the session began with.
+    ///
+    /// What is written down is written down separately, in
+    /// [`crate::remembered`] — so this is the session's answer and that is the
+    /// next session's, and a hand-written config file still outranks both at
+    /// the moment it is read. See [`crate::config::Config::enabled_is_pinned`],
+    /// which is how a shell is told that it does.
+    ///
+    /// Keyed by connector name, like the scales above it and for the same
+    /// reason: it is the only name a display that is not being driven has at
+    /// all. A display whose cable comes out keeps its entry, so a monitor
+    /// switched off and then unplugged is still off when it comes back.
+    switched: std::collections::HashMap<String, bool>,
 }
 
 impl OutputManager {
@@ -417,12 +438,54 @@ impl OutputManager {
         }
     }
 
-    /// Whether the config disables this connector outright.
-    pub fn is_enabled(name: &str, config: &Config) -> bool {
+    /// Whether this connector is one to drive at all.
+    ///
+    /// Three answers, in the order they outrank one another. A connector a
+    /// hand-written config file names outright is whatever that file says,
+    /// always — see [`crate::config::Config::enabled_is_pinned`], which is how
+    /// a shell learns not to offer a switch it could not keep. Otherwise, what
+    /// a shell asked for in this session. Otherwise what the config says,
+    /// which is where [`crate::remembered`] has already been merged, and so is
+    /// what the last session left.
+    ///
+    /// A method rather than the associated function it was, because the
+    /// session's own answer lives on the manager and the two could not be read
+    /// together without it.
+    pub fn is_enabled(&self, name: &str, config: &Config) -> bool {
+        if config.enabled_is_pinned(name) {
+            return config
+                .output_for(name)
+                .and_then(|e| e.enabled)
+                .unwrap_or(true);
+        }
+        if let Some(&on) = self.switched.get(name) {
+            return on;
+        }
         config
             .output_for(name)
             .and_then(|e| e.enabled)
             .unwrap_or(true)
+    }
+
+    /// Record that a shell has asked for this display to be on, or off.
+    ///
+    /// Only the asking. Lighting a connector and darkening one are the
+    /// backend's, because only the backend knows what a display is made of
+    /// there — see `crate::backend::set_connector_enabled`, which is the one
+    /// caller and which makes this record only once it has gone through.
+    pub fn switch(&mut self, name: &str, on: bool) {
+        self.switched.insert(name.to_string(), on);
+    }
+
+    /// Forget what was asked for one display, so the config answers for it
+    /// again.
+    ///
+    /// For the one case that has to undo a remembered answer rather than
+    /// replace it: the session that would otherwise come up with no display on
+    /// at all. See `crate::backend::udev`'s recovery before it refuses to
+    /// start.
+    pub fn forget_switch(&mut self, name: &str) {
+        self.switched.remove(name);
     }
 
     /// The output under a logical point, falling back to the first output.
@@ -1040,6 +1103,7 @@ impl crate::state::LxbState {
             .outputs
             .remove_output(&mut self.lxb.space, output, &config);
         // What it was set to survives; what it can do does not, until it is back.
+        self.lxb.always_on.forget(output);
         self.lxb.hdr.disconnected(output);
         // Its repaint clock with it: one that comes back by the same name starts
         // from the display it is, not the one it was.
@@ -1544,5 +1608,100 @@ mod tests {
 
         assert!(manager.placed(&config).is_empty());
         assert!(!manager.set_place(&mut space, &outputs[2], 0, &config));
+    }
+
+    /// Nothing says anything about a display, so it is driven. The answer for
+    /// every display on an ordinary machine, and the one this had no test for
+    /// at all until a press could change it.
+    #[test]
+    fn a_display_nobody_has_answered_for_is_driven() {
+        let manager = OutputManager::new();
+        assert!(manager.is_enabled("DP-1", &Config::default()));
+    }
+
+    /// The three answers, in the order they outrank one another. What a shell
+    /// asked for in this session beats what the last session left; a config
+    /// file a person wrote beats both.
+    #[test]
+    fn the_session_outranks_the_file_and_a_written_file_outranks_the_session() {
+        // What the last session left, which is how remembered state arrives:
+        // merged into the config by `remember_displays`, with no pin recorded
+        // for it because the file itself said nothing.
+        let mut remembered = Config::default();
+        remembered.remember_displays(vec![crate::config::OutputConfig {
+            name: "DP-1".into(),
+            enabled: Some(false),
+            ..Default::default()
+        }]);
+        let mut manager = OutputManager::new();
+        assert!(
+            !manager.is_enabled("DP-1", &remembered),
+            "left switched off"
+        );
+        manager.switch("DP-1", true);
+        assert!(
+            manager.is_enabled("DP-1", &remembered),
+            "a press in this session is the answer"
+        );
+        manager.forget_switch("DP-1");
+        assert!(!manager.is_enabled("DP-1", &remembered), "and back again");
+
+        // And the other way round: the key is in the file a person wrote, so
+        // it is pinned, and a press cannot move it. Offering that switch would
+        // be offering a press that works until the next login.
+        let mut written = Config {
+            outputs: vec![crate::config::OutputConfig {
+                name: "DP-1".into(),
+                enabled: Some(false),
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+        written.remember_displays(Vec::new());
+        assert!(written.enabled_is_pinned("DP-1"));
+        let mut manager = OutputManager::new();
+        manager.switch("DP-1", true);
+        assert!(!manager.is_enabled("DP-1", &written));
+    }
+
+    /// The wildcard entry answers for every display, because `output_for`
+    /// falls back to it — so one `enabled` written there is a statement about
+    /// the whole machine, and no screen's switch is the shell's to move.
+    #[test]
+    fn a_wildcard_answers_for_every_display() {
+        let mut config = Config {
+            outputs: vec![crate::config::OutputConfig {
+                name: "*".into(),
+                enabled: Some(false),
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+        config.remember_displays(Vec::new());
+        assert!(config.enabled_is_pinned("DP-1"));
+        assert!(config.enabled_is_pinned("HDMI-A-1"));
+        let mut manager = OutputManager::new();
+        manager.switch("DP-1", true);
+        assert!(!manager.is_enabled("DP-1", &config));
+    }
+
+    /// A display the file names for some other reason is not pinned by that.
+    /// Only the one key answers the on-or-off question, so a config that sets
+    /// a resolution still leaves the switch the user's.
+    #[test]
+    fn a_display_named_for_something_else_can_still_be_switched() {
+        let mut config = Config {
+            outputs: vec![crate::config::OutputConfig {
+                name: "DP-1".into(),
+                mode: Some("1920x1080".into()),
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+        config.remember_displays(Vec::new());
+        assert!(!config.enabled_is_pinned("DP-1"));
+        let mut manager = OutputManager::new();
+        manager.switch("DP-1", false);
+        assert!(!manager.is_enabled("DP-1", &config));
     }
 }

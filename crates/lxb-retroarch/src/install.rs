@@ -69,84 +69,58 @@ pub fn run(out: &mut impl Write) -> bool {
     }
 }
 
-/// Take it off again, and everything it kept.
+/// RetroArch has gone; take what this integration kept for it.
 ///
-/// The other end of [`run`], and the reason it exists is testing: setting this
-/// integration up is a sequence of first-time questions — where the games are,
-/// which cores to fetch, where a BIOS is — and every one of them can only be
-/// looked at once per machine unless there is a way back to the beginning.
+/// The other end of [`run`], and the half of a removal that is nobody else's
+/// to do. **The application itself is removed by the shell**, which is the only
+/// part of this that can ask for a password: it knows how this RetroArch was
+/// installed and hands it back to whatever installed it, so a distribution
+/// package and a system-wide flatpak come off exactly as the `--user` flatpak
+/// this helper installs does. What is left over is everything *outside* that
+/// program, and no package manager and no `--delete-data` reaches any of it.
 ///
-/// **Only a `--user` flatpak.** That is the one this shell installs, and the
-/// only one it can remove without a password: a system-wide flatpak's
-/// uninstall needs root and a distribution package needs the package manager.
-/// Both are somebody else's decision to undo, and this says so rather than
-/// raising a password panel over a television.
+/// What goes, always:
 ///
-/// What goes, beyond the application itself:
-///
-/// * `--delete-data`, which is `~/.var/app/org.libretro.RetroArch` — its
-///   configuration, every core the shell downloaded into it, the assets, the
-///   playlists, the save files, and RetroArch's own `retroarch.cfg`.
 /// * The filesystem permission the shell granted for the games folder, which
 ///   `flatpak override --user --reset` undoes. It survives an uninstall
-///   otherwise, and a reinstall would silently inherit it.
+///   otherwise and a reinstall would silently inherit it. Only the user's own
+///   overrides are reset, because a `--user` override is the only one the shell
+///   ever wrote — a system-wide installation's are per-installation and need
+///   root, and are somebody else's to undo.
 /// * This shell's own cache of the cover art it fetched from libretro, which
 ///   lives under the *shell's* cache rather than RetroArch's and would
 ///   otherwise be the one thing a reinstall did not have to fetch again.
 /// * The scratch directory a core's own files land in while it is being asked
 ///   what it can be set to.
 ///
+/// And with `data`, which is the shell's **Remove everything**: RetroArch's own
+/// configuration directory outside any sandbox, `~/.config/retroarch` — its
+/// settings, the cores downloaded into it, the playlists, the saves and any
+/// BIOS put there. A flatpak's own directory has already gone with it, because
+/// the shell passed `--delete-data`; a distribution package's never had anybody
+/// to take it, because a package manager removes what its package shipped and
+/// nothing else. Where a machine has had both, both go, which is what the
+/// button that was pressed says.
+///
 /// The user's games are not touched, and neither is the folder they are in.
-/// Those are theirs; this removes a program and what the program kept.
-pub fn remove(out: &mut impl Write) -> bool {
-    let installed = crate::find::installation();
-    let scope = match installed.as_ref().map(|installed| installed.kind) {
-        Some(Kind::FlatpakUser) => "--user",
-        Some(Kind::FlatpakSystem) => {
-            tell(
-                out,
-                Stage::Failed,
-                None,
-                "This RetroArch was installed for everyone on this machine, so                  removing it needs an administrator"
-                    .to_string(),
-            );
-            return false;
-        }
-        Some(Kind::System) => {
-            tell(
-                out,
-                Stage::Failed,
-                None,
-                "This RetroArch came from the system's own packages, so remove it                  the way it was installed"
-                    .to_string(),
-            );
-            return false;
-        }
-        None => {
-            tell(
-                out,
-                Stage::Failed,
-                None,
-                "There is no RetroArch on this machine to remove".to_string(),
-            );
-            return false;
-        }
-    };
-
-    tell(out, Stage::Removing, None, "Removing RetroArch".to_string());
-    if let Err(why) = uninstall(scope) {
-        tell(out, Stage::Failed, None, why);
-        return false;
+/// Those are theirs; this removes what a program kept, not what somebody owns.
+///
+/// Every failure here is reported and none of them stops the rest: the
+/// application is already gone by the time this runs, and a helper that
+/// returned "it could not be removed" over a leftover cache would be saying the
+/// opposite of what happened.
+pub fn forget(out: &mut impl Write, data: bool) -> bool {
+    tell(out, Stage::Removing, None, "Clearing up".to_string());
+    reset("--user");
+    let mut gone = leftovers();
+    if data {
+        gone.extend(own_config());
     }
-    // Before the last line, and never reported as a failure: the application is
-    // gone by now, and a shell that said "it could not be removed" over a
-    // leftover cache would be saying the opposite of what happened.
-    reset(scope);
-    for at in leftovers() {
+    for at in gone {
         match std::fs::remove_dir_all(&at) {
-            Ok(()) => eprintln!("uninstall: removed {}", at.display()),
+            Ok(()) => eprintln!("forget: removed {}", at.display()),
             Err(err) if err.kind() == std::io::ErrorKind::NotFound => {}
-            Err(err) => eprintln!("uninstall: {} could not be removed: {err}", at.display()),
+            Err(err) => eprintln!("forget: {} could not be removed: {err}", at.display()),
         }
     }
     tell(
@@ -158,39 +132,12 @@ pub fn remove(out: &mut impl Write) -> bool {
     true
 }
 
-/// The uninstall itself.
-///
-/// `--delete-data` is the whole point of it here: without that flag flatpak
-/// leaves `~/.var/app/org.libretro.RetroArch` exactly as it was, so the next
-/// install comes up with the same configuration, the same downloaded cores and
-/// the same BIOS — which is the opposite of starting again.
-fn uninstall(scope: &str) -> Result<(), String> {
-    let out = Command::new("flatpak")
-        .args(uninstall_argv(scope))
-        // For the reason the install runs under it: the last line of what
-        // flatpak says when it refuses is what the panel shows.
-        .env("LC_ALL", "C")
-        .stdin(Stdio::null())
-        .output()
-        .map_err(|err| format!("flatpak could not be run: {err}"))?;
-    for line in String::from_utf8_lossy(&out.stderr).lines() {
-        eprintln!("flatpak: {line}");
-    }
-    if out.status.success() {
-        return Ok(());
-    }
-    Err(said(&out.stderr).unwrap_or_else(|| "RetroArch could not be removed".to_string()))
-}
-
-/// What flatpak is asked to do.
-///
-/// Its own function so the one flag that matters can be held down by a test.
-/// Without `--delete-data`, flatpak leaves `~/.var/app/org.libretro.RetroArch`
-/// exactly as it was — so the next install comes up with the same
-/// configuration, the same downloaded cores and the same BIOS, which is the
-/// opposite of what the row this is behind promises.
-fn uninstall_argv(scope: &str) -> [&str; 5] {
-    ["uninstall", scope, "-y", "--delete-data", FLATPAK_ID]
+/// RetroArch's own configuration directory on a machine where it was not a
+/// flatpak — the one `find::config_dir` answers with for [`Kind::System`],
+/// worked out here without an installation because by now there is none.
+fn own_config() -> Option<std::path::PathBuf> {
+    let home = std::env::var_os("HOME").map(std::path::PathBuf::from)?;
+    Some(home.join(".config/retroarch"))
 }
 
 /// Give back the folder permission the shell granted.
@@ -529,23 +476,6 @@ mod tests {
     /// own files land in while it is being asked what it can be set to. A
     /// reinstall that already had every cover is not a reinstall anybody can
     /// test the first run against.
-    /// The flag that makes it an uninstall rather than a pause.
-    ///
-    /// Without `--delete-data` flatpak keeps the whole `~/.var/app` tree, so
-    /// the next install comes back with the same configuration, the same cores
-    /// and the same BIOS — and somebody trying to test the first-run setup
-    /// would find it already done.
-    #[test]
-    fn the_uninstall_takes_the_data_with_it() {
-        let argv = uninstall_argv("--user");
-        assert!(argv.contains(&"--delete-data"), "{argv:?}");
-        assert!(
-            argv.contains(&"--user"),
-            "this user's own, never the system's"
-        );
-        assert!(argv.contains(&FLATPAK_ID), "{argv:?}");
-    }
-
     #[test]
     fn what_survives_an_uninstall_is_taken_too() {
         let here = leftovers();

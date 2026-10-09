@@ -1,5 +1,5 @@
 Name:           lxb-desktop
-Version:        0.9.3
+Version:        0.9.4
 Release:        1%{?dist}
 Summary:        Multi-display Wayland desktop with a console-style shell
 
@@ -181,6 +181,34 @@ install the Flathub build into the user's own flatpak installation, which needs
 no administrative rights, and the console's system software from Sony's own
 update server.
 
+%package -n     lxb-proton
+Summary:        Windows games for the LineXinBar shell, through Proton
+# Version-locked to the shell for the reason lxb-retroarch is. It needs no
+# Proton of its own: with Steam it runs games under the Protons the client
+# already keeps up to date, and without, it fetches one into the user's own
+# data directory. tar and xz do the unpacking.
+Requires:       lxb-desktop%{?_isa} = %{version}-%{release}
+Requires:       tar
+Requires:       xz
+
+%description -n lxb-proton
+Adds Windows games to the LineXinBar shell, through Proton and Valve's
+container runtime: a row under Steam in the Games column, and a column of the
+user's Windows games. Each one gets a Windows installation of its own, so a
+game that needs an old library cannot break the game beside it, and taking one
+off takes nothing else with it.
+
+Three ways in: an installer or a game picked off the disk, a folder copied in
+whole for a game that came without an installer, and a way to reach into a game
+that is already set up to run its settings program or its patcher.
+
+The shell looks for this subpackage on PATH and mentions Windows only when it
+is installed. On a machine with Steam it runs games under the Protons the
+client already keeps up to date; on a machine without, it fetches one and the
+container runtime it asks for into the user's own data directory, checking each
+download against the digest published beside it. Nothing is installed as root
+and no account is signed in to.
+
 %description -n lxb-compositor
 A small DRM/KMS Wayland compositor that manages every connected display as an
 independent output, with per-output colour management, HDR and a night light.
@@ -334,7 +362,30 @@ cp -p third_party/lxb-gilrs/LICENSE-MIT GilRs-LICENSE-MIT.txt
 %dir %{_datadir}/lxb/glyphs
 %{_datadir}/lxb/glyphs/ps3.svg
 
+# The two %dir entries are repeated in every one of these, and have to be:
+# rpm owns a directory per subpackage that puts anything in it, and one that
+# claims a file in a directory it does not own leaves that directory behind
+# when the last package in it goes.
+%files -n       lxb-proton
+%license LICENSE
+%{_bindir}/lxb-proton
+%dir %{_datadir}/lxb
+%dir %{_datadir}/lxb/glyphs
+%{_datadir}/lxb/glyphs/windows.svg
+
 %changelog
+* Tue Oct 06 2026 Piotr Lewandowski <piotr.petexy@gmail.com> - 0.9.4-1
+- Settings > Display > Screens in use: every screen the machine has, lit or
+  dark, switched off and back on while the session runs. A screen switched off
+  leaves the arrangement and its windows move to the screens that are left;
+  what it was set to is kept, and the choice is remembered for the next start.
+  The last screen still lit is never switched off.
+- Settings > Display > Always on display: a screen that has gone dark goes on
+  showing the time, in the middle of it and in a near-black grey, whether it
+  went dark under OLED protection or because the machine was left alone. Per
+  screen and off until asked for. The clock creeps a few pixels so it cannot
+  burn in, is drawn once a minute, and keeps that screen's connector lit.
+
 * Tue Sep 29 2026 Piotr Lewandowski <piotr.petexy@gmail.com> - 0.9.3-1
 - PlayStation 3 through RPCS3, as the new optional lxb-rpcs3 package: a
   column of its own, packages and encrypted discs, trophies, and RPCS3's

@@ -182,6 +182,22 @@ impl Where {
     /// already in hand are all the same command with different arguments, and
     /// a game the client launches inherits whatever the client was given. See
     /// [`CONFINEMENT`].
+    /// Where this client is, as the shell's own removal asks the question —
+    /// the id for the Flatpak, and for a native one the launcher itself, whose
+    /// package the package manager is asked to name.
+    ///
+    /// What is named is Valve's **launcher**, which is what a distribution
+    /// packages and all it packages: the client proper is half a gigabyte the
+    /// launcher downloads into the user's own home on its first run, which no
+    /// package manager has ever owned and which the row that removes this says
+    /// so about.
+    pub fn installed(&self) -> Installed {
+        match self {
+            Where::Native(path) => Installed::Package(path.clone()),
+            Where::Flatpak => Installed::Flatpak(FLATPAK_APP),
+        }
+    }
+
     pub(crate) fn command(&self) -> Command {
         let mut command = match self {
             Where::Native(path) => Command::new(path),
@@ -196,6 +212,20 @@ impl Where {
         }
         command
     }
+}
+
+/// How this machine's Steam got here, for whoever would take it off again.
+///
+/// Deliberately not an answer the shell works out for itself from the path: the
+/// Flatpak is reached through `flatpak run` and the path in hand would be
+/// `flatpak`'s, so a shell asking a package manager who owns it would be
+/// offered the *tool* rather than the client.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Installed {
+    /// A flatpak with this application id.
+    Flatpak(&'static str),
+    /// Valve's launcher at this path, and whatever packaged it.
+    Package(PathBuf),
 }
 
 /// What the background client is doing.
@@ -3085,7 +3115,11 @@ fn stamped(line: &str) -> Option<(&str, u32, &str)> {
 
 /// Valve's Flatpak, which is the name of everything it puts on the disk:
 /// its deployment, its exported launcher, and the home directory it runs with.
-pub(crate) const FLATPAK_APP: &str = "com.valvesoftware.Steam";
+///
+/// Public because it is also what removing that client is handed, and the shell
+/// is what removes it: a second copy of this string over there would be two
+/// places that have to agree about one word. See `Where::installed`.
+pub const FLATPAK_APP: &str = "com.valvesoftware.Steam";
 
 /// Whether Valve's Flatpak is *deployed*, rather than merely remembered.
 ///

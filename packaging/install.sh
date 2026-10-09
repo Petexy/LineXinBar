@@ -17,7 +17,7 @@ target_dir="${CARGO_TARGET_DIR:-$PROJECT_ROOT/target}"
 usage() {
     cat <<'EOF'
 Usage: packaging/install.sh --destdir DIR [--prefix PREFIX] [--target-dir DIR]
-                            [--component compositor|desktop|retroarch|heroic|rpcs3|all]
+                            [--component compositor|desktop|retroarch|heroic|rpcs3|proton|all]
 
 Stages one part of LineXinBar, or all of them. PREFIX defaults to /usr and
 --component to all.
@@ -40,6 +40,10 @@ Stages one part of LineXinBar, or all of them. PREFIX defaults to /usr and
   rpcs3       lxb-rpcs3 and the mark it draws its rows with: the optional
               PlayStation 3 integration, through RPCS3. Found on PATH the
               same way; without it the shell never mentions a PlayStation 3.
+  proton      lxb-proton and the mark it draws its rows with: the optional
+              Windows Apps integration, through Proton and Valve's container
+              runtime. Found on PATH the same way; without it the shell never
+              mentions Windows at all.
   all         Every part, as one tree.
 EOF
 }
@@ -75,8 +79,8 @@ while (($#)); do
 done
 
 case "$component" in
-    compositor|desktop|retroarch|heroic|rpcs3|all) ;;
-    *) package_die "unknown component: $component (compositor, desktop, retroarch, heroic, rpcs3 or all)" ;;
+    compositor|desktop|retroarch|heroic|rpcs3|proton|all) ;;
+    *) package_die "unknown component: $component (compositor, desktop, retroarch, heroic, rpcs3, proton or all)" ;;
 esac
 
 [[ -n "$destdir" ]] || package_die "--destdir is required"
@@ -259,6 +263,15 @@ stage_rpcs3() {
     install -Dm0644 "$mark" "$install_root/share/lxb/glyphs/ps3.svg"
 }
 
+# And Windows programs, through Proton and Valve's container runtime, on the
+# same terms. See `crates/lxb-proton` and `lxb-desktop`'s `src/proton.rs`.
+stage_proton() {
+    install_binary lxb-proton
+    local mark="$PROJECT_ROOT/crates/lxb-proton/glyphs/windows.svg"
+    [[ -f "$mark" ]] || package_die "no mark to stage at $mark"
+    install -Dm0644 "$mark" "$install_root/share/lxb/glyphs/windows.svg"
+}
+
 if [[ "$component" == compositor || "$component" == all ]]; then
     stage_compositor
 fi
@@ -273,4 +286,7 @@ if [[ "$component" == heroic || "$component" == all ]]; then
 fi
 if [[ "$component" == rpcs3 || "$component" == all ]]; then
     stage_rpcs3
+fi
+if [[ "$component" == proton || "$component" == all ]]; then
+    stage_proton
 fi

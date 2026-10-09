@@ -158,12 +158,21 @@ desktop's menu.
 `Settings > Display` is the one part of the Settings column the shell does not
 carry out itself. It sends what was chosen over `lxb_shell_v1` and the
 compositor does the work, because none of it is a client's to touch. There are
-seven pages: **Resolution**, **Refresh rate**, **Orientation**, **Application
-scaling**, **Night light**, **HDR**, and **OLED protection**.
+ten pages: **Resolution**, **Refresh rate**, **Orientation**, **Application
+scaling**, **Screens in use**, **Display order**, **Night light**, **HDR**,
+**Always on display**, and **OLED protection**.
 
 Every one of them is *per screen*, and every one of them names the screen
 before it offers anything — see below, where the rule is written out once for
-HDR and holds for all six.
+HDR and holds for all of them.
+
+The order they stand in is the order the questions arrive. The first four are
+about one screen's picture, with the plainest thing about a display first. The
+next two are not about a picture at all but about which screens there are and
+how they stand, and in that order: a screen nobody is drawing on has no place
+in an arrangement to be moved to. The last four describe the picture those
+carry, ending with the two about a screen with no picture at all: what a dark
+screen still shows, and the panel protection only some screens need.
 
 ### Resolution and refresh rate
 
@@ -347,6 +356,73 @@ lights the displays a second before the shell can speak and being corrected
 afterwards costs a black screen; here there is nothing on screen to correct —
 every application is started *by* the shell, always after it has said what this
 is.
+
+### Screens in use
+
+```
+Settings > Display > Screens in use  >  HDMI-A-1  >  Not in use
+```
+
+Which screens the bar draws on. A screen switched off here goes dark at its
+connector, leaves the arrangement, and whatever was on it moves to the screens
+that are left; everything it was ever set to is kept, so switching it back on
+brings it back at its own resolution, the way up it was left and in its own
+place in the order.
+
+It is the only page in this column that lists a screen the shell cannot see.
+Every other page is built from the displays being drawn on, so a screen that has
+been switched off has already left them — which is why switching one back on has
+to happen here, and why this page is listed before **Display order**.
+
+**The last screen in use stays in use.** There has to be somewhere to draw the
+page that would switch it back, so the one screen a session has left is never
+offered the switch: its row says it stays in use, and nothing on it can be
+pressed. The compositor refuses it again when the press arrives, because the
+page's own list can be a moment out of date — the other screen's cable may have
+come out in between.
+
+The choice is remembered by the *compositor*, in its own state file, rather than
+by the shell. It has to be known before a shell exists at all: a screen somebody
+switched off would otherwise light for a moment at every login and then go dark
+again, which is a modeset in each direction for nothing. That also means the
+login screen comes up the same way.
+
+**A screen the config file answers for is not offered a switch.** Writing
+`enabled` for a connector in `~/.config/lxb/config.toml` — see
+[configuration.md](configuration.md) — is a deliberate instruction about that
+hardware, and it is read again at every login, so a press here would appear to
+work and then be overruled. The row says the choice is made on the machine
+itself instead. This is the same refusal **Display order** already makes for a
+screen pinned to a `position`.
+
+A session running inside another compositor has nothing to switch: the window it
+draws in is the outer compositor's. The page says so rather than standing empty.
+
+### Display order
+
+```
+Settings > Display > Display order  >  DP-1  >  Display 2
+```
+
+Which screen the compositor puts first, which second, and so on along the row it
+lays them out in. That is what decides where a pointer leaving one screen's edge
+comes out, and which way along the desk the windows go.
+
+A list of screens has no empty places to move into, so an order can only be
+changed by **exchanging** two screens: every row that is not the one in force
+says which screen is standing there, because that is what pressing it does. The
+places are counted from one on the page and from zero everywhere else — nobody
+calls their leftmost monitor the zeroth one.
+
+The screens are listed in the order they were *announced*, not the order they
+stand in. The arrangement changes under the rows while the rows hold still,
+which is what keeps the mark moving to where it was pressed: listed in standing
+order, every press would reorder the rows under a cursor that stays where it is,
+and moving a screen would read as having failed.
+
+A screen pinned to a `position` in the compositor's config takes no part in the
+arrangement and is left off this page, and a session that mirrors every screen
+onto one region has no arrangement at all. Both say so.
 
 ### Night light
 
@@ -615,6 +691,55 @@ line is left at whatever the compositor brought it up at.
 The compositor's own `config.toml` has the same mode, the same transform and
 the same four HDR settings per output, for a session with no shell — see
 [docs/configuration.md](configuration.md).
+
+### Always on display
+
+```
+Settings > Display > Always on display  >  DP-1  >  On
+```
+
+What a screen goes on showing once it has gone dark: the time, in the middle of
+it, in a grey barely above the black it stands on. Nothing else — no date, no
+wallpaper, no bar.
+
+It is per screen and off until you ask for it. A screen arrives at the dark two
+ways, and this covers both: **OLED protection** resting it while you use another
+one, and **Settings > Power** turning the screens off because nobody is at the
+machine. It is deliberately *not* shown on Power's intermediate dim stage, where
+your desktop is still there at about half brightness and a clock would be
+sitting on top of your windows.
+
+Not the same question as OLED protection, however close the two sit. That one
+decides whether a screen nobody is watching goes dark; this decides what it
+shows once it has. A screen can be answered either way on each: dark and blank,
+dark with the time on it, or never dark at all.
+
+**It arrives.** The clock fades up out of the black over about a second and a
+half, once the screen has finished going dark. It is not a cross-fade with
+anything — there is nothing else on the screen by then — and it is slower than
+the screen's own fall to black on purpose, so it reads as what is left when that
+is over rather than as part of the same movement. The surface it is drawn on is
+only lifted over the black once it is holding a clock, so nothing of the bar is
+ever shown on a screen that has just gone to sleep.
+
+**It creeps.** The clock walks a small circle — about twelve pixels, once round
+every seven minutes — so that no pixel of it is lit for more than a minute at a
+time. That is the same thing OLED protection exists for, said about the one
+thing left on the screen. It is slow enough that it reads as standing still.
+
+**It is drawn once a minute.** There is nothing a frame in between could show
+that the last one did not, so a screen left dark all night is drawn a few
+hundred times rather than a few million. A clock that redrew at the display's
+own rate would cost more than the feature saves.
+
+**It costs the screen staying on.** A screen the machine switches off is
+normally taken down at its connector — on a panel the backlight going out, on a
+monitor the monitor sleeping — and that is where the power saving on the Power
+page actually comes from. A screen showing the time is left lit instead, because
+there is nothing to show a clock on once the backlight has gone. On an OLED that
+is a handful of near-black pixels and very little else; on an LCD it is the whole
+backlight. Everything else about the screen stays dark: its windows are still off
+screen and the applications behind them are still stopped.
 
 ### OLED protection
 

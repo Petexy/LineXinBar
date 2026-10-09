@@ -57,6 +57,7 @@ fn system() -> Option<Installation> {
     let command = vec![program.to_string_lossy().into_owned()];
     Some(Installation {
         kind: Kind::System,
+        id: None,
         play: command.clone(),
         command,
         // `rpcs3 --version` starts half the emulator to say one line, and a
@@ -79,6 +80,7 @@ fn flatpak(kind: Kind) -> Option<Installation> {
     })?;
     Some(Installation {
         kind,
+        id: Some(FLATPAK_ID.to_string()),
         command: vec![
             "flatpak".to_string(),
             "run".to_string(),
@@ -119,6 +121,7 @@ fn appimage() -> Option<Installation> {
     let command = vec![found.to_string_lossy().into_owned()];
     Some(Installation {
         kind: Kind::AppImage,
+        id: None,
         play: command.clone(),
         command,
         version: None,

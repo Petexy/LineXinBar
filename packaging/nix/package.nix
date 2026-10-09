@@ -88,7 +88,8 @@ let
     fwupd
     polkit
   ];
-  # `lxb-retroarch`, `lxb-heroic` and `lxb-rpcs3` are deliberately not in this
+  # `lxb-retroarch`, `lxb-heroic`, `lxb-rpcs3` and `lxb-proton` are
+  # deliberately not in this
   # list: they
   # link nothing that
   # needs a driver runpath or a wrapper, and they look for `flatpak` on the PATH
@@ -253,6 +254,9 @@ rustPlatform.buildRustPackage {
       -t "$out/share/lxb/glyphs"
     # And the PlayStation 3 integration's.
     install -Dm0644 crates/lxb-rpcs3/glyphs/ps3.svg \
+      -t "$out/share/lxb/glyphs"
+    # And the Windows Apps integration's.
+    install -Dm0644 crates/lxb-proton/glyphs/windows.svg \
       -t "$out/share/lxb/glyphs"
 
     patchShebangs "$out/bin/lxb-session"

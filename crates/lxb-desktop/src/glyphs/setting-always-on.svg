@@ -1,0 +1,57 @@
+<!--
+  A display with a clock face standing in its screen, for the Always on display
+  rows.
+
+  The third of the monitors drawn this way, and the set is now a sentence:
+  setting-display.svg is a screen, setting-screen-use.svg is a screen with a
+  tick for whether it is used at all, setting-screen-rest.svg is a screen with a
+  moon for when it rests, and this is a screen with a clock for what it shows
+  once it has. A reader who has learnt any one of them can read the rest.
+
+  A clock face rather than a drawing of digits. The page is about the time, and
+  a pair of numerals at this size is four strokes nobody can resolve on a row;
+  a ring with two hands is the shape everyone already reads as "the time" and
+  survives being drawn small, which is the whole test a mark here has to pass.
+
+  The ring is a stroke rather than a filled annulus so that the hands inside it
+  have somewhere to be: a disc would leave them drawn on top of their own
+  background and the shader would bevel the pair as one blob. Both are
+  outlines, filled, like every other mark in this set — the material is computed
+  from the outline and a stroke has none to compute from.
+
+  The screen is cut before the clock is laid down. Painted the other way round
+  the hole takes the clock with it, which is a monitor showing nothing and looks
+  exactly like a monitor meant to show nothing.
+
+  The scale is setting-display.svg's, unchanged and for the same reason: a shape
+  has to leave room round itself for the shadow the shader casts beside it. The
+  four are one object and have to stay one size.
+
+  lxb:shape — the material is computed from this outline. See
+  category-games.svg, which is where it is explained.
+-->
+
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32">
+  <defs>
+    <path id="bezel" d="M4.4 5.1h23.2a2 2 0 0 1 2 2v12.9a2 2 0 0 1-2 2H4.4a2 2 0 0 1-2-2V7.1a2 2 0 0 1 2-2z"/>
+    <path id="pane" d="M5.9 8.1h20.2v10.9H5.9z"/>
+    <path id="neck" d="M13.4 22.4h5.2v3.8h-5.2z"/>
+    <path id="foot" d="M8.6 25.7h14.8a1.1 1.1 0 0 1 1.1 1.1v0.9a1.1 1.1 0 0 1-1.1 1.1H8.6a1.1 1.1 0 0 1-1.1-1.1v-0.9a1.1 1.1 0 0 1 1.1-1.1z"/>
+    <path id="ring" d="M16 9.05a4.5 4.5 0 1 0 0 9 4.5 4.5 0 1 0 0-9zm0 1.5a3 3 0 1 1 0 6 3 3 0 1 1 0-6z"/>
+    <path id="hands" d="M15.35 11.3h1.3v2.55h2.1v1.3h-3.4z"/>
+    <g id="bead"><use href="#bezel"/><use href="#neck"/><use href="#foot"/><use href="#ring"/><use href="#hands"/></g>
+    <g id="holes"><use href="#pane"/></g>
+    <mask id="pierced">
+      <use href="#bead" fill="#ffffff"/>
+      <use href="#holes" fill="#000000"/>
+      <use href="#ring" fill="#ffffff"/>
+      <use href="#hands" fill="#ffffff"/>
+    </mask>
+  </defs>
+  <g transform="translate(16 16) scale(0.963) translate(-16 -16)">
+
+    <g mask="url(#pierced)">
+      <use href="#bead" fill="#ffffff"/>
+    </g>
+  </g>
+</svg>

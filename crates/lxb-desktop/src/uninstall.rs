@@ -7,11 +7,13 @@
 //!
 //! ## Three answers, in order
 //!
-//! 1. **What would be run.** [`removal`] turns an origin into a [`Removal`]: a
+//! 1. **What would be done.** [`removal`] turns an origin into a [`Removal`]: a
 //!    program and its arguments, and whether it has to be root. Nothing here
 //!    ever builds a shell command line. Every removal is an argv handed
 //!    straight to `execve`, so a package name is one argument however it is
-//!    spelt, and `appinfo` has already refused any name that is not one.
+//!    spelt, and `appinfo` has already refused any name that is not one. The
+//!    one thing that is not a package removal is [`Doing::File`], for a program
+//!    somebody downloaded whole and nothing on the machine claims.
 //!
 //! 2. **Whether this user may.** [`authority`] asks `sudo` itself rather than
 //!    guessing from group membership: a machine can put someone in `wheel` and
@@ -36,12 +38,57 @@
 //! cost is that the user's `sudo` is warmed for its usual few minutes
 //! afterwards, exactly as it would be had they typed `sudo` in a terminal.
 
+use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
 
 use crate::appinfo::{Manager, Origin, Scope};
 use crate::secret::Secret;
+
+/// Whether what the program kept goes with it.
+///
+/// The one question a person answering "remove this" is not answering by
+/// pressing one button, and the reason the panels that offer this have two:
+/// a program's own folder is the program's settings on one machine and
+/// somebody's entire games library on the next. Steam keeps every game it has
+/// installed under its own directory and RPCS3 keeps the saves and trophies of
+/// a console under its; a shell that took those away as tidying up would be a
+/// shell that deleted somebody's games to remove a program.
+///
+/// So it is asked, and the panel names what each answer costs. [`Kept`] is the
+/// safe one and is where those panels rest.
+///
+/// [`Kept`]: ItsData::Kept
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ItsData {
+    /// The program goes and its own folder stays, so installing it again finds
+    /// its settings, its saves and whatever it had downloaded.
+    Kept,
+    /// Everything goes. For a flatpak this is `--delete-data`, which is
+    /// flatpak's own name for exactly this question; for a package manager
+    /// there is no such flag, because a package never owned anything in
+    /// somebody's home directory in the first place — what is in there is
+    /// deleted by whoever knows where it is, which for the integrations is
+    /// each one's own helper.
+    Gone,
+}
+
+/// What removing something would actually do.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Doing {
+    /// Hand it back to whatever installed it.
+    Package(Removal),
+    /// Delete one file.
+    ///
+    /// A program that arrived as a single file somebody downloaded — an
+    /// AppImage — is not installed by anything, so there is nothing to ask and
+    /// nothing to authorise: it is a file in their own directory, and removing
+    /// it is deleting it. It is never guessed at. Only a caller that already
+    /// knows the file *is* the program says so, which on this bar is the
+    /// PlayStation 3 row and nothing else.
+    File(PathBuf),
+}
 
 /// What removing an application would actually run.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -61,7 +108,15 @@ pub struct Removal {
 /// The `--noninteractive` and `--noconfirm` flags are not optional politeness:
 /// there is no terminal on the other end of any of these, and a tool that stops
 /// to ask would hang until the user gave up.
-pub fn removal(origin: &Origin) -> Option<Removal> {
+///
+/// `data` is answered by flatpak alone, because flatpak is the only one of
+/// these that owns the directory a program keeps its own things in. A package
+/// manager removes what its package shipped and has never had any business in
+/// somebody's home directory, so there is no flag to pass it and nothing is
+/// pretended: what is in there goes, where the user asked for it to go, by the
+/// hand of whoever knows where it is.
+pub fn removal(origin: &Origin, data: ItsData) -> Option<Removal> {
+    let delete_data = matches!(data, ItsData::Gone);
     let (argv, root): (Vec<&str>, bool) = match origin {
         // A user installation belongs to the person logged in, so it comes out
         // with no authority at all. A system one goes through polkit rather
@@ -71,8 +126,8 @@ pub fn removal(origin: &Origin) -> Option<Removal> {
         // collect it, and a session that is only this shell may not have one;
         // that comes back as a plain failure with polkit's own words in it,
         // which is the honest thing to show.
-        Origin::Flatpak { id, scope } => (
-            vec![
+        Origin::Flatpak { id, scope } => {
+            let mut argv = vec![
                 "flatpak",
                 "uninstall",
                 match scope {
@@ -81,11 +136,18 @@ pub fn removal(origin: &Origin) -> Option<Removal> {
                 },
                 "--assumeyes",
                 "--noninteractive",
-                "--",
-                id,
-            ],
-            false,
-        ),
+            ];
+            // Without it, flatpak leaves `~/.var/app/<id>` exactly as it was,
+            // so the next install comes up with the same settings and the same
+            // downloaded everything. That is the right answer to one of the two
+            // buttons and the wrong answer to the other, which is why the
+            // question is asked rather than decided here.
+            if delete_data {
+                argv.push("--delete-data");
+            }
+            argv.extend(["--", id]);
+            (argv, false)
+        }
         Origin::Snap { name } => (vec!["snap", "remove", "--", name], true),
         Origin::System { manager, package } => match manager {
             // `-Rs` and not `-R`: it takes the package and the dependencies
@@ -211,20 +273,61 @@ fn installed(program: &str) -> bool {
 /// What the shell found out before it can offer to remove anything.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Plan {
-    pub removal: Option<Removal>,
+    pub doing: Option<Doing>,
     pub authority: Authority,
 }
 
 impl Plan {
-    /// The plan for something that cannot be removed: nothing to run, and
+    /// The plan for something that cannot be removed: nothing to do, and
     /// therefore nothing to authorise. What a worker that never answered comes
     /// back as, and what the shell shows as "we cannot tell what installed
     /// this" — the same answer, and the same safe one, as a package manager
     /// that said so itself.
     fn nothing_to_do() -> Self {
         Self {
-            removal: None,
+            doing: None,
             authority: Authority::NotNeeded,
+        }
+    }
+}
+
+/// Where a program is, as much as the shell knows before anything is asked.
+///
+/// The question [`Survey`] is started with. A desktop entry is what the bar
+/// has for an ordinary application; the other two are what an integration has
+/// for the program it drives, which the shell knows about in its own terms
+/// rather than through a file on the bar — it took that file *off* the bar, and
+/// a flatpak's application id is a better answer than a path to an export of it
+/// anyway.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Installed {
+    /// At this path, and whatever claims the path owns it — a desktop entry, or
+    /// the program itself.
+    At(PathBuf),
+    /// A flatpak with this application id, in whichever of the two
+    /// installations actually holds it.
+    Flatpak(String),
+    /// One program file somebody downloaded whole, which nothing on this
+    /// machine installed. See [`Doing::File`].
+    Downloaded(PathBuf),
+}
+
+impl Installed {
+    /// What removing it would take. Costs a process or two; call it off a
+    /// worker.
+    fn plan(&self, data: ItsData) -> Plan {
+        match self {
+            Installed::At(path) => plan(&crate::appinfo::identify(path), data),
+            Installed::Flatpak(id) => plan(&crate::appinfo::flatpak_origin(id), data),
+            // Nothing is asked of the machine beyond whether the file is still
+            // there, which is the whole of what this answer depends on.
+            Installed::Downloaded(at) => match at.is_file() {
+                true => Plan {
+                    doing: Some(Doing::File(at.clone())),
+                    authority: Authority::NotNeeded,
+                },
+                false => Plan::nothing_to_do(),
+            },
         }
     }
 }
@@ -248,16 +351,23 @@ pub struct Survey {
 const SURVEY_PATIENCE: std::time::Duration = std::time::Duration::from_secs(6);
 
 impl Survey {
-    pub fn start(path: &std::path::Path) -> Self {
+    /// What removing the application whose desktop entry is at `path` takes,
+    /// leaving whatever it kept where it is — the bar's own Uninstall row,
+    /// which removes an application and has never claimed to do more.
+    pub fn start(path: &Path) -> Self {
+        Self::of(Installed::At(path.to_path_buf()), ItsData::Kept)
+    }
+
+    /// The same question asked about a program the shell knows in its own
+    /// terms, and about either answer to what it kept.
+    pub fn of(installed: Installed, data: ItsData) -> Self {
         let slot: Arc<Mutex<Option<Plan>>> = Arc::new(Mutex::new(None));
         let into = Arc::clone(&slot);
-        let path = path.to_path_buf();
         std::thread::spawn(move || {
-            let origin = crate::appinfo::identify(&path);
-            let found = plan(&origin);
+            let found = installed.plan(data);
             tracing::debug!(
-                ?path,
-                ?origin,
+                ?installed,
+                ?data,
                 ?found,
                 "worked out what removing this takes"
             );
@@ -287,14 +397,17 @@ impl Survey {
 
 /// Work out the plan for `origin`. Costs a process or two; call it off a
 /// worker.
-pub fn plan(origin: &Origin) -> Plan {
-    let removal = removal(origin);
+pub fn plan(origin: &Origin, data: ItsData) -> Plan {
+    let removal = removal(origin, data);
     let authority = match &removal {
         Some(removal) => authority(removal),
         // Nothing to authorise, and nothing that would use the answer.
         None => Authority::NotNeeded,
     };
-    Plan { removal, authority }
+    Plan {
+        doing: removal.map(Doing::Package),
+        authority,
+    }
 }
 
 /// How a removal ended.
@@ -315,22 +428,24 @@ pub struct Run {
 }
 
 impl Run {
-    /// Start `removal`, authenticating with `password` if one was asked for.
+    /// Start `doing`, authenticating with `password` if one was asked for.
     ///
     /// The password is moved in and dropped on the worker the moment `sudo -v`
     /// has been fed it, so it is gone well before the removal itself finishes.
-    pub fn start(removal: Removal, password: Option<Secret>) -> Self {
+    pub fn start(doing: Doing, password: Option<Secret>) -> Self {
         let outcome = Arc::new(Mutex::new(None));
         let slot = Arc::clone(&outcome);
         std::thread::spawn(move || {
-            let result = carry_out(&removal, password);
+            let result = carry_out(&doing, password);
+            let what = match &doing {
+                Doing::Package(removal) => removal.package.clone(),
+                Doing::File(at) => at.display().to_string(),
+            };
             match &result {
-                Outcome::Removed => {
-                    tracing::info!(package = %removal.package, "removed")
-                }
+                Outcome::Removed => tracing::info!(%what, "removed"),
                 Outcome::WrongPassword => tracing::info!("the password was not accepted"),
                 Outcome::Failed(why) => {
-                    tracing::warn!(package = %removal.package, why, "the removal failed")
+                    tracing::warn!(%what, why, "the removal failed")
                 }
             }
             if let Ok(mut slot) = slot.lock() {
@@ -353,13 +468,24 @@ impl Run {
     }
 }
 
-/// Authenticate if a password was given, then run the removal.
-fn carry_out(removal: &Removal, password: Option<Secret>) -> Outcome {
+/// Authenticate if a password was given, then do it.
+fn carry_out(doing: &Doing, password: Option<Secret>) -> Outcome {
     if let Some(password) = password {
         if let Some(refused) = validate(password) {
             return refused;
         }
     }
+    let removal = match doing {
+        Doing::Package(removal) => removal,
+        // One file, and its own error: nothing was run, so there is no tool's
+        // complaint to reduce to a line.
+        Doing::File(at) => {
+            return match std::fs::remove_file(at) {
+                Ok(()) => Outcome::Removed,
+                Err(err) => Outcome::Failed(err.to_string()),
+            }
+        }
+    };
     let mut command = if removal.root {
         // `-n`, so that a timestamp which expired between validating and here
         // comes back as a failure rather than as a process sitting on a prompt
@@ -470,7 +596,7 @@ mod tests {
     const APP_ID: &str = "com.example.Editor";
 
     fn argv(origin: &Origin) -> Option<Vec<String>> {
-        removal(origin).map(|removal| removal.argv)
+        removal(origin, ItsData::Kept).map(|removal| removal.argv)
     }
 
     /// The one thing that must be true of every recipe: the package is its own
@@ -524,7 +650,7 @@ mod tests {
                 id: APP_ID.into(),
                 scope,
             };
-            let Some(removal) = removal(&origin) else {
+            let Some(removal) = removal(&origin, ItsData::Kept) else {
                 continue;
             };
             assert!(!removal.root);
@@ -540,6 +666,62 @@ mod tests {
         }
     }
 
+    /// The flag that answers the second button, and only on the answer that
+    /// asked for it. A removal that passed `--delete-data` whatever was pressed
+    /// would make the two buttons one button, and the one it would make them is
+    /// the one that deletes somebody's games.
+    #[test]
+    fn only_remove_everything_deletes_what_a_flatpak_kept() {
+        let origin = Origin::Flatpak {
+            id: APP_ID.into(),
+            scope: Scope::User,
+        };
+        let Some(kept) = removal(&origin, ItsData::Kept) else {
+            // No flatpak on this machine, so there is no recipe to look at.
+            return;
+        };
+        let gone = removal(&origin, ItsData::Gone).expect("the same recipe, with the flag");
+        assert!(!kept.argv.iter().any(|part| part == "--delete-data"));
+        assert!(gone.argv.iter().any(|part| part == "--delete-data"));
+        // And it is a flag rather than the thing being removed: the id is
+        // still the last argument, behind the fence.
+        assert_eq!(gone.argv.last().map(String::as_str), Some(APP_ID));
+    }
+
+    /// A package manager is asked the same thing either way, because a package
+    /// never owned anything in somebody's home directory. What is in there is
+    /// deleted by whoever knows where it is, and this is where it would be
+    /// wrong to pretend otherwise by inventing a flag.
+    #[test]
+    fn a_package_manager_is_asked_the_same_thing_either_way() {
+        for manager in [Manager::Pacman, Manager::Dpkg, Manager::Rpm] {
+            let origin = Origin::System {
+                manager,
+                package: PACKAGE.into(),
+            };
+            assert_eq!(
+                removal(&origin, ItsData::Kept),
+                removal(&origin, ItsData::Gone)
+            );
+        }
+    }
+
+    /// A downloaded program is a file and nothing else: no tool to run, nobody
+    /// to ask, and no plan at all once it is not there any more.
+    #[test]
+    fn a_downloaded_program_is_one_file_and_needs_nobody() {
+        let at = std::env::temp_dir().join("lxb-uninstall-test-downloaded");
+        std::fs::write(&at, b"not really a program").expect("the scratch file");
+        let plan = Installed::Downloaded(at.clone()).plan(ItsData::Gone);
+        assert_eq!(plan.doing, Some(Doing::File(at.clone())));
+        assert_eq!(plan.authority, Authority::NotNeeded);
+        assert_eq!(carry_out(&Doing::File(at.clone()), None), Outcome::Removed);
+        assert!(!at.exists());
+        // And a file that has already gone is nothing to offer, rather than a
+        // button that would fail when it was pressed.
+        assert_eq!(Installed::Downloaded(at).plan(ItsData::Gone).doing, None);
+    }
+
     /// A snap needs root even though it installed itself without a package
     /// manager — this is the case the shell would get wrong by assuming that
     /// "not a system package" means "no authority needed".
@@ -548,7 +730,7 @@ mod tests {
         let origin = Origin::Snap {
             name: PACKAGE.into(),
         };
-        if let Some(removal) = removal(&origin) {
+        if let Some(removal) = removal(&origin, ItsData::Kept) {
             assert!(removal.root);
         }
     }
@@ -558,9 +740,9 @@ mod tests {
     /// saying so.
     #[test]
     fn an_unknown_origin_has_no_removal_and_nothing_to_authorise() {
-        assert_eq!(removal(&Origin::Unknown), None);
-        let plan = plan(&Origin::Unknown);
-        assert_eq!(plan.removal, None);
+        assert_eq!(removal(&Origin::Unknown, ItsData::Kept), None);
+        let plan = plan(&Origin::Unknown, ItsData::Kept);
+        assert_eq!(plan.doing, None);
         assert_eq!(plan.authority, Authority::NotNeeded);
     }
 
@@ -590,7 +772,7 @@ mod tests {
                 package: PACKAGE.into(),
             },
         ] {
-            if let Some(removal) = removal(&origin) {
+            if let Some(removal) = removal(&origin, ItsData::Kept) {
                 assert!(
                     installed(&removal.argv[0]),
                     "{} is not on this machine",

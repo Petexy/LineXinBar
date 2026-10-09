@@ -86,6 +86,12 @@ ASOUND
 # Anything else the shell should be started with — a `--debug-*` flag, or the
 # `--retroarch-helper` that stands in for an installed integration package.
 # One string, appended to the command line as written.
+#
+# LXB_SHOT_OUTPUTS is how many virtual displays the session comes up with, for
+# the pages that are about having more than one screen — Display order, and
+# Screens in use, which cannot be opened at all on a session with one. Each is
+# its own window on the host, and the shell photographs the one its actions
+# were driven on.
 cat > "$scratch_home/.config/lxb/config.toml" <<EOF
 [general]
 shell = "$root/target/release/lxb-desktop --debug-actions $actions ${LXB_SHOT_ARGS:-}"
@@ -102,7 +108,7 @@ env -u WAYLAND_DISPLAY -u WAYLAND_SOCKET \
     HOME="$scratch_home" XDG_CONFIG_HOME="$scratch_home/.config" DISPLAY="${LXB_SHOT_DISPLAY:-:1}" \
     dbus-run-session -- bash -c '
         root=$1; socket=$2; lifetime=$3; inside=$4
-        "$root/target/release/lxb" --backend x11 --outputs 1 \
+        "$root/target/release/lxb" --backend x11 --outputs "${LXB_SHOT_OUTPUTS:-1}" \
             --window-size "${LXB_SHOT_SIZE:-1280x800}" --socket "$socket" --shell &
         lxb=$!
         if [[ -n "$inside" ]]; then

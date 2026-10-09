@@ -278,6 +278,94 @@ fn write(out: &mut impl Write, line: &Progress) {
     }
 }
 
+/// Heroic has gone; take what this integration kept for it.
+///
+/// The other end of [`run`], and the half of a removal that is nobody else's to
+/// do. **Removing Heroic itself is the shell's job**, because only the shell
+/// can ask for a password: it knows which flatpak installation holds this one
+/// and hands it back to flatpak — this user's own with nobody's permission, a
+/// system-wide one through polkit. What is left over is everything *outside*
+/// that application, which `flatpak uninstall --delete-data` does not reach,
+/// and that is this.
+///
+/// What goes, always:
+///
+/// * The filesystem permission the shell granted so Heroic could install games
+///   where somebody asked for them — `flatpak override --user --reset`. It
+///   outlives the application, and a reinstall would silently inherit it.
+/// * The shell's own cache of the covers and backdrops fetched from Epic, which
+///   lives under the *shell's* cache rather than Heroic's.
+///
+/// And with `data`, which is the shell's **Remove everything**: Heroic's own
+/// configuration directory outside any sandbox, `~/.config/heroic`. The
+/// flatpak's own went with it, because the shell passed `--delete-data`; this
+/// is for a machine that has also had a Heroic installed some other way, and
+/// the button that was pressed asked for everything.
+///
+/// **Games installed through Heroic are not touched.** They are kept where
+/// Heroic was told to keep them — `~/Games/Heroic` unless somebody chose
+/// somewhere else — which is outside all of this, and they are the user's.
+///
+/// Every failure is reported and none of them stops the rest: Heroic is already
+/// gone by the time this runs.
+pub fn forget(out: &mut impl Write, data: bool) -> bool {
+    tell(out, Stage::Installing, None, "Clearing up".to_string());
+    reset();
+    let mut gone = Vec::new();
+    if let Some(art) = crate::art::cache() {
+        gone.push(art);
+    }
+    if data {
+        if let Some(config) = own_config() {
+            gone.push(config);
+        }
+    }
+    for at in gone {
+        match std::fs::remove_dir_all(&at) {
+            Ok(()) => eprintln!("forget: removed {}", at.display()),
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => {}
+            Err(err) => eprintln!("forget: {} could not be removed: {err}", at.display()),
+        }
+    }
+    tell(
+        out,
+        Stage::Done,
+        Some(1.0),
+        "Heroic has been removed".to_string(),
+    );
+    true
+}
+
+/// Give back the filesystem permission the shell granted — see
+/// `folder::permit`, which is the one that writes it.
+///
+/// Only this user's own overrides, because a `--user` override is the only one
+/// anything here ever wrote: a system-wide installation's are per-installation
+/// and need root, and are somebody else's to undo.
+fn reset() {
+    let out = Command::new("flatpak")
+        .args(["override", "--user", "--reset", FLATPAK_ID])
+        .env("LC_ALL", "C")
+        .stdin(Stdio::null())
+        .output();
+    match out {
+        Ok(out) if out.status.success() => eprintln!("forget: permissions reset"),
+        Ok(out) => eprintln!(
+            "forget: permissions were not reset: {}",
+            said(&out.stderr).unwrap_or_else(|| "flatpak refused".to_string())
+        ),
+        Err(err) => eprintln!("forget: flatpak could not be run: {err}"),
+    }
+}
+
+/// Heroic's own configuration directory on a machine where it was not a
+/// flatpak, worked out here without an installation because by now there is
+/// none.
+fn own_config() -> Option<std::path::PathBuf> {
+    let home = std::env::var_os("HOME").map(std::path::PathBuf::from)?;
+    Some(home.join(".config/heroic"))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

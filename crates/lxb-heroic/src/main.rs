@@ -7,11 +7,12 @@
 //! depends on this crate at build time — what the two agree about is one JSON
 //! record per line, [`report`], and the shell finds this program on `PATH`.
 //!
-//! ## Twelve questions
+//! ## Thirteen questions
 //!
 //! ```text
 //! lxb-heroic probe             is Heroic here, whose account, which Proton
 //! lxb-heroic install           put Heroic in this user's flatpaks, and its Proton
+//! lxb-heroic forget            it has been removed; forget what was kept for it
 //! lxb-heroic sign-in           a code for the phone, and Heroic signed in with it
 //! lxb-heroic sign-out          Heroic signed out
 //! lxb-heroic library           the account's games [--refresh: ask Epic first]
@@ -72,6 +73,22 @@ enum Asked {
     ///
     /// Deliberately `--user`: it needs no password and no polkit agent.
     Install,
+    /// Heroic has been taken off this machine; forget what this integration
+    /// kept for it.
+    ///
+    /// **Removing Heroic itself is the shell's job**, because only the shell
+    /// can ask for a password — this user's own flatpak comes off with nobody's
+    /// permission and a system-wide one through polkit. What is left is
+    /// everything outside the application: the filesystem permission granted to
+    /// its sandbox, and the shell's own cache of Epic's artwork. With `--data`,
+    /// which is the shell's **Remove everything**, Heroic's own configuration
+    /// directory outside any sandbox goes as well. Games installed through
+    /// Heroic are kept where Heroic was told to keep them and are not touched.
+    Forget {
+        /// Take Heroic's own configuration directory as well.
+        #[arg(long)]
+        data: bool,
+    },
     /// Sign Heroic in to Epic with a code approved on a phone.
     ///
     /// Writes the code as it is issued, and again whenever a fresh one
@@ -190,6 +207,7 @@ fn main() -> ExitCode {
             };
             ended(install::run(&mut out, &paths, &home))
         }
+        Asked::Forget { data } => ended(install::forget(&mut out, data)),
         Asked::SignIn => {
             let Some(installation) = heroic::installation() else {
                 say(

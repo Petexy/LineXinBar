@@ -18,7 +18,7 @@ use smithay::reexports::wayland_server::protocol::wl_output::WlOutput;
 use smithay::reexports::wayland_server::protocol::wl_seat::WlSeat;
 use smithay::reexports::wayland_server::protocol::wl_surface::WlSurface;
 use smithay::reexports::wayland_server::{Client, Resource};
-use smithay::utils::{Logical, Point, Serial};
+use smithay::utils::{Logical, Point, Rectangle, Serial};
 use smithay::wayland::buffer::BufferHandler;
 use smithay::wayland::compositor::{
     add_blocker, add_pre_commit_hook, get_parent, is_sync_subsurface, with_states,
@@ -27,6 +27,7 @@ use smithay::wayland::compositor::{
 use smithay::wayland::dmabuf::{DmabufGlobal, DmabufHandler, DmabufState, ImportNotifier};
 use smithay::wayland::drm_syncobj::{DrmSyncobjCachedState, DrmSyncobjHandler, DrmSyncobjState};
 use smithay::wayland::fractional_scale::FractionalScaleHandler;
+use smithay::wayland::input_method::InputMethodSeat;
 use smithay::wayland::output::OutputHandler;
 use smithay::wayland::pointer_constraints::{with_pointer_constraint, PointerConstraintsHandler};
 use smithay::wayland::seat::WaylandFocus;
@@ -476,6 +477,22 @@ impl XdgShellHandler for LxbState {
     fn grab(&mut self, surface: PopupSurface, seat: WlSeat, serial: Serial) {
         let seat: Seat<Self> = Seat::from_resource(&seat).unwrap();
         let popup = PopupKind::Xdg(surface);
+        // Whether the keys are with the shell's own on-screen keyboard.
+        //
+        // The board borrows the physical keyboard for as long as it is up, and
+        // it borrows it through `zwp_input_method_v2.grab_keyboard` rather than
+        // by taking focus — see `keyboard.rs`'s `Grab`, which explains why it
+        // may not take focus. To the seat that is a keyboard grab like any
+        // other, and the rule below read it as *another client has the keys,
+        // so this menu may not have them* and threw the menu away.
+        //
+        // It is not another client. It is this shell's board, drawn over the
+        // very application that is opening the menu, and it lets go on its own
+        // a moment later: opening a menu moves the application's own focus off
+        // the field, the field deactivates, and the board puts itself away.
+        // All that was needed was to let the menu live long enough for that to
+        // happen.
+        let the_board_has_the_keys = seat.input_method().keyboard_grabbed();
         if let Ok(root) = find_popup_root_surface(&popup) {
             if let Ok(mut grab) = self
                 .lxb
@@ -484,22 +501,40 @@ impl XdgShellHandler for LxbState {
             {
                 if let Some(keyboard) = seat.get_keyboard() {
                     if keyboard.is_grabbed()
+                        && !the_board_has_the_keys
                         && !(keyboard.has_grab(serial)
                             || keyboard.has_grab(grab.previous_serial().unwrap_or(serial)))
                     {
                         grab.ungrab(smithay::desktop::PopupUngrabStrategy::All);
                         return;
                     }
-                    keyboard.set_focus(self, grab.current_grab(), serial);
-                    // The grab is not optional. Besides routing keys along the
-                    // popup chain, it is what hands focus back to the window
-                    // when the menu closes; without it the application is left
-                    // deaf to the keyboard from the first menu it ever opens.
-                    keyboard.set_grab(
-                        self,
-                        smithay::desktop::PopupKeyboardGrab::new(&grab),
-                        serial,
-                    );
+                    // And the keyboard half of the grab is not taken while the
+                    // board holds it. There is one grab on a seat, so taking it
+                    // here would leave the board deaf with its own grab object
+                    // still open — and the board releasing that object later
+                    // would then release *this* grab, which is the one thing
+                    // the menu cannot do without. The board is already on its
+                    // way out; what it leaves behind is the keyboard on the
+                    // application, which is where the menu's keys are read
+                    // from anyway.
+                    if the_board_has_the_keys {
+                        tracing::debug!(
+                            "a menu opened while the on-screen keyboard had the keys; \
+                             it keeps the pointer and the board keeps the keys"
+                        );
+                    } else {
+                        keyboard.set_focus(self, grab.current_grab(), serial);
+                        // The grab is not optional. Besides routing keys along
+                        // the popup chain, it is what hands focus back to the
+                        // window when the menu closes; without it the
+                        // application is left deaf to the keyboard from the
+                        // first menu it ever opens.
+                        keyboard.set_grab(
+                            self,
+                            smithay::desktop::PopupKeyboardGrab::new(&grab),
+                            serial,
+                        );
+                    }
                 }
                 if let Some(pointer) = seat.get_pointer() {
                     if pointer.is_grabbed()
@@ -746,13 +781,26 @@ impl LxbState {
             return;
         };
 
-        // The positioner works in the window's coordinate space.
-        let mut target = output_geo;
-        target.loc -= get_popup_toplevel_coords(&PopupKind::Xdg(popup.clone()));
-        target.loc -= window_loc;
+        // The positioner works in the window's coordinate space, which is not
+        // the display's whenever the application is drawing larger than life.
+        let target = the_display_in_the_windows_own_coordinates(
+            output_geo,
+            window_loc,
+            self.lxb.outputs.window_scale_on(&window, &output),
+            get_popup_toplevel_coords(&PopupKind::Xdg(popup.clone())),
+        );
 
         popup.with_pending_state(|state| {
+            let asked = state.geometry;
             state.geometry = state.positioner.get_unconstrained_geometry(target);
+            if state.geometry != asked {
+                tracing::debug!(
+                    ?asked,
+                    given = ?state.geometry,
+                    ?target,
+                    "a menu was put back inside the display it is on"
+                );
+            }
         });
     }
 }
@@ -863,6 +911,12 @@ impl WlrLayerShellHandler for LxbState {
 
     fn layer_destroyed(&mut self, surface: LayerSurface) {
         let mut changed = false;
+
+        // Before anything else, in case this was the one surface a dark display
+        // was being kept lit for. A shell that goes away holding one would
+        // otherwise leave that display's connector on for the rest of the
+        // session, with nothing drawing on it. See [`crate::always_on`].
+        self.lxb.always_on.forget_surface(surface.wl_surface());
 
         for output in self.lxb.space.outputs().cloned().collect::<Vec<_>>() {
             let mut map = layer_map_for_output(&output);
@@ -1304,4 +1358,115 @@ impl LxbState {
     /// Deliberately only re-describes the surface: see the note in
     /// [`crate::colour`] about the user's setting outranking the client's.
     fn follow_surface_colour(&mut self, _surface: &WlSurface) {}
+}
+
+/// The display a window is on, written in that window's own coordinates — the
+/// rectangle a menu of its has to fit inside.
+///
+/// The two are the same rectangle on an ordinary screen and they are not when
+/// the application is **drawing larger than life**. Settings > Display >
+/// Application scaling configures a window with a logical size that much
+/// *smaller* than the display and draws its picture back out over the whole of
+/// it — see [`crate::scale`] — so a window on a 1280-wide display at 125% has
+/// 1024 coordinates of its own, and every one of them is worth a pixel and a
+/// quarter.
+///
+/// A popup is placed in those coordinates. Handing the positioner the
+/// display's rectangle instead told the application it had 1280 to put a menu
+/// in when it had 1024, so a menu near the right-hand edge was left exactly
+/// where it was asked for and then drawn a quarter larger — off the side of
+/// the screen. Reported from use on 2026-10-08 against Dolphin, and measured
+/// here: a menu asked for at 1020 and 214 wide, on a window 1024 wide, came
+/// out at 1275 on a 1280-wide display with five pixels of it on the screen.
+///
+/// `popup_coords` is where this popup's own parent chain starts, and is
+/// already in the window's coordinates — it is subtracted after the scaling
+/// rather than before it, which is the whole reason this is one function
+/// instead of three lines at the call site.
+fn the_display_in_the_windows_own_coordinates(
+    output: Rectangle<i32, Logical>,
+    window: Point<i32, Logical>,
+    scale: f64,
+    popup_coords: Point<i32, Logical>,
+) -> Rectangle<i32, Logical> {
+    let mut target = output;
+    target.loc -= window;
+    if scale > 0.0 && scale != 1.0 {
+        target = target.to_f64().downscale(scale).to_i32_round();
+    }
+    target.loc -= popup_coords;
+    target
+}
+
+#[cfg(test)]
+mod tests {
+    use super::the_display_in_the_windows_own_coordinates;
+    use smithay::utils::{Logical, Point, Rectangle};
+
+    fn display(w: i32, h: i32) -> Rectangle<i32, Logical> {
+        Rectangle::from_size((w, h).into())
+    }
+
+    /// An application drawn at its own size has the display's own rectangle.
+    #[test]
+    fn an_ordinary_window_has_the_whole_display_to_put_a_menu_in() {
+        assert_eq!(
+            the_display_in_the_windows_own_coordinates(
+                display(1280, 800),
+                Point::from((0, 0)),
+                1.0,
+                Point::from((0, 0)),
+            ),
+            display(1280, 800)
+        );
+    }
+
+    /// And one drawn larger than life has exactly as much less of it as it is
+    /// being enlarged by. This is the bug: at 125% the window is 1024 wide,
+    /// and a menu told it had 1280 ran off the side of the screen.
+    #[test]
+    fn a_window_drawn_larger_than_life_has_less_of_it() {
+        assert_eq!(
+            the_display_in_the_windows_own_coordinates(
+                display(1280, 800),
+                Point::from((0, 0)),
+                1.25,
+                Point::from((0, 0)),
+            ),
+            display(1024, 640)
+        );
+    }
+
+    /// A window on the second screen is offset by where that screen begins,
+    /// and the offset is in the display's units — so it is scaled with the
+    /// rest rather than taken off afterwards.
+    #[test]
+    fn a_window_on_the_second_screen_is_measured_from_its_own_corner() {
+        let mut second = display(1280, 800);
+        second.loc = Point::from((1280, 0));
+        assert_eq!(
+            the_display_in_the_windows_own_coordinates(
+                second,
+                Point::from((1280, 0)),
+                1.25,
+                Point::from((0, 0)),
+            ),
+            display(1024, 640)
+        );
+    }
+
+    /// And a submenu is placed relative to the popup it hangs off, which is
+    /// already in the window's own coordinates: it comes off after the
+    /// scaling, not before it.
+    #[test]
+    fn a_submenu_is_measured_from_the_menu_it_hangs_off() {
+        let target = the_display_in_the_windows_own_coordinates(
+            display(1280, 800),
+            Point::from((0, 0)),
+            1.25,
+            Point::from((100, 50)),
+        );
+        assert_eq!(target.loc, Point::from((-100, -50)));
+        assert_eq!(target.size, display(1024, 640).size);
+    }
 }

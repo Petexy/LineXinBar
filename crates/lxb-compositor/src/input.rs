@@ -3710,12 +3710,23 @@ fn watch_a_client_placing_the_pointer(
 ///
 /// A window that has said *nothing whatever* about itself is chrome too, for
 /// the reason given at [`x11_window_says_nothing`].
+///
+/// And so is an override-redirect window that belongs to another window, for
+/// the reason given at [`an_override_redirect_window_of_another`] — which is
+/// every menu a Windows application opens.
 pub(crate) fn window_is_x11_chrome(window: &Window) -> bool {
     let Some(surface) = window.x11_surface() else {
         return false;
     };
 
     if x11_window_says_nothing(surface) {
+        return true;
+    }
+
+    if an_override_redirect_window_of_another(
+        surface.is_override_redirect(),
+        surface.is_transient_for().is_some(),
+    ) {
         return true;
     }
 
@@ -3731,6 +3742,42 @@ pub(crate) fn window_is_x11_chrome(window: &Window) -> bool {
                 | WmWindowType::Tooltip
         )
     )
+}
+
+/// Whether an X11 window is one its client hung off another window of its
+/// own: the two facts that say so, so the question can be asked without an X
+/// server.
+///
+/// **Override-redirect** means the window manager is to keep its hands off
+/// entirely — the client places the window itself and nobody is to move,
+/// stack or focus it. **`WM_TRANSIENT_FOR`** names the window it belongs to.
+/// Together they are a menu, a dropdown or a tooltip: a piece of furniture
+/// that one of the client's own windows put on the screen and is driving. An
+/// application in its own right is transient for nothing, which is what keeps
+/// an override-redirect *game* — the case the window-type list above was
+/// written for — out of this.
+///
+/// This is here because of what a Windows application's menus look like.
+/// Measured on 2026-10-08, against Wine 11.18 under a private X server:
+/// Notepad's File menu is override-redirect, `WM_TRANSIENT_FOR` the main
+/// window, and typed **`_NET_WM_WINDOW_TYPE_DIALOG`** — not `Menu`, not
+/// `PopupMenu`, not `DropdownMenu`. It carries the application's class, its
+/// pid and `WM_HINTS` as well, so neither the list above nor
+/// [`x11_window_says_nothing`] caught it, and it was taken for an application
+/// window and handed the keyboard the moment it mapped.
+///
+/// That is what a menu cannot survive. A Windows menu is tracked by the
+/// window that opened it, and the tracking ends when that window loses the
+/// focus: giving the keyboard to the menu takes it off the owner, the owner
+/// is told it is no longer focused, and the application closes the menu
+/// itself. In the session this was found in the whole life of the File menu
+/// was 1.8 milliseconds — one unpainted frame on the screen, which is exactly
+/// what was reported.
+///
+/// So the two of them are furniture here: never given the keyboard, and drawn
+/// over the application they belong to rather than in the stack beside it.
+fn an_override_redirect_window_of_another(override_redirect: bool, has_an_owner: bool) -> bool {
+    override_redirect && has_an_owner
 }
 
 /// Whether an X11 window has told us nothing at all about itself: no class, no
@@ -4099,7 +4146,29 @@ fn xwayland_moved_alone(
 
 #[cfg(test)]
 mod tests {
-    use super::says_nothing;
+    use super::{an_override_redirect_window_of_another, says_nothing};
+
+    /// A Windows application's menu, which is the shape this was written for:
+    /// override-redirect, and transient for the window that opened it.
+    ///
+    /// Given the keyboard, it lives one frame — the application is told its
+    /// own window is no longer focused and closes the menu itself.
+    #[test]
+    fn a_menu_a_window_opened_belongs_to_that_window() {
+        assert!(an_override_redirect_window_of_another(true, true));
+    }
+
+    /// And the case the override-redirect windows are let through for: a game
+    /// that places its own window and is the application, not a part of one.
+    /// It is transient for nothing, so it still takes the keyboard.
+    #[test]
+    fn a_game_that_places_its_own_window_is_still_the_application() {
+        assert!(!an_override_redirect_window_of_another(true, false));
+        // And a managed window is the window manager's whatever it is
+        // transient for: a dialog is a window somebody types into.
+        assert!(!an_override_redirect_window_of_another(false, true));
+        assert!(!an_override_redirect_window_of_another(false, false));
+    }
 
     /// The windows Wine leaves lying around every game under Proton: no class,
     /// no instance, no title, no type, no hints, no pid. Tiled over the

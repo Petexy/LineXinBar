@@ -204,6 +204,27 @@ pub fn identify(path: &Path) -> Origin {
     Origin::Unknown
 }
 
+/// Where the flatpak with this application id is, where one is installed.
+///
+/// For the programs the integrations drive, which the shell knows by their
+/// application id rather than by a file: it takes their desktop entries *off*
+/// the bar and stands a row of its own in their place, so there is no path in
+/// hand to ask [`identify`] about — and the id is a better question anyway,
+/// because it is what the removal itself is going to name.
+///
+/// [`Origin::Unknown`] for an id nothing has installed, which is the same safe
+/// answer an unplaceable application gets: the shell says it cannot find it and
+/// offers nothing further.
+pub fn flatpak_origin(id: &str) -> Origin {
+    match flatpak_scope(id) {
+        Some(scope) => Origin::Flatpak {
+            id: id.to_string(),
+            scope,
+        },
+        None => Origin::Unknown,
+    }
+}
+
 /// Ask the installation what version it holds and what it weighs.
 pub fn facts(origin: &Origin) -> Facts {
     match origin {

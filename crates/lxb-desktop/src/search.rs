@@ -356,14 +356,18 @@ impl Hunt {
 /// what the shelves and the explorer are for.
 fn press_for(entry: &Entry) -> Option<Press> {
     match entry {
-        Entry::App(_) | Entry::Game(_) | Entry::EpicGame(_) | Entry::Rom(_) | Entry::Ps3Game(_) => {
-            Some(Press::Here)
-        }
+        Entry::App(_)
+        | Entry::Game(_)
+        | Entry::EpicGame(_)
+        | Entry::Rom(_)
+        | Entry::Ps3Game(_)
+        | Entry::WindowsGame(_) => Some(Press::Here),
         Entry::Folder(_)
         | Entry::Steam(_)
         | Entry::RetroArch(_)
         | Entry::Epic(_)
         | Entry::Ps3(_)
+        | Entry::Windows(_)
         | Entry::Facts(_)
         | Entry::Typed(_)
         | Entry::Partition(_) => Some(Press::There),

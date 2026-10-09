@@ -14,6 +14,7 @@ pub mod preflight;
 pub mod process;
 pub mod prompt;
 pub mod protection;
+pub mod proton;
 pub mod release_install;
 pub mod releases;
 pub mod service;

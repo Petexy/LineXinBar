@@ -179,6 +179,17 @@ where
         )));
     }
 
+    // Then the one surface the shell is allowed to show on a display that has
+    // gone dark — over the black, and so over the cursor and everything else
+    // on this screen, but still under the curtain: a session on its way out
+    // takes every screen with it, clock and all. See [`crate::always_on`].
+    //
+    // Above the sheet and not below it, which is the whole of this feature: the
+    // sheet is opaque once it is all the way down, so a surface drawn after it
+    // would not be dimmed by it, it would be gone — occluded, contributing no
+    // damage, and leaving a frame the backend reports as empty.
+    push_the_always_on_display(&mut elements, renderer, lxb, output, scale);
+
     // Then the black one display rests behind while another one is being
     // used — under the curtain, because the session leaving is over every
     // screen and outranks one screen sleeping, and over everything else on
@@ -252,9 +263,17 @@ where
 
     let layer_map = layer_map_for_output(output);
     let a_menu_is_up = lxb.outputs.pip().has_a_menu();
+    // Whatever this display shows while it is dark has already been drawn, over
+    // the black at the top of this list. Left out here so it is drawn once:
+    // drawn twice it would also appear in its own layer, under the sheet, where
+    // it is invisible but still costs a quad.
+    let always_on = lxb.always_on.surface(output).cloned();
 
     let push_layer = |elements: &mut Vec<LxbRenderElement<R>>, layer: Layer, renderer: &mut R| {
         for surface in layer_map.layers_on(layer).rev() {
+            if always_on.as_ref() == Some(surface.wl_surface()) {
+                continue;
+            }
             let Some(geometry) = layer_map.layer_geometry(surface) else {
                 continue;
             };
@@ -1047,6 +1066,54 @@ fn push_the_menu_over_floating_windows<R>(
             }
         }
     }
+}
+
+/// Draw what one display shows while it is dark, over the black.
+///
+/// The shell names a layer surface of its own per display — see
+/// [`crate::always_on`] — and this is where it is drawn: at the very top of the
+/// list, above the sheet, so that the one thing a dark screen is allowed to
+/// show is the one thing on it.
+///
+/// Its own [`layer_map_for_output`] guard, and that is why this is called where
+/// it is. The guard is a mutex per output and taking it twice on one thread
+/// deadlocks, so this has to run before [`output_elements`] takes its own at the
+/// top of the layer walk — exactly the arrangement
+/// [`push_the_menu_over_floating_windows`] is under, and for exactly the same
+/// reason.
+///
+/// Nothing at all for a display with no surface named, which is every display
+/// until somebody turns the setting on. The *black* is not this function's: a
+/// clock named for a display that is wide awake draws over nothing, because
+/// there is no sheet under it and the shell does not ask for one until its
+/// display is dark.
+fn push_the_always_on_display<R>(
+    elements: &mut Vec<LxbRenderElement<R>>,
+    renderer: &mut R,
+    lxb: &Lxb,
+    output: &Output,
+    scale: Scale<f64>,
+) where
+    R: Renderer + ImportAll + ImportMem,
+    R::TextureId: Clone + 'static,
+{
+    let Some(named) = lxb.always_on.surface(output) else {
+        return;
+    };
+    let layer_map = layer_map_for_output(output);
+    let Some(surface) = layer_map.layers().find(|layer| layer.wl_surface() == named) else {
+        return;
+    };
+    let Some(geometry) = layer_map.layer_geometry(surface) else {
+        return;
+    };
+    let location = geometry.loc.to_physical_precise_round(scale);
+    elements.extend(
+        surface
+            .render_elements::<WaylandSurfaceRenderElement<R>>(renderer, location, scale, 1.0)
+            .into_iter()
+            .map(LxbRenderElement::Surface),
+    );
 }
 
 /// The menu surface inside one layer surface's tree, if it is in this one.

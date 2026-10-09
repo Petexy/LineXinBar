@@ -264,6 +264,13 @@ pub struct Lxb {
     /// different statement — that one is about the session leaving, this one
     /// is about a panel nobody is looking at. See [`crate::blackout`].
     pub blackouts: crate::blackout::Blackouts,
+    /// The one surface of the shell's that is drawn *over* that black, for a
+    /// display somebody has asked to go on showing the time while it is dark.
+    ///
+    /// Beside the sheet rather than inside it because it is a different
+    /// statement again: the sheet says this display shows nothing, and this
+    /// says there is one exception. See [`crate::always_on`].
+    pub always_on: crate::always_on::Always,
     /// The idle timers every program on the session can ask for — the shell's
     /// dim, off and sleep among them. See [`crate::idle`].
     pub idle_notifier: smithay::wayland::idle_notify::IdleNotifierState<LxbState>,
@@ -559,6 +566,7 @@ impl LxbState {
                 flashes: crate::flash::Flashes::default(),
                 curtain: crate::curtain::Curtain::default(),
                 blackouts: crate::blackout::Blackouts::default(),
+                always_on: crate::always_on::Always::default(),
                 idle_notifier,
                 idleness: crate::idle::Idleness::default(),
                 screencopy,

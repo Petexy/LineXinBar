@@ -240,6 +240,10 @@ shell-notifications = Notifications
 shell-off = Off
 shell-off-steam-is-an-application-like-any-other = Off — Steam is an application like any other
 shell-oled-protection = OLED protection
+shell-always-on-display = Always on display
+shell-what-a-dark-screen-still-shows = What a dark screen still shows
+shell-show-the-time-on-this-screen-while-it-is-dark = Show the time on this screen while it is dark
+shell-no-screen-can-show-the-time = No screen can show the time
 shell-on = On
 shell-on-for-as-long-as-the-switch-above-is = On for as long as the switch above is
 shell-on-screen-keyboard = On-screen keyboard
@@ -248,6 +252,13 @@ shell-on-the-library-is-a-column-of-the-bar = On — the library is a column of 
 shell-one-hour-of-night-light = One hour of night light
 shell-only-devices-this-machine-is-paired-with = Only devices this machine is paired with
 shell-only-one-display = Only one display
+shell-screens-in-use = Screens in use
+shell-which-screens-the-bar-draws-on = Which screens the bar draws on
+shell-in-use = In use
+shell-not-in-use = Not in use
+shell-this-screen-stays-in-use = This screen stays in use
+shell-set-on-this-machine = Set on this machine
+shell-no-screen-can-be-switched = No screen can be switched off
 shell-only-the-ones-named-below = Only the ones named below
 shell-open = Open
 shell-open-with = Open with
@@ -507,10 +518,15 @@ shell-your-folder-this-machine-and-anything-plugged-in = Your folder, this machi
 shell-linexinbar-s-own-settings-will-live-here = LineXinBar's own settings will live here
 shell-no-applications-in-this-category = No applications in this category
 oled-needs-the-compositor = The black is drawn over the whole of a display, cursor and all, so it is the compositor's to draw: this session's has never heard of it
+always-on-needs-a-display = This setting belongs to a screen, and no display has reported itself: what each one was set to is kept, and comes back with it
 application-scale-needs-a-display = This setting belongs to a screen, and no display has reported itself: what each one was set to is kept, and comes back with it
 orientation-nested-session = Nothing here owns its own picture: the session is running inside another compositor, which owns which way up its window is
 placement-nested-or-mirrored = Nothing here has a place to change: the session is running inside another compositor, or every screen is set to show the same region, and neither has a first screen to be
 display-order-needs-two-screens = An order is something two screens have. This one is the whole arrangement, and there is nowhere else in it to stand
+switching-not-possible = Nothing here can be switched off: the session is running inside another compositor, which owns the window it draws in
+one-screen-must-stay-in-use = The bar needs a screen to draw on. Plug in another and this one can be switched off
+the-last-screen-in-use-stays-on = The only screen still in use. Switch another one on and this one can be switched off too
+screen-switching-set-elsewhere = Whether this screen is used is set on the machine itself, and a choice made here would not last past the next sign-in
 resolution-nested-session = Nothing here owns a connector: the session is running inside another compositor, which owns the size of its window
 night-light-nested-session = Nothing here owns a colour ramp: the session is running inside another compositor, which owns what its window is tinted with
 hdr-no-display-or-pipeline = No connected display reports HDR, or the driver has no colour pipeline to feed it
@@ -687,7 +703,6 @@ shell-remove-your-cover = Remove your cover
 shell-removing-this-can-take-a-moment = Removing… this can take a moment.
 shell-renaming-it-to-what-the-game-is-called-may-find-some = Renaming it to what the game is called may find some.
 shell-repair-with-steam = Repair with Steam
-shell-retroarch-has-been-removed = RetroArch has been removed
 shell-retroarch-plays-your-own-game-files = RetroArch plays your own game files.
 shell-saved-in = Saved in
 shell-sign-in-to-steam = Sign in to Steam
@@ -730,7 +745,6 @@ shell-that-cannot-be-used-as-a-password = That cannot be used as a password.
 shell-that-console = That console
 shell-that-password-was-not-accepted-try-again = That password was not accepted. Try again.
 shell-the-download-has-finished = The download has finished.
-shell-the-games-themselves-stay = The games themselves stay.
 shell-the-picture-was-not-kept = The picture was not kept
 shell-the-screenshot-could-not-be-saved = The screenshot could not be saved.
 shell-the-screenshot-has-been-saved = The screenshot has been saved.
@@ -759,7 +773,6 @@ shell-where-should-this-be-unpacked = Where should this be unpacked?
 shell-you-are-offline-on-steam-choose-a-status-above-to-come-back = You are offline on Steam. Choose a status above to come back.
 shell-you-can-keep-using-it-in-the-meantime = You can keep using it in the meantime.
 shell-your-device-needs-to-stay-on-while-updating = Your device needs to stay on while updating.
-shell-your-games-are-where-they-were = Your games are where they were.
 count-items = { $count ->
     [one] { $count } item
    *[other] { $count } items
@@ -912,7 +925,6 @@ shell-preparing-your-updates = Preparing your updates…
 shell-press-to-download-it = Press to download it
 shell-ready-to-update = Ready to update
 shell-removing = Removing…
-shell-removing-retroarch = Removing RetroArch
 shell-respond = Respond
 shell-restart-now = Restart now
 shell-restart-the-system = Restart the system?
@@ -1069,10 +1081,8 @@ shell-white = White
 shell-silver = Silver
 shell-black = Black
 shell-configure-retroachievements = Configure RetroAchievements
-shell-remove-retroarch-question = Remove RetroArch?
 shell-configure-retroachievements-question = Configure RetroAchievements?
 shell-asking-steam-ellipsis = Asking Steam…
-shell-remove-retroarch = Remove RetroArch
 shell-asking-steam = Asking Steam
 shell-not-checked-yet = Not checked yet
 shell-restarting-ellipsis = Restarting…
@@ -1084,7 +1094,6 @@ shell-updating-ellipsis = Updating…
 shell-updates-installed-full-stop = Updates installed.
 shell-updates-installed = Updates installed
 retroarch-install-explanation = It is free, and nothing else on this machine is changed.
-retroarch-remove-explanation = Everything it kept goes with it: its settings, the emulators this shell downloaded, the saves, any BIOS you chose, and where your games are.
 rom-folders-explanation = Inside it, keep each console’s games in a folder named after the console: psp, nes, snes.
 
 # Lines that share a panel with a name on its own line, and other short forms.
@@ -1476,6 +1485,20 @@ showing-name = Showing  { $name }
 
 uninstall-unknown-origin = LineXinBar cannot tell what installed this, so it cannot remove it.
 uninstall-forbidden = You do not have permission to remove applications on this system.
+
+# Taking one of the integrations' programs off the machine.
+remove-name = Remove { $name }
+name-has-been-removed = { $name } has been removed
+shell-remove-everything = Remove everything
+shell-what-it-kept-is-still-on-the-disk = What it kept is still on the disk, so installing it again finds it.
+steam-remove-what-stays = Your games, your downloads and your Steam folder stay, and you stay signed in here.
+steam-remove-everything-explanation = Remove everything deletes Steam's own folder as well: every game you have installed, and their saves.
+epic-remove-what-stays = Your Epic games stay installed where they are, and you stay signed in here.
+epic-remove-everything-explanation = Remove everything deletes Heroic's own folder as well: its settings, its sign-in, and what it downloaded to run games with.
+retroarch-remove-what-stays = Your games and the folder they are in stay.
+retroarch-remove-everything-explanation = Remove everything deletes RetroArch's own folder as well: its settings, the emulators downloaded for it, the saves and any BIOS you chose.
+ps3-remove-what-stays = The game files in your folder stay.
+ps3-remove-everything-explanation = Remove everything deletes RPCS3's own folder as well: the system software, the games you installed from packages, your saves and your trophies.
 password-could-not-be-checked = This machine could not be asked to check your password.
 
 # Archives.
@@ -1676,6 +1699,12 @@ retroarch-no-bios-for-console = Nothing in there is a file the { $console } can 
 retroarch-console-games-need-more = { $console } games need something this machine has not got.
 retroarch-core-missing-for = Something is missing to play { $console } games.
 retroarch-console-may-need-bios = { $console } games may need the console's own BIOS, which cannot be downloaded.
+
+# Settings > Games > RetroArch > Integration.
+retroarch-on-your-games-are-a-column-of-the-bar = On — your own games are a column of the bar
+retroarch-off-retroarch-is-an-application-like-any-other = Off — RetroArch is an application like any other
+retroarch-retroarch-is-an-application-like-any-other-with-its-own-icon = RetroArch is an application like any other, with its own icon
+retroarch-play-your-own-games-from-the-bar = Play your own console games from the bar
 
 # Updates and the terminal under them.
 terminal-lines-following = Lines { $from }–{ $to } of { $total } · following · Left to look back
@@ -2157,6 +2186,10 @@ ps3-trouble-not-a-package = This file is not a PlayStation 3 game that can be in
 ps3-trouble-package = The file may be damaged, or be an update for a game that is not installed.
 ps3-trouble-other = Try again later.
 ps3-where-your-games-are = Where your PlayStation 3 games are
+ps3-on-your-playstation-3-games-are-a-column-of-the-bar = On — your PlayStation 3 games are a column of the bar
+ps3-off-rpcs3-is-an-application-like-any-other = Off — RPCS3 is an application like any other
+ps3-rpcs3-is-an-application-like-any-other-with-its-own-icon = RPCS3 is an application like any other, with its own icon
+ps3-play-your-playstation-3-games-from-the-bar = Play your PlayStation 3 games from the bar
 ps3-install-question = Install this PlayStation 3 game? It is copied into the console, and this file stays where it is.
 ps3-installed-find-it = It is installed, and ready to play in the PlayStation 3 column.
 ps3-trophy-platinum = Platinum
@@ -2226,3 +2259,48 @@ low-end-off-note = Every effect, as smooth as the device allows
 low-end-on-note = A still wallpaper, simpler effects and fewer frames
 low-end-slow = The shell is running slowly on this device
 low-end-slow-body = Low-end hardware mode in Settings > System can make it smoother.
+
+# Windows Apps — the games somebody has installed under Proton.
+windows-run-an-exe = Run a Windows program
+windows-run-an-exe-note = Choose an installer or a program and give it a place of its own
+windows-run-inside-a-prefix = Run something inside
+windows-run-inside-game = Run inside { $game }
+windows-looking = Looking for what can run Windows programs
+windows-press-to-set-up = Press to set it up
+windows-getting-ready = Getting ready to run Windows programs
+windows-settling = Checking what was downloaded
+windows-no-games-yet = No Windows programs yet
+windows-ready = Ready to play
+windows-install-unfinished = This was never finished installing
+windows-nothing-installed-yet = Nothing has been installed here yet
+windows-trouble-offline = The download could not be reached. Check the connection and try again.
+windows-trouble-damaged = What was downloaded did not arrive whole. Try again.
+windows-trouble-no-space = There is not enough room on the disk.
+windows-trouble-wrong-machine = There is no version of this for this machine.
+windows-trouble-in-use = This is still running. Close it and try again.
+windows-trouble-other = That did not work. Try again.
+windows-count-games = { $count ->
+    [one] { $count } Windows program
+   *[other] { $count } Windows programs
+    }
+windows-set-up-explanation = Windows programs need one free download before they can be run. Nothing else on this machine is changed.
+windows-what-to-play = Choose what to play
+windows-asking-what-is-here = Looking at what this machine has
+windows-looking-in-the-folder = Looking through the folder's files
+windows-nothing-looks-like-a-program = Nothing in here looks like a program
+windows-uninstall-takes-saves = Everything in this game’s folder goes with it, saved games included. This cannot be undone.
+windows-copy-this-game-or-app-in = Copy the game or app in this folder
+windows-add-a-game-or-app-folder = Add a game or app folder
+windows-add-a-game-or-app-folder-note = Copy in a game or app you already have on this disk
+windows-this-machines-choice = This machine's choice
+windows-uninstalling = Uninstalling…
+windows-games-and-apps-folder = Games and Apps folder
+windows-games-and-apps-folder-note = Where new games and apps are kept
+windows-programs-and-games-on-this-machine = Windows programs and games on this machine
+windows-on-your-windows-games-and-apps-are-a-column-of-the-bar = On — your Windows games and apps are a column of the bar
+windows-off-nothing-here-runs-windows-programs = Off — nothing here runs Windows programs
+windows-your-games-and-apps-stay-on-the-disk-and-nothing-reaches-them = Your games and apps stay on the disk, and nothing on the bar reaches them
+windows-run-your-windows-games-and-apps-from-the-bar = Run your Windows games and apps from the bar
+windows-keep-games-and-apps-in-this-folder = Keep new games and apps in this folder
+windows-run-inside-a-game = Run inside a game
+windows-which-game-to-run-it-in = Choose which game to run it in

@@ -290,6 +290,54 @@ pub struct Installation {
     /// core and a path on the end of it.
     pub command: Vec<String>,
     pub version: Option<String>,
+    /// Which of the three ways it is here, which is the whole of what deciding
+    /// how to remove it needs. `None` from a helper too old to say, and then
+    /// the row that takes it off is not offered at all — guessing, for the one
+    /// command in this shell that deletes software, is not a thing to do.
+    #[serde(default)]
+    pub kind: Option<Kind>,
+    /// Its flatpak application id, for an installation that is one.
+    #[serde(default)]
+    pub id: Option<String>,
+}
+
+/// Which of the ways RetroArch can be on a machine this one is.
+///
+/// Read off the helper's own answer rather than worked out here: the helper is
+/// what looked, and which installation it picked is a decision it already made
+/// — see `lxb-retroarch`'s `find::installation`, which prefers the
+/// distribution's package.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum Kind {
+    System,
+    FlatpakUser,
+    FlatpakSystem,
+}
+
+impl Installation {
+    /// Where this RetroArch is, in the terms the shell's own removal is asked
+    /// in — see [`crate::uninstall::Installed`]. `None` for one the helper did
+    /// not say enough about, which takes the row that removes it away rather
+    /// than guessing: this is the one command in the shell that deletes
+    /// software.
+    ///
+    /// A flatpak is named by its application id, which the helper sends for
+    /// exactly this reason — the id is the word `flatpak uninstall` is handed,
+    /// and a second copy of it in this shell would be two places that have to
+    /// agree. A distribution package is named by the program itself, which is
+    /// the first word of the command the helper would start it with, and the
+    /// package manager is asked who owns it.
+    pub fn installed(&self) -> Option<crate::uninstall::Installed> {
+        match self.kind? {
+            Kind::FlatpakUser | Kind::FlatpakSystem => {
+                Some(crate::uninstall::Installed::Flatpak(self.id.clone()?))
+            }
+            Kind::System => Some(crate::uninstall::Installed::At(
+                self.command.first()?.into(),
+            )),
+        }
+    }
 }
 
 /// One line of an install as it happens.
@@ -635,10 +683,12 @@ struct Rom {
 enum Ask {
     Probe,
     Install,
-    /// Take it off again, with everything it kept — see the helper's
-    /// `install::remove`. Sent only when somebody has said yes to a panel that
-    /// spells out what goes.
-    Uninstall,
+    /// RetroArch has been removed; the helper is to forget what this
+    /// integration kept for it — see its `install::forget`. `data` is the
+    /// second of the panel's two buttons, **Remove everything**.
+    Forget {
+        data: bool,
+    },
     /// Let a sandboxed RetroArch read the folder the user has just chosen. Sent
     /// once, when they choose it — see [`RetroArch::permit`].
     Permit(PathBuf),
@@ -683,7 +733,7 @@ impl Ask {
     /// one put "Not working on this machine" under a row that was working
     /// perfectly well.
     fn must_answer(&self) -> bool {
-        !matches!(self, Ask::Options)
+        !matches!(self, Ask::Options | Ask::Forget { .. })
     }
 }
 
@@ -691,6 +741,9 @@ impl Ask {
 enum Heard {
     Probed(Probe),
     Installing(Progress),
+    /// A line of the clearing-up after a removal, which is for the log alone:
+    /// the application is gone by then and nothing on screen is waiting.
+    Forgotten(Progress),
     Permitted(Permission),
     Scanned(Library),
     Fetching(Fetch),
@@ -714,7 +767,8 @@ fn answer(helper: &Path, ask: &Ask, back: &Sender<Heard>) {
     match ask {
         Ask::Probe => command.arg("probe"),
         Ask::Install => command.arg("install"),
-        Ask::Uninstall => command.arg("uninstall"),
+        Ask::Forget { data: true } => command.arg("forget").arg("--data"),
+        Ask::Forget { data: false } => command.arg("forget"),
         Ask::Permit(at) => command.arg("permit").arg(at),
         Ask::Scan(at) => command.arg("scan").arg(at),
         Ask::Cores(wanted) => command.arg("cores").args(wanted),
@@ -751,7 +805,8 @@ fn answer(helper: &Path, ask: &Ask, back: &Sender<Heard>) {
             }
             let heard = match ask {
                 Ask::Probe => serde_json::from_str(line).map(Heard::Probed),
-                Ask::Install | Ask::Uninstall => serde_json::from_str(line).map(Heard::Installing),
+                Ask::Install => serde_json::from_str(line).map(Heard::Installing),
+                Ask::Forget { .. } => serde_json::from_str(line).map(Heard::Forgotten),
                 Ask::Permit(_) => serde_json::from_str(line).map(Heard::Permitted),
                 Ask::Scan(_) => serde_json::from_str(line).map(Heard::Scanned),
                 Ask::Cores(_) => serde_json::from_str(line).map(Heard::Fetching),
@@ -938,13 +993,6 @@ enum Found {
 pub struct Installing {
     pub progress: Option<f32>,
     pub note: String,
-    /// Which way this one is going.
-    ///
-    /// One field rather than a second piece of state beside it, because the
-    /// two are the same thing to everything that watches: a panel with a
-    /// sentence and no buttons, and one line at the end saying how it went.
-    /// What turns on it is the words.
-    pub removing: bool,
     /// Set on the line that ends it, and taken by the shell on the next frame:
     /// finishing is an event, and the panel that was up has to be answered
     /// exactly once. See [`RetroArch::poll`].
@@ -1244,28 +1292,23 @@ impl RetroArch {
             inner.installing = Some(Installing {
                 progress: None,
                 note: crate::i18n::text("shell-installing-retroarch").to_string(),
-                removing: false,
                 ended: None,
             });
         }
         self.send(Ask::Install);
     }
 
-    /// Take it off again, and start saying so.
+    /// RetroArch has gone; tell the helper to take what was kept for it.
     ///
-    /// Sent only when somebody has said yes to a panel naming what goes with
-    /// it. What that is, and what deliberately does not, is in the helper's
-    /// `install::remove`.
-    pub fn remove(&mut self) {
-        if let Some(inner) = self.inner.as_mut() {
-            inner.installing = Some(Installing {
-                progress: None,
-                note: crate::i18n::text("shell-removing-retroarch").to_string(),
-                removing: true,
-                ended: None,
-            });
-        }
-        self.send(Ask::Uninstall);
+    /// Sent after the removal itself, which is the shell's — see
+    /// `Shell::program_removed`. Nothing is drawn for it and nothing waits on
+    /// it: the application is already gone, every one of these is a cache or a
+    /// permission belonging to a program that is not there, and a panel saying
+    /// "it could not be removed" over a leftover cache would be saying the
+    /// opposite of what happened. What goes, and what `everything` adds, is in
+    /// the helper's `install::forget`.
+    pub fn forget_what_it_kept(&mut self, everything: bool) {
+        self.send(Ask::Forget { data: everything });
     }
 
     /// Forget everything read off a RetroArch that is no longer there.
@@ -1546,30 +1589,26 @@ impl RetroArch {
                     let installing = inner.installing.get_or_insert_with(|| Installing {
                         progress: None,
                         note: String::new(),
-                        // The helper says which way it is going on its own
-                        // first line, so a panel that arrives before the shell
-                        // has set one up still knows.
-                        removing: stage == Stage::Removing,
                         ended: None,
                     });
                     installing.note = line.note.clone();
                     installing.progress = line.progress.or(installing.progress);
-                    installing.removing |= stage == Stage::Removing;
                     change.panel = true;
                     change.rows = true;
                     match stage {
                         Stage::Done => ended = Some(true),
                         Stage::Failed => {
-                            let doing = if installing.removing {
-                                "removed"
-                            } else {
-                                "installed"
-                            };
-                            tracing::warn!(why = %line.note, "RetroArch was not {doing}");
+                            tracing::warn!(why = %line.note, "RetroArch was not installed");
                             ended = Some(false);
                         }
                         Stage::Remote | Stage::Installing | Stage::Removing => {}
                     }
+                }
+                // Nothing on screen, by design — see
+                // [`RetroArch::forget_what_it_kept`]. The helper's own stderr
+                // is where each path it could not remove is named.
+                Heard::Forgotten(line) => {
+                    tracing::info!(stage = ?line.stage, note = %line.note, "clearing up after RetroArch");
                 }
                 Heard::Permitted(permission) if !permission.usable() => {}
                 Heard::Permitted(permission) => {
@@ -1975,6 +2014,21 @@ impl RetroArch {
         }
     }
 
+    /// Where the RetroArch this machine would use is, for the row that takes it
+    /// off — see [`Installation::installed`]. `None` while there is none, while
+    /// one is being installed, and on a session that has not been told enough
+    /// about the one there is.
+    pub fn installed_where(&self) -> Option<crate::uninstall::Installed> {
+        let inner = self.inner.as_ref()?;
+        if inner.installing.is_some() {
+            return None;
+        }
+        match &inner.found {
+            Found::Here(installation) => installation.installed(),
+            Found::Asking | Found::Absent { .. } => None,
+        }
+    }
+
     /// What pressing the row means now.
     pub fn press(&self) -> Press {
         let Some(inner) = self.inner.as_ref() else {
@@ -2145,10 +2199,20 @@ impl RetroArch {
         // The PlayStation 3 folder is not a console of this column's where
         // the PlayStation 3 package is here to play it: RetroArch has no core
         // for it, and the package's own column is where those games are.
+        //
+        // Where it is *not* here to play it, the folder comes back and is
+        // listed like any other console this column has no core for. That
+        // includes the package being installed with its integration switched
+        // off — see [`crate::settings::ps3_integration`] — and it has to: the
+        // PlayStation 3 column is gone in that session, so a folder still
+        // filtered out here would be a folder of games reachable from nowhere
+        // on the bar. Those rows will not start, and the column says why they
+        // cannot, which is the honest answer rather than the silent one.
+        let ps3_plays_them = crate::ps3::offered() && crate::settings::ps3_integration();
         let shown: Vec<&Console> = inner
             .consoles
             .iter()
-            .filter(|console| !(crate::ps3::offered() && crate::ps3::is_ps3_folder(&console.title)))
+            .filter(|console| !(ps3_plays_them && crate::ps3::is_ps3_folder(&console.title)))
             .collect();
         if shown.is_empty() {
             rows.push(folder_row());
@@ -3829,7 +3893,19 @@ fn write_key(at: &Path, key: &str, value: &str) -> bool {
 /// are things the shell does itself.
 ///
 /// Empty for a state with nothing to offer, and an empty list raises no menu.
-pub fn menu_rows(press: &Press, missing: usize, folder_set: bool) -> Vec<menu::Entry> {
+///
+/// `removable` is whether the shell has been told enough about the RetroArch on
+/// this machine to take it off — see [`Installation::installed`]. It is not the
+/// same question as whether one is installed: a helper too old to say which
+/// kind of installation it found leaves one here that works perfectly and
+/// cannot be removed from this menu, and the honest answer to that is no row,
+/// not a row that fails when it is pressed.
+pub fn menu_rows(
+    press: &Press,
+    missing: usize,
+    folder_set: bool,
+    removable: bool,
+) -> Vec<menu::Entry> {
     let mut rows = Vec::new();
     match press {
         // Nothing is known yet, and nothing can honestly be offered. The press
@@ -3889,15 +3965,18 @@ pub fn menu_rows(press: &Press, missing: usize, folder_set: bool) -> Vec<menu::E
     // program rather than about this machine's collection — and last of the
     // three, because it is the only row here that takes something away. What it
     // takes is spelt out in a panel before anything happens; see
-    // `Shell::offer_to_remove_retroarch`.
-    rows.push(
-        menu::Entry::new(
-            menu::Command::RemoveRetroArch,
-            crate::i18n::text("shell-remove-retroarch"),
-        )
-        .glyph(icons::UNINSTALL)
-        .group(1),
-    );
+    // `Shell::offer_to_remove_program`.
+    if removable {
+        rows.push(
+            menu::Entry::new(
+                menu::Command::RemoveProgram(menu::Program::RetroArch),
+                crate::message!("remove-name", "name" => "RetroArch"),
+            )
+            .glyph(icons::UNINSTALL)
+            .grave()
+            .group(1),
+        );
+    }
     rows.push(menu::Entry::new(menu::Command::Dismiss, crate::i18n::text("shell-cancel")).group(1));
     rows
 }
@@ -4505,6 +4584,8 @@ input_player1_right_btn = \"14\"
                 found: Found::Here(Installation {
                     command: vec!["retroarch".to_string()],
                     version: Some("1.22.2".to_string()),
+                    kind: Some(Kind::System),
+                    id: None,
                 }),
                 installing: None,
                 fetching: None,
@@ -5797,6 +5878,8 @@ input_player1_right_btn = \"14\"
                 found: Found::Here(Installation {
                     command: vec!["retroarch".to_string()],
                     version: None,
+                    kind: Some(Kind::System),
+                    id: None,
                 }),
                 installing: None,
                 fetching: None,
@@ -6011,7 +6094,10 @@ input_player1_right_btn = \"14\"
     }
 
     fn menu(press: Press, missing: usize, folder: bool) -> Vec<String> {
-        menu_rows(&press, missing, folder)
+        // Installed and removable, which is what every state below the install
+        // offer is on an ordinary machine. The one that is not has its own test
+        // — see `a_machine_without_it_is_not_offered_to_remove_it`.
+        menu_rows(&press, missing, folder, !matches!(press, Press::Install))
             .into_iter()
             .map(|row| row.label)
             .collect()
@@ -6025,8 +6111,8 @@ input_player1_right_btn = \"14\"
     /// wasted the press that raised it.
     #[test]
     fn a_row_with_nothing_to_offer_raises_no_menu() {
-        assert!(menu_rows(&Press::Waiting, 0, false).is_empty());
-        assert!(menu_rows(&Press::Cannot("no flatpak".to_string()), 0, false).is_empty());
+        assert!(menu_rows(&Press::Waiting, 0, false, false).is_empty());
+        assert!(menu_rows(&Press::Cannot("no flatpak".to_string()), 0, false, false).is_empty());
     }
 
     /// Before it is installed there is one thing to do and one way out.
@@ -6088,7 +6174,7 @@ input_player1_right_btn = \"14\"
     /// away, so it does not sit where a hand falls.
     #[test]
     fn the_emulators_own_screens_are_below_the_rule() {
-        let rows = menu_rows(&Press::Enter, 2, true);
+        let rows = menu_rows(&Press::Enter, 2, true, true);
         let below: Vec<&str> = rows
             .iter()
             .filter(|row| row.group == 1)
@@ -6158,16 +6244,25 @@ input_player1_right_btn = \"14\"
     /// offering to take RetroArch off is a row that could only ever fail.
     #[test]
     fn a_machine_without_it_is_not_offered_to_remove_it() {
-        let removes = |press: Press| {
-            menu_rows(&press, 0, false)
+        let removes = |press: Press, removable: bool| {
+            menu_rows(&press, 0, false, removable)
                 .iter()
-                .any(|row| row.command == menu::Command::RemoveRetroArch)
+                .any(|row| row.command == menu::Command::RemoveProgram(menu::Program::RetroArch))
         };
-        assert!(!removes(Press::Install), "there is nothing there yet");
-        assert!(!removes(Press::Waiting), "and nothing is known yet");
-        assert!(!removes(Press::Cannot("no flatpak".to_string())));
-        assert!(removes(Press::Folder), "installed, with no folder chosen");
-        assert!(removes(Press::Enter), "and installed with one");
+        assert!(
+            !removes(Press::Install, false),
+            "there is nothing there yet"
+        );
+        assert!(!removes(Press::Waiting, false), "and nothing is known yet");
+        assert!(!removes(Press::Cannot("no flatpak".to_string()), false));
+        assert!(
+            removes(Press::Folder, true),
+            "installed, with no folder chosen"
+        );
+        assert!(removes(Press::Enter, true), "and installed with one");
+        // And a RetroArch this shell has not been told how to take off gets no
+        // row at all, rather than one that could only fail when it was pressed.
+        assert!(!removes(Press::Enter, false), "nothing to remove it by");
     }
 
     /// The row that asks where the games are is a question, and a question
@@ -6533,7 +6628,6 @@ input_player1_right_btn = \"14\"
                 Some(Installing {
                     progress: Some(0.6),
                     note: "Downloading".to_string(),
-                    removing: false,
                     ended: None,
                 })
             ),

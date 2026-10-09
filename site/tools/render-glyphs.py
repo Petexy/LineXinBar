@@ -41,6 +41,7 @@ SOURCES = [
     ROOT / "crates" / "lxb-retroarch" / "glyphs",
     ROOT / "crates" / "lxb-heroic" / "glyphs",
     ROOT / "crates" / "lxb-rpcs3" / "glyphs",
+    ROOT / "crates" / "lxb-proton" / "glyphs",
     ROOT / "site" / "tools" / "glyphs",
 ]
 
@@ -51,7 +52,7 @@ logo category-games category-steam category-multimedia category-music
 category-video category-images category-files category-settings category-system
 category-software category-development category-trophies category-internet
 category-utilities category-waydroid category-office category-graphics
-category-education category-other steam retroarch epic ps3 console-psx
+category-education category-other steam retroarch epic ps3 windows console-psx
 setting-display setting-hdr setting-night-light setting-screen-rest
 setting-resolution setting-refresh setting-orientation setting-scale
 setting-accent setting-theme setting-wallpaper setting-particles setting-icons

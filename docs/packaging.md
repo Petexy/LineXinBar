@@ -33,6 +33,12 @@ These definitions build three early-development packages from one source tree:
   version-locked on the same terms. It recommends `flatpak`, which is how the
   shell installs RPCS3 where there is none — see [PlayStation 3](ps3.md) and
   `crates/lxb-rpcs3`.
+* **`lxb-proton`** — the optional Windows Apps integration, through Proton and
+  Valve's container runtime: one helper program and the mark the shell draws
+  its rows with. Optional and version-locked on the same terms. It needs `tar`
+  and `xz` to unpack what it fetches, and suggests `steam`, whose Protons it
+  uses in preference to fetching one — see [Windows Apps](windows.md) and
+  `crates/lxb-proton`.
 
 The split is a partition, and `packaging/build.sh check` enforces that — a file
 installed by no package is one that has quietly stopped shipping, and a file

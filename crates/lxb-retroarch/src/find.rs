@@ -50,6 +50,7 @@ fn system() -> Option<Installation> {
     let program = on_path("retroarch")?;
     Some(Installation {
         kind: Kind::System,
+        id: None,
         command: vec![program.to_string_lossy().into_owned()],
         // `retroarch --version` prints one line and exits. A build that
         // refuses to say is still a RetroArch; this is for the log.
@@ -71,6 +72,7 @@ fn flatpak(kind: Kind) -> Option<Installation> {
     ];
     Some(Installation {
         kind,
+        id: Some(FLATPAK_ID.to_string()),
         command,
         version: flatpak_version(scope),
     })

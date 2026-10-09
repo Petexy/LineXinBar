@@ -14,7 +14,7 @@
     all copies or substantial portions of the Software.
   </copyright>
 
-  <interface name="lxb_shell_v1" version="47">
+  <interface name="lxb_shell_v1" version="49">
     <description summary="private channel between LineXinBar and its session shell">
       Layer-shell lets a shell draw itself, but says nothing about the two
       things a console-style session needs: a hardware button that reaches the
@@ -2879,5 +2879,145 @@
       <arg name="transform" type="uint" enum="transform"
            summary="the turn that stands its picture up as the machine is built"/>
     </event>
+
+    <request name="set_connector_enabled" since="48">
+      <description summary="switch one display off, or switch it back on">
+        Switches a display off: nothing is drawn on it, its connector goes
+        dark, it leaves the arrangement, and what was on it moves to the
+        screens that are left. Or switches one back on, which does everything
+        a display arriving on hardware does.
+
+        The display is named by the string the connector event names it by,
+        and not by a wl_output as every other request here names one. A
+        display that is off has no wl_output — there is nothing being driven,
+        so there is nothing for a client to bind — and a request that could
+        only name a display that is on could never switch one back on. While a
+        display is on, this name is the same one its wl_output.name gives, so
+        a shell can put the two halves together.
+
+        What it is set to is remembered, unlike an arrangement and like a mode
+        or an orientation: a display switched off and then lit for a moment at
+        every login would be a modeset to get back out of each time.
+
+        Refused, with nothing said, when the display named is not one this
+        compositor has; when switching it is not this compositor's to do; and
+        always when switching it off would leave the session with no display
+        on at all. The connector event says which of those is the case before
+        anybody presses anything, and says it again afterwards.
+
+        Written after every other request, so that each request before it
+        keeps the number it has always had: a program carrying its own copy of
+        this file at an older version goes on being understood.
+      </description>
+      <arg name="name" type="string" summary="the display, as the connector event names it"/>
+      <arg name="enabled" type="uint" summary="1 to switch it on, 0 to switch it off"/>
+    </request>
+
+    <enum name="connector_switching" since="48">
+      <description summary="whether a display's being on is the shell's to change">
+        Why a display cannot be switched, where it cannot.
+      </description>
+      <entry name="allowed" value="0" summary="it can be switched either way"/>
+      <entry name="last_one_on" value="1"
+             summary="the only display left on, so it stays on"/>
+      <entry name="set_elsewhere" value="2"
+             summary="answered for by this compositor's own configuration"/>
+      <entry name="not_possible" value="3"
+             summary="this compositor cannot switch a display at all"/>
+    </enum>
+
+    <event name="connector" since="48">
+      <description summary="one display this compositor could be driving">
+        Describes one display this compositor has, whether or not it is being
+        driven. A batch of these followed by connectors_done replaces
+        everything previously known about them.
+
+        Named by a string and carrying no wl_output, deliberately, and for the
+        same reason set_connector_enabled is: a display that is off has none
+        to carry. A display that is on is named here by the same string its
+        wl_output's name gives, so a shell can put the two halves together.
+
+        What is reported is what this compositor is actually doing, not what
+        it was last asked for; the two differ exactly when a request could not
+        be carried out, which is the case a shell must not present as success.
+
+        Sent once per display when a version 48 object is bound, and again
+        whenever any of it changes — a display plugged in or unplugged, one
+        switched off or back on, or the only display on becoming one of
+        several. A session where nothing can be switched sends one batch
+        saying so, and a compositor with no display at all sends an empty one.
+
+        Written after every other event, so that each event before it keeps
+        the number it has always had: a program carrying its own copy of this
+        file at an older version goes on being understood.
+      </description>
+      <arg name="name" type="string" summary="the display's own name"/>
+      <arg name="lit" type="uint" summary="1 while it is being driven, 0 while it is off"/>
+      <arg name="switching" type="uint" enum="connector_switching"
+           summary="whether switching it is the shell's to do"/>
+    </event>
+
+    <event name="connectors_done" since="48">
+      <description summary="the display list is complete">
+        Ends a batch of connector events. The batch is the whole truth: a
+        display not named in it is one this compositor does not have, and a
+        done event with nothing before it means there are none.
+
+        Always sent, even where the batch is empty, so that a shell can tell
+        "no display can be switched" from "the answer has not arrived yet"
+        and draw the page rather than waiting on it.
+
+        Written after every other event, so that each event before it keeps
+        the number it has always had: a program carrying its own copy of this
+        file at an older version goes on being understood.
+      </description>
+    </event>
+
+    <request name="set_always_on_display" since="49">
+      <description summary="which surface of the shell's carries one display's clock while it is dark">
+        Names a surface the shell draws one display's always-on display on, and
+        nothing else: the little that is shown on a screen that has gone dark
+        but is still being looked at out of the corner of an eye.
+
+        A compositor draws that surface **over the black** it has drawn across
+        that display — over the sheet a display rests behind, and over the one
+        the idle timer brings down — where every other surface the shell owns is
+        behind it. Everything else about the display stays exactly as dark as it
+        was: its windows are still off screen, the applications they belong to
+        are still stopped, and the cursor is still under the black. This moves
+        one surface and nothing else.
+
+        It also keeps the connector on. A display the shell has asked to switch
+        off is normally taken down at the connector once its black is all the
+        way down, which is a modeset in each direction; a display named here is
+        left lit instead, because there is nothing to show a clock on once the
+        panel's backlight has gone out. That is the one cost of this request and
+        it is the whole of it.
+
+        A surface of its own rather than a rectangle of the shell's main one,
+        for the reason set_menu_surface gives and one more: the surface the
+        shell draws its bar on is not committed at all while its display rests,
+        so anything drawn as part of it would never reach the screen.
+
+        Sent for as long as one display is showing this and not a moment
+        longer: before the frame that draws it, and null again once that display
+        is awake or the setting is off. Everything a compositor does about this
+        is per-frame work on a display nobody is using, and none of it is owed
+        on a session where nobody has asked for it.
+
+        One at a time per display. Naming a second surface for a display forgets
+        the first; a null surface forgets whatever was named for that display,
+        and a surface that is destroyed is forgotten with it. Silently ignored
+        when the output is gone.
+
+        Written after every other request, so that each request before it keeps
+        the number it has always had: a program carrying its own copy of this
+        file at an older version goes on being understood.
+      </description>
+      <arg name="output" type="object" interface="wl_output"
+           summary="the display whose clock this is"/>
+      <arg name="surface" type="object" interface="wl_surface" allow-null="true"
+           summary="the surface the clock is drawn on, or null to stop"/>
+    </request>
   </interface>
 </protocol>

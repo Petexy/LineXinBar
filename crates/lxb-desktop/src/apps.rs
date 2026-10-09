@@ -471,6 +471,21 @@ pub enum Entry {
     /// One PlayStation 3 game: a disc image, a game in a folder, one RPCS3 has
     /// installed, or a package waiting to be installed. See [`Ps3Game`].
     Ps3Game(Ps3Game),
+    /// Windows Apps, under Steam at the head of the Games column: the way in
+    /// to the games somebody has installed under Proton, and afterwards the
+    /// way back out of them.
+    ///
+    /// The same kind of row as [`Entry::Epic`] and [`Entry::Ps3`], and the
+    /// same type. It exists on a machine that has the `lxb-proton` package
+    /// and on no other. See [`crate::proton`].
+    Windows(Emulation),
+    /// One Windows game, in the prefix that is its whole installation.
+    ///
+    /// Its own kind of row for the reasons an Epic game and a PlayStation 3
+    /// game are: nothing on this machine installed it in a way the package
+    /// manager knows about, no `.desktop` file describes it, and what can be
+    /// done to it is this integration's list rather than anybody else's.
+    WindowsGame(WindowsGame),
     /// The row at the head of a column of folders that says "this one".
     ///
     /// The picker's answer, and the only row in that column that acts. A row
@@ -1067,6 +1082,44 @@ pub struct Rom {
     /// and there is nothing of the user's there to rename. See
     /// [`crate::retroarch`].
     pub disc: Option<u64>,
+}
+
+/// One Windows game, as a row of the Windows Apps column.
+///
+/// Compared but not equatable, like [`EpicGame`] and [`Ps3Game`]: the bar is
+/// a measurement.
+#[derive(Debug, Clone, PartialEq)]
+pub struct WindowsGame {
+    /// The helper's identifier for it, which is its own directory's name.
+    /// The shell files everything about it under `windows:<id>` — see
+    /// [`crate::proton::key`].
+    pub id: String,
+    pub name: String,
+    /// The line under it: that it is ready, or that it is an install nobody
+    /// finished.
+    pub note: String,
+    /// The same fact as a bar, while something is being copied into it.
+    pub progress: Option<Arriving>,
+    /// Whether there is anything to play. False for an install that was
+    /// interrupted, whose press offers to finish it rather than to start it.
+    pub ready: bool,
+    /// Its own directory — for Uninstall's confirmation, which has to say
+    /// what is about to be deleted, and for Show in folder.
+    pub at: PathBuf,
+    /// The Proton it is set to, where somebody chose one.
+    pub proton: Option<String>,
+    /// The program's own drawing: the icon its author put inside the `.exe`,
+    /// which the helper wrote out beside the game as a picture. A file on
+    /// this disk, asked for by path exactly as a ROM's box art and a
+    /// PlayStation 3 game's `ICON0.PNG` are.
+    ///
+    /// This column had nothing here for a while, on the grounds that nobody
+    /// publishes cover art for a folder somebody installed — which is true,
+    /// and was the wrong thing to ask. A Windows program has carried its own
+    /// drawing since Windows 3.0, and it is the one the person already
+    /// recognises. `None` where the program carries none, or where nothing
+    /// has been named to play yet and so there is no program to ask.
+    pub cover: Option<PathBuf>,
 }
 
 /// The row that answers a folder picker.
@@ -2292,6 +2345,23 @@ pub fn ps3_column() -> &'static str {
     ps3_column_id().0
 }
 
+/// The column the Windows games hang in — not in [`CATEGORY_TABLE`], for the
+/// reason the other integrations' columns are not: it comes and goes with a
+/// package.
+///
+/// Unlike theirs, it exists even when it holds no games: its two head rows
+/// are how the first game gets installed, so a column that waited for a game
+/// would be a column nobody could ever put one in.
+fn windows_column_id() -> (&'static str, &'static str, &'static str) {
+    ("windows", crate::proton::TITLE, crate::proton::mark())
+}
+
+/// What that column is called on the bar, for the press on the Windows Apps
+/// row that takes the display to it.
+pub fn windows_column() -> &'static str {
+    windows_column_id().0
+}
+
 /// What that column is called on the bar, for the two things outside this
 /// module that have to find it: pressing the RetroArch row takes the display
 /// to it, and so does finishing the setup it asks for.
@@ -2626,13 +2696,14 @@ pub fn offer_retroarch(
         // Under the Steam row where there is one, and at the head where there
         // is not — a session started with `--no-steam` has no Steam row, and
         // this row would then be standing under nothing.
-        // And under the Epic Games row where there is one, for the same
-        // reason one step further on: the column order on the bar is Steam,
-        // Epic Games, RetroArch, and the rows that lead to them read the same.
+        // And under the Windows Apps and Epic Games rows where there are
+        // some, for the same reason one step further on: the column order on
+        // the bar is Steam, Windows Apps, Epic Games, RetroArch, and the rows
+        // that lead to them read the same.
         let under = column
             .entries
             .iter()
-            .take_while(|row| matches!(row, Entry::Steam(_) | Entry::Epic(_)))
+            .take_while(|row| matches!(row, Entry::Steam(_) | Entry::Windows(_) | Entry::Epic(_)))
             .count();
         column
             .entries
@@ -2746,11 +2817,97 @@ pub fn offer_epic(
         let under = column
             .entries
             .iter()
-            .take_while(|row| matches!(row, Entry::Steam(_)))
+            .take_while(|row| matches!(row, Entry::Steam(_) | Entry::Windows(_)))
             .count();
         column
             .entries
             .insert(under, Entry::Epic(Emulation::new(comment, arriving)));
+    }
+    shifted
+}
+
+/// Put the Windows Apps row under the Steam row in the Games column, or take
+/// it away — [`offer_epic`] for the other integration, on its terms: under
+/// Steam, which every session has, and above Epic Games, whose column comes
+/// after this one's. `None` takes the row off.
+pub fn offer_windows(
+    categories: &mut Vec<Category>,
+    comment: Option<String>,
+    arriving: Option<f32>,
+) -> Shifted {
+    let mut shifted = Shifted::default();
+    let standing = categories.iter().position(|column| column.id == GAMES);
+    let at = match (standing, &comment) {
+        (Some(at), _) => at,
+        (None, None) => return shifted,
+        (None, Some(_)) => {
+            let (id, title, icon, _) = CATEGORY_TABLE
+                .iter()
+                .find(|(own, ..)| *own == GAMES)
+                .expect("the Games column is in the table");
+            let at = column_place(categories, id);
+            categories.insert(
+                at,
+                Category {
+                    id,
+                    title,
+                    icon,
+                    entries: Vec::new(),
+                },
+            );
+            shifted.added = Some(at);
+            at
+        }
+    };
+    let column = &mut categories[at];
+    column
+        .entries
+        .retain(|entry| !matches!(entry, Entry::Windows(_)));
+    if let Some(comment) = comment {
+        let under = column
+            .entries
+            .iter()
+            .take_while(|row| matches!(row, Entry::Steam(_)))
+            .count();
+        column
+            .entries
+            .insert(under, Entry::Windows(Emulation::new(comment, arriving)));
+    }
+    shifted
+}
+
+/// Hang the Windows games in a column of their own, or take the column away.
+///
+/// The same shape as [`shelve_epic`] with one difference that matters: this
+/// column exists whenever the package does, games or no games. Its two head
+/// rows are how the first game is installed, so a column that waited for a
+/// game would be a column nobody could ever put one in. `rows` therefore
+/// arrives with those two rows already on it, and an empty `rows` means the
+/// package has gone rather than that somebody has no games.
+pub fn shelve_windows(categories: &mut Vec<Category>, rows: Vec<Entry>) -> Shifted {
+    let mut shifted = Shifted::default();
+    let (id, title, icon) = windows_column_id();
+    let standing = categories.iter().position(|column| column.id == id);
+    match (standing, rows.is_empty()) {
+        (None, true) => {}
+        (Some(at), true) => {
+            categories.remove(at);
+            shifted.removed = Some(at);
+        }
+        (Some(at), false) => categories[at].entries = rows,
+        (None, false) => {
+            let at = column_place(categories, id);
+            categories.insert(
+                at,
+                Category {
+                    id,
+                    title,
+                    icon,
+                    entries: rows,
+                },
+            );
+            shifted.added = Some(at);
+        }
     }
     shifted
 }
@@ -2854,7 +3011,12 @@ pub fn offer_ps3(
         let under = column
             .entries
             .iter()
-            .take_while(|row| matches!(row, Entry::Steam(_) | Entry::Epic(_) | Entry::RetroArch(_)))
+            .take_while(|row| {
+                matches!(
+                    row,
+                    Entry::Steam(_) | Entry::Windows(_) | Entry::Epic(_) | Entry::RetroArch(_)
+                )
+            })
             .count();
         column
             .entries
@@ -2993,25 +3155,34 @@ fn column_place(categories: &[Category], id: &str) -> usize {
 /// Epic Games comes before RetroArch because it is a store's library, the kind
 /// of column Steam's is.
 ///
+/// Windows Apps sits directly under Steam — above the stores and the
+/// consoles — because it is the same Proton Steam runs its own Windows games
+/// with, and somebody stepping down from Steam is stepping into the rest of
+/// what that Proton can run.
+///
 /// Eight rather than four since Epic Games arrived and took the step the room
-/// was kept for; there is room again for the next one.
+/// was kept for. Six of the eight are spoken for now; the gap is still two
+/// wide, and a seventh integration takes one of them.
 fn rank(id: &str) -> Option<usize> {
     if id == crate::trophies::COLUMN {
-        return rank(GAMES).map(|games| games + 5);
+        return rank(GAMES).map(|games| games + 6);
     }
     // After RetroArch's: another console's games, and a package a machine may
     // not have, so it moves nothing that is always there.
     if id == ps3_column_id().0 {
-        return rank(GAMES).map(|games| games + 4);
+        return rank(GAMES).map(|games| games + 5);
     }
     if id == STEAM.0 {
         return rank(GAMES).map(|games| games + 1);
     }
-    if id == epic_column_id().0 {
+    if id == windows_column_id().0 {
         return rank(GAMES).map(|games| games + 2);
     }
-    if id == retroarch_column_id().0 {
+    if id == epic_column_id().0 {
         return rank(GAMES).map(|games| games + 3);
+    }
+    if id == retroarch_column_id().0 {
+        return rank(GAMES).map(|games| games + 4);
     }
     CATEGORY_TABLE
         .iter()
@@ -3298,6 +3469,8 @@ impl Entry {
             Entry::Rom(rom) => &rom.name,
             Entry::EpicGame(game) => &game.name,
             Entry::Ps3Game(game) => &game.name,
+            Entry::Windows(_) => crate::proton::TITLE,
+            Entry::WindowsGame(game) => &game.name,
             Entry::Pick(_) => crate::i18n::text("shell-select-folder"),
             Entry::Make(_) => crate::i18n::text("shell-new-folder"),
             Entry::Sweep(_) => crate::i18n::text("shell-empty-trash"),
@@ -3337,6 +3510,8 @@ impl Entry {
             Entry::RetroArch(emulation) => Some(&emulation.comment),
             Entry::Epic(store) => Some(&store.comment),
             Entry::Ps3(emulation) => Some(&emulation.comment),
+            Entry::Windows(emulation) => Some(&emulation.comment),
+            Entry::WindowsGame(game) => Some(&game.note),
             Entry::Game(game) => Some(&game.note),
             Entry::Rom(rom) => Some(&rom.note),
             Entry::EpicGame(game) => Some(&game.note),
@@ -3381,6 +3556,8 @@ impl Entry {
             Entry::Rom(rom) => rom.note = line,
             Entry::EpicGame(game) => game.note = line,
             Entry::Ps3Game(game) => game.note = line,
+            Entry::Windows(row) => row.comment = line,
+            Entry::WindowsGame(game) => game.note = line,
             Entry::Facts(facts) => facts.comment = line,
             Entry::Typed(typed) => typed.comment = line,
             Entry::Partition(partition) => partition.facts.comment = line,
@@ -3490,6 +3667,12 @@ impl Entry {
             // The console's own mark, on the row and on every game of its
             // column whose icon has not been read yet.
             Entry::Ps3(_) | Entry::Ps3Game(_) => Some(crate::ps3::mark()),
+            // The Windows mark on the row, on the column, and on a game
+            // whose own drawing could not be read out of it — which is the
+            // same arrangement every other column of this bar has: the
+            // store's mark where the game's own picture is missing. See
+            // [`WindowsGame::cover`].
+            Entry::Windows(_) | Entry::WindowsGame(_) => Some(crate::proton::mark()),
             // The folder it would answer with, drawn as a folder: what is
             // being chosen is the column the row stands over.
             // The tick and not a folder: every other row in the column it
@@ -3531,6 +3714,25 @@ impl Entry {
             Entry::Choice(choice) => choice.over_the_list,
             _ => false,
         }
+    }
+
+    /// Whether this is the head row a column opens on when it has nothing
+    /// else — the one case where the answer is the *first* head row rather
+    /// than the last.
+    ///
+    /// Almost every column of nothing but head rows wants the last of them:
+    /// a shelf whose search matched nothing opens on Clear search, which is
+    /// the way back out of a search that found nothing, and that is
+    /// deliberate. Windows Apps is the other case, because its head rows are
+    /// not about a list that came up empty — they are how the list gets its
+    /// first row at all, and the first of them is the one to press.
+    ///
+    /// See `crate::model::first_row`, which is the only caller.
+    pub fn opens_an_empty_column(&self) -> bool {
+        self.folder().is_some_and(|folder| {
+            folder.place.as_ref().map(crate::files::Place::shows)
+                == Some(crate::files::Shows::Executable)
+        })
     }
 
     /// The search this row is about, if it is one of the two that are.
@@ -3645,6 +3847,22 @@ impl Entry {
     pub fn ps3_game(&self) -> Option<&Ps3Game> {
         match self {
             Entry::Ps3Game(game) => Some(game),
+            _ => None,
+        }
+    }
+
+    /// The Windows Apps row, if this is it.
+    pub fn windows(&self) -> Option<&Emulation> {
+        match self {
+            Entry::Windows(row) => Some(row),
+            _ => None,
+        }
+    }
+
+    /// The Windows game this row is, if it is one.
+    pub fn windows_game(&self) -> Option<&WindowsGame> {
+        match self {
+            Entry::WindowsGame(game) => Some(game),
             _ => None,
         }
     }
