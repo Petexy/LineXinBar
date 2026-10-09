@@ -2258,6 +2258,7 @@ windows-trouble-damaged = Das Heruntergeladene kam nicht vollständig an. Versuc
 windows-trouble-no-space = Auf der Festplatte ist nicht genug Platz.
 windows-trouble-wrong-machine = Dafür gibt es keine Fassung für dieses Gerät.
 windows-trouble-in-use = Das läuft noch. Schließen Sie es und versuchen Sie es erneut.
+windows-trouble-gone = Das Programm ist nicht mehr dort. Es wurde vielleicht verschoben oder gelöscht.
 windows-trouble-other = Das hat nicht geklappt. Versuchen Sie es erneut.
 windows-count-games = { $count ->
     [one] { $count } Windows-Programm

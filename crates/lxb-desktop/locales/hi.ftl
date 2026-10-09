@@ -2254,6 +2254,7 @@ windows-trouble-damaged = डाउनलोड पूरा नहीं आय
 windows-trouble-no-space = डिस्क पर पर्याप्त जगह नहीं है।
 windows-trouble-wrong-machine = इस मशीन के लिए इसका कोई संस्करण नहीं है।
 windows-trouble-in-use = यह अभी चल रहा है। इसे बंद करें और फिर कोशिश करें।
+windows-trouble-gone = वह प्रोग्राम वहाँ नहीं है जहाँ था। शायद उसे हटा या मिटा दिया गया हो।
 windows-trouble-other = वह नहीं हो सका। फिर कोशिश करें।
 windows-count-games = { $count ->
     [one] { $count } Windows प्रोग्राम

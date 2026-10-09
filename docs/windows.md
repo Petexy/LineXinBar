@@ -76,9 +76,11 @@ Two rows at the head of the column, before the first game:
    there is nothing on it that cannot be the answer.
 2. **Add a game or app folder** copies in something you already have, whole.
    For a game or a program that arrived without an installer: a folder from
-   another machine, or one an archive was unpacked into. A folder rather than
-   a file, because an executable without the files beside it is a program that
-   starts and stops.
+   another machine, one an archive was unpacked into, or one on a disk you
+   would rather not keep plugged in. A folder rather than a file, because an
+   executable without the files beside it is a program that starts and stops
+   — and because the folder you point at is the only way the shell is ever
+   told which folder is a program's.
 Running something *inside* a game that is already set up — a mod's installer,
 a patcher, a tool that wants the game there before it will start — is on that
 game's own menu rather than up here. It walks your disk the same way this row
@@ -109,10 +111,12 @@ any `.exe`, `.msi`, `.bat` or `.cmd` in a folder:
   files with nothing inside them to read, and keep the window mark;
 * **runs when you press it.** A file inside a game's folder runs in *that*
   game's Windows; anything else is a program this machine has not got yet, so
-  it is given a place of its own and started — the same rule, and the same
+  it is given a Windows of its own and started — the same rule, and the same
   loading screen, as **Run a Windows program**. A press on a machine that has
   the package but has never downloaded a Proton offers that download first,
-  exactly as the Windows Apps row does.
+  exactly as the Windows Apps row does. **It does not have to be an
+  installer**: a program that needs none works the same way, and the next
+  section is how.
 * And its **Options** menu carries **Run inside a game**, which lists the
   Windows games already set up and runs the file inside the one you choose.
   This is **Run something inside** from the other end: that one starts at the
@@ -128,6 +132,47 @@ The icons are drawn wherever a file row is drawn — a folder in Files, the walk
 **Run a Windows program** opens, and the file panel an application raises to
 ask you for a file. One file, one mark, whichever column you are looking at it
 from.
+
+## An installer and a program that needs none
+
+Press either and the same thing happens, because **nothing on a disk reliably
+says which of the two a file is**. A great many installers are named for a
+download, ask for no special permission, and carry the product's own name and
+icon inside them — exactly as the program itself does. So neither you nor the
+shell is asked to guess:
+
+1. **What you pressed runs where it already is**, in a Windows of its own,
+   with the folder it lives in shared into that Windows. Nothing is copied
+   anywhere, so a program that needs no installer has everything it came with
+   — its plugins, its languages, its data files — exactly as it had on your
+   disk a moment before.
+2. **It is on the bar and ready to press from that moment**, under its own
+   name and wearing its own icon.
+3. **When it closes, the shell looks in the Windows it ran in.** Anything in
+   there is something that run put there, since nothing else ever went in: so
+   it was an installer, and what it installed is what the row plays from then
+   on. An empty one means what ran *was* the program, and the row goes on
+   playing it where it lives.
+
+**Nothing of yours is copied, moved or changed.** The row is a way back to the
+program you already have, not a second copy of it — so pressing a `.exe` costs
+no disk, and taking the row off again leaves your own files exactly where they
+were.
+
+What that asks in return is that the program stays where it is. Move the
+folder or delete the download and the row says the program is not where it
+was, which is the truth and is fixed by pressing the file again in its new
+place.
+
+**To have a copy of your own**, so that the download can go: **Add a game or
+app folder** at the head of the column copies the whole folder you point at
+into a Windows of its own. That is also the way in for a program on a memory
+stick you would rather not keep plugged in.
+
+**Pressing the same program again** runs the one you already have rather than
+standing a second row beside the first. An installer pressed again is a
+different matter — that is somebody installing it again, and it gets a new
+Windows of its own, which is what it has always done.
 
 ## A setup opens on a Windows desktop
 
@@ -150,8 +195,8 @@ changes resolution needs the screen itself to change with it.
 ## After an installer
 
 When a setup finishes, the shell looks in the game's folder and takes what it
-left. You do not have to find it: the row goes from a setup to a game you can
-press, on its own, as soon as the installer closes.
+left. You do not have to find it: the row goes from the setup you pressed to
+the game it installed, on its own, as soon as the installer closes.
 
 What it takes is the likeliest program in there, which is not the first file
 found — a setup leaves uninstallers, crash handlers and redistributables
@@ -164,12 +209,12 @@ script is a few hundred bytes against a game's megabytes, so where there is a
 program beside one the program wins. An `.msi` is never offered as the thing a
 game plays — it is what puts the game there, not the game.
 
-A setup you cancelled leaves nothing that looks like a program, so the row
-says the install was never finished. Pressing it looks again — and that is
-also how an interrupted install is rescued: **Run something inside** on that
-game's menu, pick the same installer again, and it runs in the half-built
-Windows rather than starting a new one. When it finishes, the game names
-itself and is ready.
+A setup you cancelled installed nothing, so the row goes on playing the setup
+where it lives — which is how an interrupted install is finished: press the
+row and the same installer runs again, in the half-built Windows rather than
+in a new one. When it gets to the end, the game names itself. **Run something
+inside** on the game's menu does the same from any other installer on your
+disk.
 
 ## A place of its own for each game
 
@@ -324,6 +369,12 @@ use from here.
 `~/.lxb-proton`, unless you choose somewhere else. Games already installed
 stay where they are and are still found, so moving the folder does not strand
 them.
+
+One row is not kept there: a program pressed in **Files** is played where you
+keep it, and only its Windows is in the games folder. That Windows is a few
+hundred megabytes whatever the program is, and takes the program's saves and
+settings with it when the row is removed — the program itself is yours and is
+left alone.
 
 ## Keeping it up to date
 

@@ -218,6 +218,13 @@ pub enum Trouble {
     /// A game or an installer is still using the prefix, so it may not be
     /// removed.
     InUse,
+    /// What this game plays is not there any more.
+    ///
+    /// Only ever a program run where the person keeps it — see
+    /// `prefix::Kept::play` — which is the one thing a game points at that
+    /// this shell does not own. They moved the folder, or deleted the
+    /// download it was in.
+    Gone,
     /// Anything else. The note says what.
     Other,
 }
@@ -247,9 +254,10 @@ pub struct GameRow {
     /// Its own directory. For the log, for Uninstall's confirmation, and
     /// for Show in folder.
     pub at: String,
-    /// What a press of Play runs, as a path inside the game's own folder, or
-    /// `None` while nothing has been named. The menu that offers to change it
-    /// ticks this one.
+    /// What a press of Play runs: a path inside the game's own folder, or an
+    /// absolute one for a program run where it lives — see
+    /// [`GameRow::runs_in_place`]. `None` while nothing has been named. The
+    /// menu that offers to change it ticks this one.
     #[serde(default)]
     pub play: Option<String>,
     /// Whether Proton has ever built the prefix in there.
@@ -262,6 +270,15 @@ pub struct GameRow {
     /// is ready with no prefix at all until the first time it is played.
     #[serde(default)]
     pub prefix_built: bool,
+    /// Whether what it plays is a program outside its own folder — one
+    /// pressed in Files and run where the person keeps it, rather than
+    /// anything this shell copied.
+    ///
+    /// The shell reads one thing off it: whether a launch ending in this
+    /// prefix is worth asking `settled` about. Everything else about it is
+    /// the helper's — see `install::settled`.
+    #[serde(default)]
+    pub runs_in_place: bool,
     /// The program's own drawing, written out beside it as a PNG — what the
     /// row wears instead of the mark every Windows game used to share. See
     /// [`crate::icon`]. `None` for a game with nothing named to play yet,

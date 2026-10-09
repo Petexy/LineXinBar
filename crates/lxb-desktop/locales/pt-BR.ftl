@@ -2258,6 +2258,7 @@ windows-trouble-damaged = O download não chegou inteiro. Tente de novo.
 windows-trouble-no-space = Não há espaço suficiente no disco.
 windows-trouble-wrong-machine = Não há uma versão disto para este aparelho.
 windows-trouble-in-use = Isto ainda está em execução. Feche e tente de novo.
+windows-trouble-gone = Esse programa não está mais onde estava. Pode ter sido movido ou excluído.
 windows-trouble-other = Isso não funcionou. Tente de novo.
 windows-count-games = { $count ->
     [one] { $count } programa do Windows

@@ -42,11 +42,17 @@ use serde::{Deserialize, Serialize};
 pub struct Kept {
     /// What it is called on the bar.
     pub name: String,
-    /// The executable a press of Play runs, as a path inside `pfx/`.
+    /// The executable a press of Play runs.
     ///
-    /// Stored relative to the game's own directory rather than absolutely,
-    /// so moving the games folder to another disk does not break every
-    /// shortcut in it.
+    /// Relative to the game's own directory for a game that lives in its
+    /// prefix — an installation, or a folder copied in — so that moving the
+    /// games folder to another disk does not break every shortcut in it.
+    ///
+    /// **Absolute for a program this shell never copied anywhere**: a `.exe`
+    /// pressed in Files is run where the person keeps it, with everything it
+    /// came with still beside it, so what plays it is a path on their own
+    /// disk. See `install`'s head for why nothing is copied, and
+    /// [`Game::runs_in_place`], which is this fact asked as a question.
     pub play: Option<String>,
     /// What to put after it, if anything.
     #[serde(default)]
@@ -120,6 +126,23 @@ impl Game {
     /// The executable a press of Play runs, where one has been named.
     pub fn target(&self) -> Option<PathBuf> {
         self.kept.play.as_ref().map(|play| self.at.join(play))
+    }
+
+    /// Whether what this plays is a program outside its own directory — one
+    /// pressed in Files and run where the person keeps it.
+    ///
+    /// The one fact that says a launch ending in here is worth looking at the
+    /// prefix over: a game that plays something *inside* its prefix is
+    /// installed and settled, and one that plays something outside has not
+    /// been told yet whether what it ran was a setup. Asked of the path
+    /// rather than remembered in a field of its own, because it is the same
+    /// fact written once — the moment what it plays moves inside the prefix,
+    /// it has settled.
+    pub fn runs_in_place(&self) -> bool {
+        self.kept
+            .play
+            .as_deref()
+            .is_some_and(|play| Path::new(play).is_absolute())
     }
 
     /// Write `lxb.json` back, beside itself and then over itself, so a

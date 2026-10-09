@@ -89,6 +89,28 @@ pub fn beside(game_dir: &Path, exe: &Path) -> Option<PathBuf> {
     }
 }
 
+/// Forget the picture written beside a game, so the next listing reads it
+/// out of the program again.
+///
+/// For the one moment what a game plays changes to a *different program*:
+/// a press on a `.exe` names the copy it brought in from the first frame, and
+/// an installer among those is replaced by what it installed — see `settle`
+/// in the binary. [`beside`] answers the file it wrote before without opening
+/// anything, which is what makes a listing cheap and what would otherwise
+/// leave a game wearing its setup's drawing for ever.
+///
+/// Not called when the *same* program is merely re-read, and nothing calls it
+/// for a game whose target is corrected by hand through **What to play**:
+/// those are two executables of one installation, which carry one drawing
+/// between them more often than not, and a picture rewritten on every press
+/// of that menu would be a read of a file nobody asked about.
+pub fn forget(game_dir: &Path) {
+    let at = game_dir.join(FILE);
+    if at.is_file() {
+        let _ = std::fs::remove_file(at);
+    }
+}
+
 /// The same picture, written to a file the caller named, answering whether
 /// there was one.
 ///

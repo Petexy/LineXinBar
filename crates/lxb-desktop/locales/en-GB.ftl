@@ -2278,6 +2278,7 @@ windows-trouble-damaged = What was downloaded did not arrive whole. Try again.
 windows-trouble-no-space = There is not enough room on the disk.
 windows-trouble-wrong-machine = There is no version of this for this machine.
 windows-trouble-in-use = This is still running. Close it and try again.
+windows-trouble-gone = That program is not where it was. It may have been moved or deleted.
 windows-trouble-other = That did not work. Try again.
 windows-count-games = { $count ->
     [one] { $count } Windows program

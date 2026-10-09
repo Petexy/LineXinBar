@@ -2377,6 +2377,7 @@ windows-trouble-damaged = Загрузка пришла не полностью.
 windows-trouble-no-space = На диске недостаточно места.
 windows-trouble-wrong-machine = Для этого устройства такой версии нет.
 windows-trouble-in-use = Это ещё работает. Закройте и попробуйте снова.
+windows-trouble-gone = Этой программы больше нет на прежнем месте. Возможно, её перенесли или удалили.
 windows-trouble-other = Это не получилось. Попробуйте снова.
 windows-count-games = { $count ->
     [one] { $count } программа Windows

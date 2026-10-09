@@ -25,10 +25,11 @@
 //! lxb-proton newer             what is newer than the build we fetched
 //! lxb-proton end ID            leave nothing of its Windows running
 //! lxb-proton remove ID         take one off the disk, prefix and all
-//! lxb-proton new EXE           a prefix of its own, and how to run the setup
-//!                              [--desktop WxH]
+//! lxb-proton new EXE           a prefix of its own, and how to run that
+//!                              program where it is [--desktop WxH]
 //! lxb-proton import DIR        a game somebody already has, copied into one
 //! lxb-proton found ID          what in that prefix could be the game
+//! lxb-proton settled ID        what the run in there left: it, or the copy
 //! lxb-proton target ID AT      that is the one; play it from now on
 //! ```
 //!
@@ -177,7 +178,8 @@ enum Asked {
         desktop: Option<launch::Desktop>,
     },
     /// Make a prefix of its own for this executable and say how to run it
-    /// in there. For an installer, and for a single portable executable.
+    /// where it already is. For an installer, and for a program that needs
+    /// none — nothing is copied either way; see `install`'s head.
     New {
         #[arg(value_name = "EXE")]
         exe: std::path::PathBuf,
@@ -202,6 +204,22 @@ enum Asked {
     /// What inside a game's prefix could be the game, likeliest first, for
     /// the shell to confirm one with the person.
     Found {
+        #[arg(value_name = "ID")]
+        id: String,
+    },
+    /// What the run in a prefix left behind: whether the program it plays
+    /// is still the one that was pressed, or something that run installed.
+    ///
+    /// Asked once each time something in that prefix exits. A program that
+    /// put another program in there was a setup, so the installed one
+    /// becomes what the game plays; a program that put nothing there was the
+    /// program itself, and nothing changes.
+    ///
+    /// Answers with the one row, as `target` does. A game whose program is
+    /// already inside its own prefix — a folder somebody imported, an
+    /// installation that has settled — answers with no row at all, which is
+    /// not a failure.
+    Settled {
         #[arg(value_name = "ID")]
         id: String,
     },
@@ -436,6 +454,30 @@ fn main() -> ExitCode {
             say(&mut out, &made);
             ended(worked)
         }
+        Asked::Settled { id } => match settle(&paths, &id) {
+            Some(game) => say(
+                &mut out,
+                &Games {
+                    protocol: PROTOCOL,
+                    games: vec![game],
+                },
+            ),
+            // Not a failure, and not silence either: the shell asks this of
+            // anything that ends in a prefix, and a game nothing was brought
+            // into has nothing to settle. An empty list says so in the shape
+            // the shell already reads, where saying nothing at all is read as
+            // a helper that could not answer.
+            None => {
+                eprintln!("settled: {id} plays something in its own prefix already");
+                say(
+                    &mut out,
+                    &Games {
+                        protocol: PROTOCOL,
+                        games: Vec::new(),
+                    },
+                )
+            }
+        },
         Asked::Import { dir, name } => ended(run_import(&mut out, &paths, &dir, name.as_deref())),
         Asked::Found { id } => {
             let games = prefix::all(paths.roots());
@@ -985,7 +1027,14 @@ fn end_everything(paths: &Paths, id: &str) -> Ended {
     }
 }
 
-/// A prefix of its own for an executable, and how to run it in there.
+/// A prefix of its own for an executable, and how to run it where it is.
+///
+/// **Nothing here decides whether this is an installer**; see `install`'s own
+/// head for why that question cannot be answered before the thing has run,
+/// and [`settle`] for the answer that is read off the prefix afterwards.
+/// What this does is the same for both: a prefix, the executable named as
+/// what the game plays *at the path it is already at*, and a launch that runs
+/// it there with its own folder shared into the container.
 fn make_new(
     steam: &Steam,
     paths: &Paths,
@@ -1026,16 +1075,61 @@ fn make_new(
         );
     };
 
-    let game = match prefix::make(paths.new_prefixes(), &called, Some(exe)) {
+    // **The same program pressed twice is one program.** A press in Files on
+    // something that already has a prefix of its own starts what is here
+    // rather than standing a second row beside the first.
+    //
+    // Only while that game still plays the file itself, which is exactly the
+    // program that needs no installer. A *setup* pressed again is a setup
+    // somebody is running again — to repair an installation, or to install it
+    // somewhere else — and that is a new prefix, which is what it has always
+    // been. The two are told apart by the same fact everything else here is:
+    // whether anything ever appeared in the prefix.
+    if let Some(already) = prefix::all(paths.roots()).into_iter().find(|game| {
+        game.runs_in_place()
+            && game
+                .kept
+                .play
+                .as_deref()
+                .is_some_and(|play| Path::new(play) == exe)
+    }) {
+        eprintln!(
+            "new: {} already plays {}, so it is started rather than made again",
+            already.id,
+            exe.display()
+        );
+        // Started the way the row in the column starts it, down to having no
+        // Windows desktop: it is a program this machine knows, and the
+        // setting-up run it had on the first press is over.
+        let start = start(steam, paths, &already.id, None, None, None);
+        let trouble = start.trouble;
+        return Made {
+            protocol: PROTOCOL,
+            game: Some(row(&already)),
+            start: trouble.is_none().then_some(start),
+            trouble,
+            note: format!("{} is what that program already is", already.id),
+        };
+    }
+
+    let mut game = match prefix::make(paths.new_prefixes(), &called, Some(exe)) {
         Ok(game) => game,
         Err(err) => return refuse(Trouble::Files, err.to_string()),
     };
 
-    // The setup is run from outside the prefix — it is a file somebody
-    // picked anywhere on their disk — so the container has to be able to
-    // see where it is as well. `launch::of` does that for any executable
-    // that is not inside the game, which is this one and also anything run
-    // inside an existing prefix.
+    // Named as what it plays before it has been run once, so the row is one
+    // somebody can press from the frame it first appears on. Absolute,
+    // because this is a program on their own disk that nothing here has
+    // copied — see `prefix::Kept::play`.
+    game.kept.play = Some(exe.to_string_lossy().into_owned());
+    if let Err(err) = game.save() {
+        let _ = std::fs::remove_dir_all(&game.at);
+        return refuse(Trouble::Files, err.to_string());
+    }
+
+    // The folder the program lives in is shared into the container by
+    // `launch::of`, which has always done that for an executable that is not
+    // inside the game — so it runs with everything it came with beside it.
     let made = launch::of(
         &game,
         tool,
@@ -1056,10 +1150,10 @@ fn make_new(
                 directory: launch.directory.to_string_lossy().into_owned(),
                 proton: Some(tool.name.clone()),
                 trouble: None,
-                note: format!("{called} setting up under {}", tool.name),
+                note: format!("{called} starting under {}", tool.name),
             }),
             trouble: None,
-            note: format!("{} is ready for {}", game.id, exe.display()),
+            note: format!("{} plays {}", game.id, exe.display()),
         },
         Err(launch::Cannot::NoRuntime) => Made {
             protocol: PROTOCOL,
@@ -1070,6 +1164,47 @@ fn make_new(
         },
         Err(launch::Cannot::NoTarget) => refuse(Trouble::Other, "nothing to run".to_string()),
     }
+}
+
+/// What a run in a prefix left behind, read once that run is over.
+///
+/// **The one place an installer is told from a program that needs none**, and
+/// it is told after the fact: nothing a press runs is ever copied into a
+/// prefix, so anything in one is something the run put there. Something there
+/// and what ran was a setup, so what it installed is what the game plays from
+/// now on; nothing there and what ran was the program, which goes on being
+/// played where it lives.
+///
+/// Asked of a game that plays something outside its own folder, every time
+/// something in it exits — see [`prefix::Game::runs_in_place`] for why it is
+/// not asked once and then forgotten. `None` for every other game, which is
+/// every game whose program is in its own prefix already.
+///
+/// Answers with the one row, in `games`' own shape, so the shell has nothing
+/// extra to learn.
+fn settle(paths: &Paths, id: &str) -> Option<GameRow> {
+    let games = prefix::all(paths.roots());
+    let mut game = games.into_iter().find(|game| game.id == id)?;
+    if !game.runs_in_place() {
+        return None;
+    }
+    let Some(installed) = install::settled(&game.at) else {
+        eprintln!("settled: {id} put nothing in its prefix, so it is the program itself");
+        return Some(row(&game));
+    };
+    eprintln!(
+        "settled: {id} installed {}, so what ran was a setup",
+        installed.at
+    );
+    game.kept.play = Some(installed.at);
+    // And the drawing on the row is read again, out of what was installed:
+    // it was taken from the setup, and the two are not always the same
+    // picture. See `icon::beside`, which never opens a program twice.
+    icon::forget(&game.at);
+    if let Err(err) = game.save() {
+        eprintln!("settled: {id} could not be written ({err})");
+    }
+    Some(row(&game))
 }
 
 /// A prefix of its own, with a game somebody already has copied into it.
@@ -1197,6 +1332,7 @@ fn row(game: &prefix::Game) -> GameRow {
         at: game.at.to_string_lossy().into_owned(),
         play: game.kept.play.clone(),
         prefix_built: game.prefix_built(),
+        runs_in_place: game.runs_in_place(),
     }
 }
 
@@ -1275,7 +1411,21 @@ fn start(
             launch::of(&game, tool, exe, &[], verb, paths.store(), desktop)
         }
         // And the game itself against the display itself. See `launch`.
-        None => launch::play(&game, tool, paths.store()),
+        None => {
+            // A program run where the person keeps it is the one thing a
+            // game points at that this shell does not own, so it is the one
+            // that can go: they moved the folder, or deleted the download it
+            // was in. Said here for the reason `--in` says it above — a path
+            // that is not there makes a perfectly well-formed launch, and
+            // the shell would answer it with a loading screen that waits its
+            // patience out over a program nothing ever started.
+            if let Some(at) = game.target().filter(|_| game.runs_in_place()) {
+                if !at.is_file() {
+                    return refuse(Trouble::Gone, format!("{} is not there", at.display()));
+                }
+            }
+            launch::play(&game, tool, paths.store())
+        }
     };
     match made {
         Ok(launch) => Start {

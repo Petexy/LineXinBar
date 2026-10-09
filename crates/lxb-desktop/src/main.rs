@@ -27362,11 +27362,21 @@ impl Shell {
         // more: whether Proton has built the prefix, and how long the game
         // has been there.
         self.proton.reread();
-        if a_launch_that_ended_was_a_setup(self.proton.game(id)) {
-            self.only_one_walk_is_waited_on();
-            self.windows_settling = Some(id.to_string());
-            self.proton
-                .send(proton::Ask::FoundIn { id: id.to_string() });
+        match when_it_ended(self.proton.game(id)) {
+            // The one question the shell has no opinion about the answer to:
+            // nothing a press runs is copied into a prefix, so anything in
+            // that one now is something this run put there — and the half of
+            // this that has the prefix is the half that reads it.
+            WhenItEnded::Settle => self
+                .proton
+                .send(proton::Ask::Settled { id: id.to_string() }),
+            WhenItEnded::LookForWhatWasInstalled => {
+                self.only_one_walk_is_waited_on();
+                self.windows_settling = Some(id.to_string());
+                self.proton
+                    .send(proton::Ask::FoundIn { id: id.to_string() });
+            }
+            WhenItEnded::Nothing => {}
         }
         // Last of the three, because the helper answers one ask at a time and
         // this is the only one nobody is waiting for. It returns in no time
@@ -40489,17 +40499,37 @@ fn looking_in_the_folder() -> Vec<menu::Entry> {
     ]
 }
 
-/// Whether a Windows launch that has just ended was a setup rather than a
-/// game: whether its prefix is worth looking in for something to play.
+/// What to do about a prefix a launch has just ended in.
 ///
-/// **The rule is "nothing is named yet", and the gate matters more than it
-/// looks.** Without it every quit would send the shell looking again and
-/// name whatever the ranking liked best this time — so a person who used
-/// **What to play** to pick the right one of three executables would have
-/// their choice undone the first time they closed the game. A game that
-/// already plays something has not just been installed.
-fn a_launch_that_ended_was_a_setup(game: Option<&proton::GameRow>) -> bool {
-    game.is_some_and(|game| game.play.is_none())
+/// Three answers, because there are three shapes of prefix on a machine that
+/// has been upgraded, and reading one of them as another undoes somebody's
+/// choice.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum WhenItEnded {
+    /// This game plays a program outside its own folder — one pressed in
+    /// Files and run where the person keeps it — so what is in the prefix
+    /// now says which it was: a setup, or the program itself. The helper
+    /// settles it — see `lxb-proton`'s `settle`.
+    Settle,
+    /// Nothing is named to play at all: a prefix an older build made and
+    /// never finished. Look in the prefix and take the likeliest thing the
+    /// setup left.
+    LookForWhatWasInstalled,
+    /// Nothing to do. **The gate matters more than it looks:** without it
+    /// every quit would send the shell looking again and name whatever the
+    /// ranking liked best this time — so a person who used **What to play**
+    /// to pick the right one of three executables would have their choice
+    /// undone the first time they closed the game.
+    Nothing,
+}
+
+/// Which of the three a launch that has just ended was.
+fn when_it_ended(game: Option<&proton::GameRow>) -> WhenItEnded {
+    match game {
+        Some(game) if game.runs_in_place => WhenItEnded::Settle,
+        Some(game) if game.play.is_none() => WhenItEnded::LookForWhatWasInstalled,
+        _ => WhenItEnded::Nothing,
+    }
 }
 
 /// The rows of the Windows Apps column's Sort list: its three orders, the one
@@ -41514,6 +41544,7 @@ mod steam_game_menu_tests {
             at: at.to_string(),
             play: None,
             prefix_built: true,
+            runs_in_place: false,
             cover: None,
         }
     }
@@ -41614,24 +41645,39 @@ mod steam_game_menu_tests {
         let once = ["notepad".to_string()];
         assert_eq!(launches_that_ended(&twice, &once), ["notepad"]);
 
-        // And which of those endings was a setup. A game that already plays
-        // something has not just been installed — without this, quitting
-        // Notepad++ would send the shell off to choose again and undo
-        // whatever somebody had picked in **What to play**.
+        // And what each of those endings is worth doing about. A game that
+        // already plays something and had nothing brought into it has not
+        // just been installed — without that gate, quitting Notepad++ would
+        // send the shell off to choose again and undo whatever somebody had
+        // picked in **What to play**.
         let mut installed = windows_game_at("notepad", "/games/notepad");
-        assert!(
-            a_launch_that_ended_was_a_setup(Some(&installed)),
-            "nothing named to play: the setup has just run"
+        assert_eq!(
+            when_it_ended(Some(&installed)),
+            WhenItEnded::LookForWhatWasInstalled,
+            "nothing named to play and nothing brought in: an older build's \
+             prefix, whose setup has just run"
         );
         installed.play = Some("pfx/drive_c/Program Files/Notepad++/notepad++.exe".into());
-        assert!(
-            !a_launch_that_ended_was_a_setup(Some(&installed)),
+        assert_eq!(
+            when_it_ended(Some(&installed)),
+            WhenItEnded::Nothing,
             "it plays something already, so this was somebody using it"
         );
-        assert!(
-            !a_launch_that_ended_was_a_setup(None),
+        assert_eq!(
+            when_it_ended(None),
+            WhenItEnded::Nothing,
             "and a game the shell no longer has is nothing to go looking in"
         );
+
+        // A game that plays a program *outside* its own folder is the third
+        // shape, and it is asked about every time, however many times it has
+        // been played: an installer cancelled on its first run and finished
+        // on its second has to be noticed the second time. What is in the
+        // prefix decides, and the helper is the half that has it.
+        let mut in_place = windows_game_at("notepad", "/games/notepad");
+        in_place.runs_in_place = true;
+        in_place.play = Some("/home/someone/Desktop/npp.portable/notepad++.exe".into());
+        assert_eq!(when_it_ended(Some(&in_place)), WhenItEnded::Settle);
     }
 
     /// **A mod's setup is in somebody's Downloads, not in the prefix.**

@@ -285,6 +285,58 @@ mod tests {
         }
     }
 
+    /// **A press on a `.exe` names what it plays before anything has run**,
+    /// and names it where the person keeps it.
+    ///
+    /// Checked against the line itself rather than against the parser above,
+    /// because what the two programs agree on is the JSON: a field renamed on
+    /// either side is a press that quietly does something else.
+    #[test]
+    fn a_new_prefix_plays_the_program_where_it_already_is() {
+        let made = serde_json::json!({
+            "protocol": PROTOCOL,
+            "game": {
+                "id": "notepad",
+                "name": "Notepad++",
+                "state": "ready",
+                "at": "/home/someone/.lxb-proton/notepad",
+                "play": "/home/someone/Desktop/npp.portable/notepad++.exe",
+                "runs_in_place": true,
+                "prefix_built": false,
+            },
+            "start": {
+                "protocol": PROTOCOL,
+                "argv": ["/proton", "waitforexitandrun", "notepad++.exe"],
+                "environment": [],
+                "directory": "/home/someone/Desktop/npp.portable",
+                "proton": "Proton 11.0",
+                "trouble": serde_json::Value::Null,
+                "note": "Notepad++ starting",
+            },
+            "trouble": serde_json::Value::Null,
+            "note": "notepad plays it",
+        })
+        .to_string();
+
+        let made: Made = serde_json::from_str(&made).expect("the launch, and the game it is for");
+        let game = made.game.expect("it made one");
+        assert_eq!(
+            game.play.as_deref(),
+            Some("/home/someone/Desktop/npp.portable/notepad++.exe"),
+            "the program is what the game plays from the first frame, so the \
+             row is never one that says nothing has been installed"
+        );
+        assert!(
+            game.runs_in_place,
+            "and the shell is told this prefix is one to settle when the run ends"
+        );
+        assert_eq!(
+            made.start.expect("a launch").directory,
+            "/home/someone/Desktop/npp.portable",
+            "run in its own folder, with everything it came with beside it"
+        );
+    }
+
     /// **A Notepad++ folder was imported on this machine, landed complete on
     /// the disk, and left a row saying *Nothing has been installed here
     /// yet*.** Not one line of that import ever reached the shell.
@@ -373,6 +425,7 @@ mod tests {
             at: format!("/games/{}", name.to_lowercase()),
             play: ready.then(|| "pfx/drive_c/game.exe".to_string()),
             prefix_built: ready,
+            runs_in_place: false,
             cover: None,
         }
     }
@@ -695,10 +748,17 @@ mod tests {
         );
     }
 
-    /// Ending what is left of a game's Windows is one word and the game.
+    /// Ending what is left of a game's Windows is one word and the game, and
+    /// so is asking what the run in it left behind.
     #[test]
     fn ending_a_games_windows_names_only_the_game() {
         assert_eq!(said(Ask::End { id: "cemu".into() }), ["end", "cemu"]);
+        assert_eq!(
+            said(Ask::Settled {
+                id: "notepad".into()
+            }),
+            ["settled", "notepad"]
+        );
     }
 
     /// **A helper too old to know a verb must not put a sentence on screen.**
@@ -714,6 +774,9 @@ mod tests {
     #[test]
     fn only_the_asks_somebody_pressed_are_answered_on_screen() {
         assert!(!anybody_is_waiting(&Ask::End { id: "cemu".into() }));
+        assert!(!anybody_is_waiting(&Ask::Settled {
+            id: "notepad".into()
+        }));
         for pressed in [
             Ask::Probe,
             Ask::Games,
@@ -889,6 +952,15 @@ pub struct GameRow {
     pub play: Option<String>,
     #[serde(default)]
     pub prefix_built: bool,
+    /// Whether what it plays is a program outside its own folder — one
+    /// pressed in Files and run where the person keeps it.
+    ///
+    /// One thing is read off it and nothing else: whether a launch ending in
+    /// this prefix is one worth asking [`Ask::Settled`] about. What is then
+    /// done about it belongs to the helper, which is the half that has the
+    /// prefix.
+    #[serde(default)]
+    pub runs_in_place: bool,
     /// The program's own drawing, which the helper took out of the
     /// executable and wrote beside the game. A file on this disk, so it goes
     /// through the same worker and the same band of the same atlas a
@@ -1027,6 +1099,7 @@ pub enum Trouble {
     WrongMachine,
     UnknownRuntime,
     InUse,
+    Gone,
     #[serde(other)]
     Other,
 }
@@ -1043,6 +1116,7 @@ pub fn trouble_sentence(trouble: Trouble) -> &'static str {
         Trouble::NoSpace => crate::i18n::text("windows-trouble-no-space"),
         Trouble::WrongMachine => crate::i18n::text("windows-trouble-wrong-machine"),
         Trouble::InUse => crate::i18n::text("windows-trouble-in-use"),
+        Trouble::Gone => crate::i18n::text("windows-trouble-gone"),
         Trouble::Files | Trouble::UnknownRuntime | Trouble::Other => {
             crate::i18n::text("windows-trouble-other")
         }
@@ -1213,6 +1287,15 @@ pub enum Ask {
     Import { dir: PathBuf, name: Option<String> },
     /// What inside this game's prefix could be the game.
     FoundIn { id: String },
+    /// Something that ran in this prefix has ended: settle what the game
+    /// plays against what is in there now.
+    ///
+    /// The one ask about a prefix the shell has no opinion about the answer
+    /// to. A program that put another program in there was a setup, and the
+    /// helper promotes what it installed and deletes the copy of the setup; a
+    /// program that put nothing there was the program itself. Either way the
+    /// answer is the one row, and the shell draws it.
+    Settled { id: String },
     /// That one is the game.
     Target {
         id: String,
@@ -1299,6 +1382,10 @@ fn arguments(ask: &Ask) -> Vec<OsString> {
             argv.push("found".into());
             argv.push(id.into());
         }
+        Ask::Settled { id } => {
+            argv.push("settled".into());
+            argv.push(id.into());
+        }
         Ask::Start {
             id,
             inside,
@@ -1357,19 +1444,20 @@ fn arguments(ask: &Ask) -> Vec<OsString> {
 /// cannot answer it is worth putting on the screen.
 ///
 /// **Almost everything here is a press**, and a press that goes nowhere has
-/// to say so. The tidying-up after a launch is not: by the time it is asked
-/// the application is already gone, there is nothing on screen it belongs to,
-/// and a sentence about it would arrive over the start screen attached to
-/// nothing the person did.
+/// to say so. The two asks that tidy up after a launch are not: by the time
+/// either is asked the application is already gone, there is nothing on
+/// screen it belongs to, and a sentence about it would arrive over the start
+/// screen attached to nothing the person did.
 ///
-/// It is also the one ask an *older* helper will not know. The two halves of
-/// this integration are separate packages — see this module's head — so a
-/// shell that has been updated can be talking to a helper that has not, and
-/// `clap` answers a verb it has never heard of by printing nothing at all.
-/// Without this, every Windows application that closed on such a machine put
-/// *something went wrong* on the screen behind it.
+/// They are also the asks an *older* helper will not know, which is no
+/// coincidence: both were added after the first release of this pair. The two
+/// halves of this integration are separate packages — see this module's head
+/// — so a shell that has been updated can be talking to a helper that has
+/// not, and `clap` answers a verb it has never heard of by printing nothing
+/// at all. Without this, every Windows application that closed on such a
+/// machine put *something went wrong* on the screen behind it.
 fn anybody_is_waiting(ask: &Ask) -> bool {
-    !matches!(ask, Ask::End { .. })
+    !matches!(ask, Ask::End { .. } | Ask::Settled { .. })
 }
 
 fn answer(helper: &Path, ask: &Ask, generation: u64, back: &Sender<Heard>) {
@@ -1399,7 +1487,7 @@ fn answer(helper: &Path, ask: &Ask, generation: u64, back: &Sender<Heard>) {
                 // `target` and `use` answer with the one row they changed,
                 // in the same shape `games` uses, so the shell has nothing
                 // extra to learn.
-                Ask::Games | Ask::Target { .. } | Ask::Under { .. } => {
+                Ask::Games | Ask::Target { .. } | Ask::Under { .. } | Ask::Settled { .. } => {
                     serde_json::from_str(line).map(Heard::Listed)
                 }
                 Ask::Offer => serde_json::from_str(line).map(Heard::Offered),

@@ -1,19 +1,56 @@
 //! Getting a Windows game into a prefix, and finding out what to run
 //! afterwards.
 //!
-//! Two shapes arrive through **Run .exe**, and the flow must tell them apart
-//! without asking somebody a question they have no way to answer:
+//! Two shapes arrive through **Run .exe** — an installer, and a program that
+//! needs none — and **the flow does not tell them apart before it runs
+//! them**, because nothing on the disk reliably says which a file is. A great
+//! many installers are named for a download, demand no privileges and carry
+//! the product's own name and icon, exactly as the program itself does.
 //!
-//! - **An installer.** It is run inside a fresh prefix, it writes the game
-//!   somewhere under `drive_c`, and it exits. What to play afterwards is
-//!   *not* the installer, and it is not the first executable found either —
-//!   a setup leaves uninstallers, crash handlers, redistributables and
-//!   DirectX stubs lying about. So the prefix is searched afterwards and the
-//!   candidates are ranked, and the shell confirms one.
-//! - **A portable game**, which is a folder somebody already has. Copying
-//!   only the executable out of it gives a game with no data files, so what
-//!   is imported is the folder — and the folder somebody points at is the
-//!   one they say holds the whole game.
+//! So neither is copied anywhere, and what *happened* decides:
+//!
+//! 1. **Whatever was pressed is run where it already is**, in a prefix of its
+//!    own, with the folder it lives in shared into the container — see
+//!    `launch::of`, which has always done that for a program from the disk at
+//!    large. A program that needs no installer therefore has everything it
+//!    came with: its plugins, its languages, its data files, all still beside
+//!    it on the person's own disk.
+//! 2. **It is what the game plays, from the first frame the row is drawn on**
+//!    — as the path it is at, which is outside the prefix. A row that cannot
+//!    be pressed until something else has happened is a row that has to
+//!    explain itself, and the explanation — *nothing has been installed here
+//!    yet* — was a dead end on every portable program anybody pressed.
+//! 3. **When it exits, the prefix is looked at** — see [`settled`]. Anything
+//!    in there is unambiguously what the run put there, because nothing else
+//!    ever went in: that makes it an installer, and what it installed becomes
+//!    what the game plays from then on. An empty prefix means the thing that
+//!    ran was the program, and it goes on being played where it lives.
+//!
+//! ## Why nothing is copied in
+//!
+//! Because **the shell is never told whose folder a file is sitting in**. A
+//! program that needs no installer is often a folder — `notepad++.exe` is
+//! nothing without the `plugins`, `themes` and `localization` beside it, and
+//! brought in alone it puts up *Load langs.xml failed!* and waits on it — but
+//! the same press is made on an installer among four hundred photographs, on
+//! a desktop beside three other programs, and in a folder of source trees.
+//! Taking the folder would copy all of that into a prefix.
+//!
+//! Rules to tell those apart were tried and all of them had a hole. A list of
+//! the places people keep everything — the home directory, whatever
+//! `xdg-user-dirs` named their downloads in their own language, any mount
+//! point — answers for those and for nowhere else. Reading the contents does
+//! no better: the signal that catches a desktop holding `Cemu_2.6/Cemu.exe`
+//! also catches Notepad++'s own `updater/GUP.exe`.
+//!
+//! Running it where it is has no such question in it. It is also the only
+//! arrangement in which *everything in the prefix* is something the run put
+//! there, which is what makes the first paragraph's third step a fact rather
+//! than another guess.
+//!
+//! **What is copied in is what somebody asked to be copied in**: a folder
+//! chosen through **Add a game or app folder**, which is [`import`], and the
+//! one way this shell is ever told which folder is a program's.
 //!
 //! ## Why the ranking is not a guess
 //!
@@ -276,6 +313,21 @@ pub fn import(
     Ok(into)
 }
 
+/// What a run in a prefix left behind: the likeliest program in there, or
+/// `None` where the run put nothing in it.
+///
+/// **This is the whole of telling an installer from a program that needs
+/// none**, and it is asked after the fact rather than guessed at before.
+/// Nothing is ever copied into a prefix by a press, so anything in one is
+/// something a run put there: something here and the thing that ran was a
+/// setup, nothing here and the thing that ran was the program itself.
+///
+/// The ranking is [`candidates`]', so an installation that left an
+/// uninstaller and two redistributables answers with the game.
+pub fn settled(game_dir: &Path) -> Option<Candidate> {
+    candidates(game_dir).into_iter().next()
+}
+
 /// How much a folder holds, in bytes. Links are counted as nothing rather
 /// than followed, for the reason [`walk`] does not follow them.
 fn weigh(at: &Path) -> u64 {
@@ -472,5 +524,58 @@ mod tests {
     fn a_prefix_with_nothing_in_it_offers_nothing() {
         let dir = tempfile::tempdir().unwrap();
         assert!(candidates(dir.path()).is_empty());
+    }
+
+    /// **Nothing a press runs is copied into the prefix**, so anything in a
+    /// prefix is something a run put there — which is what lets an installer
+    /// be told from a program that needs none without anybody guessing.
+    ///
+    /// A folder is somebody's and the shell is not told whose. The same press
+    /// is made on a program unpacked into a folder of its own, on an
+    /// installer among four hundred photographs, and on something dropped in
+    /// a folder of source trees — and taking the folder would copy all of
+    /// that into a prefix. Every rule for telling those apart had a hole: a
+    /// list of the places people keep everything misses every other place a
+    /// file can be, and reading the contents instead catches Notepad++'s own
+    /// `updater/GUP.exe` with the same signal that catches a desktop with
+    /// `Cemu_2.6/Cemu.exe` on it. A folder is copied in only when somebody
+    /// points at one — see [`import`], which is **Add a game or app folder**.
+    #[test]
+    fn a_prefix_a_press_has_not_run_in_yet_holds_nothing() {
+        let dir = tempfile::tempdir().unwrap();
+        assert_eq!(
+            settled(dir.path()),
+            None,
+            "nothing was put in there, so nothing ran"
+        );
+
+        // And once a setup has run in it, what is in there is what it
+        // installed — there is nothing else it could be.
+        let c = dir.path().join(DRIVE_C);
+        exe(&c.join("Program Files/Notepad++/notepad++.exe"), 8192);
+        exe(&c.join("Program Files/Notepad++/unins000.exe"), 70_000);
+        let installed = settled(dir.path()).expect("the setup installed something");
+        assert_eq!(
+            installed.at, "pfx/drive_c/Program Files/Notepad++/notepad++.exe",
+            "and never the uninstaller beside it"
+        );
+    }
+
+    /// A prefix an installer only ever wrote Windows' own things into is a
+    /// setup somebody cancelled, and that must not read as an installation:
+    /// the row goes on playing the setup where it lives, so pressing it runs
+    /// the setup again — which is how an interrupted install is finished.
+    #[test]
+    fn a_setup_that_was_cancelled_installed_nothing() {
+        let dir = tempfile::tempdir().unwrap();
+        let c = dir.path().join(DRIVE_C);
+        exe(&c.join("windows/system32/notepad.exe"), 90_000);
+        exe(&c.join("users/steamuser/Temp/is-ABCDE.tmp/setup.exe"), 4096);
+
+        assert_eq!(
+            settled(dir.path()),
+            None,
+            "Windows' own folders are not an installation"
+        );
     }
 }

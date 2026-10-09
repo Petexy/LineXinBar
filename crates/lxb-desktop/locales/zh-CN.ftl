@@ -2077,6 +2077,7 @@ windows-trouble-damaged = 下载的内容不完整。请重试。
 windows-trouble-no-space = 磁盘空间不足。
 windows-trouble-wrong-machine = 没有适用于此设备的版本。
 windows-trouble-in-use = 它仍在运行。请关闭后重试。
+windows-trouble-gone = 这个程序已经不在原来的位置了。它可能被移动或删除了。
 windows-trouble-other = 操作未能完成。请重试。
 windows-count-games = { $count ->
    *[other] { $count } 个 Windows 程序

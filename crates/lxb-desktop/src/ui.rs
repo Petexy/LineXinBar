@@ -2734,12 +2734,13 @@ pub fn build(
         // A column with a disc's game at its head is measured off that card
         // for every row: the names of a column stand on one line, and a card
         // is wider than the glass an icon stands on.
-        let text_x = match (cards, head) {
+        let names_at = |x: f32, near: f32| match (cards, head) {
             (Some(cards), _) | (None, Some(HeadCard { cards })) => {
                 x + (cards.reach() / 2.0 + 14.0) * scale * near
             }
             (None, None) => x + (ITEM_ICON_FOCUSED * ITEM_DISC / 2.0 + 12.0) * scale * near,
         };
+        let text_x = names_at(x, near);
         // A column gives up its half of the screen to the one opened in front
         // of it, over the glide but ahead of it — see [`COLUMN_CONCEDE`]. Not
         // at once, because a label that snapped to the shorter box the instant
@@ -2747,17 +2748,54 @@ pub fn build(
         // not in step with the slide either, because the room has to be empty
         // by the time the column arrives in it.
         //
+        // Coming back out, the room comes back at the pace the column in front
+        // gives up its *ink* rather than at the pace of the slide — and that is
+        // not the same curve read backwards. What is leaving goes dark two
+        // thirds of the way out and then keeps sliding, which is what says
+        // where it went; see [`departing`]. So the room it was holding is empty
+        // from the moment it cannot be read, and the names behind it are owed
+        // that room *then*. Measured off the depth alone the two were mirror
+        // images: every name in the column being stepped back into stayed cut
+        // to the width of a subcategory that had already gone — a column of
+        // labels chopped to about ten letters — and then sprang out whole a
+        // third of a second later, with nothing on the screen to explain it.
+        // This is the one curve that has them whole by the time there is
+        // nothing in front of them and still never prints a name across
+        // something that can be read.
+        //
         // What it gives up is measured off what is arriving: a column of covers
         // stands a good deal wider than a column of icons, and the name behind
         // it has to stop where the cards begin rather than where an icon would
         // have. Clamped rather than trusted, because a column three steps back
         // is three of these glides behind and would otherwise be handed a box
         // of negative width.
-        let ahead = columns.get(level + 1).and_then(column_cards);
+        let front = columns.get(level + 1);
+        let conceded = match front.map(|next| next.standing) {
+            Some(Standing::Leaving) => departing((depth - level as f32).clamp(0.0, 1.0)),
+            Some(_) => ((depth - level as f32) * COLUMN_CONCEDE).clamp(0.0, 1.0),
+            // Nothing in front of it at all, so nothing to make room for —
+            // and read off the depth this was the same defect again, against a
+            // neighbour that did not exist. Going to a category out of a path
+            // takes the whole path off the screen on one frame while the depth
+            // takes a third of a second to come home — see
+            // `Cursor::leave_subcolumns`, which a press on the category row, an
+            // application's own column and the guide all reach — and what a
+            // search finds is one column however deep the cursor was standing.
+            None => 0.0,
+        };
+        let ahead = front.and_then(column_cards);
+        // The room to the right-hand margin, measured from where this column's
+        // names end up as well as from where they are now — the further of the
+        // two. A column coming home slides *rightwards*, so the room between
+        // its names and the margin shrinks under them as they arrive; given the
+        // box they have while still out to the left, a name long enough to use
+        // it would be drawn whole as the subcategory faded and then cut again
+        // over the last of the glide. A name is as long as it is.
+        let margin = width - 48.0 * scale - text_x.max(names_at(width * BAR_CROSS_X, 1.0));
         let text_max = lerp(
-            (width - text_x - 48.0 * scale).max(0.0),
+            margin.max(0.0),
             (column_x(level + 1) - column_clear(ahead) * scale - text_x).max(0.0),
-            ((depth - level as f32) * COLUMN_CONCEDE).clamp(0.0, 1.0),
+            conceded,
         );
 
         let trophy_sections = TrophySections::new(column, level, near, height);
@@ -23209,6 +23247,185 @@ mod tests {
             frames += 1;
             assert!(frames < 600, "the step never settled");
         }
+    }
+
+    /// And it has its room back by the time there is nothing in front of it.
+    ///
+    /// The other half of the same question, and the half that was wrong. A
+    /// column being stepped back out of goes dark two thirds of the way out and
+    /// then keeps sliding — see [`departing`] — so for the rest of the step
+    /// there is nothing on the screen the box behind it is being cut for. Read
+    /// off the depth alone the two directions were mirror images: every name in
+    /// the column being returned to stayed cut to the width of a subcategory
+    /// that had already gone, which on a column of applications is about ten
+    /// letters, and then sprang out whole a third of a second later with
+    /// nothing on screen to explain it.
+    ///
+    /// Three things, then: it starts where it was, it only ever grows, and it
+    /// is whole on the frame the column in front stops being readable.
+    #[test]
+    fn a_name_gets_its_room_back_as_the_subcategory_fades() {
+        let lattice = Lattice::new(vec![Category {
+            id: "games",
+            title: "Games",
+            icon: "g",
+            entries: vec![folder(
+                "PlayStation Portable",
+                vec![app("Ridge Racer 2"), app("Wipeout Pure")],
+            )],
+        }]);
+        let (width, height) = (1600.0, 900.0);
+
+        let mut cursor = Cursor::new(lattice.categories.len());
+        assert!(cursor.enter(&lattice), "into the console's games");
+        settle(&mut cursor);
+        assert!(cursor.leave(), "back out to the console they came from");
+
+        // Every frame of the step home: the box the console's name is cut to,
+        // and whether anything of the column it came out of is still being
+        // drawn. The second is read off the scene rather than worked out again
+        // from the ramp, so what this holds is what is on the screen.
+        let mut step: Vec<(f32, bool)> = Vec::new();
+        loop {
+            let scene = build_with(&lattice, &cursor, width, height, true, &NoSlots);
+            let name = scene
+                .texts
+                .iter()
+                .find(|text| text.content == "PlayStation Portable")
+                .expect("the console the games came out of");
+            let subcategory = ["Ridge Racer 2", "Wipeout Pure"].iter().any(|game| {
+                scene
+                    .texts
+                    .iter()
+                    .any(|text| text.content == *game && text.color[3] > 0.01)
+            });
+            step.push((name.max_width, subcategory));
+            if !cursor.animate(1.0 / 60.0) {
+                break;
+            }
+            assert!(step.len() < 600, "the step never settled");
+        }
+        let whole = step.last().expect("a frame to read").0;
+
+        // It starts where it was. The room is given back over the step, not on
+        // the frame the button lands: a box that opened at once would be a name
+        // printed across a column still at full strength.
+        assert!(
+            step[0].0 < whole * 0.5,
+            "the box sprang open on the first frame: {} of {whole}",
+            step[0].0
+        );
+
+        // There is no frame with nothing in front of the name and the name
+        // still cut, which is the whole of the defect.
+        for (room, subcategory) in &step {
+            assert!(
+                *subcategory || (*room - whole).abs() < 0.5,
+                "cut to {room} of {whole} with the subcategory already gone"
+            );
+        }
+
+        // And it only ever grows. The room between a column's names and the
+        // margin closes as the column slides home, so a box handed the wider
+        // one on the way would cut a long name a second time at the end of a
+        // step that was already over. A pixel of slack: the narrow box is
+        // measured off a receding icon, so it breathes by a fraction as the
+        // column comes forward, and that is not a re-cut.
+        for pair in step.windows(2) {
+            assert!(
+                pair[1].0 >= pair[0].0 - 1.0,
+                "the box closed again mid-step: {} after {}",
+                pair[1].0,
+                pair[0].0
+            );
+        }
+        // The two halves really are separate frames — a step whose column
+        // vanished on the last frame would pass the above having proved
+        // nothing.
+        assert!(
+            step.iter().any(|(_, subcategory)| !*subcategory),
+            "the subcategory never left"
+        );
+        assert!(step[0].1, "it was gone before the step began");
+    }
+
+    /// And a column with nothing in front of it is not budgeted against one.
+    ///
+    /// The same defect in a second family of presses. Going to a category while
+    /// standing deep in a path takes the whole path off the screen on one
+    /// frame — `Cursor::leave_subcolumns`, which a press on the category row,
+    /// an application's own column and the guide all reach — while the depth
+    /// takes a third of a second to come home. The columns are already gone, so
+    /// the arithmetic was reaching past the end of a list of one and handing
+    /// every name in the category's column the width of a neighbour that did
+    /// not exist: cut to about eleven letters with nothing whatever beside
+    /// them. What a search finds is one column however deep the cursor was
+    /// standing, which is the same shape again.
+    #[test]
+    fn a_column_with_nothing_in_front_of_it_is_cut_by_the_display_alone() {
+        let lattice = Lattice::new(vec![
+            Category {
+                id: "games",
+                title: "Games",
+                icon: "g",
+                entries: vec![folder(
+                    "PlayStation Portable",
+                    vec![app("Ridge Racer 2"), app("Wipeout Pure")],
+                )],
+            },
+            Category {
+                id: "programs",
+                title: "Programs",
+                icon: "p",
+                entries: vec![app("Interface Design Suite")],
+            },
+        ]);
+        let (width, height) = (1600.0, 900.0);
+
+        let room = |cursor: &Cursor| {
+            build_with(&lattice, cursor, width, height, true, &NoSlots)
+                .texts
+                .iter()
+                .find(|text| text.content == "Interface Design Suite")
+                .map(|text| text.max_width)
+        };
+
+        // What that name's room is when nothing is happening at all, which is
+        // what it should be every frame of a move that has nothing in front of
+        // it either.
+        let mut home = Cursor::new(lattice.categories.len());
+        home.select_category(1, &lattice);
+        settle(&mut home);
+        let whole = room(&home).expect("the program in the second category");
+
+        // Standing a column in, and then sent to that category: one press,
+        // which takes the path with it.
+        let mut cursor = Cursor::new(lattice.categories.len());
+        assert!(cursor.enter(&lattice), "into the console's games");
+        settle(&mut cursor);
+        cursor.select_category(1, &lattice);
+
+        let mut drawn = 0;
+        let mut frames = 0;
+        loop {
+            // Only the frames it is on the screen at all: a column fades out
+            // with the category it belonged to and back in with this one, so
+            // the first frames of the move have no name on them to measure.
+            if let Some(room) = room(&cursor) {
+                drawn += 1;
+                assert!(
+                    (room - whole).abs() < 0.5,
+                    "cut to {room} of {whole} with nothing in front of it, \
+                     {frames} frames in"
+                );
+            }
+            if !cursor.animate(1.0 / 60.0) {
+                break;
+            }
+            frames += 1;
+            assert!(frames < 600, "the move never settled");
+        }
+        assert!(drawn > 0, "the column was never drawn");
     }
 
     #[test]
