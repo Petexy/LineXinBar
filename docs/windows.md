@@ -6,6 +6,7 @@
 - [Setting it up](#setting-it-up)
 - [The Windows Apps row](#the-windows-apps-row)
 - [Two ways in](#two-ways-in)
+- [A disc in the drive](#a-disc-in-the-drive)
 - [A setup opens on a Windows desktop](#a-setup-opens-on-a-windows-desktop)
 - [After an installer](#after-an-installer)
 - [A place of its own for each game](#a-place-of-its-own-for-each-game)
@@ -174,6 +175,54 @@ standing a second row beside the first. An installer pressed again is a
 different matter — that is somebody installing it again, and it gets a new
 Windows of its own, which is what it has always done.
 
+## A disc in the drive
+
+A CD or DVD made for Windows is a way in of its own. Put one in the drive and
+it stands at the head of the games in the Windows Apps column, under the two
+rows above, called what the disc calls itself and wearing the disc's own
+picture. If you are on the start screen and doing nothing else when it goes
+in, the cursor is taken to it, so the next press is the one that installs it.
+A disc that was already in when the session started is on the column too, and
+nothing moves for it.
+
+**Which discs.** The ones Windows itself would open: a disc whose
+`autorun.inf` names a program runs that program, wears the picture it names
+and is called by the name it gives, as it would be on Windows. A disc without
+one is offered the plain way in at its top — a program called `setup`,
+`install` or `autorun`, or the only program there is. A disc whose programs are
+all further down than its top gets no row: that is a disc of somebody's files,
+and choosing one of its programs would be the shell choosing for you. Films,
+music and photographs get none either.
+
+**Pressing it** runs the disc's program from the disc, in a Windows of its
+own, in the middle of the screen — the same installer as a program pressed in
+Files, described [just above](#an-installer-and-a-program-that-needs-none).
+The first press builds that Windows
+before the program starts in it, so the disc is a CD drive with a drive letter
+of its own there, just as it is on Windows: a setup that asks for its second
+disc looks for it on that drive, and a game that reads its disc while it plays
+finds it where it expects. That press takes a little longer, and the loading
+screen stays up while it happens.
+
+**What it installs becomes a game** in the column, with its own name and
+picture. From then on the disc's row reads *Ready to play* and plays that
+game, which suits an older game that checks for its disc: the press that put
+the disc in is the one that starts it. **Install again** on the disc's menu
+runs the disc's program once more, into a Windows of its own.
+
+**If nothing was installed** — you looked at the disc's menu and closed it, or
+the game plays straight from the disc — the Windows it ran in is kept, but it
+gets no row of its own. The next time that disc goes in, its row runs in that
+same Windows, so a game played from the disc keeps its saves. **Uninstall** on
+the disc's menu takes that Windows off, saves included.
+
+**Eject** on the disc's menu opens the tray. A disc cannot be taken out while
+a program on it is still running.
+
+A disc is recognised by the name and the date written on it, not by where it
+was put, so the same disc is the same disc every time it goes in — and two
+discs that happen to share a name are not.
+
 ## A setup opens on a Windows desktop
 
 An installer gets a Windows desktop of its own, the size of the display it was
@@ -230,7 +279,9 @@ interfere, which is the failure that is hardest to undo.
 
 A game starts full screen behind the loading screen, on the display it was
 pressed on, and the guide's **Close** ends it. The first start of a game takes
-longer than the rest: the Windows installation is built then.
+longer than the rest: the Windows installation is built then, and after the
+machine has been restarted that can be over a minute. The loading screen stays
+up for as long as it takes.
 
 A game that starts a small launcher and hands over to the real thing is
 followed properly. The shell waits for everything the game started rather than

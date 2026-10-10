@@ -11155,6 +11155,12 @@ impl Shell {
         // The two rows at the head of that column are not here: they are
         // folder rows, and a press on one of those opens the column it leads
         // to through the navigation every other folder row uses.
+        //
+        // A disc in the drive first, whose row is drawn as a game's and is
+        // not one: it installs from the disc, or plays what the disc put on.
+        if let Some(number) = self.selected_windows_disc() {
+            return self.press_windows_disc(number, false);
+        }
         match self.panels.get(self.focused_panel).and_then(|panel| {
             panel.cursor.current_entry(&self.lattice).map(|entry| {
                 (
@@ -11596,12 +11602,36 @@ impl Shell {
         pid: Option<u32>,
         opens_from: OpensFrom,
     ) {
+        self.raise_this_loading_screen(name, icon, pid, opens_from, false);
+    }
+
+    /// The loading screen for a Windows program: up on the press, with no
+    /// process yet, waiting on `lxb-proton` for as long as it may take to say
+    /// what to run — see [`launch::Launch::through_proton`].
+    fn raise_a_windows_loading_screen(&mut self, name: String, opens_from: OpensFrom) {
+        self.raise_this_loading_screen(
+            name,
+            Some(proton::mark().to_string()),
+            None,
+            opens_from,
+            true,
+        );
+    }
+
+    fn raise_this_loading_screen(
+        &mut self,
+        name: String,
+        icon: Option<String>,
+        pid: Option<u32>,
+        opens_from: OpensFrom,
+        through_proton: bool,
+    ) {
         self.needs_redraw = true;
         self.sounds.launch();
         let Some(here) = self.display_at(self.focused_panel) else {
             return;
         };
-        let splash = launch::Launch::new(
+        let mut splash = launch::Launch::new(
             name,
             icon,
             here,
@@ -11613,6 +11643,9 @@ impl Shell {
                 foreground: &opens_from.foreground,
             },
         );
+        if through_proton {
+            splash = splash.through_proton();
+        }
         self.begin_launch(splash);
         if the_press_hands_the_display_over(self.lattice.running_app().is_some(), true) {
             self.guide.close();
@@ -13120,6 +13153,9 @@ impl Shell {
         if self.selected_epic().is_some() {
             return self.epic_entry_menu();
         }
+        if let Some(number) = self.selected_windows_disc() {
+            return self.windows_disc_entry_menu(number);
+        }
         if self.selected_windows_game().is_some() {
             return self.windows_game_entry_menu();
         }
@@ -13310,10 +13346,7 @@ impl Shell {
         // sent on the way into its own launch, the arrangement an Epic game
         // and a ROM folder both use.
         if let Some(game) = self.selected_windows_game() {
-            return Some(resolution::Subject::Application {
-                key: proton::key(&game.id),
-                names: vec![proton::WINDOW_CLASS.to_string()],
-            });
+            return Some(windows_resolution_subject(&game.id));
         }
         if let Some(game) = self.selected_game() {
             // Valve starts a title under a class of its own making, which is
@@ -19604,6 +19637,15 @@ impl Shell {
             }
             menu::Command::WindowsRunThisInside(id) => self.run_this_inside_a_windows_game(id),
             menu::Command::WindowsOfferRemove => self.offer_to_uninstall_windows_game(),
+            menu::Command::WindowsDiscPlay(number) => self.press_windows_disc(number, false),
+            menu::Command::WindowsDiscInstall(number) => self.press_windows_disc(number, true),
+            menu::Command::WindowsDiscOfferRemove(number) => {
+                if let Some(disc) = self.proton.disc(number) {
+                    if let Some(id) = disc.own {
+                        self.offer_to_uninstall_windows(id, disc.name);
+                    }
+                }
+            }
             menu::Command::WindowsRemove => self.uninstall_windows_game(),
             menu::Command::WindowsSort => {
                 let entries = windows_sort_rows(self.proton.sort());
@@ -26424,7 +26466,10 @@ impl Shell {
     fn a_windows_game_could_run_this(&self, path: &Path) -> bool {
         files::is_a_windows_program(path)
             && proton::runs_windows_programs()
-            && !self.proton.games().is_empty()
+            // The games that list would offer, which a disc's own Windows is
+            // not one of — counted the way the list counts them, or the row
+            // opens onto nothing but Cancel.
+            && !self.proton.games_in_order().is_empty()
     }
 
     /// The games the file this menu is open over could be run inside of, in
@@ -26541,16 +26586,21 @@ impl Shell {
             }
             None => {
                 tracing::info!(exe = %exe.display(), "a Windows program pressed in Files is to be given a place of its own");
+                // On its way like any launch: the same program pressed again
+                // starts in the Windows it already has.
+                self.windows_launches_on_their_way += 1;
                 self.proton.send(proton::Ask::New {
                     exe,
                     name: None,
                     desktop: self.how_big_a_launch_opens(),
+                    disc: None,
+                    arguments: Vec::new(),
                 });
             }
         }
         self.sync_launch_output(self.focused_panel);
         if let Some(opens_from) = self.what_a_launch_opens_from() {
-            self.raise_a_loading_screen(called, Some(proton::mark().to_string()), None, opens_from);
+            self.raise_a_windows_loading_screen(called, opens_from);
         }
     }
 
@@ -26818,6 +26868,137 @@ impl Shell {
         }
     }
 
+    /// A press on the row of a disc carrying a Windows program.
+    ///
+    /// What the Windows Apps row answers with when there is nothing yet to
+    /// run a Windows program with, and otherwise the disc's own press — see
+    /// [`Shell::run_the_windows_disc`].
+    ///
+    /// The row's press and both rows of its menu come through here, so a
+    /// machine with nothing to run a Windows program with is offered that
+    /// first whichever of the three was pressed — the menu's **Install** once
+    /// went straight to the helper and came back with *that did not work*.
+    fn press_windows_disc(&mut self, number: u64, again: bool) {
+        match self.proton.press() {
+            proton::Press::Waiting => self.proton.send(proton::Ask::Probe),
+            proton::Press::Working => {
+                self.say_about_windows(crate::i18n::text("windows-getting-ready"))
+            }
+            proton::Press::SetUp => self.offer_to_set_up_windows(),
+            proton::Press::Enter => self.run_the_windows_disc(number, again),
+        }
+    }
+
+    /// Run what is on the disc in drive `number`, or play what it installed.
+    ///
+    /// **A disc whose setup has installed a game here plays that game** — the
+    /// user's decision, 2026-10-10: a game of that age often looks for its
+    /// disc, and the press that put the disc in is the one that should start
+    /// it. `again` is **Install again** on the disc's menu, which runs the
+    /// disc's own program whatever it has installed before.
+    ///
+    /// Otherwise the disc's program — its `autorun.inf`'s, or the plain way in
+    /// at its top — goes through the same installer as a program pressed in
+    /// Files: run where it is, in a Windows of its own, and what it installs
+    /// becomes the game. That Windows is the disc's own, matched by the disc
+    /// rather than by where it is mounted, so a disc that installed nothing
+    /// the first time runs in the same one the next time it goes in — see
+    /// `lxb-proton`'s `make_for_a_disc`.
+    fn run_the_windows_disc(&mut self, number: u64, again: bool) {
+        let Some(disc) = self.proton.disc(number) else {
+            return;
+        };
+        if !again {
+            if let Some(id) = disc.installed.clone() {
+                let name = self
+                    .proton
+                    .game(&id)
+                    .map(|game| game.name.clone())
+                    .unwrap_or_else(|| disc.name.clone());
+                return self.play_windows_game(id, name);
+            }
+        }
+        tracing::info!(
+            program = %disc.program.display(),
+            name = disc.name,
+            "running the Windows program on a disc"
+        );
+        self.windows_launches_on_their_way += 1;
+        self.proton.send(proton::Ask::New {
+            exe: disc.program,
+            name: Some(disc.name.clone()),
+            desktop: self.how_big_a_launch_opens(),
+            disc: disc.identity,
+            arguments: disc.arguments,
+        });
+        // Up on the press, as every Windows launch's is: this one builds a
+        // Windows before it starts anything, which is several seconds with
+        // nothing else on screen to say a press was heard.
+        self.sync_launch_output(self.focused_panel);
+        if let Some(opens_from) = self.what_a_launch_opens_from() {
+            self.raise_a_windows_loading_screen(disc.name, opens_from);
+        }
+        self.needs_redraw = true;
+    }
+
+    /// The menu over a disc's row: what its press does, said as a word, and
+    /// the one other thing to do with a disc, which is to take it out.
+    fn windows_disc_entry_menu(
+        &self,
+        number: u64,
+    ) -> Option<([f32; 4], Option<String>, Vec<menu::Entry>)> {
+        let panel = self.panels.get(self.focused_panel)?;
+        let disc = self.proton.disc(number)?;
+        let mut rows = Vec::new();
+        match disc.installed {
+            Some(_) => {
+                rows.push(
+                    menu::Entry::new(
+                        menu::Command::WindowsDiscPlay(number),
+                        crate::i18n::text("shell-play"),
+                    )
+                    .glyph(icons::LAUNCH),
+                );
+                rows.push(menu::Entry::new(
+                    menu::Command::WindowsDiscInstall(number),
+                    crate::i18n::text("windows-install-again"),
+                ));
+            }
+            None => rows.push(
+                menu::Entry::new(
+                    menu::Command::WindowsDiscInstall(number),
+                    crate::i18n::text("shell-install"),
+                )
+                .glyph(icons::LAUNCH),
+            ),
+        }
+        // The Windows a disc was given and installed nothing into has no row
+        // of its own, so this is the one place it can be taken off the disk.
+        if disc.own.is_some() {
+            rows.push(
+                menu::Entry::new(
+                    menu::Command::WindowsDiscOfferRemove(number),
+                    crate::i18n::text("shell-uninstall"),
+                )
+                .glyph(icons::UNINSTALL)
+                .grave(),
+            );
+        }
+        rows.push(
+            menu::Entry::new(
+                menu::Command::EjectDisc(number),
+                crate::i18n::text("windows-eject-disc"),
+            )
+            .glyph(icons::SETTING_DISCONNECT)
+            .group(1),
+        );
+        rows.push(
+            menu::Entry::new(menu::Command::Dismiss, crate::i18n::text("shell-cancel")).group(1),
+        );
+        let anchor = ui::launch_origin(panel.width as f32, panel.height as f32);
+        Some((anchor, Some(disc.name), rows))
+    }
+
     /// A press on a game with nothing named to play.
     ///
     /// **A press that only says no is a press worth nothing**, and that is
@@ -26967,6 +27148,11 @@ impl Shell {
             self.rebuild_proton();
             self.needs_redraw = true;
         }
+        // A disc's row has just come to be on the column, which was built
+        // again above.
+        if let Some(number) = change.disc_in {
+            self.take_the_cursor_to_the_windows_disc(number);
+        }
         if let Some(starting) = change.start {
             let name = self
                 .proton
@@ -27053,6 +27239,7 @@ impl Shell {
                 // [`settings::windows_integration`].
                 if settings::windows_integration() {
                     self.proton = proton::Proton::start(helper);
+                    self.windows_hears_about_the_drives();
                 }
             }
             None => {
@@ -27073,19 +27260,20 @@ impl Shell {
             self.proton.arriving(),
         );
         self.absorb(shifted);
-        let standing: Vec<Option<String>> = match self.windows_column() {
+        // A game by its identifier, and a disc by its drive: a disc's row
+        // carries the identifier of the game it installed, and one kept by
+        // identifier alone would carry a cursor standing on that game up onto
+        // the disc's row on every rebuild.
+        let standing: Vec<Option<(String, Option<u64>)>> = match self.windows_column() {
             Some(at) => self
                 .panels
                 .iter()
                 .map(|panel| {
-                    Some(
-                        panel
-                            .cursor
-                            .entry_in_column(&self.lattice, at)?
-                            .windows_game()?
-                            .id
-                            .clone(),
-                    )
+                    let game = panel
+                        .cursor
+                        .entry_in_column(&self.lattice, at)?
+                        .windows_game()?;
+                    Some((game.id.clone(), game.disc))
                 })
                 .collect(),
             None => Vec::new(),
@@ -27101,11 +27289,13 @@ impl Shell {
         if let Some(at) = self.windows_column() {
             let lattice = &self.lattice;
             for (panel, was) in self.panels.iter_mut().zip(standing) {
-                let Some(id) = was else {
+                let Some((id, disc)) = was else {
                     continue;
                 };
                 panel.cursor.keep_on_row(lattice, at, |entry| {
-                    entry.windows_game().is_some_and(|game| game.id == id)
+                    entry
+                        .windows_game()
+                        .is_some_and(|game| game.id == id && game.disc == disc)
                 });
             }
         }
@@ -27207,10 +27397,13 @@ impl Shell {
             }
             None => {
                 tracing::info!(exe = %exe.display(), "a Windows program is to be given a place of its own");
+                self.windows_launches_on_their_way += 1;
                 self.proton.send(proton::Ask::New {
                     exe,
                     name: None,
                     desktop: self.how_big_a_launch_opens(),
+                    disc: None,
+                    arguments: Vec::new(),
                 });
             }
         }
@@ -27221,7 +27414,7 @@ impl Shell {
         // before its first window — so this is the one that most needs it.
         self.sync_launch_output(self.focused_panel);
         if let Some(opens_from) = self.what_a_launch_opens_from() {
-            self.raise_a_loading_screen(called, Some(proton::mark().to_string()), None, opens_from);
+            self.raise_a_windows_loading_screen(called, opens_from);
         }
         true
     }
@@ -27259,6 +27452,12 @@ impl Shell {
         }
         let id = game.id.clone();
         let name = game.name.clone();
+        self.play_windows_game(id, name);
+    }
+
+    /// Start one Windows game, by its identifier — from its own row, or from
+    /// the row of the disc it was installed from.
+    fn play_windows_game(&mut self, id: String, name: String) {
         tracing::info!(id, "starting a Windows game");
         // Before the ask, and the *before* is the whole point. Every Windows
         // game's windows carry the one class `proton::WINDOW_CLASS`, so the
@@ -27268,9 +27467,12 @@ impl Shell {
         // emulator's name for the same reason.
         //
         // Here rather than in `start_selection` beside the other three: this
-        // game is started from two places, a press on the row and Play on its
-        // menu, and only one of them goes through there.
-        self.push_resolution_for_a_launch();
+        // game is started from more than one place — a press on the row, Play
+        // on its menu, and the row of the disc it came off — and only one of
+        // them goes through there. By the game's own key rather than by what
+        // is under the cursor, which on a disc's row is the disc.
+        let subject = windows_resolution_subject(&id);
+        self.push_resolution(subject.names(), subject.chosen(&self.prefs));
         // The loading screen goes up *here*, on the press, and not where the
         // process is finally forked. Everything else on this bar forks on
         // the press and can raise it afterwards; this one is a round trip to
@@ -27286,7 +27488,7 @@ impl Shell {
         // one, so a launch that dies still takes its screen down with it.
         self.sync_launch_output(self.focused_panel);
         if let Some(opens_from) = self.what_a_launch_opens_from() {
-            self.raise_a_loading_screen(name, Some(proton::mark().to_string()), None, opens_from);
+            self.raise_a_windows_loading_screen(name, opens_from);
         }
         self.windows_launches_on_their_way += 1;
         self.proton.send(proton::Ask::Start {
@@ -27319,7 +27521,7 @@ impl Shell {
                     .iter_mut()
                     .find(|splash| splash.display == here && splash.pid.is_none())
                 {
-                    splash.pid = Some(pid);
+                    splash.now_running(pid, Instant::now());
                 }
             }
             // Nothing was forked. The loading screen would otherwise stand
@@ -27619,6 +27821,13 @@ impl Shell {
         };
         let name = game.name.clone();
         let id = game.id.clone();
+        self.offer_to_uninstall_windows(id, name);
+    }
+
+    /// Ask whether to take one Windows game off the disk, by its identifier
+    /// and the name its question is headed with — a game's own row, or the
+    /// Windows a disc was given and installed nothing into.
+    fn offer_to_uninstall_windows(&mut self, id: String, name: String) {
         let from = self.dialog_origin();
         self.dialog.ask(
             from,
@@ -27835,12 +28044,27 @@ impl Shell {
     }
 
     /// The Windows game the focused display is standing on, if it is on one.
+    ///
+    /// Never a disc's row, which is drawn as one and is not: everything that
+    /// reaches a game through here acts on it by its identifier — its menu,
+    /// Uninstall, Compatibility, Resolution — and a disc has none of those.
+    /// See [`Shell::selected_windows_disc`].
     fn selected_windows_game(&self) -> Option<&apps::WindowsGame> {
         self.panels
             .get(self.focused_panel)?
             .cursor
             .current_entry(&self.lattice)?
             .windows_game()
+            .filter(|game| game.disc.is_none())
+    }
+
+    /// The drive whose disc's row the focused display is standing on.
+    fn selected_windows_disc(&self) -> Option<u64> {
+        self.panels
+            .get(self.focused_panel)?
+            .cursor
+            .current_entry(&self.lattice)?
+            .windows_disc()
     }
 
     fn windows_column(&self) -> Option<usize> {
@@ -28277,8 +28501,23 @@ impl Shell {
     /// row is at the head of the column either way; what this decides is only
     /// whether the bar moves under somebody's hands to show it to them.
     fn take_the_cursor_to_the_disc(&mut self, path: &Path) {
+        if self.the_start_screen_is_busy() {
+            tracing::info!(game = %path.display(), "a disc went in; the start screen is busy, so the cursor stays");
+            return;
+        }
+        if self.stand_on_rom(path) {
+            tracing::info!(game = %path.display(), "a disc went in; the cursor is on it");
+            self.sounds.step();
+        }
+    }
+
+    /// Whether the focused display's start screen is doing something with
+    /// somebody, so a disc going in must not move the bar under them: an
+    /// application in front of it, the guide or a panel over it, a game
+    /// loading, a menu open or a search being typed.
+    fn the_start_screen_is_busy(&self) -> bool {
         let index = self.focused_panel;
-        let busy = self.app_in_front_of(index)
+        self.app_in_front_of(index)
             || self.guide.is_over_app()
             || self.guide.is_menu()
             || self.dialog.is_open()
@@ -28289,15 +28528,64 @@ impl Shell {
             || self
                 .panels
                 .get(index)
-                .is_some_and(|panel| panel.cursor.searching());
-        if busy {
-            tracing::info!(game = %path.display(), "a disc went in; the start screen is busy, so the cursor stays");
+                .is_some_and(|panel| panel.cursor.searching())
+    }
+
+    /// Take the cursor to the row of a disc carrying a Windows program that
+    /// has just gone in — [`Shell::take_the_cursor_to_the_disc`]'s act, on the
+    /// same terms, for the Windows Apps column. The user's own ask: put the
+    /// disc in while the start screen is up and the next press installs it.
+    fn take_the_cursor_to_the_windows_disc(&mut self, number: u64) {
+        if self.the_start_screen_is_busy() {
+            tracing::info!(
+                number,
+                "a Windows disc went in; the start screen is busy, so the cursor stays"
+            );
             return;
         }
-        if self.stand_on_rom(path) {
-            tracing::info!(game = %path.display(), "a disc went in; the cursor is on it");
+        if self.stand_on_windows_disc(number) {
+            tracing::info!(number, "a Windows disc went in; the cursor is on it");
             self.sounds.step();
         }
+    }
+
+    /// Put the focused display on the row of the disc in drive `number`, in
+    /// the Windows Apps column. Whether it is there to stand on.
+    fn stand_on_windows_disc(&mut self, number: u64) -> bool {
+        let Some(at) = self.windows_column() else {
+            return false;
+        };
+        let Some(row) = self.lattice.categories.get(at).and_then(|column| {
+            column
+                .entries
+                .iter()
+                .position(|row| row.windows_disc() == Some(number))
+        }) else {
+            return false;
+        };
+        let lattice = &self.lattice;
+        let Some(panel) = self.panels.get_mut(self.focused_panel) else {
+            return false;
+        };
+        panel.cursor.go_to_own_column(at, lattice);
+        panel.cursor.point_at_row(row, lattice);
+        self.needs_redraw = true;
+        true
+    }
+
+    /// Tell a Windows integration that has just been started again which
+    /// discs are in the drives, as though it had been there all along — so a
+    /// disc already in does not move the cursor for having been noticed late.
+    ///
+    /// Only once the drives have been read at all. Before that, the first
+    /// listing to arrive is the one that says what was in before anybody was
+    /// told, and that is what [`proton::Proton::discs_changed`] treats it as.
+    fn windows_hears_about_the_drives(&mut self) {
+        if self.drives_seen == 0 {
+            return;
+        }
+        let listing = drives::known();
+        self.proton.discs_changed(&listing);
     }
 
     /// The folder has been read. Two things wait on that, and both of them are
@@ -37309,6 +37597,14 @@ impl Shell {
                 self.rebuild_retroarch();
                 self.needs_redraw = true;
             }
+            // And to the Windows half, which reads every data disc for a
+            // Windows program on it. The whole listing rather than the discs
+            // alone, because a disc is read through its files and where it is
+            // mounted is a fact about its volume.
+            if self.proton.discs_changed(&listing) {
+                self.rebuild_proton();
+                self.needs_redraw = true;
+            }
             if drives::note(listing) {
                 self.rebuild_settings();
                 if self.standing_in_the_drives() {
@@ -37487,6 +37783,7 @@ impl Shell {
                 let title = self
                     .retroarch
                     .disc_title(outcome.number)
+                    .or_else(|| self.proton.disc_title(outcome.number))
                     .unwrap_or_else(|| crate::i18n::text("retroarch-game-disc").to_string());
                 self.say_about_a_drive(
                     &title,
@@ -38013,6 +38310,7 @@ impl Shell {
         if on {
             if let Some(helper) = proton::helper() {
                 self.proton = proton::Proton::start(helper);
+                self.windows_hears_about_the_drives();
             }
         } else {
             self.give_up_on_windows();
@@ -40499,6 +40797,18 @@ fn looking_in_the_folder() -> Vec<menu::Entry> {
     ]
 }
 
+/// What a Windows game's resolution is filed under and sent as.
+///
+/// Its windows are Wine's, named after the executable rather than after an
+/// app id — this integration deliberately sets no `SteamAppId` — so the
+/// answer is filed under the game and sent on the way into its own launch.
+fn windows_resolution_subject(id: &str) -> resolution::Subject {
+    resolution::Subject::Application {
+        key: proton::key(id),
+        names: vec![proton::WINDOW_CLASS.to_string()],
+    }
+}
+
 /// What to do about a prefix a launch has just ended in.
 ///
 /// Three answers, because there are three shapes of prefix on a machine that
@@ -41546,6 +41856,7 @@ mod steam_game_menu_tests {
             prefix_built: true,
             runs_in_place: false,
             cover: None,
+            disc: None,
         }
     }
 

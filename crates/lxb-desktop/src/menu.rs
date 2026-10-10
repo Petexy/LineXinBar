@@ -355,6 +355,17 @@ pub enum Command {
     /// Take it off the disk, the user having said yes. Only ever reached from
     /// the panel [`Command::WindowsOfferRemove`] raises.
     WindowsRemove,
+    /// The press on the row of the disc in this drive: play what it
+    /// installed, or run the program on it. See
+    /// `Shell::run_the_windows_disc`.
+    WindowsDiscPlay(u64),
+    /// Run the program on the disc in this drive whatever it installed
+    /// before — **Install**, or **Install again** on a disc that has.
+    WindowsDiscInstall(u64),
+    /// Ask whether to take the Windows the disc in this drive was given off
+    /// the disk — the one that installed nothing, which has no row of its
+    /// own to be uninstalled from.
+    WindowsDiscOfferRemove(u64),
     /// Step into the orders the Windows Apps column can be listed in.
     WindowsSort,
     WindowsSortBy(crate::proton::Sort),
@@ -447,7 +458,8 @@ pub enum Command {
     /// the menu offers one or the other, never both.
     SafelyRemove(u64),
     /// Open the tray of the drive a game's disc is in — the menu over the
-    /// disc's row at the head of the RetroArch column, by the drive's number.
+    /// disc's row at the head of the RetroArch column or of the games in
+    /// Windows Apps, by the drive's number.
     ///
     /// What a folder's game has Rename and Delete for: the disc's game is not a
     /// file of the user's, and the one thing to do to a disc is take it out.

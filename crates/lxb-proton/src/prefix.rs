@@ -68,6 +68,15 @@ pub struct Kept {
     /// The executable the setup started from, for the log and for saying
     /// what an interrupted install was installing.
     pub came_from: Option<String>,
+    /// The disc it was set up from, where it was one — what a disc in the
+    /// drive is matched against to find its own Windows, and the game it
+    /// installed. See [`crate::report::Disc`] and [`Game::the_discs_own`].
+    ///
+    /// Left out of the file for a game that came off none, so an `lxb.json`
+    /// written before discs reads back the same and a newer one says nothing
+    /// it does not have to.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub disc: Option<crate::report::Disc>,
 }
 
 /// One game on the disk.
@@ -145,6 +154,19 @@ impl Game {
             .is_some_and(|play| Path::new(play).is_absolute())
     }
 
+    /// Whether this is a disc's own Windows: set up from that disc, and still
+    /// playing the program on it because nothing has been installed.
+    ///
+    /// The shell shows no row for one — the disc's own row runs in it while
+    /// the disc is in — and the next press on that disc runs here rather than
+    /// in a new Windows, so a game played straight off its disc keeps its
+    /// saves. Read from the two facts it is made of, as
+    /// [`Game::runs_in_place`] is, so the moment a setup on that disc
+    /// installs something this stops being true without anybody saying so.
+    pub fn the_discs_own(&self, disc: &crate::report::Disc) -> bool {
+        self.kept.disc.as_ref() == Some(disc) && self.runs_in_place()
+    }
+
     /// Write `lxb.json` back, beside itself and then over itself, so a
     /// session that ends mid-write leaves the old one rather than half of
     /// the new one.
@@ -220,6 +242,7 @@ pub fn make(root: &Path, name: &str, came_from: Option<&Path>) -> std::io::Resul
             arguments: Vec::new(),
             proton: None,
             came_from: came_from.map(|at| at.to_string_lossy().into_owned()),
+            disc: None,
         },
     };
     game.save()?;
@@ -579,6 +602,7 @@ mod tests {
                 arguments: Vec::new(),
                 proton: None,
                 came_from: None,
+                disc: None,
             },
         }
     }

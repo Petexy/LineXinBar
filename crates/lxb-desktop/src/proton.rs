@@ -427,6 +427,7 @@ mod tests {
             prefix_built: ready,
             runs_in_place: false,
             cover: None,
+            disc: None,
         }
     }
 
@@ -738,6 +739,8 @@ mod tests {
                 exe: PathBuf::from("/home/someone/Desktop/setup.exe"),
                 name: None,
                 desktop: Some((1920, 1080)),
+                disc: None,
+                arguments: Vec::new(),
             }),
             [
                 "new",
@@ -794,6 +797,8 @@ mod tests {
                 exe: PathBuf::from("/d/setup.exe"),
                 name: None,
                 desktop: None,
+                disc: None,
+                arguments: Vec::new(),
             },
         ] {
             assert!(anybody_is_waiting(&pressed), "{pressed:?}");
@@ -810,6 +815,8 @@ mod tests {
                 exe: PathBuf::from("/home/someone/Desktop/setup.exe"),
                 name: Some("Notepad++".into()),
                 desktop: None,
+                disc: None,
+                arguments: Vec::new(),
             }),
             [
                 "new",
@@ -848,6 +855,380 @@ mod tests {
         assert_eq!(row.play, None);
         assert!(!row.prefix_built);
         assert_eq!(row.proton, None);
+        assert_eq!(row.disc, None, "and came off no disc");
+        assert!(row.listed());
+    }
+
+    // --- a disc in the drive -------------------------------------------------
+
+    const DRIVE: u64 = 2816;
+
+    fn some_disc() -> Disc {
+        Disc {
+            label: "Some Game".into(),
+            uuid: "2001-02-03-04-05-06-00".into(),
+        }
+    }
+
+    /// The drives as the worker would list them: one optical drive, with a
+    /// disc in it that went in at `inserted`, mounted at `mounted` or not at
+    /// all.
+    fn drives(inserted: Option<u64>, mounted: Option<&str>) -> crate::drives::Listing {
+        let drive = "/org/freedesktop/UDisks2/drives/an_optical_drive".to_string();
+        let mut volume = crate::drives::a_drive(DRIVE, "sr0", "Some Game");
+        volume.drive = Some(drive.clone());
+        volume.uuid = Some(some_disc().uuid);
+        volume.kind = Some("iso9660".into());
+        volume.mounted_at = mounted.map(PathBuf::from).into_iter().collect();
+        crate::drives::Listing {
+            volumes: inserted.map(|_| volume).into_iter().collect(),
+            discs: inserted
+                .map(|inserted| crate::drives::Disc {
+                    device: "/dev/sr0".into(),
+                    number: DRIVE,
+                    drive,
+                    inserted,
+                    data: true,
+                })
+                .into_iter()
+                .collect(),
+            service: true,
+            ..crate::drives::Listing::default()
+        }
+    }
+
+    /// What the helper says about a disc made for Windows.
+    fn read_as_windows(inserted: u64) -> Heard {
+        Heard::DiscRead {
+            number: DRIVE,
+            inserted,
+            reading: Some(DiscReading {
+                protocol: PROTOCOL,
+                windows: true,
+                name: Some("Some Game".into()),
+                program: Some("/run/media/someone/Some Game/setup.exe".into()),
+                arguments: vec!["/autorun".into()],
+                png: None,
+            }),
+        }
+    }
+
+    fn hear(proton: &mut Proton, says: &Sender<Heard>, heard: Heard) -> Change {
+        says.send(heard).unwrap();
+        proton.poll()
+    }
+
+    /// The rows of the column after the two ways in.
+    fn games_of(proton: &Proton) -> Vec<(String, Option<u64>)> {
+        proton.rows(None)[2..]
+            .iter()
+            .filter_map(|row| row.windows_game())
+            .map(|game| (game.name.clone(), game.disc))
+            .collect()
+    }
+
+    /// **A disc made for Windows, put in while the session runs, is a row at
+    /// the head of the games and the cursor is offered it** — the user's ask:
+    /// put the disc in and the next press installs it. Not until the helper
+    /// has said what is on it, and only once.
+    #[test]
+    fn a_windows_disc_put_in_stands_at_the_head_of_the_games() {
+        let (mut proton, says, _) = Proton::listening();
+        proton.inner.as_mut().unwrap().games = vec![row("Anna", true)];
+        assert!(
+            !proton.discs_changed(&drives(None, None)),
+            "the first listing"
+        );
+        assert!(!proton.discs_changed(&drives(Some(7), Some("/run/media/someone/Some Game"))));
+        assert_eq!(
+            games_of(&proton),
+            [("Anna".to_string(), None)],
+            "nothing for the disc until the helper has read it"
+        );
+
+        let change = hear(&mut proton, &says, read_as_windows(7));
+        assert!(change.rows);
+        assert_eq!(change.disc_in, Some(DRIVE), "the cursor is offered it");
+        let rows = proton.rows(None);
+        // The two ways in still stand over the list, so the first row under
+        // them — the disc — is the one the column opens on.
+        assert_eq!(
+            crate::apps::head_rows(&rows),
+            2,
+            "the two ways in still lead"
+        );
+        let disc = rows[2].windows_game().expect("the disc's row");
+        assert_eq!(disc.name, "Some Game");
+        assert_eq!(disc.disc, Some(DRIVE));
+        assert_eq!(disc.note, crate::i18n::text("windows-disc-install"));
+        assert_eq!(
+            games_of(&proton)[1..],
+            [("Anna".to_string(), None)],
+            "with the games under it"
+        );
+
+        // The same disc listed again, as every mount and unmount anywhere
+        // lists the drives, is the same row and is not offered twice.
+        assert!(!proton.discs_changed(&drives(Some(7), Some("/run/media/someone/Some Game"))));
+        let change = hear(&mut proton, &says, read_as_windows(7));
+        assert_eq!(change.disc_in, None, "an answer nobody is waiting for");
+    }
+
+    /// A disc that was in before the session started is on the column, and
+    /// the bar does not move for it: nobody put it in while looking.
+    #[test]
+    fn a_disc_already_in_moves_nothing() {
+        let (mut proton, says, _) = Proton::listening();
+        proton.discs_changed(&drives(Some(7), Some("/run/media/someone/Some Game")));
+        let change = hear(&mut proton, &says, read_as_windows(7));
+        assert!(change.rows);
+        assert_eq!(change.disc_in, None);
+        assert_eq!(games_of(&proton), [("Some Game".to_string(), Some(DRIVE))]);
+    }
+
+    /// **A disc is read through its files**, so a disc nothing has mounted yet
+    /// is not read until something has — and is offered then, which is the
+    /// order a disc going in actually happens in.
+    #[test]
+    fn a_disc_is_read_once_it_is_mounted() {
+        let (mut proton, says, _) = Proton::listening();
+        proton.discs_changed(&drives(None, None));
+        proton.discs_changed(&drives(Some(7), None));
+        let change = hear(&mut proton, &says, read_as_windows(7));
+        assert_eq!(
+            change.disc_in, None,
+            "nobody asked about a disc not mounted"
+        );
+        assert!(games_of(&proton).is_empty());
+
+        proton.discs_changed(&drives(Some(7), Some("/run/media/someone/Some Game")));
+        let change = hear(&mut proton, &says, read_as_windows(7));
+        assert_eq!(change.disc_in, Some(DRIVE), "mounted, read, and offered");
+
+        // Unmounted from Files while it is in: the row goes, because what a
+        // press runs is a path that is not there any more.
+        assert!(proton.discs_changed(&drives(Some(7), None)));
+        assert!(games_of(&proton).is_empty());
+    }
+
+    /// A disc that comes out takes its row with it, and a late word about it
+    /// is a word about nothing. The same disc put back is a new one, offered
+    /// again.
+    #[test]
+    fn a_disc_that_comes_out_takes_its_row_with_it() {
+        let (mut proton, says, _) = Proton::listening();
+        proton.discs_changed(&drives(None, None));
+        proton.discs_changed(&drives(Some(7), Some("/run/media/someone/Some Game")));
+        hear(&mut proton, &says, read_as_windows(7));
+        assert!(
+            proton.discs_changed(&drives(None, None)),
+            "the column is built again"
+        );
+        assert!(games_of(&proton).is_empty());
+        let change = hear(&mut proton, &says, read_as_windows(7));
+        assert!(!change.rows);
+
+        proton.discs_changed(&drives(Some(8), Some("/run/media/someone/Some Game")));
+        let change = hear(&mut proton, &says, read_as_windows(8));
+        assert_eq!(change.disc_in, Some(DRIVE), "put back, and offered again");
+    }
+
+    /// Films, music, somebody's photographs: no row and no cursor.
+    #[test]
+    fn a_disc_with_nothing_for_windows_is_not_on_the_column() {
+        let (mut proton, says, _) = Proton::listening();
+        proton.discs_changed(&drives(None, None));
+        proton.discs_changed(&drives(Some(7), Some("/run/media/someone/A Film")));
+        let change = hear(
+            &mut proton,
+            &says,
+            Heard::DiscRead {
+                number: DRIVE,
+                inserted: 7,
+                reading: Some(DiscReading {
+                    protocol: PROTOCOL,
+                    windows: false,
+                    name: None,
+                    program: None,
+                    arguments: Vec::new(),
+                    png: None,
+                }),
+            },
+        );
+        assert_eq!(change.disc_in, None);
+        assert!(!change.rows);
+        assert!(games_of(&proton).is_empty());
+    }
+
+    /// **A disc's own Windows has no row, and what its setup installed is
+    /// what the disc's row plays** — the user's two decisions, 2026-10-10.
+    /// Neither is counted twice on the Windows Apps row.
+    #[test]
+    fn a_discs_windows_is_reached_through_the_disc() {
+        let (mut proton, says, _) = Proton::listening();
+        let from_the_disc = |id: &str, play: &str| GameRow {
+            disc: Some(some_disc()),
+            runs_in_place: play.starts_with('/'),
+            play: Some(play.into()),
+            id: id.into(),
+            ..row(id, true)
+        };
+        proton.inner.as_mut().unwrap().games = vec![
+            from_the_disc("its-own", "/run/media/someone/Some Game/setup.exe"),
+            from_the_disc("installed", "pfx/drive_c/Some Game/game.exe"),
+            row("Anna", true),
+        ];
+        proton.inner.as_mut().unwrap().probe = Some(probe(Some(a_usable_proton()), false));
+        assert_eq!(
+            proton.note().as_deref(),
+            Some(crate::message!("windows-count-games", "count" => 2).as_str()),
+            "the disc's own Windows is not a game anybody can find"
+        );
+        assert_eq!(
+            proton
+                .games_in_order()
+                .iter()
+                .map(|game| game.id.as_str())
+                .collect::<Vec<_>>(),
+            ["anna", "installed"]
+        );
+
+        proton.discs_changed(&drives(Some(7), Some("/run/media/someone/Some Game")));
+        hear(&mut proton, &says, read_as_windows(7));
+        let press = proton.disc(DRIVE).expect("a press on the disc's row");
+        assert_eq!(press.installed.as_deref(), Some("installed"));
+        assert_eq!(press.own.as_deref(), Some("its-own"));
+        assert_eq!(press.identity, Some(some_disc()));
+        assert_eq!(press.arguments, ["/autorun"]);
+        let rows = proton.rows(None);
+        let disc = rows[2].windows_game().unwrap();
+        assert_eq!(disc.note, crate::i18n::text("windows-disc-ready"));
+        assert_eq!(disc.id, "installed");
+        assert_eq!(proton.disc_title(DRIVE).as_deref(), Some("Some Game"));
+    }
+
+    /// **A disc that says neither what it is called nor when it was made is
+    /// not recognised as any other such disc** — it would be all of them —
+    /// so nothing installed from one is played from another.
+    #[test]
+    fn a_disc_with_no_name_and_no_date_is_nobody_s() {
+        let (mut proton, says, _) = Proton::listening();
+        let nameless = Disc::default();
+        proton.inner.as_mut().unwrap().games = vec![GameRow {
+            disc: Some(nameless),
+            play: Some("pfx/drive_c/Game/game.exe".into()),
+            ..row("Another", true)
+        }];
+        let mut listing = drives(Some(7), Some("/run/media/someone/CDROM"));
+        listing.volumes[0].label = None;
+        listing.volumes[0].uuid = None;
+        proton.discs_changed(&drives(None, None));
+        proton.discs_changed(&listing);
+        hear(&mut proton, &says, read_as_windows(7));
+        let press = proton.disc(DRIVE).expect("its row is still there");
+        assert_eq!(press.identity, None);
+        assert_eq!(press.installed, None, "another nameless disc's game");
+        assert_eq!(press.own, None);
+    }
+
+    /// The disc goes to the helper in both halves, and what `autorun.inf`
+    /// puts after the program goes after `--`, where a word starting with a
+    /// dash is the program's and not the helper's.
+    #[test]
+    fn a_disc_is_named_to_the_helper_with_what_follows_its_program() {
+        assert_eq!(
+            said(Ask::New {
+                exe: PathBuf::from("/run/media/someone/Some Game/setup.exe"),
+                name: Some("Some Game".into()),
+                desktop: Some((1280, 800)),
+                disc: Some(Disc {
+                    label: "Some Game".into(),
+                    uuid: String::new(),
+                }),
+                arguments: vec!["-autorun".into(), "lang=en".into()],
+            }),
+            [
+                "new",
+                "/run/media/someone/Some Game/setup.exe",
+                "--name",
+                "Some Game",
+                "--desktop",
+                "1280x800",
+                "--disc-label",
+                "Some Game",
+                "--disc-uuid",
+                "",
+                "--",
+                "-autorun",
+                "lang=en",
+            ]
+        );
+    }
+
+    /// **An empty `settled` is one game with nothing to say**, not a machine
+    /// with no games — it emptied the column until the next listing.
+    #[test]
+    fn an_empty_settled_answer_leaves_the_column_alone() {
+        let (mut proton, says, _) = Proton::listening();
+        hear(
+            &mut proton,
+            &says,
+            Heard::Listed(Games {
+                protocol: PROTOCOL,
+                games: vec![row("Anna", true), row("Beatrix", true)],
+            }),
+        );
+        hear(
+            &mut proton,
+            &says,
+            Heard::Settled(Games {
+                protocol: PROTOCOL,
+                games: Vec::new(),
+            }),
+        );
+        assert_eq!(proton.games().len(), 2);
+
+        let mut settled = row("Anna", true);
+        settled.name = "Anna, installed".into();
+        let change = hear(
+            &mut proton,
+            &says,
+            Heard::Settled(Games {
+                protocol: PROTOCOL,
+                games: vec![settled],
+            }),
+        );
+        assert!(change.rows);
+        assert_eq!(proton.game("anna").unwrap().name, "Anna, installed");
+        assert_eq!(proton.games().len(), 2);
+    }
+
+    /// A game the helper answers `new` with that this list already holds — the
+    /// same program pressed again, a disc that has its own Windows — is that
+    /// row brought up to date, not a second one beside it.
+    #[test]
+    fn a_game_made_again_is_one_row() {
+        let (mut proton, says, _) = Proton::listening();
+        hear(
+            &mut proton,
+            &says,
+            Heard::Listed(Games {
+                protocol: PROTOCOL,
+                games: vec![row("Anna", true)],
+            }),
+        );
+        let change = hear(
+            &mut proton,
+            &says,
+            Heard::MadeOne(Made {
+                protocol: PROTOCOL,
+                game: Some(row("Anna", true)),
+                start: None,
+                trouble: None,
+            }),
+        );
+        assert_eq!(proton.games().len(), 1);
+        assert_eq!(change.launches_answered, 1, "and the launch was answered");
     }
 }
 
@@ -967,6 +1348,55 @@ pub struct GameRow {
     /// photograph does — see [`crate::apps::WindowsGame::cover`].
     #[serde(default)]
     pub cover: Option<PathBuf>,
+    /// The disc it was set up from, where it was one. See [`Disc`] and
+    /// [`GameRow::listed`].
+    #[serde(default)]
+    pub disc: Option<Disc>,
+}
+
+impl GameRow {
+    /// Whether this game has a row of its own in the column.
+    ///
+    /// Every one but a disc's own Windows: one set up from a disc that still
+    /// plays the program *on* that disc, because nothing has been installed
+    /// in it. The user's decision, 2026-10-10 — that Windows is kept, so a
+    /// game played straight off its disc keeps its saves, but it is reached
+    /// through the disc's own row while that disc is in, and stands nowhere
+    /// else. The moment a setup on the disc installs something it has a row
+    /// like any game.
+    pub fn listed(&self) -> bool {
+        !(self.disc.is_some() && self.runs_in_place)
+    }
+}
+
+/// Which disc a game came off — see `lxb-proton`'s `report::Disc`, whose
+/// shape this is: the label the disc carries and when its file system was
+/// made, which travel with the disc where its mount point does not.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize)]
+pub struct Disc {
+    #[serde(default)]
+    pub label: String,
+    #[serde(default)]
+    pub uuid: String,
+}
+
+/// What the helper read off a disc in the drive.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+pub struct DiscReading {
+    pub protocol: u32,
+    /// Whether it carries anything for Windows to run at all.
+    #[serde(default)]
+    pub windows: bool,
+    #[serde(default)]
+    pub name: Option<String>,
+    /// The program a press runs, where the disc is mounted now.
+    #[serde(default)]
+    pub program: Option<String>,
+    #[serde(default)]
+    pub arguments: Vec<String>,
+    /// The disc's own picture, written where the shell asked.
+    #[serde(default)]
+    pub png: Option<PathBuf>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
@@ -1282,6 +1712,12 @@ pub enum Ask {
         name: Option<String>,
         /// The display the setup is being started on. See [`Ask::Start`].
         desktop: Option<(u32, u32)>,
+        /// The disc it is on, where a disc's row was pressed: the helper
+        /// then runs it in that disc's own Windows where it has one, and
+        /// builds a new one before the program first runs in it.
+        disc: Option<Disc>,
+        /// What to put after it — what the disc's `autorun.inf` does.
+        arguments: Vec<String>,
     },
     /// A prefix of its own with a game somebody already has copied into it.
     Import { dir: PathBuf, name: Option<String> },
@@ -1328,6 +1764,23 @@ pub enum Heard {
     Probed(Probe),
     Tooled(Tools),
     Listed(Games),
+    /// What `settled` said about the one game it was asked about: its row,
+    /// or nothing where there was nothing to settle.
+    ///
+    /// Apart from [`Heard::Listed`] because the two mean different things
+    /// when they are empty. An empty `games` is a machine with no games on
+    /// it; an empty `settled` is one game that had nothing to say, and read
+    /// as the first it emptied the whole column until the next listing.
+    Settled(Games),
+    /// What the helper read off the disc that went into one drive — `None`
+    /// where it could not be asked. The drive's number and the moment the
+    /// disc went in, so an answer about a disc that has since come out is
+    /// recognised as one.
+    DiscRead {
+        number: u64,
+        inserted: u64,
+        reading: Option<DiscReading>,
+    },
     Starting(String, Start),
     MadeOne(Made),
     FoundSome(Found),
@@ -1407,7 +1860,13 @@ fn arguments(ask: &Ask) -> Vec<OsString> {
                 argv.push(a_display(*size).into());
             }
         }
-        Ask::New { exe, name, desktop } => {
+        Ask::New {
+            exe,
+            name,
+            desktop,
+            disc,
+            arguments,
+        } => {
             argv.push("new".into());
             argv.push(exe.into());
             if let Some(name) = name {
@@ -1417,6 +1876,21 @@ fn arguments(ask: &Ask) -> Vec<OsString> {
             if let Some(size) = desktop {
                 argv.push("--desktop".into());
                 argv.push(a_display(*size).into());
+            }
+            // Both halves, always, where it is a disc — an empty one is still
+            // half of which disc this is.
+            if let Some(disc) = disc {
+                argv.push("--disc-label".into());
+                argv.push(disc.label.as_str().into());
+                argv.push("--disc-uuid".into());
+                argv.push(disc.uuid.as_str().into());
+            }
+            // Last, after `--`, so an argument that starts with a dash — a
+            // setup's `/s` is fine, but `-silent` is not — is the program's
+            // and not taken for one of the helper's own.
+            if !arguments.is_empty() {
+                argv.push("--".into());
+                argv.extend(arguments.iter().map(OsString::from));
             }
         }
         Ask::Import { dir, name } => {
@@ -1487,9 +1961,10 @@ fn answer(helper: &Path, ask: &Ask, generation: u64, back: &Sender<Heard>) {
                 // `target` and `use` answer with the one row they changed,
                 // in the same shape `games` uses, so the shell has nothing
                 // extra to learn.
-                Ask::Games | Ask::Target { .. } | Ask::Under { .. } | Ask::Settled { .. } => {
+                Ask::Games | Ask::Target { .. } | Ask::Under { .. } => {
                     serde_json::from_str(line).map(Heard::Listed)
                 }
+                Ask::Settled { .. } => serde_json::from_str(line).map(Heard::Settled),
                 Ask::Offer => serde_json::from_str(line).map(Heard::Offered),
                 Ask::FoundIn { .. } => serde_json::from_str(line).map(Heard::FoundSome),
                 Ask::Remove { .. } => serde_json::from_str(line).map(Heard::Removed),
@@ -1540,6 +2015,18 @@ pub struct Proton {
 struct Inner {
     asks: Sender<Ask>,
     heard: Receiver<Heard>,
+    /// The helper, for the one question not put through `asks`: what is on
+    /// a disc that has just gone in. See [`Proton::discs_changed`].
+    helper: PathBuf,
+    /// Where the answer to that question is sent, which is where every
+    /// other answer arrives.
+    tell: Sender<Heard>,
+    /// The discs in the drives, and what each has been found to be.
+    discs: Vec<DiscSlot>,
+    /// Whether the drives have been listed to this integration yet. A disc
+    /// in the first listing was in before anybody could be told about it,
+    /// and the cursor is never moved for one — see [`DiscSlot::announced`].
+    drives_listed: bool,
     /// The child of a fetch or an import while one runs, so it can be ended.
     working: Arc<Mutex<Option<std::process::Child>>>,
     /// Which run of a long job the lines arriving belong to. Bumped when one
@@ -1608,6 +2095,11 @@ pub struct Change {
     /// `Shell::a_windows_launch_ended`, where mistaking it for nothing at all
     /// would empty the Windows a launch is about to start in.
     pub launches_answered: usize,
+    /// A disc carrying a Windows program has just gone into this drive, and
+    /// its row is on the column: the cursor may be taken to it. Once per disc,
+    /// and never for one that was in before the session started — see
+    /// [`DiscSlot::announced`].
+    pub disc_in: Option<u64>,
 }
 
 /// A game, and everything needed to start it. The shell starts it — see the
@@ -1662,6 +2154,12 @@ impl Proton {
             inner: Some(Inner {
                 asks,
                 heard,
+                // Nobody to ask about a disc: the test says what the helper
+                // would have — see [`read_the_disc`].
+                helper: PathBuf::new(),
+                tell: says.clone(),
+                discs: Vec::new(),
+                drives_listed: false,
                 working: Arc::new(Mutex::new(None)),
                 generation: Arc::clone(&generation),
                 probe: None,
@@ -1685,11 +2183,15 @@ impl Proton {
     #[cfg(test)]
     fn holding(probe: Option<Probe>, tools: Vec<Tool>, games: Vec<GameRow>) -> Proton {
         let (asks, _) = std::sync::mpsc::channel::<Ask>();
-        let (_, heard) = std::sync::mpsc::channel::<Heard>();
+        let (tell, heard) = std::sync::mpsc::channel::<Heard>();
         Proton {
             inner: Some(Inner {
                 asks,
                 heard,
+                helper: PathBuf::new(),
+                tell,
+                discs: Vec::new(),
+                drives_listed: false,
                 working: Arc::new(Mutex::new(None)),
                 generation: Arc::new(AtomicU64::new(0)),
                 probe,
@@ -1710,6 +2212,8 @@ impl Proton {
         let working: Arc<Mutex<Option<std::process::Child>>> = Arc::new(Mutex::new(None));
         let generation = Arc::new(AtomicU64::new(0));
         let counted = Arc::clone(&generation);
+        let tell = says.clone();
+        let asked = helper.clone();
         std::thread::Builder::new()
             .name("lxb-proton".to_string())
             .spawn(move || {
@@ -1735,6 +2239,10 @@ impl Proton {
             inner: Some(Inner {
                 asks,
                 heard,
+                helper: asked,
+                tell,
+                discs: Vec::new(),
+                drives_listed: false,
                 working,
                 generation,
                 probe: None,
@@ -1840,7 +2348,9 @@ impl Proton {
     /// is the other caller.
     pub fn games_in_order(&self) -> Vec<&GameRow> {
         let sort = self.sort();
-        let mut listed: Vec<&GameRow> = self.games().iter().collect();
+        // Every game with a row of its own: a disc's own Windows is reached
+        // through that disc and is nobody's to choose from a list.
+        let mut listed: Vec<&GameRow> = self.games().iter().filter(|game| game.listed()).collect();
         listed.sort_by(|one, two| sort.compare(one, two));
         listed
     }
@@ -2017,15 +2527,69 @@ impl Proton {
                         }
                     }
                 }
+                Heard::Settled(games) => {
+                    // One row, or none: never the whole column.
+                    for one in games.games {
+                        match inner.games.iter_mut().find(|had| had.id == one.id) {
+                            Some(had) => *had = one,
+                            None => inner.games.push(one),
+                        }
+                        change.rows = true;
+                    }
+                }
+                Heard::DiscRead {
+                    number,
+                    inserted,
+                    reading,
+                } => {
+                    let Some(slot) = inner.discs.iter_mut().find(|slot| {
+                        slot.disc.number == number
+                            && slot.disc.inserted == inserted
+                            && slot.reading == Reading::Asked
+                    }) else {
+                        continue;
+                    };
+                    match reading.filter(|reading| reading.windows && reading.program.is_some()) {
+                        Some(reading) => {
+                            tracing::info!(
+                                device = %slot.disc.device.display(),
+                                name = reading.name.as_deref().unwrap_or_default(),
+                                program = reading.program.as_deref().unwrap_or_default(),
+                                "a disc carrying a Windows program is in the drive"
+                            );
+                            slot.reading = Reading::Windows(reading);
+                            change.rows = true;
+                            if !std::mem::replace(&mut slot.announced, true) {
+                                change.disc_in = Some(number);
+                            }
+                        }
+                        None => {
+                            tracing::info!(
+                                device = %slot.disc.device.display(),
+                                "the disc in the drive carries nothing for Windows to run"
+                            );
+                            slot.reading = Reading::Nothing;
+                        }
+                    }
+                }
                 Heard::MadeOne(made) => match made.trouble {
                     Some(trouble) => {
+                        change.launches_answered += 1;
                         change.finished =
                             Some(Finished::Failed(trouble_sentence(trouble).to_string()))
                     }
                     None => {
+                        change.launches_answered += 1;
                         if let Some(game) = made.game {
                             let id = game.id.clone();
-                            inner.games.push(game);
+                            // The same program pressed again, or a disc that
+                            // already has a Windows, answers with a game this
+                            // list already holds — which is the row brought
+                            // up to date, not a second one beside it.
+                            match inner.games.iter_mut().find(|had| had.id == id) {
+                                Some(had) => *had = game,
+                                None => inner.games.push(game),
+                            }
                             change.rows = true;
                             change.finished = Some(Finished::Made(id.clone()));
                             if let Some(start) = made.start {
@@ -2123,6 +2687,8 @@ impl Proton {
 fn protocol_of(heard: &Heard) -> Option<u32> {
     match heard {
         Heard::Probed(said) => Some(said.protocol),
+        Heard::Settled(said) => Some(said.protocol),
+        Heard::DiscRead { reading, .. } => reading.as_ref().map(|said| said.protocol),
         Heard::Tooled(said) => Some(said.protocol),
         Heard::Listed(said) => Some(said.protocol),
         Heard::Starting(_, said) => Some(said.protocol),
@@ -2140,6 +2706,316 @@ fn protocol_of(heard: &Heard) -> Option<u32> {
 impl Drop for Proton {
     fn drop(&mut self) {
         self.stop_working();
+    }
+}
+
+// --- discs in the drive ----------------------------------------------------
+
+/// A disc in a drive, and what it has been found to be.
+///
+/// One per disc rather than one per drive, as RetroArch's are: the same disc
+/// taken out and put back is a new one — see `drives::Disc::inserted` — and is
+/// read again, and offered again.
+struct DiscSlot {
+    disc: crate::drives::Disc,
+    /// Where it is mounted, while it is. A disc is read through its files, so
+    /// one nothing has mounted is not read until something does — the shell's
+    /// drive worker mounts a disc as it goes in.
+    root: Option<PathBuf>,
+    /// Which disc this is, as the games set up from it remember it.
+    identity: Disc,
+    /// What its file system calls it, for the helper to name the row with.
+    label: Option<String>,
+    reading: Reading,
+    /// Whether the cursor has been offered this disc's row — or never will
+    /// be, for a disc that was in before the session started. A disc that
+    /// moved the bar under somebody's hands as their session came up would
+    /// be a disc nobody asked about.
+    announced: bool,
+}
+
+/// How far reading one disc has got.
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum Reading {
+    /// Not mounted yet, or mounted somewhere new.
+    Waiting,
+    /// The helper has been asked.
+    Asked,
+    /// It carries a Windows program, and this is what the helper said.
+    Windows(DiscReading),
+    /// Films, music, somebody's photographs — or a disc whose programs are
+    /// all further down than its top.
+    Nothing,
+}
+
+impl DiscSlot {
+    fn is(&self, disc: &crate::drives::Disc) -> bool {
+        self.disc.device == disc.device && self.disc.inserted == disc.inserted
+    }
+
+    /// What the helper read, where the disc carries a Windows program and is
+    /// still mounted where it was read.
+    fn windows(&self) -> Option<&DiscReading> {
+        match &self.reading {
+            Reading::Windows(reading) if self.root.is_some() => Some(reading),
+            _ => None,
+        }
+    }
+}
+
+/// Everything a press on a disc's row needs, read off the integration at the
+/// press.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DiscPress {
+    pub name: String,
+    pub program: PathBuf,
+    pub arguments: Vec<String>,
+    /// Which disc this is, or `None` for one that carries neither a label
+    /// nor a date — which is every such disc at once, so it is recognised as
+    /// none of them: it gets a Windows of its own on every press, the way a
+    /// program pressed in Files does, and nothing is found for it.
+    pub identity: Option<Disc>,
+    /// The game a setup on this disc installed, which the row plays — the
+    /// user's decision, 2026-10-10, so a game that checks for its disc is
+    /// played with the press that put the disc in.
+    pub installed: Option<String>,
+    /// The disc's own Windows, where it has one that installed nothing. See
+    /// [`GameRow::listed`].
+    pub own: Option<String>,
+}
+
+/// Ask the helper what is on one disc, on a thread of its own.
+///
+/// **Not through the worker**, which answers one ask at a time and spends
+/// minutes on a fetch or an import: a disc put in while a game was being
+/// copied in would be met by nothing until the copy ended. And an optical
+/// drive spinning up takes seconds, which the frame never waits for.
+///
+/// Nothing is asked where there is no helper to ask — which is what the
+/// tests here are: they say themselves what it would have.
+fn read_the_disc(inner: &Inner, slot: &DiscSlot) {
+    let Some(root) = slot.root.clone() else {
+        return;
+    };
+    if inner.helper.as_os_str().is_empty() {
+        return;
+    }
+    let helper = inner.helper.clone();
+    let tell = inner.tell.clone();
+    let (number, inserted) = (slot.disc.number, slot.disc.inserted);
+    let label = slot.label.clone();
+    let picture = disc_picture(&slot.identity);
+    let _ = std::thread::Builder::new()
+        .name("lxb-proton-disc".to_string())
+        .spawn(move || {
+            let mut command = Command::new(&helper);
+            command.arg("disc").arg(&root);
+            if let Some(label) = &label {
+                command.arg("--label").arg(label);
+            }
+            // Somewhere to put the picture, which the row then asks for by
+            // path like any game's. Where the cache cannot be made the
+            // helper is still asked, and writes into the scratch it is given.
+            let to = picture.unwrap_or_else(|| std::env::temp_dir().join("lxb-windows-disc.png"));
+            command.arg("--to").arg(&to);
+            let reading = command
+                .stdin(Stdio::null())
+                .stderr(Stdio::null())
+                .output()
+                .ok()
+                .and_then(|out| {
+                    let line = String::from_utf8_lossy(&out.stdout);
+                    let line = line.lines().find(|line| !line.trim().is_empty())?;
+                    serde_json::from_str::<DiscReading>(line)
+                        .inspect_err(|err| {
+                            tracing::warn!(%err, line, "the Windows Apps helper said something unreadable about a disc")
+                        })
+                        .ok()
+                });
+            let _ = tell.send(Heard::DiscRead {
+                number,
+                inserted,
+                reading,
+            });
+        });
+}
+
+/// Where one disc's picture is kept: `$XDG_CACHE_HOME/lxb/windows-discs`,
+/// one file per disc ever put in, named for which disc it is — so the same
+/// disc put back wears the picture it wore and two discs never share one.
+fn disc_picture(identity: &Disc) -> Option<PathBuf> {
+    let cache = std::env::var_os("XDG_CACHE_HOME")
+        .map(PathBuf::from)
+        .filter(|at| at.is_absolute())
+        .or_else(|| std::env::var_os("HOME").map(|home| PathBuf::from(home).join(".cache")))?;
+    let at = cache.join("lxb").join("windows-discs");
+    std::fs::create_dir_all(&at).ok()?;
+    // FNV-1a over the two halves, which is a name and not a secret.
+    let mut hash: u64 = 0xcbf2_9ce4_8422_2325;
+    for byte in identity
+        .label
+        .bytes()
+        .chain(std::iter::once(0))
+        .chain(identity.uuid.bytes())
+    {
+        hash = (hash ^ u64::from(byte)).wrapping_mul(0x0100_0000_01b3);
+    }
+    Some(at.join(format!("{hash:016x}.png")))
+}
+
+impl Proton {
+    /// The drives have been listed again: start reading every disc that has
+    /// gone in or been mounted somewhere new, and let go of every one that
+    /// has come out.
+    ///
+    /// Answers whether the column has to be built again, which is whether a
+    /// disc that had a row has gone or moved. A disc that has just gone in is
+    /// not on the column until the helper has said what it is — see
+    /// [`Change::disc_in`].
+    pub fn discs_changed(&mut self, listing: &crate::drives::Listing) -> bool {
+        let Some(inner) = self.inner.as_mut() else {
+            return false;
+        };
+        let first = !std::mem::replace(&mut inner.drives_listed, true);
+        let mut changed = false;
+        inner.discs.retain(|slot| {
+            let still = listing.discs.iter().any(|disc| slot.is(disc));
+            if !still {
+                tracing::info!(device = %slot.disc.device.display(), "the disc has come out");
+                changed |= slot.windows().is_some();
+            }
+            still
+        });
+        for disc in listing.discs.iter().filter(|disc| disc.data) {
+            // The disc's own file system is a volume of the same drive, which
+            // is where its mount point, its label and its making are.
+            let volume = listing
+                .volumes
+                .iter()
+                .find(|volume| volume.drive.as_deref() == Some(disc.drive.as_str()));
+            let root = volume
+                .and_then(crate::drives::Volume::place)
+                .map(Path::to_path_buf);
+            match inner.discs.iter_mut().find(|slot| slot.is(disc)) {
+                Some(slot) if slot.root == root => {}
+                Some(slot) => {
+                    // Mounted, unmounted, or mounted somewhere else: what was
+                    // read is about a place the disc is no longer at — and
+                    // what its file system is called is read again with it.
+                    changed |= slot.windows().is_some();
+                    slot.root = root;
+                    slot.reading = Reading::Waiting;
+                    if let Some(volume) = volume {
+                        slot.identity = Disc {
+                            label: volume.label.clone().unwrap_or_default(),
+                            uuid: volume.uuid.clone().unwrap_or_default(),
+                        };
+                        slot.label = volume.label.clone();
+                    }
+                }
+                None => inner.discs.push(DiscSlot {
+                    disc: disc.clone(),
+                    root,
+                    identity: Disc {
+                        label: volume
+                            .and_then(|volume| volume.label.clone())
+                            .unwrap_or_default(),
+                        uuid: volume
+                            .and_then(|volume| volume.uuid.clone())
+                            .unwrap_or_default(),
+                    },
+                    label: volume.and_then(|volume| volume.label.clone()),
+                    reading: Reading::Waiting,
+                    announced: first,
+                }),
+            }
+        }
+        for at in 0..inner.discs.len() {
+            if inner.discs[at].reading == Reading::Waiting && inner.discs[at].root.is_some() {
+                read_the_disc(inner, &inner.discs[at]);
+                inner.discs[at].reading = Reading::Asked;
+            }
+        }
+        changed
+    }
+
+    /// What a press on the row of the disc in drive `number` runs.
+    pub fn disc(&self, number: u64) -> Option<DiscPress> {
+        let inner = self.inner.as_ref()?;
+        let slot = inner.discs.iter().find(|slot| slot.disc.number == number)?;
+        let reading = slot.windows()?;
+        let identity = Some(slot.identity.clone())
+            .filter(|disc| !(disc.label.is_empty() && disc.uuid.is_empty()));
+        let ours = |game: &&GameRow| identity.is_some() && game.disc.as_ref() == identity.as_ref();
+        Some(DiscPress {
+            name: reading
+                .name
+                .clone()
+                .unwrap_or_else(|| crate::i18n::text("windows-disc").to_string()),
+            program: PathBuf::from(reading.program.as_deref()?),
+            arguments: reading.arguments.clone(),
+            identity: identity.clone(),
+            // The last of them where a disc has been installed from twice:
+            // the helper lists a root's games by name, and the second copy of
+            // a name is the one with the number after it.
+            installed: inner
+                .games
+                .iter()
+                .filter(ours)
+                .rfind(|game| game.listed() && game.state == GameState::Ready)
+                .map(|game| game.id.clone()),
+            own: inner
+                .games
+                .iter()
+                .filter(ours)
+                .find(|game| !game.listed())
+                .map(|game| game.id.clone()),
+        })
+    }
+
+    /// What the disc in drive `number` is called on its row, for a panel
+    /// about that drive.
+    pub fn disc_title(&self, number: u64) -> Option<String> {
+        self.disc(number).map(|disc| disc.name)
+    }
+
+    /// The rows of every disc carrying a Windows program, as they stand at
+    /// the head of the games.
+    fn disc_rows(&self) -> Vec<Entry> {
+        let Some(inner) = &self.inner else {
+            return Vec::new();
+        };
+        inner
+            .discs
+            .iter()
+            .filter_map(|slot| {
+                let reading = slot.windows()?;
+                let press = self.disc(slot.disc.number)?;
+                let installed = press.installed.as_deref().and_then(|id| self.game(id));
+                Some(Entry::WindowsGame(apps::WindowsGame {
+                    id: installed.map(|game| game.id.clone()).unwrap_or_default(),
+                    name: press.name,
+                    // That this is the disc, and what a press does: plays
+                    // what it installed, or installs it.
+                    note: crate::i18n::text(match installed {
+                        Some(_) => "windows-disc-ready",
+                        None => "windows-disc-install",
+                    })
+                    .to_string(),
+                    progress: None,
+                    ready: true,
+                    at: slot.root.clone().unwrap_or_default(),
+                    proton: None,
+                    // The disc's own picture first — it is the disc's row —
+                    // and the installed game's where the disc carries none.
+                    cover: reading
+                        .png
+                        .clone()
+                        .or_else(|| installed.and_then(|game| game.cover.clone())),
+                    disc: Some(slot.disc.number),
+                }))
+            })
+            .collect()
     }
 }
 
@@ -2172,10 +3048,14 @@ impl Proton {
         if probe.proton.as_ref().is_none_or(|tool| !tool.usable()) {
             return Some(crate::i18n::text("windows-press-to-set-up").to_string());
         }
-        Some(match inner.games.len() {
-            0 => crate::i18n::text("windows-no-games-yet").to_string(),
-            count => crate::message!("windows-count-games", "count" => count),
-        })
+        // A disc's own Windows is not a game anybody can find in the column,
+        // so it is not counted as one.
+        Some(
+            match inner.games.iter().filter(|game| game.listed()).count() {
+                0 => crate::i18n::text("windows-no-games-yet").to_string(),
+                count => crate::message!("windows-count-games", "count" => count),
+            },
+        )
     }
 
     /// The bar under that row, while something is coming down.
@@ -2287,6 +3167,12 @@ impl Proton {
                 used: None,
             }),
         ];
+        // A disc in the drive, at the head of the games: the first row the
+        // column opens on, which is where a console puts the disc that has
+        // just gone in. After the two rows over the list rather than above
+        // them, because those stand over the list by being first — see
+        // [`apps::head_rows`].
+        rows.extend(self.disc_rows());
         // The order the column is listed in is applied here rather than on
         // the way in from the helper: the helper lists what is on the disk,
         // and what order somebody reads it in is the shell's business.
@@ -2308,6 +3194,7 @@ impl Proton {
                 at: PathBuf::from(&game.at),
                 proton: game.proton.clone(),
                 cover: game.cover.clone(),
+                disc: None,
             })
         }));
         rows

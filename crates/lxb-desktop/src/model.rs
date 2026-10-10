@@ -6999,6 +6999,7 @@ mod tests {
                 at: PathBuf::from("/games/stardew-valley"),
                 proton: None,
                 cover: None,
+                disc: None,
             }),
         ];
         assert_eq!(first_row(&with_a_game), 2);

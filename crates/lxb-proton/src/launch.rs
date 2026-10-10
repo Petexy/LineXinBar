@@ -172,16 +172,25 @@ impl Desktop {
 /// both can take. **The comma above all**, which is what separates the name
 /// from the size and would otherwise let a game called `Hello, World` ask for
 /// a desktop called `Hello` of size `World`.
+///
+/// **And no space at all**, so words are joined with `_`. `explorer` reads
+/// `/desktop=` up to the first space and takes the rest of the line for the
+/// program, so a setup for `Stardew Valley` asked for a desktop called
+/// `Stardew` and a program called `Valley,1280x800` — and ran nothing, with
+/// exit status 0. Measured on 2026-10-10 against Proton 11.0: the same
+/// command with `Aqua Fish 2` started nothing and with `Aqua_Fish_2` started
+/// the program, from a folder whose own name has spaces in it. Nothing
+/// shows the title: a desktop's window is filed by its class.
 fn desktop_name(called: &str) -> String {
     let kept: String = called
         .chars()
         .map(|letter| match letter {
             letter if letter.is_alphanumeric() => letter,
-            ' ' | '+' | '-' | '_' | '.' => letter,
+            '+' | '-' | '_' | '.' => letter,
             _ => ' ',
         })
         .collect();
-    let trimmed: String = kept.split_whitespace().collect::<Vec<_>>().join(" ");
+    let trimmed: String = kept.split_whitespace().collect::<Vec<_>>().join("_");
     let short: String = trimmed.chars().take(40).collect();
     match short.trim().is_empty() {
         true => "Windows".to_string(),
@@ -439,6 +448,7 @@ mod tests {
                 arguments: vec!["--windowed".into()],
                 proton: None,
                 came_from: None,
+                disc: None,
             },
         }
     }
@@ -768,7 +778,7 @@ mod tests {
             tail,
             [
                 "explorer",
-                "/desktop=Stardew Valley,1280x800",
+                "/desktop=Stardew_Valley,1280x800",
                 &*setup.to_string_lossy(),
                 "/S",
             ],
@@ -803,7 +813,7 @@ mod tests {
             tail,
             [
                 "explorer",
-                "/desktop=Stardew Valley,1920x1080",
+                "/desktop=Stardew_Valley,1920x1080",
                 "msiexec",
                 "/i",
                 &*msi.to_string_lossy(),
@@ -829,21 +839,26 @@ mod tests {
         );
     }
 
-    /// A desktop's name is the game's, cut down to what Wine and the comma in
-    /// `/desktop=name,WxH` can both take.
+    /// A desktop's name is the game's, cut down to what Wine, the comma in
+    /// `/desktop=name,WxH` and the space after it can all take.
     #[test]
     fn a_desktops_name_cannot_be_read_as_part_of_its_size() {
         assert_eq!(desktop_name("Notepad++"), "Notepad++");
-        assert_eq!(desktop_name("Stardew Valley"), "Stardew Valley");
+        assert_eq!(
+            desktop_name("Stardew Valley"),
+            "Stardew_Valley",
+            "a space would end the switch, and the rest of the name would be \
+             taken for the program"
+        );
         assert_eq!(
             desktop_name("Hello, World"),
-            "Hello World",
+            "Hello_World",
             "a comma would end the name and start the size"
         );
         assert_eq!(
             desktop_name("  Tom\tClancy's   Splinter  Cell "),
-            "Tom Clancy s Splinter Cell",
-            "one space between words, and none at either end"
+            "Tom_Clancy_s_Splinter_Cell",
+            "one joint between words, and none at either end"
         );
         assert_eq!(desktop_name(""), "Windows");
         assert_eq!(desktop_name("///"), "Windows");
@@ -860,7 +875,7 @@ mod tests {
                 height: 600,
             }
             .switch("Hello, World"),
-            "/desktop=Hello World,800x600"
+            "/desktop=Hello_World,800x600"
         );
     }
 

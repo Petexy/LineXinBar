@@ -1120,6 +1120,17 @@ pub struct WindowsGame {
     /// recognises. `None` where the program carries none, or where nothing
     /// has been named to play yet and so there is no program to ask.
     pub cover: Option<PathBuf>,
+    /// The drive whose disc this row is, for the row at the head of the
+    /// games that a disc carrying a Windows program stands as while it is in
+    /// — see [`crate::proton::Proton::discs_changed`]. Its press installs from
+    /// the disc, or plays what the disc installed; its menu ejects it.
+    ///
+    /// `id` on such a row is the installed game's where there is one and
+    /// empty where there is not, and nothing that acts on a game by its
+    /// identifier is reached from it: see `Shell::selected_windows_game`,
+    /// which passes it over, and `Shell::selected_windows_disc`, which is how
+    /// it is pressed.
+    pub disc: Option<u64>,
 }
 
 /// The row that answers a folder picker.
@@ -3865,6 +3876,12 @@ impl Entry {
             Entry::WindowsGame(game) => Some(game),
             _ => None,
         }
+    }
+
+    /// The drive whose disc this row is, if it is the row of a disc carrying
+    /// a Windows program. See [`WindowsGame::disc`].
+    pub fn windows_disc(&self) -> Option<u64> {
+        self.windows_game()?.disc
     }
 
     /// The game out of somebody's ROM folder this row is, if it is one.

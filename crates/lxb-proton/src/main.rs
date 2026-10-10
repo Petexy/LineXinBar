@@ -8,11 +8,13 @@
 //! about is one JSON record per line, [`report`], and the shell finds this
 //! program on `PATH`.
 //!
-//! ## Nine questions
+//! ## The questions
 //!
 //! ```text
 //! lxb-proton mark              the drawing this package carries
 //! lxb-proton icon EXE --to P   the drawing one Windows program carries
+//! lxb-proton disc DIR --to P   what the disc mounted there runs, and its
+//!                              picture [--label LABEL]
 //! lxb-proton probe             what a Windows game would run with here
 //! lxb-proton tools             everything it could run with, and which one
 //! lxb-proton offer             what a machine with none would have to fetch
@@ -27,9 +29,11 @@
 //! lxb-proton remove ID         take one off the disk, prefix and all
 //! lxb-proton new EXE           a prefix of its own, and how to run that
 //!                              program where it is [--desktop WxH]
+//!                              [--disc-label L --disc-uuid U] [-- ARGS]
 //! lxb-proton import DIR        a game somebody already has, copied into one
 //! lxb-proton found ID          what in that prefix could be the game
-//! lxb-proton settled ID        what the run in there left: it, or the copy
+//! lxb-proton settled ID        what the run in there left: it, or what it
+//!                              installed
 //! lxb-proton target ID AT      that is the one; play it from now on
 //! ```
 //!
@@ -49,6 +53,7 @@
 //! the two things that are facts about the disk — which Protons are on it,
 //! and which folders prefixes have been made in.
 
+mod disc;
 mod fetch;
 mod icon;
 mod install;
@@ -69,8 +74,8 @@ use clap::{Parser, Subcommand};
 
 use paths::Paths;
 use report::{
-    Candidate, Download, Ended, Found, GameRow, GameState, Games, Made, Offer, Probe, Progress,
-    Removal, Stage, Start, Tools, Trouble, PROTOCOL,
+    Candidate, Disc, DiscReading, Download, Ended, Found, GameRow, GameState, Games, Made, Offer,
+    Probe, Progress, Removal, Stage, Start, Tools, Trouble, PROTOCOL,
 };
 use steam::Steam;
 
@@ -117,6 +122,30 @@ enum Asked {
         /// Write the PNG here. There is no default: a picture this program
         /// put somewhere of its own choosing would be a file nobody came
         /// back for.
+        #[arg(long = "to", value_name = "PNG")]
+        to: std::path::PathBuf,
+    },
+    /// Whether the disc mounted at DIR carries a Windows program, which one a
+    /// press runs, what the disc is called and what it wears — written to
+    /// the PNG named, as `icon` writes one.
+    ///
+    /// Read the way Windows reads a disc that has just gone in: its
+    /// `autorun.inf`, and without one the program at its top that is plainly
+    /// the way in. See `disc`'s own head.
+    ///
+    /// Answered before this machine is looked at, as `icon` is: it reads the
+    /// disc it was pointed at and writes the file it was told to.
+    Disc {
+        #[arg(value_name = "DIR")]
+        dir: std::path::PathBuf,
+        /// What the disc's own file system is called, which names the row
+        /// where `autorun.inf` does not. Read as a value even where it starts
+        /// with a dash, as every name and label here is: a disc can be called
+        /// `-= GAME =-`.
+        #[arg(long, value_name = "LABEL", allow_hyphen_values = true)]
+        label: Option<String>,
+        /// Write the disc's picture here. Nothing is written for a disc that
+        /// carries none.
         #[arg(long = "to", value_name = "PNG")]
         to: std::path::PathBuf,
     },
@@ -185,12 +214,29 @@ enum Asked {
         exe: std::path::PathBuf,
         /// What to call it. The executable's own name where this is not
         /// given.
-        #[arg(long, value_name = "NAME")]
+        #[arg(long, value_name = "NAME", allow_hyphen_values = true)]
         name: Option<String>,
         /// The display this is being started on, as `1280x800` — the Windows
         /// desktop the setup opens on. See `start`.
         #[arg(long, value_name = "WxH", value_parser = a_display)]
         desktop: Option<launch::Desktop>,
+        /// The label of the disc this program is on, where it is on one.
+        ///
+        /// With `--disc-uuid`, what makes this the disc's own Windows rather
+        /// than a program somebody pressed: it is kept on the game, a disc
+        /// that already has a Windows runs in it again rather than in a new
+        /// one, and the prefix is built before the program is first run so
+        /// the program finds its disc where Windows would put it. See
+        /// `report::Disc`.
+        #[arg(long = "disc-label", value_name = "LABEL", allow_hyphen_values = true)]
+        disc_label: Option<String>,
+        /// When the disc's file system was made — UDisks' `IdUUID` for it.
+        #[arg(long = "disc-uuid", value_name = "UUID", allow_hyphen_values = true)]
+        disc_uuid: Option<String>,
+        /// What to put after the program — what a disc's `autorun.inf`
+        /// puts after it.
+        #[arg(last = true, value_name = "ARGS")]
+        arguments: Vec<String>,
     },
     /// Make a prefix of its own and copy a game somebody already has into
     /// it — the whole folder, because an executable without its data files
@@ -198,7 +244,7 @@ enum Asked {
     Import {
         #[arg(value_name = "DIR")]
         dir: std::path::PathBuf,
-        #[arg(long, value_name = "NAME")]
+        #[arg(long, value_name = "NAME", allow_hyphen_values = true)]
         name: Option<String>,
     },
     /// What inside a game's prefix could be the game, likeliest first, for
@@ -231,7 +277,7 @@ enum Asked {
         #[arg(value_name = "AT")]
         at: String,
         /// And call the game this.
-        #[arg(long, value_name = "NAME")]
+        #[arg(long, value_name = "NAME", allow_hyphen_values = true)]
         name: Option<String>,
     },
     /// Run one game under this Proton from now on, by name, as `tools`
@@ -333,6 +379,49 @@ fn main() -> ExitCode {
         );
     }
 
+    // And a disc, for the same reason as `icon`: the disc it was pointed at
+    // and the one picture it was told to write are the whole of what this
+    // touches.
+    if let Asked::Disc { dir, label, to } = &cli.asked {
+        let read = disc::read(dir, label.as_deref());
+        let png = read
+            .as_ref()
+            .and_then(|read| read.png.as_ref())
+            .filter(|png| std::fs::write(to, png).is_ok())
+            .map(|_| to.to_string_lossy().into_owned());
+        let note = match &read {
+            Some(read) => format!(
+                "{} runs {}{}",
+                dir.display(),
+                read.program.display(),
+                if png.is_some() {
+                    ", and wears a picture"
+                } else {
+                    ""
+                }
+            ),
+            None => format!("{} carries nothing for Windows to run", dir.display()),
+        };
+        eprintln!("disc: {note}");
+        return say(
+            &mut out,
+            &DiscReading {
+                protocol: PROTOCOL,
+                windows: read.is_some(),
+                name: read.as_ref().map(|read| read.name.clone()),
+                program: read
+                    .as_ref()
+                    .map(|read| read.program.to_string_lossy().into_owned()),
+                arguments: read
+                    .as_ref()
+                    .map(|read| read.arguments.clone())
+                    .unwrap_or_default(),
+                png,
+                note,
+            },
+        );
+    }
+
     let Some(mut paths) = Paths::of_this_user() else {
         eprintln!("lxb-proton: there is no home directory to keep games in");
         return ExitCode::FAILURE;
@@ -340,7 +429,7 @@ fn main() -> ExitCode {
     let steam = Steam::of_this_user();
 
     match cli.asked {
-        Asked::Mark | Asked::Icon { .. } => {
+        Asked::Mark | Asked::Icon { .. } | Asked::Disc { .. } => {
             unreachable!("answered above, before the machine is read")
         }
         Asked::Probe => {
@@ -447,8 +536,29 @@ fn main() -> ExitCode {
             say(&mut out, &gone);
             ended(worked)
         }
-        Asked::New { exe, name, desktop } => {
-            let made = make_new(&steam, &paths, &exe, name.as_deref(), desktop);
+        Asked::New {
+            exe,
+            name,
+            desktop,
+            disc_label,
+            disc_uuid,
+            arguments,
+        } => {
+            // Either half says it is a disc. A disc pressed without a label,
+            // or whose file system carries no date, is still a disc.
+            let disc = (disc_label.is_some() || disc_uuid.is_some()).then(|| Disc {
+                label: disc_label.unwrap_or_default(),
+                uuid: disc_uuid.unwrap_or_default(),
+            });
+            let made = make_new(
+                &steam,
+                &paths,
+                &exe,
+                name.as_deref(),
+                desktop,
+                disc.as_ref(),
+                &arguments,
+            );
             eprintln!("new: {} ({:?})", made.note, made.trouble);
             let worked = made.trouble.is_none();
             say(&mut out, &made);
@@ -515,6 +625,11 @@ fn main() -> ExitCode {
             if !inside_the_game(&game.at, &at) {
                 eprintln!("target: {at} is not inside {id}");
                 return ExitCode::FAILURE;
+            }
+            // What a disc's `autorun.inf` put after its program belonged to
+            // that program, and is no part of whatever it installed.
+            if game.runs_in_place() {
+                game.kept.arguments.clear();
             }
             game.kept.play = Some(at);
             if let Some(name) = name {
@@ -1035,22 +1150,21 @@ fn end_everything(paths: &Paths, id: &str) -> Ended {
 /// What this does is the same for both: a prefix, the executable named as
 /// what the game plays *at the path it is already at*, and a launch that runs
 /// it there with its own folder shared into the container.
+///
+/// `disc` is the disc the executable is on, where the shell pressed a disc's
+/// row rather than a file — see [`make_for_a_disc`], which is the one place
+/// the two differ.
 fn make_new(
     steam: &Steam,
     paths: &Paths,
     exe: &Path,
     name: Option<&str>,
     desktop: Option<launch::Desktop>,
+    disc: Option<&Disc>,
+    arguments: &[String],
 ) -> Made {
-    let refuse = |trouble: Trouble, note: String| Made {
-        protocol: PROTOCOL,
-        game: None,
-        start: None,
-        trouble: Some(trouble),
-        note,
-    };
     if !exe.is_file() {
-        return refuse(Trouble::Files, format!("{} is not there", exe.display()));
+        return refused(Trouble::Files, format!("{} is not there", exe.display()));
     }
     // What to call it, best source first. The filename is last on purpose:
     // an installer is named for a download — `npp.8.9.8.Installer.x64` is a
@@ -1069,11 +1183,15 @@ fn make_new(
 
     let found = tools::list(steam, paths.store());
     let Some(tool) = tools::chosen(&found) else {
-        return refuse(
+        return refused(
             Trouble::Other,
             "there is no Proton on this machine to make a prefix with".to_string(),
         );
     };
+
+    if let Some(disc) = disc {
+        return make_for_a_disc(paths, &found, exe, &called, desktop, disc, arguments);
+    }
 
     // **The same program pressed twice is one program.** A press in Files on
     // something that already has a prefix of its own starts what is here
@@ -1098,6 +1216,23 @@ fn make_new(
             already.id,
             exe.display()
         );
+        // A disc's own Windows, met by somebody pressing the disc's program
+        // in Files: run the way the disc's row runs it, on a Windows desktop,
+        // and without what `autorun.inf` puts after it, which nobody pressing
+        // the file asked for. See [`make_for_a_disc`].
+        if already.kept.disc.is_some() {
+            let tool = proton_for(&found, already.kept.proton.as_deref()).unwrap_or(tool);
+            let made = launch::of(
+                &already,
+                tool,
+                exe,
+                &[],
+                launch::Verb::WaitForExitAndRun,
+                paths.store(),
+                desktop,
+            );
+            return launched(&already, tool, &called, exe, made);
+        }
         // Started the way the row in the column starts it, down to having no
         // Windows desktop: it is a program this machine knows, and the
         // setting-up run it had on the first press is over.
@@ -1114,7 +1249,7 @@ fn make_new(
 
     let mut game = match prefix::make(paths.new_prefixes(), &called, Some(exe)) {
         Ok(game) => game,
-        Err(err) => return refuse(Trouble::Files, err.to_string()),
+        Err(err) => return refused(Trouble::Files, err.to_string()),
     };
 
     // Named as what it plays before it has been run once, so the row is one
@@ -1122,9 +1257,10 @@ fn make_new(
     // because this is a program on their own disk that nothing here has
     // copied — see `prefix::Kept::play`.
     game.kept.play = Some(exe.to_string_lossy().into_owned());
+    game.kept.arguments = arguments.to_vec();
     if let Err(err) = game.save() {
         let _ = std::fs::remove_dir_all(&game.at);
-        return refuse(Trouble::Files, err.to_string());
+        return refused(Trouble::Files, err.to_string());
     }
 
     // The folder the program lives in is shared into the container by
@@ -1134,15 +1270,107 @@ fn make_new(
         &game,
         tool,
         exe,
-        &[],
+        arguments,
         launch::Verb::WaitForExitAndRun,
         paths.store(),
         desktop,
     );
+    launched(&game, tool, &called, exe, made)
+}
+
+/// The program on a disc, run in that disc's own Windows.
+///
+/// Three things are different from a file pressed in Files, and all three are
+/// about the disc being the same disc every time it goes in, wherever it is
+/// mounted:
+///
+/// 1. **A disc that already has a Windows runs in it again** rather than in a
+///    new one — matched by [`Disc`], never by the path, because the path is
+///    made out of the label and another disc with that label shares it. That
+///    is how a game played straight off its disc keeps its saves, which is
+///    the user's own reason for keeping the Windows at all. What it plays is
+///    pointed at where the disc is *now*.
+/// 2. **That Windows is built before the program first runs in it.** Wine
+///    gives a disc in the drive a letter of its own, a CD drive like the one
+///    the disc was made for, but only once its own services are up — which in
+///    a Windows being built for the first time is after the program has
+///    already started, so the program finds itself on `Z:\run\media\…` and
+///    not on `D:\`. Measured on 2026-10-10 against Proton 11.0: the first run
+///    in a new prefix started in `Z:`, every run after it in `D:`. A setup
+///    that asks for its second disc looks for it on the drive it was started
+///    from, and only a drive letter follows the disc being changed.
+/// 3. **It opens on a Windows desktop every time**, not only the first: until
+///    something is installed, what a disc runs is a setup or a menu, which is
+///    one fixed-size window — the shape this session draws into a corner
+///    without a desktop. See `launch`'s head.
+fn make_for_a_disc(
+    paths: &Paths,
+    found: &[report::Tool],
+    exe: &Path,
+    called: &str,
+    desktop: Option<launch::Desktop>,
+    disc: &Disc,
+    arguments: &[String],
+) -> Made {
+    let games = prefix::all(paths.roots());
+    let mut game = match disc::its_own_windows(&games, disc) {
+        Some(already) => {
+            eprintln!(
+                "new: {} is that disc's Windows already, so it runs there again",
+                already.id
+            );
+            already.clone()
+        }
+        None => match prefix::make(paths.new_prefixes(), called, Some(exe)) {
+            Ok(game) => game,
+            Err(err) => return refused(Trouble::Files, err.to_string()),
+        },
+    };
+    let fresh = game.kept.disc.is_none();
+    game.kept.play = Some(exe.to_string_lossy().into_owned());
+    game.kept.arguments = arguments.to_vec();
+    game.kept.disc = Some(disc.clone());
+    if let Err(err) = game.save() {
+        if fresh {
+            let _ = std::fs::remove_dir_all(&game.at);
+        }
+        return refused(Trouble::Files, err.to_string());
+    }
+    // The Proton somebody chose for it, where this is a Windows they have
+    // had long enough to choose one for, and the machine's otherwise.
+    let Some(tool) = proton_for(found, game.kept.proton.as_deref()) else {
+        return refused(
+            Trouble::Other,
+            "there is no Proton on this machine to make a prefix with".to_string(),
+        );
+    };
+    if !game.prefix_built() {
+        build_before_the_first_run(&game, tool, paths.store());
+    }
+    let made = launch::of(
+        &game,
+        tool,
+        exe,
+        arguments,
+        launch::Verb::WaitForExitAndRun,
+        paths.store(),
+        desktop,
+    );
+    launched(&game, tool, called, exe, made)
+}
+
+/// What `new` answers once it has a game and a launch for it.
+fn launched(
+    game: &prefix::Game,
+    tool: &report::Tool,
+    called: &str,
+    exe: &Path,
+    made: Result<launch::Launch, launch::Cannot>,
+) -> Made {
     match made {
         Ok(launch) => Made {
             protocol: PROTOCOL,
-            game: Some(row(&game)),
+            game: Some(row(game)),
             start: Some(Start {
                 protocol: PROTOCOL,
                 argv: launch.argv,
@@ -1157,13 +1385,101 @@ fn make_new(
         },
         Err(launch::Cannot::NoRuntime) => Made {
             protocol: PROTOCOL,
-            game: Some(row(&game)),
+            game: Some(row(game)),
             start: None,
             trouble: Some(Trouble::UnknownRuntime),
             note: format!("{} has no runtime on this machine", tool.name),
         },
-        Err(launch::Cannot::NoTarget) => refuse(Trouble::Other, "nothing to run".to_string()),
+        Err(launch::Cannot::NoTarget) => refused(Trouble::Other, "nothing to run".to_string()),
     }
+}
+
+/// `new`'s answer where nothing was made.
+fn refused(trouble: Trouble, note: String) -> Made {
+    Made {
+        protocol: PROTOCOL,
+        game: None,
+        start: None,
+        trouble: Some(trouble),
+        note,
+    }
+}
+
+/// How long building a Windows may take before it is given up on. Measured
+/// at four to nine seconds on this machine's disks; the first run of a
+/// runtime this helper has never used unpacks a container as well, which is
+/// most of half a minute. Three minutes is a Windows that is not coming.
+const LONGEST_BUILD: std::time::Duration = std::time::Duration::from_secs(180);
+
+/// Build a game's Windows and wait for it, before anything is run in it.
+///
+/// **The one Wine this helper ever runs itself**, and not a game: Proton's
+/// `wineboot` in the game's own prefix, which builds the Windows and starts
+/// its services and ends — `waitforexitandrun` waits for the whole of it,
+/// services included — so nothing of it is left for the shell to end. Its
+/// output goes nowhere; Proton's own chatter is not this helper's log. See
+/// [`make_for_a_disc`] for why a disc needs it.
+///
+/// Answers whether the Windows is built. One that is not is no reason to
+/// refuse the press: the program then starts where it would have started
+/// without this, which is on `Z:` rather than on the disc's own letter.
+fn build_before_the_first_run(game: &prefix::Game, tool: &report::Tool, store: &Path) -> bool {
+    let Ok(launch) = launch::of(
+        game,
+        tool,
+        Path::new("wineboot"),
+        &[],
+        launch::Verb::WaitForExitAndRun,
+        store,
+        None,
+    ) else {
+        return false;
+    };
+    let Some((program, arguments)) = launch.argv.split_first() else {
+        return false;
+    };
+    let began = std::time::Instant::now();
+    let child = std::process::Command::new(program)
+        .args(arguments)
+        .envs(&launch.environment)
+        .current_dir(&game.at)
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .spawn();
+    let mut child = match child {
+        Ok(child) => child,
+        Err(err) => {
+            eprintln!("new: {}'s Windows could not be built ({err})", game.id);
+            return false;
+        }
+    };
+    loop {
+        match child.try_wait() {
+            Ok(Some(_)) => break,
+            Ok(None) if began.elapsed() < LONGEST_BUILD => {
+                std::thread::sleep(std::time::Duration::from_millis(100));
+            }
+            _ => {
+                eprintln!("new: {}'s Windows took too long to build", game.id);
+                let _ = child.kill();
+                let _ = child.wait();
+                // The supervisor cannot pass a `SIGKILL` on, so whatever it
+                // had started is ended by the prefix it is running in — see
+                // `prefix::end`.
+                let _ = prefix::end(game);
+                break;
+            }
+        }
+    }
+    let built = game.prefix_built();
+    eprintln!(
+        "new: {}'s Windows {} in {:.1} s",
+        game.id,
+        if built { "was built" } else { "was not built" },
+        began.elapsed().as_secs_f32()
+    );
+    built
 }
 
 /// What a run in a prefix left behind, read once that run is over.
@@ -1197,6 +1513,10 @@ fn settle(paths: &Paths, id: &str) -> Option<GameRow> {
         installed.at
     );
     game.kept.play = Some(installed.at);
+    // Whatever a disc's `autorun.inf` put after its program was for that
+    // program — a menu's `/autorun`, a setup's language — and a game started
+    // with its installer's switches is a game told something it never asked.
+    game.kept.arguments.clear();
     // And the drawing on the row is read again, out of what was installed:
     // it was taken from the setup, and the two are not always the same
     // picture. See `icon::beside`, which never opens a program twice.
@@ -1333,6 +1653,7 @@ fn row(game: &prefix::Game) -> GameRow {
         play: game.kept.play.clone(),
         prefix_built: game.prefix_built(),
         runs_in_place: game.runs_in_place(),
+        disc: game.kept.disc.clone(),
     }
 }
 
@@ -1549,6 +1870,57 @@ fn say(out: &mut (impl Write + ?Sized), record: &impl serde::Serialize) -> ExitC
 mod tests {
     use super::*;
     use crate::report::{Origin, Runtime};
+
+    /// **A disc's label is a value, whatever it starts with**, and so is a
+    /// name — a disc called `-= GAME =-` was refused by both verbs that hear
+    /// it, with nothing on stdout, which the shell can only read as a helper
+    /// that could not answer.
+    #[test]
+    fn a_label_that_starts_with_a_dash_is_a_label() {
+        let read = Cli::try_parse_from([
+            "lxb-proton",
+            "disc",
+            "/run/media/someone/GAME",
+            "--label",
+            "-= GAME =-",
+            "--to",
+            "/tmp/picture.png",
+        ])
+        .expect("the label is a value");
+        assert!(
+            matches!(read.asked, Asked::Disc { label: Some(ref label), .. } if label == "-= GAME =-")
+        );
+
+        let made = Cli::try_parse_from([
+            "lxb-proton",
+            "new",
+            "/run/media/someone/GAME/setup.exe",
+            "--name",
+            "-= GAME =-",
+            "--disc-label",
+            "-= GAME =-",
+            "--disc-uuid",
+            "",
+            "--",
+            "-autorun",
+        ])
+        .expect("and so are these");
+        match made.asked {
+            Asked::New {
+                name,
+                disc_label,
+                disc_uuid,
+                arguments,
+                ..
+            } => {
+                assert_eq!(name.as_deref(), Some("-= GAME =-"));
+                assert_eq!(disc_label.as_deref(), Some("-= GAME =-"));
+                assert_eq!(disc_uuid.as_deref(), Some(""));
+                assert_eq!(arguments, ["-autorun"]);
+            }
+            other => panic!("{other:?}"),
+        }
+    }
 
     fn published_release() -> fetch::Release {
         fetch::Release {

@@ -135,11 +135,25 @@ pub fn written_to(exe: &Path, at: &Path) -> bool {
 }
 
 /// The picture inside one executable, as the bytes of a PNG.
+///
+/// Or inside one `.ico` file, which is the same drawings with a different
+/// table in front of them — what a disc's `autorun.inf` names with `Icon=`
+/// as often as it names a program. Told apart by the file's first four bytes
+/// rather than by its ending, which on a disc is whatever its author typed.
 pub fn of(exe: &Path) -> Option<Vec<u8>> {
+    if let Some(png) = of_an_ico(exe) {
+        return Some(png);
+    }
     let read = crate::pe::Reader::of(exe)?;
     let group = read.resource(crate::pe::RT_GROUP_ICON, None)?;
     let name = best_of(group)?;
     let image = read.resource(crate::pe::RT_ICON, Some(name))?;
+    as_png(image)
+}
+
+/// One drawing, as the bytes of a PNG — whichever of the two shapes it came
+/// in.
+fn as_png(image: &[u8]) -> Option<Vec<u8>> {
     // A program built this decade stores its largest drawing as a PNG
     // already, and the best thing to do with it is nothing.
     if image.starts_with(&[0x89, b'P', b'N', b'G', 0x0d, 0x0a, 0x1a, 0x0a]) {
@@ -149,47 +163,125 @@ pub fn of(exe: &Path) -> Option<Vec<u8>> {
     encode(width, height, &rgba)
 }
 
+/// What an `.ico` file starts with: a reserved zero, then 1 for an icon —
+/// where a cursor file would say 2.
+const ICO_MAGIC: [u8; 4] = [0, 0, 1, 0];
+
+/// Larger than any icon file anybody ships, and the most this reads of one.
+/// The one on the disc this was written against is 146 KiB holding nineteen
+/// drawings.
+const LARGEST_ICO: u64 = 4 * 1024 * 1024;
+
+/// The picture in an `.ico` file, or `None` for a file that is not one.
+///
+/// `ICONDIR` is six bytes and then sixteen per drawing: the first eight are
+/// the ones a program's group table has, and the last eight are how long the
+/// drawing is and *where in the file* it starts — where a program's table
+/// has a resource's name instead. What is there is either shape an
+/// executable's `RT_ICON` is, so it is read the same way.
+fn of_an_ico(at: &Path) -> Option<Vec<u8>> {
+    use std::io::Read;
+
+    let mut file = std::fs::File::open(at).ok()?;
+    let mut magic = [0u8; 4];
+    file.read_exact(&mut magic).ok()?;
+    if magic != ICO_MAGIC {
+        return None;
+    }
+    let mut rest = Vec::new();
+    file.take(LARGEST_ICO).read_to_end(&mut rest).ok()?;
+    let mut bytes = magic.to_vec();
+    bytes.append(&mut rest);
+
+    let count = usize::from(u16_at(&bytes, 4)?).min(MOST_IMAGES);
+    let entries = (0..count).map_while(|index| {
+        let entry = 6usize
+            .checked_add(index.checked_mul(16)?)
+            .and_then(|at| bytes.get(at..at.checked_add(16)?))?;
+        let (width, height, depth) = drawn_at(entry)?;
+        let length = usize::try_from(u32_at(entry, 8)?).ok()?;
+        let start = usize::try_from(u32_at(entry, 12)?).ok()?;
+        // An icon file of the Windows 3 kind leaves its table's depth at
+        // nought and says it only in the drawing's own header — so it is
+        // read from there, or a 16-colour drawing listed first would be
+        // taken over the true-colour one after it.
+        let depth = match depth {
+            0 => depth_of(bytes.get(start..)?).unwrap_or(0),
+            said => said,
+        };
+        Some((width, height, depth, (start, length)))
+    });
+    let (start, length) = best(entries)?;
+    let image = bytes.get(start..start.checked_add(length)?)?;
+    as_png(image)
+}
+
+/// How deep one drawing is, read from the drawing itself: a PNG is as deep
+/// as anything a row draws, and a Windows bitmap says so in its header.
+fn depth_of(image: &[u8]) -> Option<u16> {
+    match image.starts_with(&[0x89, b'P', b'N', b'G']) {
+        true => Some(32),
+        false => u16_at(image, 14),
+    }
+}
+
 /// Which of a group's drawings to take, by the name it is filed under.
 ///
 /// `GRPICONDIR` is six bytes of header and then fourteen per drawing. The
-/// biggest is wanted, and the deepest where two are the same size — which
-/// is how a program that carries both a 32-colour and a true-colour 32×32
-/// gets the one that still looks like something.
+/// biggest is wanted, and the deepest where two are the same size — see
+/// [`best`].
 fn best_of(group: &[u8]) -> Option<u32> {
     let count = usize::from(u16_at(group, 4)?).min(MOST_IMAGES);
-    let mut best: Option<(u32, u16, u32)> = None;
-    for index in 0..count {
-        // A header may claim more drawings than the file carries. What has
-        // been read so far is still the answer — stopping is right, and
-        // throwing away the drawing already found would be a program with
-        // an icon drawn as one without.
-        let Some(entry) = 6usize
+    // A header may claim more drawings than the file carries. What has been
+    // read so far is still the answer — stopping is right, and throwing away
+    // the drawing already found would be a program with an icon drawn as one
+    // without.
+    let entries = (0..count).map_while(|index| {
+        let entry = 6usize
             .checked_add(index.checked_mul(14)?)
-            .and_then(|at| group.get(at..at.checked_add(14)?))
-        else {
-            break;
-        };
-        // Zero means 256 in a field one byte wide, which is how the format
-        // was made to hold a drawing larger than it was designed for.
-        let width = match entry[0] {
-            0 => 256u32,
-            byte => u32::from(byte),
-        };
-        let height = match entry[1] {
-            0 => 256u32,
-            byte => u32::from(byte),
-        };
-        let depth = u16_at(entry, 6)?;
-        let name = u32::from(u16_at(entry, 12)?);
+            .and_then(|at| group.get(at..at.checked_add(14)?))?;
+        let (width, height, depth) = drawn_at(entry)?;
+        Some((width, height, depth, u32::from(u16_at(entry, 12)?)))
+    });
+    best(entries)
+}
+
+/// How big one entry of either table says its drawing is, and how deep.
+///
+/// The first eight bytes are laid out the same in a program's group table
+/// and in an `.ico` file. Zero means 256 in a field one byte wide, which is
+/// how the format was made to hold a drawing larger than it was designed for.
+fn drawn_at(entry: &[u8]) -> Option<(u32, u32, u16)> {
+    let width = match *entry.first()? {
+        0 => 256u32,
+        byte => u32::from(byte),
+    };
+    let height = match *entry.get(1)? {
+        0 => 256u32,
+        byte => u32::from(byte),
+    };
+    Some((width, height, u16_at(entry, 6)?))
+}
+
+/// The drawing worth drawing at the size a row is: the biggest, and the
+/// deepest where two are the same size — which is how a program that carries
+/// both a 32-colour and a true-colour 32×32 gets the one that still looks
+/// like something. Nothing past [`BIGGEST`] is taken.
+fn best<K>(entries: impl Iterator<Item = (u32, u32, u16, K)>) -> Option<K> {
+    let mut chosen: Option<(u32, u16, K)> = None;
+    for (width, height, depth, key) in entries {
         if width > BIGGEST || height > BIGGEST {
             continue;
         }
         let size = width.saturating_mul(height);
-        if best.is_none_or(|(had, had_depth, _)| (size, depth) > (had, had_depth)) {
-            best = Some((size, depth, name));
+        if chosen
+            .as_ref()
+            .is_none_or(|(had, had_depth, _)| (size, depth) > (*had, *had_depth))
+        {
+            chosen = Some((size, depth, key));
         }
     }
-    best.map(|(_, _, name)| name)
+    chosen.map(|(_, _, key)| key)
 }
 
 /// One Windows bitmap out of an executable, as width, height and RGBA.
@@ -532,6 +624,115 @@ mod tests {
 
         assert!(!written_to(&exe, &at), "a script carries no drawing");
         assert!(!at.exists(), "and no empty file was left behind");
+    }
+
+    /// A 32-bit `width`×`height` drawing of one colour, as an `.ico` or a
+    /// program carries it: the header, the pixels bottom row first, and a
+    /// mask with nothing set.
+    fn solid(width: u32, height: u32, bgra: [u8; 4]) -> Vec<u8> {
+        let mut image = vec![0u8; 40];
+        image[0..4].copy_from_slice(&40u32.to_le_bytes());
+        image[4..8].copy_from_slice(&width.to_le_bytes());
+        image[8..12].copy_from_slice(&(height * 2).to_le_bytes());
+        image[12..14].copy_from_slice(&1u16.to_le_bytes());
+        image[14..16].copy_from_slice(&32u16.to_le_bytes());
+        for _ in 0..width * height {
+            image.extend_from_slice(&bgra);
+        }
+        let mask_row = width.div_ceil(32) as usize * 4;
+        image.extend(std::iter::repeat_n(0u8, mask_row * height as usize));
+        image
+    }
+
+    /// An `.ico` file holding these drawings, each at the depth given — the
+    /// table first, then the drawings after it, each where its entry says.
+    fn ico(drawings: &[(u8, u8, u16, Vec<u8>)]) -> Vec<u8> {
+        let mut out = vec![0, 0, 1, 0];
+        out.extend_from_slice(&(drawings.len() as u16).to_le_bytes());
+        let mut at = 6 + 16 * drawings.len();
+        for (width, height, depth, image) in drawings {
+            out.extend_from_slice(&[*width, *height, 0, 0]);
+            out.extend_from_slice(&1u16.to_le_bytes());
+            out.extend_from_slice(&depth.to_le_bytes());
+            out.extend_from_slice(&(image.len() as u32).to_le_bytes());
+            out.extend_from_slice(&(at as u32).to_le_bytes());
+            at += image.len();
+        }
+        for (_, _, _, image) in drawings {
+            out.extend_from_slice(image);
+        }
+        out
+    }
+
+    /// **A disc names its picture as an `.ico` file as often as it names a
+    /// program**, and the same drawing is taken out of one: the biggest,
+    /// found where the file says it starts rather than where a program's
+    /// table would name it.
+    #[test]
+    fn an_icon_file_gives_its_biggest_drawing() {
+        let dir = tempfile::tempdir().unwrap();
+        let at = dir.path().join("DISC.ICO");
+        std::fs::write(
+            &at,
+            ico(&[
+                (2, 2, 32, solid(2, 2, [255, 0, 0, 255])),
+                (4, 4, 32, solid(4, 4, [0, 0, 255, 255])),
+                (3, 3, 32, solid(3, 3, [0, 255, 0, 255])),
+            ]),
+        )
+        .unwrap();
+
+        let png = of(&at).expect("an icon file is a picture");
+        let decoder = png::Decoder::new(std::io::Cursor::new(png));
+        let mut reader = decoder.read_info().expect("a PNG");
+        let mut pixels = vec![0u8; reader.output_buffer_size().unwrap()];
+        let frame = reader.next_frame(&mut pixels).expect("one frame");
+        assert_eq!((frame.width, frame.height), (4, 4), "the biggest of three");
+        assert_eq!(&pixels[0..4], &[255, 0, 0, 255], "and it is the red one");
+
+        // The same bargain `written_to` makes with a program.
+        let out = dir.path().join("asked-for.png");
+        assert!(written_to(&at, &out));
+        assert_eq!(std::fs::read(&out).unwrap()[..4], [0x89, b'P', b'N', b'G']);
+    }
+
+    /// An icon file of the Windows 3 kind says nought for every drawing's
+    /// depth in its table and the real one in each drawing, which is where it
+    /// is read from.
+    #[test]
+    fn an_old_icon_file_says_its_depth_in_the_drawing() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut sixteen = solid(2, 2, [0, 0, 255, 255]);
+        sixteen[14..16].copy_from_slice(&4u16.to_le_bytes());
+        let mut file = ico(&[(2, 2, 0, sixteen), (2, 2, 0, solid(2, 2, [0, 255, 0, 255]))]);
+        // Both table entries say nought, as such a file does.
+        file[12..14].copy_from_slice(&0u16.to_le_bytes());
+        file[28..30].copy_from_slice(&0u16.to_le_bytes());
+        let at = dir.path().join("old.ico");
+        std::fs::write(&at, &file).unwrap();
+        let png = of(&at).expect("a picture");
+        let decoder = png::Decoder::new(std::io::Cursor::new(png));
+        let mut reader = decoder.read_info().unwrap();
+        let mut pixels = vec![0u8; reader.output_buffer_size().unwrap()];
+        reader.next_frame(&mut pixels).unwrap();
+        assert_eq!(&pixels[0..4], &[0, 255, 0, 255], "the true-colour one");
+    }
+
+    /// An icon file whose table points past its own end gives nothing, and
+    /// a file that only starts like one is not read as one.
+    #[test]
+    fn an_icon_file_that_does_not_add_up_gives_nothing() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut lying = ico(&[(2, 2, 32, solid(2, 2, [1, 2, 3, 255]))]);
+        // Its one drawing said to start a megabyte in.
+        lying[18..22].copy_from_slice(&(1u32 << 20).to_le_bytes());
+        let at = dir.path().join("lying.ico");
+        std::fs::write(&at, &lying).unwrap();
+        assert_eq!(of(&at), None);
+
+        let short = dir.path().join("short.ico");
+        std::fs::write(&short, [0u8, 0, 1]).unwrap();
+        assert_eq!(of(&short), None);
     }
 
     /// Read a real executable's drawing, when one is named — opt-in for the

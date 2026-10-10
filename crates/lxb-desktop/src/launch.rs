@@ -104,6 +104,25 @@ const PATIENCE: f32 = 20.0;
 /// game then opening over it.
 const HEROIC_PATIENCE: f32 = 120.0;
 
+/// How long a Windows launch waits for `lxb-proton` to say what to run, before
+/// there is any process at all.
+///
+/// Not an application's twenty seconds, because the helper can be building the
+/// Windows the program is going to run in: a disc's is built before its program
+/// first runs, so the program finds its disc on a drive letter of its own. That
+/// build is capped in the helper at three minutes (`LONGEST_BUILD`), and it is
+/// not idle time — measured on 2026-10-10, the first build after the machine
+/// had restarted took 102.8 seconds, all of it Valve's container runtime coming
+/// up cold, and the loading screen gave up at twenty and left the start screen
+/// standing over a press that was being answered. A helper that never answers
+/// at all ends the screen through `Heard::Broken`, not through this.
+const PROTON_PREPARING_PATIENCE: f32 = 200.0;
+
+/// And how long for its window once the process is running: a minute, on
+/// [`STEAM_PATIENCE`]'s argument. A Windows started for the first time builds
+/// itself first, and the container under it is unpacked on its first run.
+const PROTON_PATIENCE: f32 = 60.0;
+
 /// And how long for a game started through Valve's client.
 ///
 /// Longer than [`PATIENCE`], because there is no process to watch — the
@@ -429,6 +448,11 @@ pub struct Launch {
     /// at once, so only the window counts — and it is allowed
     /// [`HEROIC_PATIENCE`].
     through_heroic: bool,
+    /// Whether this is a Windows program started through `lxb-proton`: the
+    /// helper is asked what to run first, which can take minutes, and the
+    /// process only arrives once it has answered — see
+    /// [`PROTON_PREPARING_PATIENCE`] and [`Launch::now_running`].
+    through_proton: bool,
     /// Whether no Heroic was running when this was pressed, so the process
     /// that carried the request is Heroic itself, there for as long as the
     /// game is. Its going before any window came is then the launch over —
@@ -576,6 +600,7 @@ impl Launch {
             pid,
             through_steam: false,
             through_heroic: false,
+            through_proton: false,
             heroic_carries_it: false,
             own_picture: false,
             logo: None,
@@ -614,6 +639,25 @@ impl Launch {
     pub fn through_heroic(mut self) -> Self {
         self.through_heroic = true;
         self
+    }
+
+    /// Mark this as a Windows program the helper has been asked about. See
+    /// the field of the same name.
+    pub fn through_proton(mut self) -> Self {
+        self.through_proton = true;
+        self
+    }
+
+    /// The process this screen was waiting for has been started — what a
+    /// Windows launch says once the helper has answered and the shell has
+    /// forked what it said.
+    ///
+    /// The clock starts again here, the way [`Self::now_starting_through_steam`]
+    /// starts it: the minutes the helper spent building a Windows were not the
+    /// program failing to appear, and what is left is the program's window.
+    pub fn now_running(&mut self, pid: u32, now: Instant) {
+        self.pid = Some(pid);
+        self.waiting_since = now;
     }
 
     /// And say whether a Heroic was running already when it was pressed —
@@ -1031,6 +1075,8 @@ impl Launch {
         let waited = now.duration_since(self.waiting_since).as_secs_f32();
         let patience = match (self.through_steam, self.doing) {
             _ if self.through_heroic => HEROIC_PATIENCE,
+            _ if self.through_proton && self.pid.is_none() => PROTON_PREPARING_PATIENCE,
+            _ if self.through_proton => PROTON_PATIENCE,
             // Waiting on Valve's client, which has not been asked for the game
             // yet and cannot be until it is up.
             (true, Some(Doing::Steam)) => STEAM_CLIENT_PATIENCE,
@@ -2210,6 +2256,43 @@ mod tests {
         );
         assert!(never.heroic_never_started_it(), "and that is said");
         assert!(!splash.heroic_never_started_it());
+    }
+
+    /// **A Windows launch waits for the helper as long as the helper may take**
+    /// — building a disc's Windows cold took 102.8 seconds, measured — and
+    /// then for the program's window from the moment it is running, not from
+    /// the press.
+    #[test]
+    fn a_windows_launch_waits_for_its_windows_to_be_built() {
+        let t0 = Instant::now();
+        let preparing = || {
+            let mut splash = launch(t0).through_proton();
+            splash.pid = None;
+            splash
+        };
+        let mut splash = preparing();
+        assert_eq!(
+            splash.advance(at(t0, 103.0), &[7], "", true),
+            None,
+            "an application's twenty seconds are not a Windows being built"
+        );
+        splash.now_running(4242, at(t0, 103.0));
+        assert_eq!(
+            splash.advance(at(t0, 103.0 + PATIENCE + 5.0), &[7], "", true),
+            None,
+            "and the program has its own minute from when it was started"
+        );
+        assert_eq!(
+            splash.advance(at(t0, 103.0 + PROTON_PATIENCE + 1.0), &[7], "", true),
+            Some(Arrival::GaveUp)
+        );
+
+        let mut never = preparing();
+        assert_eq!(
+            never.advance(at(t0, PROTON_PREPARING_PATIENCE + 1.0), &[7], "", true),
+            Some(Arrival::GaveUp),
+            "a helper that never answers is still given up on"
+        );
     }
 
     /// Where no Heroic was running, the process the shell started is Heroic,

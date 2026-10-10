@@ -285,6 +285,62 @@ pub struct GameRow {
     /// and for a program that carries no icon.
     #[serde(default)]
     pub cover: Option<String>,
+    /// The disc this game was set up from, where it was — see [`Disc`].
+    ///
+    /// The shell reads two things off it. A game that came off a disc and
+    /// still plays the program *on* that disc is the disc's own Windows: it
+    /// has no row of its own, and the disc's row runs in it whenever that disc
+    /// is in. And a game that came off a disc and has something installed is
+    /// what that disc's row plays.
+    #[serde(default)]
+    pub disc: Option<Disc>,
+}
+
+/// Which disc a game came off: what the disc says it is called, and the
+/// moment its file system was made.
+///
+/// **Neither is where the disc is mounted.** That is a path made out of the
+/// label, which another disc with the same label shares and the same disc
+/// does not keep when something already stands at that path. The two here
+/// travel with the disc: the label, and the creation time an ISO 9660 or UDF
+/// file system carries — UDisks' `IdUUID` for one — which is the same every
+/// time that disc goes in and different for every other pressing.
+///
+/// Either may be empty — a disc somebody burned without a label, a file
+/// system with no date — and two discs are the same disc only where both
+/// agree.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Disc {
+    #[serde(default)]
+    pub label: String,
+    #[serde(default)]
+    pub uuid: String,
+}
+
+/// What `lxb-proton disc` answers: whether the disc in a drive carries a
+/// Windows program, and which.
+///
+/// Answered without the machine being looked at, like `icon`: it reads the
+/// disc it was pointed at and writes the one picture it was told to.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DiscReading {
+    pub protocol: u32,
+    /// Whether there is anything on the disc for Windows to run. `false` for
+    /// a disc of films, music or somebody's photographs, and for one whose
+    /// programs are all further down than its top — see `disc::program`.
+    pub windows: bool,
+    /// What the row is called: the name `autorun.inf` gives, then the disc's
+    /// own label, then the name the program carries inside it.
+    pub name: Option<String>,
+    /// The program a press runs, where it is on the disc now.
+    pub program: Option<String>,
+    /// What `autorun.inf` puts after it, if anything.
+    #[serde(default)]
+    pub arguments: Vec<String>,
+    /// Where the disc's own picture was written — `autorun.inf`'s `Icon=`,
+    /// or the program's own — or `None` where it carries neither.
+    pub png: Option<String>,
+    pub note: String,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -493,5 +549,40 @@ mod tests {
         let older: OlderProbe = serde_json::from_value(newer).unwrap();
         assert_eq!(older.protocol, 1);
         assert!(older.steam);
+    }
+
+    /// **A game says which disc it came off in two words the shell reads
+    /// back**, and a game that came off none says nothing at all — so a row
+    /// from a helper older than discs reads as exactly what it was.
+    #[test]
+    fn a_disc_is_named_by_its_label_and_its_making() {
+        let row = |disc: Option<Disc>| GameRow {
+            id: "aqua".into(),
+            name: "Aqua".into(),
+            state: GameState::Ready,
+            proton: None,
+            at: "/games/aqua".into(),
+            play: None,
+            prefix_built: false,
+            runs_in_place: true,
+            cover: None,
+            disc,
+        };
+        let said = serde_json::to_value(row(Some(Disc {
+            label: "Some Game".into(),
+            uuid: "2001-02-03-04-05-06-00".into(),
+        })))
+        .unwrap();
+        assert_eq!(
+            said["disc"],
+            serde_json::json!({"label": "Some Game", "uuid": "2001-02-03-04-05-06-00"})
+        );
+
+        let older = serde_json::json!({
+            "id": "aqua", "name": "Aqua", "state": "ready", "proton": null,
+            "at": "/games/aqua"
+        });
+        let read: GameRow = serde_json::from_value(older).unwrap();
+        assert_eq!(read.disc, None, "a row that says nothing came off no disc");
     }
 }

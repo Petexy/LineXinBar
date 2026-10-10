@@ -21983,6 +21983,7 @@ mod tests {
             at: PathBuf::from("/games/cemu"),
             proton: None,
             cover: Some(PathBuf::from("/games/cemu/icon.png")),
+            disc: None,
         });
         let lattice = shelved_games(vec![row]);
         for (width, height) in [(1280.0, 720.0), (1920.0, 1080.0), (3840.0, 2160.0)] {
