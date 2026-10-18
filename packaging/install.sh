@@ -110,9 +110,12 @@ stage_compositor() {
 
     # The pointer belongs to the compositor — it is what loads the theme and
     # draws the cursor — so the theme ships beside it rather than with the
-    # shell. See `general.cursor_theme` in the configuration.
-    local cursor_source="$PROJECT_ROOT/share/icons/Bibata-Modern-Classic"
-    local cursor_destination="$install_root/share/icons/Bibata-Modern-Classic"
+    # shell. See `general.cursor_theme` in the configuration. It is installed
+    # under a name of its own, never as plain Bibata-Modern-Classic, which
+    # linexin-desktop installs too: two packages owning one file cannot be
+    # installed together.
+    local cursor_source="$PROJECT_ROOT/share/icons/lxb-Bibata-Modern-Classic"
+    local cursor_destination="$install_root/share/icons/lxb-Bibata-Modern-Classic"
     [[ -d "$cursor_source/cursors" ]] || package_die "bundled cursor theme is missing"
     mkdir -p "$cursor_destination"
     # Preserve cursor aliases and metadata, but let the package builder assign

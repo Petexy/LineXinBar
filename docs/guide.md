@@ -15,6 +15,7 @@ menu over whatever is running:
 
 | Entry             | Effect |
 | ----------------- | ------ |
+| *The session's application* | Only in [installation mode](packaging.md#installation-mode): brings that application back, or opens it again if it was closed |
 | Stick pointer     | Whether the right stick is a mouse inside the application in front |
 | Volume mixer      | Opens [a panel](#the-volume-mixer) of everything making a noise, a row per application |
 | Do not disturb    | Whether anything may interrupt. On, an announcement is filed without a bubble and without a chime |
@@ -25,6 +26,14 @@ menu over whatever is running:
 | Close *app*       | End the application on the selected card. It is asked first and cannot refuse |
 | Start screen      | Show the start screen over the running application, without closing it |
 | Power             | Suspend, turn off, or end the session |
+
+A session started in installation mode — a live medium's, started for its
+installer — leads the column with that application, by its own name, on a line
+of its own above the tiles. Pressing it while the application is running on
+this display takes its card, as choosing it in the deck does; otherwise it is
+the application's tile pressed, so it opens behind the ordinary loading screen.
+It is answered in the menu's own sound, like every other entry here. The menu
+still opens on Resume.
 
 Close and Start screen are offered only while the card beside the column is a
 window. The start screen is the last card in the deck, and it is neither
@@ -79,12 +88,10 @@ the day and nothing else.
 
 It is the same mark and the same reading the start screen's corner draws — see
 [Battery percentage](settings.md#battery-percentage), which is the one setting behind both.
-What differs is where the figures go when they are turned on: **left of the
-mark** here, and above it in the corner. The corner is a cluster on a wallpaper
-with a whole display beside it, where stacking the number keeps it from pushing
-the clock inward; this is a narrow column with a line of its own to spend and
-nothing above the mark but the date. A long application name gives up exactly
-the room the mark takes and ends in an ellipsis rather than running under it.
+The figures, when they are turned on, go where they go in the corner and on a
+phone: **right of the mark**, against the edge the day is aligned to, with the
+mark stepping left of them. A long application name gives up exactly the room
+the battery takes and ends in an ellipsis rather than running under it.
 
 ### What the menu's buttons do
 

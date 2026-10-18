@@ -54,7 +54,7 @@
 //! A shell nobody has chosen a language on ([`Language::System`]) touches
 //! none of this. It follows the session, which is what the row shows.
 use std::collections::HashMap;
-use std::sync::{LazyLock, Mutex};
+use std::sync::{LazyLock, Mutex, OnceLock};
 
 use crate::i18n::{self, Language};
 
@@ -172,6 +172,27 @@ static STARTED_IN: LazyLock<Option<String>> = LazyLock::new(|| {
         .filter(|value| !value.is_empty())
 });
 
+/// The variables that decide which language a program speaks, as the session
+/// had them before this shell changed any of them — `LANG` as [`prime`]
+/// plants it where the session came without one. Kept for [`follow`], which
+/// gives them back to the programs the shell opens when another program says
+/// the shell is to follow the session again.
+static SESSION: OnceLock<Vec<(&'static str, String)>> = OnceLock::new();
+
+/// [`SESSION`], out of whatever `get` says the environment holds.
+fn as_the_session_had_it(get: impl Fn(&str) -> Option<String>) -> Vec<(&'static str, String)> {
+    DECIDE_THE_LANGUAGE
+        .into_iter()
+        .filter_map(|name| {
+            let value = match name {
+                "LANG" => get(name).or_else(|| Some(get("LC_ALL").unwrap_or_else(|| "C".into()))),
+                _ => get(name),
+            };
+            value.map(|value| (name, value))
+        })
+        .collect()
+}
+
 fn state() -> std::sync::MutexGuard<'static, State> {
     STATE.lock().unwrap_or_else(|e| e.into_inner())
 }
@@ -191,6 +212,13 @@ fn state() -> std::sync::MutexGuard<'static, State> {
 /// time it starts.
 pub fn prime() {
     LazyLock::force(&STARTED_IN);
+    // Both before the export below can change what they would read: the
+    // session's own variables, and the language the catalogs follow when
+    // nobody has chosen one. A shell that starts in Polish and is later told
+    // by another program to follow the session again must find the session
+    // as it was, not the Polish it was given here. See [`follow`].
+    let _ = SESSION.set(as_the_session_had_it(|name| std::env::var(name).ok()));
+    i18n::remember_the_session();
     // Nothing here ever ends in [`Standing::Pinned`], which is the note asking
     // for a restart. A session that has just started *is* the restart: the
     // language was not changed while anybody was looking at it, nothing is
@@ -242,13 +270,16 @@ pub fn prime() {
     state.published += 1;
 }
 
-/// Where a session that has only just started stands.
+/// Where a session that has only just started stands — and one whose
+/// language another program has just written into `shell.toml`.
 ///
 /// Never [`Standing::Pinned`], whatever the machine says: that note asks for a
 /// restart, and a session that has just started *is* the restart. Nothing has
 /// been changed while anybody was looking at it, so there is nothing waiting
-/// to be applied and nothing to ask for. Pure, so the rule can be checked
-/// without a machine to read.
+/// to be applied and nothing to ask for. The same holds for a language another
+/// program wrote: the system's own setting was not touched (see [`follow`]),
+/// so there is nothing a restart would finish. Pure, so the rule can be
+/// checked without a machine to read.
 fn standing_at_startup(chosen: Language, session_speaks: bool, locale_installed: bool) -> Standing {
     match chosen {
         Language::System => Standing::Spoken,
@@ -279,6 +310,92 @@ pub fn adopt(language: Language) {
         .name("locale".into())
         .spawn(move || work(language))
         .expect("a thread for one bus call");
+}
+
+/// Make every program the shell opens from now on speak `language`, because
+/// another program has just written it into `shell.toml`.
+///
+/// What [`prime`] does at startup, done again mid-session, and nothing a press
+/// does beyond that: no bus call is made, so nothing asks for a password and
+/// the system's own locale is left where it is. The program that wrote the
+/// file is the one deciding, and the one it is written for — the live
+/// medium's installer, which asks somebody their language on its first page —
+/// sets the language of the machine it installs itself. The system's setting
+/// is changed from a press in Settings, with the person who chose standing in
+/// front of the question.
+///
+/// Where the language is not one glibc can load here, where the session
+/// already speaks it, and where nobody has chosen one at all, the session's
+/// own variables are given back as it started with them: a shell that leaves
+/// Polish for a language this machine has no locale for must not go on
+/// opening Polish programs. Rewritten names only, every one of which the
+/// environment already holds, so glibc frees nothing under another thread's
+/// feet — see [`prime`].
+pub fn follow(language: Language) {
+    let locale = locale_for(language);
+    let started = STARTED_IN.as_deref().unwrap_or("C");
+    let speaks = language == Language::System || i18n::spoken_by(started) == language;
+    let have_it = installed(locale);
+    let carrying = carried(language, speaks, have_it);
+    let written = match carrying {
+        Carried::TheSession => give_the_session_back(),
+        Carried::TheLocale => export(locale, language.gettext_name()),
+    };
+    if carrying == Carried::TheSession && !speaks {
+        tracing::warn!(
+            locale,
+            "the language written into the settings file names a locale that is not installed; \
+             programs opened from the shell keep the session's"
+        );
+    }
+    tracing::info!(
+        language = language.key(),
+        ?written,
+        "the session follows the language written into the settings file"
+    );
+    let mut state = state();
+    state.standing = Some(standing_at_startup(language, speaks, have_it));
+    state.published += 1;
+}
+
+/// What [`follow`] gives the programs the shell opens.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Carried {
+    /// The session's own variables, as it started with them.
+    TheSession,
+    /// The language's locale.
+    TheLocale,
+}
+
+/// Pure, so each way through [`follow`] can be checked without a machine.
+fn carried(language: Language, session_speaks: bool, locale_installed: bool) -> Carried {
+    match language {
+        Language::System => Carried::TheSession,
+        _ if session_speaks || !locale_installed => Carried::TheSession,
+        _ => Carried::TheLocale,
+    }
+}
+
+/// Put back the variables [`SESSION`] holds, and say what was written.
+fn give_the_session_back() -> Vec<(String, String)> {
+    let Some(session) = SESSION.get() else {
+        return Vec::new();
+    };
+    let mut written = Vec::new();
+    for (name, value) in session {
+        // Every one of these was there when the session started, and nothing
+        // in this shell takes a variable away — but a name that has gone is
+        // not added back, because adding is the one change that is not safe
+        // once there are other threads.
+        if std::env::var_os(name).is_none() {
+            continue;
+        }
+        // SAFETY: a name the environment already holds, so glibc swaps a
+        // pointer and frees nothing; see [`prime`].
+        unsafe { std::env::set_var(name, value) };
+        written.push((name.to_string(), value.clone()));
+    }
+    written
 }
 
 /// How the last choice stands. `None` before [`prime`].
@@ -1229,6 +1346,92 @@ mod tests {
     fn a_file_is_written_back_byte_for_byte_but_for_the_value() {
         let (after, _) = repaired("LC_ALL=en_US.UTF-8", "pl_PL.UTF-8").expect("one to change");
         assert_eq!(after, "LC_ALL=pl_PL.UTF-8");
+    }
+
+    /// What a shell told mid-session to follow the session again gives back:
+    /// the variables as the session started with them, `LANG` as [`prime`]
+    /// plants it where there was none, and nothing the session did not have.
+    #[test]
+    fn the_session_is_remembered_as_it_started() {
+        let session = |pairs: &'static [(&'static str, &'static str)]| {
+            move |name: &str| {
+                pairs
+                    .iter()
+                    .find(|(have, _)| *have == name)
+                    .map(|(_, value)| value.to_string())
+            }
+        };
+        assert_eq!(
+            as_the_session_had_it(session(&[("LANG", "en_US.UTF-8")])),
+            vec![("LANG", "en_US.UTF-8".to_string())]
+        );
+        assert_eq!(
+            as_the_session_had_it(session(&[
+                ("LANG", "en_US.UTF-8"),
+                ("LANGUAGE", "en_US"),
+                ("LC_TIME", "en_GB.UTF-8"),
+            ])),
+            vec![
+                ("LANGUAGE", "en_US".to_string()),
+                ("LANG", "en_US.UTF-8".to_string()),
+            ],
+            "LC_TIME is not about the language, and is left to itself"
+        );
+        // No LANG at all: the one prime plants, out of LC_ALL or as C.
+        assert_eq!(
+            as_the_session_had_it(session(&[("LC_ALL", "pl_PL.UTF-8")])),
+            vec![
+                ("LC_ALL", "pl_PL.UTF-8".to_string()),
+                ("LANG", "pl_PL.UTF-8".to_string()),
+            ]
+        );
+        assert_eq!(
+            as_the_session_had_it(session(&[])),
+            vec![("LANG", "C".to_string())]
+        );
+    }
+
+    /// The language's own locale is given to the programs the shell opens only
+    /// where it is installed and the session does not already speak it; every
+    /// other way, and nobody having chosen at all, gives the session back.
+    #[test]
+    fn a_language_written_by_another_program_reaches_what_the_shell_opens() {
+        assert_eq!(
+            carried(Language::Polish, false, true),
+            Carried::TheLocale,
+            "an English session told Polish, with pl_PL installed"
+        );
+        assert_eq!(
+            carried(Language::German, false, false),
+            Carried::TheSession,
+            "a language with no locale here leaves programs in the session's, not the last one's"
+        );
+        assert_eq!(
+            carried(Language::American, true, true),
+            Carried::TheSession,
+            "the session already speaks it"
+        );
+        assert_eq!(
+            carried(Language::System, false, false),
+            Carried::TheSession,
+            "nobody has chosen: the session is followed again"
+        );
+        // And none of the three asks for a restart, which is a press's note.
+        assert_eq!(
+            standing_at_startup(Language::Polish, false, true),
+            Standing::Spoken
+        );
+        assert_eq!(
+            standing_at_startup(Language::System, false, false),
+            Standing::Spoken
+        );
+        assert!(matches!(
+            standing_at_startup(Language::German, false, false),
+            Standing::Refused {
+                session_follows: false,
+                ..
+            }
+        ));
     }
 
     /// The flag the installed policy binds its action to is the flag this

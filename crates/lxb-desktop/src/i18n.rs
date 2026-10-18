@@ -285,12 +285,31 @@ pub fn twelve_hour_on(clock: Clock) -> bool {
     }
 }
 
+/// Starts where a shell nobody has set up stands, following the session —
+/// not on English (UK), which is the language the catalogs fall back to and
+/// not anybody's choice. `crate::settings::load` says the same thing again
+/// before it looks for the file, and this is what is in force until it has.
 #[cfg(not(test))]
-static PREFERENCE: AtomicU8 = AtomicU8::new(Language::British as u8);
+static PREFERENCE: AtomicU8 = AtomicU8::new(Language::System as u8);
 /// What the session spoke when the shell started, which is what a shell with
 /// no language chosen follows. Read once: [`crate::locale`] rewrites the
 /// environment when a language *is* chosen, and that is not this.
+#[cfg(not(test))]
 static SYSTEM: LazyLock<String> = LazyLock::new(session_locale);
+
+/// Take note of what the session speaks, now, before anything rewrites the
+/// environment it is read from.
+///
+/// [`SYSTEM`] is otherwise read the first time a shell with no language
+/// chosen asks for it — which, in a shell that *started* with one chosen, is
+/// after [`crate::locale::prime`] has already given the environment that
+/// language. A shell told mid-session that nobody has chosen, because another
+/// program took the line out of `shell.toml`, would then read its own export
+/// back as the session's language and stay in the one it was leaving.
+pub fn remember_the_session() {
+    #[cfg(not(test))]
+    LazyLock::force(&SYSTEM);
+}
 
 /// What the session speaks now, read afresh from the environment.
 pub fn session_locale() -> String {
@@ -362,9 +381,41 @@ pub fn set(language: Language) {
 
 pub fn locale() -> &'static str {
     match preference() {
-        Language::System => &SYSTEM,
+        Language::System => started_in(),
         chosen => chosen.key(),
     }
+}
+
+/// What the session spoke when the shell started, normalised: `en-US` for an
+/// `en_US.UTF-8` session.
+fn started_in() -> &'static str {
+    #[cfg(test)]
+    {
+        TEST_SESSION.with(|session| session.get())
+    }
+    #[cfg(not(test))]
+    {
+        &SYSTEM
+    }
+}
+
+#[cfg(test)]
+thread_local! {
+    // What a test's session speaks, said by the test — see [`set_session`] —
+    // rather than read from the machine running it, whose own `LANG` is no
+    // business of any test's. An environment that says nothing until then.
+    static TEST_SESSION: std::cell::Cell<&'static str> = const { std::cell::Cell::new("en") };
+}
+
+/// Start this test's session in whatever environment `get` describes, so that
+/// a shell with no language chosen follows it. A test-only stand-in for the
+/// session the shell starts in, which is otherwise read once and kept.
+#[cfg(test)]
+pub fn set_session(get: impl FnMut(&str) -> Option<String>) {
+    // Leaked, as the session's own locale is in effect kept for the life of
+    // the process; a test sets a handful.
+    let said: &'static str = Box::leak(system_locale(get).into_boxed_str());
+    TEST_SESSION.with(|session| session.set(said));
 }
 
 /// Which catalog a locale name is read out of.

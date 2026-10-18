@@ -10,7 +10,12 @@ These definitions build three early-development packages from one source tree:
   pointer from. A Wayland session on DRM/KMS, with nothing in it that assumes
   this project's shell is the one running. This is what a display manager
   depends on to put a login screen on the hardware without installing a
-  desktop, and Console Experience Desktop Manager is the one that does.
+  desktop, and Console Experience Desktop Manager is the one that does. The
+  theme is LineXinBar's own copy of Bibata Modern Classic, installed as
+  `share/icons/lxb-Bibata-Modern-Classic/` so that it shares no file with a
+  package that installs the same theme under its own name — linexin-desktop
+  does, as `share/icons/Bibata-Modern-Classic/`, and pacman refuses a
+  transaction in which two packages own one file.
 * **`lxb-desktop`** — the shell, the portal, the update coordinator and the Wayland session entry. It
   depends on the exact `lxb-compositor` built beside it, version and release
   both: two halves of one build that drift apart are a shell talking to a
@@ -49,7 +54,7 @@ bundled cursor theme, a native Wayland session, and the optional integrations:
 
 ```text
 lxb-compositor   bin/lxb
-                 share/icons/Bibata-Modern-Classic/**
+                 share/icons/lxb-Bibata-Modern-Classic/**
 
 lxb-desktop      bin/lxb-desktop
                  bin/lxb-portal
@@ -100,6 +105,39 @@ display manager one foreground process whose lifetime is tied to the desktop
 shell. The original application sources and `share/wayland-sessions/lxb.desktop`
 are not modified; packages stage the production session files from
 `packaging/files/`.
+
+### Installation mode
+
+`lxb-session --installation-mode <desktop entry>` starts the session for one
+application. It is for a live medium, and an installed system never passes it.
+The application opens on the first display as the session comes up, with
+nothing animating: the screen that names it while it loads is there whole from
+its first frame and goes in a cut. It is then the first tile in System, ahead
+of Files, and the first entry of the Home menu, and every display's start screen
+opens on that tile, so closing it leaves the person one press from it. The rest
+of the session is the ordinary one. The option travels as an argument and
+nothing else: `lxb-session` runs `lxb --backend udev --shell --installation-mode
+<entry>`, and the compositor appends `--installation-mode <entry>` to the shell's
+own command line (`general.shell`, which has to be `lxb-desktop`), so nothing
+the shell starts inherits it. The entry is named by its file, as
+`lxb-installer.desktop`; `lxb-installer` and a full path work as well. An entry
+the machine does not have leaves an ordinary session, and the shell's log says
+so.
+
+For an ISO maker, the automatic login line is the only thing to write. In the
+image's `/etc/cedm/greetd.toml`, the `[initial_session]` table that logs the
+live user in once per boot reads:
+
+```toml
+[initial_session]
+command = "/usr/bin/cedm-session lxb-session --installation-mode lxb-installer.desktop"
+user = "liveuser"
+```
+
+`cedm-session` hands its arguments to `lxb-session` unchanged. Do not also put
+the installer in the live user's `general.autostart`: that starts a second
+copy beside the one installation mode opens. The installed system must not keep
+the table, which is why the installer removes it.
 
 ## The machine's power settings
 

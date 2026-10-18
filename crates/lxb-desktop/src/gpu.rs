@@ -5313,6 +5313,34 @@ mod tests {
         }
     }
 
+    /// The two advances a layout knows the charge's width by are the bundled
+    /// face's own: every figure at [`crate::ui::FIGURE_ADVANCE`], the per cent
+    /// sign at [`crate::ui::PERCENT_ADVANCE`].
+    ///
+    /// The guide's header places its battery from them, left of wherever its
+    /// figures begin, and has no other way of knowing where that is. A face whose
+    /// digits were not tabular, or were not these, would leave the mark standing
+    /// off the charge or under it — so it is checked against what the face
+    /// measures rather than assumed.
+    #[test]
+    fn the_charge_is_as_wide_as_the_shells_type_sets_it() {
+        let advances = letter_advances();
+        for figure in '0'..='9' {
+            assert!(
+                (advances[&figure] - crate::ui::FIGURE_ADVANCE).abs() < 1e-3,
+                "{figure} advances {}, not {}",
+                advances[&figure],
+                crate::ui::FIGURE_ADVANCE,
+            );
+        }
+        assert!(
+            (advances[&'%'] - crate::ui::PERCENT_ADVANCE).abs() < 1e-3,
+            "% advances {}, not {}",
+            advances[&'%'],
+            crate::ui::PERCENT_ADVANCE,
+        );
+    }
+
     /// The corner puts its letters on the baseline the text pipeline would have
     /// put them on.
     ///

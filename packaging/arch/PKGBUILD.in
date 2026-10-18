@@ -151,6 +151,10 @@ package_lxb-compositor() {
         'vulkan-icd-loader: Vulkan renderer backend'
     )
 
+    # The cursor theme comes with it as usr/share/icons/lxb-Bibata-Modern-Classic,
+    # a directory of its own: linexin-desktop installs the same theme as
+    # usr/share/icons/Bibata-Modern-Classic, and pacman will not install two
+    # packages owning one file in one transaction.
     cd "$pkgbase-$pkgver"
     ./packaging/install.sh \
         --destdir "$pkgdir" \

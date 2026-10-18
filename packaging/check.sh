@@ -326,8 +326,13 @@ fi
 # package would defeat the point of splitting them.
 [[ -x "$work/compositor/usr/bin/lxb" ]] \
     || package_die "the compositor component does not stage lxb"
-[[ -d "$work/compositor/usr/share/icons/Bibata-Modern-Classic/cursors" ]] \
+[[ -d "$work/compositor/usr/share/icons/lxb-Bibata-Modern-Classic/cursors" ]] \
     || package_die "the compositor component does not stage the cursor theme it draws with"
+# Under its own name only. linexin-desktop installs the same theme as
+# share/icons/Bibata-Modern-Classic/, and a package of ours owning any file
+# there is one pacman will not install beside it.
+[[ ! -e "$stage/usr/share/icons/Bibata-Modern-Classic" ]] \
+    || package_die "the payload stages share/icons/Bibata-Modern-Classic, which linexin-desktop owns"
 for intruder in lxb-desktop lxb-portal lxb-updates lxb-session; do
     [[ ! -e "$work/compositor/usr/bin/$intruder" ]] \
         || package_die "the compositor component stages $intruder, which belongs to the desktop"
@@ -473,8 +478,8 @@ if command -v udevadm >/dev/null 2>&1; then
         || package_die "udev will not accept $rules"
 fi
 
-source_theme="$PROJECT_ROOT/share/icons/Bibata-Modern-Classic"
-staged_theme="$stage/usr/share/icons/Bibata-Modern-Classic"
+source_theme="$PROJECT_ROOT/share/icons/lxb-Bibata-Modern-Classic"
+staged_theme="$stage/usr/share/icons/lxb-Bibata-Modern-Classic"
 source_links="$(find "$source_theme" -type l | wc -l | tr -d ' ')"
 staged_links="$(find "$staged_theme" -type l | wc -l | tr -d ' ')"
 [[ "$source_links" -gt 0 && "$source_links" == "$staged_links" ]] \

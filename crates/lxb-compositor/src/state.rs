@@ -1574,6 +1574,26 @@ pub fn shell_quote(argv: &[String]) -> String {
         .join(" ")
 }
 
+/// The command the session's shell is started with: `general.shell`, and the
+/// one option this compositor hands on to it.
+///
+/// `--installation-mode` is the shell's to act on — see `lxb-desktop`'s
+/// `installation` module — and arrives here because this is the command line a
+/// display manager can reach: `lxb-session --installation-mode <entry>` runs
+/// `lxb --shell --installation-mode <entry>`, and the entry goes on the end of
+/// the shell's own line, quoted back by [`shell_quote`] so that whatever the
+/// line was given arrives as exactly one argument. Nothing else in the
+/// environment carries it, so nothing the shell starts inherits it.
+pub fn shell_for(shell: &str, installation_mode: Option<&str>) -> String {
+    match installation_mode {
+        Some(entry) => format!(
+            "{shell} {}",
+            shell_quote(&["--installation-mode".to_string(), entry.to_string()])
+        ),
+        None => shell.to_string(),
+    }
+}
+
 fn shell_split(input: &str) -> Option<Vec<String>> {
     let mut out = Vec::new();
     let mut cur = String::new();
@@ -1830,8 +1850,8 @@ mod tests {
     use std::process::Command;
 
     use super::{
-        confine_to_session, folded_app_id, inject_background_handoff, shell_quote, shell_split,
-        BACKGROUND_HANDOFF_ENV,
+        confine_to_session, folded_app_id, inject_background_handoff, shell_for, shell_quote,
+        shell_split, BACKGROUND_HANDOFF_ENV,
     };
 
     /// The name the shell asks about and the name the window carries have to
@@ -1930,6 +1950,40 @@ mod tests {
                 "round trip of {argv:?}"
             );
         }
+    }
+
+    /// `--installation-mode` reaches the shell as one argument on the end of
+    /// its own command line, whatever the shell line already says and whatever
+    /// the entry is called — and a session without it starts the shell exactly
+    /// as configured.
+    #[test]
+    fn the_installation_mode_goes_on_the_end_of_the_shells_line() {
+        assert_eq!(shell_for("lxb-desktop", None), "lxb-desktop");
+        assert_eq!(
+            shell_split(&shell_for("lxb-desktop", Some("test-installer.desktop"))).unwrap(),
+            vec![
+                "lxb-desktop",
+                "--installation-mode",
+                "test-installer.desktop"
+            ]
+        );
+        // A configured shell with options of its own, and an entry somebody
+        // wrote with a space in it, still come out as the arguments they are.
+        assert_eq!(
+            shell_split(&shell_for(
+                r#"/opt/lxb/lxb-desktop --no-steam --debug-actions "2:guide""#,
+                Some("an installer.desktop"),
+            ))
+            .unwrap(),
+            vec![
+                "/opt/lxb/lxb-desktop",
+                "--no-steam",
+                "--debug-actions",
+                "2:guide",
+                "--installation-mode",
+                "an installer.desktop",
+            ]
+        );
     }
 
     /// An ordinary command must not be made unreadable on the way through:

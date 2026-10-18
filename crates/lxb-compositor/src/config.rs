@@ -52,7 +52,10 @@ pub struct General {
     /// draws one for you.
     pub draw_cursor: bool,
     /// XCursor theme for the pointer. Defaults to the bundled Bibata Modern
-    /// Classic, honouring an inherited `XCURSOR_THEME` before falling back.
+    /// Classic, `lxb-Bibata-Modern-Classic`, honouring an inherited
+    /// `XCURSOR_THEME` before falling back. `Bibata-Modern-Classic`, what the
+    /// bundled copy was called until 0.9.4, still means it wherever no theme
+    /// of that name is installed; see `cursor::resolve_theme`.
     pub cursor_theme: Option<String>,
     /// Nominal cursor size in logical pixels; `XCURSOR_SIZE`, then 24.
     pub cursor_size: Option<u32>,

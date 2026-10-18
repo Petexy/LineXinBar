@@ -914,8 +914,15 @@ alone.
 ### Battery percentage
 
 `Settings > Power > Battery percentage` decides whether the start screen's
-corner writes the charge out in figures over the mark that draws it. **Off**,
+corner writes the charge out in figures beside the mark that draws it. **Off**,
 until somebody asks for it.
+
+The figures stand **right of the mark**, the way a phone writes them: on the
+clock's own line, at the clock's own size and in the same water, outermost in
+the corner — `10:02 ▭ 44%` — with the mark and the time stepping left by however
+wide the charge came out. The digits are all one width, so that only happens at
+100 and at 9, by one figure. The [guide's header](guide.md#the-guide-overlay)
+puts them on the same side of the same mark.
 
 **The row is there only on a machine with a battery**, and so is the mark. What
 counts as one is the kernel's own answer, read from `/sys/class/power_supply`:
@@ -962,8 +969,9 @@ has one answer for every account, and a login screen has several to ask. Before
 is kept.
 
 **The login screen draws it too**, from CEDM 0.9.3 on: the same mark in its
-top-right corner on a machine with a battery, and the same figures with it when
-the account whose tile is selected has this on. It cannot open anybody's home to
+top-right corner on a machine with a battery, and the same figures right of it,
+at the same size, when the account whose tile is selected has this on — so
+the corner reads the same on either side of signing in. It cannot open anybody's home to
 find out — the greeter runs as an account of its own, in front of every account
 on the machine — so the choice reaches it as that account's published look. The
 key is carried the way the accent's is, and it is republished the moment the

@@ -51,6 +51,7 @@ mod heroic;
 mod i18n;
 mod icons;
 mod idle;
+mod installation;
 mod keyboard;
 mod launch;
 mod layouts;
@@ -84,6 +85,7 @@ mod screenshot;
 mod search;
 mod secret;
 mod settings;
+mod settings_watch;
 mod sound;
 mod steam;
 mod steam_hid;
@@ -879,6 +881,18 @@ struct Cli {
     #[arg(long, action = clap::ArgAction::SetTrue)]
     no_steam: std::primitive::bool,
 
+    /// Start this session for one application: the desktop entry named here
+    /// (`lxb-installer.desktop`) is opened on the first display as the session
+    /// comes up, with nothing animating, and is the first tile in System and
+    /// the first entry of the Home menu for as long as the session lasts.
+    ///
+    /// For a live medium, where the session exists to run its installer.
+    /// `lxb --shell --installation-mode` passes it on, which is what
+    /// `lxb-session --installation-mode` runs; an installed system never has
+    /// it. See [`installation`].
+    #[arg(long, value_name = "DESKTOP-ENTRY")]
+    installation_mode: Option<String>,
+
     /// Set the system language to this locale and exit.
     ///
     /// The privileged half of Settings > Language, started by polkit and by
@@ -1335,7 +1349,25 @@ fn main() -> anyhow::Result<()> {
     settings::note_steam_in_this_session(!cli.no_steam);
     let wallpaper_handoff = wallpaper_clock::WallpaperClock::from_environment(theme::accent().name);
 
-    let mut categories = apps::scan();
+    // Before the scan, because the application a session was started for is
+    // filed by it: the first tile in System. See [`installation`].
+    let installation = cli
+        .installation_mode
+        .as_deref()
+        .and_then(installation::Mode::for_entry);
+    match (&installation, cli.installation_mode.as_deref()) {
+        (Some(mode), _) => tracing::info!(
+            entry = mode.entry(),
+            "installation mode: this session is for one application"
+        ),
+        (None, Some(given)) => tracing::warn!(
+            given,
+            "--installation-mode names no desktop entry; this is an ordinary session"
+        ),
+        (None, None) => {}
+    }
+
+    let mut categories = apps::scan(installation.as_ref().map(installation::Mode::entry));
     // Both halves of the same answer: the flag, and the switch under Settings >
     // Games > Steam. A session with either of them saying no leaves Valve's own
     // `.desktop` entry exactly where the scan filed it and puts no row of its
@@ -1802,6 +1834,8 @@ fn main() -> anyhow::Result<()> {
         stick_keys: Vec::new(),
         gpu: None,
         startup,
+        installation,
+        pressed_in: Screen::Start,
         lattice: {
             let mut lattice = Lattice::with_session_displays(
                 categories,
@@ -1814,6 +1848,8 @@ fn main() -> anyhow::Result<()> {
             lattice
         },
         catalogue: catalogue::Watch::start(xdg_data_dirs("applications"), Instant::now()),
+        settings_file: settings::settings_path()
+            .and_then(|file| settings_watch::Watch::start(file, Instant::now())),
         media,
         // Only a real library has real artwork. An invented one — see
         // `--debug-steam-library` — numbers its games from one, and app 10 is
@@ -1884,6 +1920,9 @@ fn main() -> anyhow::Result<()> {
     if shell.panels.is_empty() {
         anyhow::bail!("this compositor advertises no outputs to draw on");
     }
+    // A session started for one application opens on its tile everywhere.
+    // See [`installation`].
+    shell.stand_every_display_on_the_installation_app();
     // A fixture library goes on the bar through exactly the path a real one
     // does — the row that names the account, then the column — so what is on
     // screen is the same arrangement the worker would have produced. Including
@@ -1967,6 +2006,11 @@ fn main() -> anyhow::Result<()> {
         // workers may write notifications, thumbnails, covers or logos into
         // it. Until it lands, only the separately rendered backdrop is shown.
         shell.finish_startup_icons();
+        // And the application this session was started for, once, as soon as
+        // the display it opens on has been sized — not after the pictures:
+        // the application loads while they are being decoded, and its loading
+        // screen is drawn the moment they land.
+        shell.start_the_installation_app();
         shell.present_deferred_share();
         shell.present_deferred_pick();
         shell.poll_controller(now);
@@ -2028,6 +2072,13 @@ fn main() -> anyhow::Result<()> {
         // across. See [`catalogue`].
         if shell.startup.ready {
             shell.notice_what_is_installed(now);
+        }
+        // And the shell's own settings file, which is the same shape again:
+        // another program — the live medium's installer — writing the language
+        // into `shell.toml` is not a Wayland event either, and this is the
+        // frame the shell starts speaking it on. See [`settings_watch`].
+        if shell.startup.ready {
+            shell.follow_the_settings_file(now);
         }
         // And for Steam, which is the same shape again: a library read over a
         // network on a worker thread, arriving on whichever frame it is ready.
@@ -5743,6 +5794,16 @@ struct Shell {
     /// procedural atlas, so replacement can never discard a notification,
     /// thumbnail, cover or logo that arrived during startup.
     startup: StartupIcons,
+    /// The application this session was started for, in installation mode —
+    /// the installer, on a live medium — and whether it has been opened yet.
+    /// `None` in every other session. See [`installation`].
+    installation: Option<installation::Mode>,
+    /// Which screen the press being carried out was made on, for the one
+    /// press that is carried out by another screen's code: the Home menu's
+    /// entry for that application presses its tile, and is answered in the
+    /// menu's voice rather than the tile's. [`Screen::Start`] at every other
+    /// moment. See [`Shell::answer_the_tile`].
+    pressed_in: Screen,
 
     lattice: Lattice,
     /// The applications directories, watched, so that something installed
@@ -5751,6 +5812,12 @@ struct Shell {
     /// which is the old behaviour: the bar is what it was when the session
     /// started. See [`catalogue`].
     catalogue: Option<catalogue::Watch>,
+    /// The directory `shell.toml` lives in, watched, so that a language or a
+    /// clock another program writes there is followed while the session runs.
+    /// `None` where there is no config directory or no `inotify` instance to
+    /// be had, which is the old behaviour: the file is read at the start and
+    /// never again. See [`settings_watch`].
+    settings_file: Option<settings_watch::Watch>,
     /// The user's own music, films and photographs, and the walk over their
     /// home directory that keeps finding them. Held beside the catalogue
     /// rather than in it:
@@ -6354,6 +6421,15 @@ impl Shell {
         // And whether there is an application for the tiles to be about, which
         // is what decides whether the highlight will stop on one.
         self.guide.set_pointer_target(self.pointer_app().is_some());
+        // And whether the column leads with the application this session was
+        // started for, by the name the bar has for it now — the session's
+        // language may have changed it.
+        let installation = self
+            .installation
+            .as_ref()
+            .and_then(|mode| apps::entry_on_the_bar(&self.lattice.categories, mode.entry()))
+            .map(|app| app.name.as_str());
+        self.guide.set_installation(installation);
         let stick_pointer = self.stick_pointer_on();
         // A display whose bar is behind a fullscreen application draws
         // nothing at all this frame: see `panel_is_visible`.
@@ -7972,7 +8048,11 @@ impl Shell {
             // why the fade below cannot be asked for by a splash that has
             // already faded off the application.
             if let Some(splash) = self.launching.iter().find(|splash| {
-                the_loading_screen_is_on_this_frame(splash.display == panel.id, splash.drawing(now))
+                the_loading_screen_is_on_this_frame(
+                    splash.display == panel.id,
+                    splash.drawing(now),
+                    self.startup.ready,
+                )
             }) {
                 let open = splash.open(now);
                 let grown = ui::ease(open);
@@ -11292,7 +11372,7 @@ impl Shell {
             // The same answer a fresh start gets. No process is forked for
             // this one, but the screen changes hands exactly as it would, and
             // that is the half of it the user is watching.
-            self.sounds.launch();
+            self.answer_the_tile();
             return;
         }
         // Nor while it is still on its way. The rule above is about something
@@ -11359,6 +11439,32 @@ impl Shell {
     /// opened in an application somebody chose by name is a launch on exactly
     /// the terms every other launch is.
     fn launch_the_selection(&mut self, with: Option<&str>) {
+        self.launch_the_selection_as(with, true);
+    }
+
+    /// The start screen's answer to a tile pressed, which is `app-launch.ogg`
+    /// whether the press starts something or comes back to it.
+    ///
+    /// Start's and nobody else's. The one tile press made from somewhere else
+    /// — the Home menu's entry for the application an installation-mode
+    /// session was started for, which is that tile pressed — has already been
+    /// answered in the menu's own voice, and a screen with a voice of its own
+    /// does not borrow another's. See [`Shell::pressed_in`].
+    fn answer_the_tile(&mut self) {
+        if self.pressed_in == Screen::Start {
+            self.sounds.launch();
+        }
+    }
+
+    /// The same, saying whether anybody pressed for it.
+    ///
+    /// `pressed` is false for one launch only: the application an
+    /// installation-mode session opens by itself as it comes up — see
+    /// [`Shell::start_the_installation_app`]. That launch is this one in every
+    /// way but two, and both are about there having been no press: no sound
+    /// answers it, and its loading screen neither grows out of the tile nor
+    /// fades off the window. See [`launch::Launch::without_a_press`].
+    fn launch_the_selection_as(&mut self, with: Option<&str>, pressed: bool) {
         // Everything the splash needs, read before the launch: the tile it
         // opens out of, and what was already on the display, so the
         // application's own window can be told from them.
@@ -11413,8 +11519,11 @@ impl Shell {
                 // is about the process, and a launch nobody could put a title
                 // on is still a launch. And not before the process exists — a
                 // press that started nothing must not be answered as though it
-                // had.
-                self.sounds.launch();
+                // had. And only for a press: a session opening its own
+                // application at the start has nothing to answer.
+                if pressed {
+                    self.answer_the_tile();
+                }
                 match opening.zip(self.display_at(self.focused_panel)) {
                     Some(((name, icon), here)) => {
                         let splash = launch::Launch::new(
@@ -11429,6 +11538,10 @@ impl Shell {
                                 foreground: &foreground,
                             },
                         );
+                        let splash = match pressed {
+                            true => splash,
+                            false => splash.without_a_press(),
+                        };
                         let splash = match (through_heroic, ps3_logo) {
                             (Some(logo), _) => splash
                                 .through_heroic()
@@ -11709,6 +11822,143 @@ impl Shell {
     fn begin_launch(&mut self, splash: launch::Launch) {
         begin_launch(&mut self.launching, splash);
         self.place_the_launches();
+    }
+
+    // --- installation mode -------------------------------------------------
+
+    /// The application this session was started for, where the bar has it.
+    /// `None` in every session but an installation-mode one. See
+    /// [`installation`].
+    fn installation_app(&self) -> Option<&apps::App> {
+        let mode = self.installation.as_ref()?;
+        apps::entry_on_the_bar(&self.lattice.categories, mode.entry())
+    }
+
+    /// Put display `index`'s bar on the tile of the application this session
+    /// was started for, with nothing travelling there. `false` where there is
+    /// no such tile, which is every ordinary session.
+    ///
+    /// Placed rather than walked, by [`model::Cursor::arrive_at_category`]:
+    /// this is the shell putting somebody somewhere, on the way to opening
+    /// what they asked for, and a glide along the category row under a loading
+    /// screen growing out of the tile would be two moves at once.
+    fn stand_on_the_installation_app(&mut self, index: usize) -> bool {
+        let Some(mode) = self.installation.as_ref() else {
+            return false;
+        };
+        let Some((column, row)) = apps::where_is_entry(&self.lattice.categories, mode.entry())
+        else {
+            return false;
+        };
+        let Some(panel) = self.panels.get_mut(index) else {
+            return false;
+        };
+        panel.cursor.arrive_at_category(column, &self.lattice);
+        panel.cursor.stand_on(row);
+        self.needs_redraw = true;
+        true
+    }
+
+    /// Open the bar on every display standing on the application this session
+    /// was started for, so that whoever closes it is put back on its tile —
+    /// one press from having it again — rather than on whichever column an
+    /// ordinary session opens on.
+    fn stand_every_display_on_the_installation_app(&mut self) {
+        for index in 0..self.panels.len() {
+            if !self.stand_on_the_installation_app(index) {
+                if let Some(mode) = &self.installation {
+                    tracing::warn!(
+                        entry = mode.entry(),
+                        "installation mode names an application this machine does not have"
+                    );
+                }
+                return;
+            }
+        }
+    }
+
+    /// Open the application this session was started for, once, as the
+    /// session comes up: on the first display, behind a loading screen that is
+    /// whole from its first frame and goes in a cut. See [`installation`].
+    ///
+    /// The first display is the one the session starts on, which is the one
+    /// control starts on — Wayland has no primary display, and the shell has
+    /// always taken the compositor's first as the main one.
+    ///
+    /// Waits for that display's first configure, so the loading screen is told
+    /// the size it stands on; that is a frame or two, and nothing is drawn
+    /// before it. Everything else is the press on its tile, made by nobody:
+    /// the picture size that application is set to, the compositor told where
+    /// it opens before it is started, and the launch itself, filed with every
+    /// other so the Home menu can close it.
+    fn start_the_installation_app(&mut self) {
+        const FIRST: usize = 0;
+        if self.installation.is_none()
+            || !self
+                .panels
+                .get(FIRST)
+                .is_some_and(|panel| panel.width > 0 && panel.height > 0)
+        {
+            return;
+        }
+        if !self
+            .installation
+            .as_mut()
+            .is_some_and(installation::Mode::start_now)
+        {
+            return;
+        }
+        if !self.stand_on_the_installation_app(FIRST) {
+            return;
+        }
+        if let Some(app) = self.installation_app() {
+            tracing::info!(
+                app = %app.name,
+                "installation mode: opening the application this session is for"
+            );
+        }
+        self.focused_panel = FIRST;
+        self.push_resolution_for_a_launch();
+        self.sync_launch_output(FIRST);
+        self.launch_the_selection_as(None, false);
+    }
+
+    /// The Home menu's entry for the application this session was started
+    /// for: brought back if it is running, and otherwise its tile, pressed —
+    /// answered in the menu's voice either way, as every row of the menu is.
+    ///
+    /// Running on this display, it is one of the cards beside the column, and
+    /// the entry takes that card: the window flies back out of it to the whole
+    /// display, which is what choosing it in the deck does. Going by way of
+    /// the start screen instead would have the window fly out of its tile
+    /// while the start screen was still on its way back from its own card,
+    /// with nothing standing between the two.
+    ///
+    /// Otherwise the menu goes the way any dismissal takes it — the start
+    /// screen over whatever is in front, or the bar alone over an empty display
+    /// — the bar is put on the tile, and the tile is pressed. So everything a
+    /// press on it does, this does, from one copy: nothing if it is already
+    /// opening, brought back on the display it is on if that is another one,
+    /// and otherwise opened behind a loading screen growing out of the tile,
+    /// on this display.
+    fn open_the_installation_app(&mut self) {
+        let index = self.focused_panel;
+        if !self.stand_on_the_installation_app(index) {
+            return;
+        }
+        if let Some((_, window)) = self
+            .window_for_selection()
+            .filter(|(display, _)| *display == index)
+        {
+            self.activate_window(window);
+            return;
+        }
+        self.guide.dismiss(self.app_running());
+        // Answered in the menu's voice — see [`Shell::answer_the_tile`] — and
+        // put back however the press went.
+        let was = std::mem::replace(&mut self.pressed_in, Screen::Guide);
+        self.start_selection();
+        self.pressed_in = was;
     }
 
     // --- the friends list --------------------------------------------------
@@ -21101,6 +21351,44 @@ impl Shell {
         self.scan_the_bar_again();
     }
 
+    /// Speak the language and read the clock another program has just written
+    /// into `shell.toml`.
+    ///
+    /// What the rows under Settings > Language and Settings > System > Clock
+    /// do on a press, short of writing the file, which already says it: the
+    /// catalog and the clock change in [`settings::follow_the_file`], every
+    /// label on every display is said again here, and the programs the shell
+    /// opens from now on are given the language's locale. The system's own
+    /// locale is not asked for — that is a press's, with a password panel in
+    /// front of it, and never something a file being written does to a
+    /// machine. See [`locale::follow`].
+    ///
+    /// Not held back while an application is in the foreground, unlike the
+    /// catalogue's walk: the one program this is for is the installer, which
+    /// *is* the application in the foreground, and the bar behind it is what
+    /// the person goes back to the moment it is done.
+    fn follow_the_settings_file(&mut self, now: Instant) {
+        let Some(watch) = self.settings_file.as_mut() else {
+            return;
+        };
+        if !watch.stirred(now) {
+            return;
+        }
+        watch.read();
+        let followed = settings::follow_the_file();
+        if let Some(language) = followed.language {
+            locale::follow(language);
+            self.refresh_language();
+        }
+        // Nothing to tell anybody for the clock, for the row's own reason:
+        // every time of day is written out of it each time its screen is
+        // drawn. The page is rebuilt so the mark moves to the row in force.
+        if followed.clock.is_some() {
+            self.rebuild_settings();
+            self.needs_redraw = true;
+        }
+    }
+
     /// Find and decode the marks of applications that were installed after the
     /// session started.
     ///
@@ -21220,7 +21508,9 @@ impl Shell {
             .iter()
             .map(|panel| panel.cursor.remember(&self.lattice))
             .collect();
-        let mut categories = apps::scan();
+        // With the application this session was started for at the head of
+        // System again, where the last scan put it. See [`installation`].
+        let mut categories = apps::scan(self.installation.as_ref().map(installation::Mode::entry));
         // A scan finds what is on the disk and nothing else, so everything
         // Steam put on the bar has to go back on with it: the row at the head
         // of Games, the library hanging off it, and the client's own entry
@@ -34059,6 +34349,7 @@ impl Shell {
         match item {
             Item::Resume => self.guide.close(),
             Item::StartScreen => self.guide.show_start_screen_over_app(),
+            Item::Installation => self.open_the_installation_app(),
             Item::Close => {
                 self.close_selected_window();
                 // Stay in the menu. The card that was killed disappears from
@@ -36624,12 +36915,21 @@ impl Shell {
     /// The shared lattice serves all displays; the integration refresh paths
     /// preserve selection by game identity and retain their search/sort state.
     fn refresh_language(&mut self) {
-        let shifted = apps::offer_steam(
-            &mut self.lattice.categories,
-            self.steam.account().map(str::to_owned),
-            self.steam.standing(),
-        );
-        self.absorb(shifted);
+        // The Steam row is said again only where there is one. `offer_steam`
+        // puts a row up whether or not one was there, and a session whose
+        // integration is off — or that was started with `--no-steam` — never
+        // had one: a language chosen in it put a "Sign in to Steam" row at the
+        // head of Games, on a bar that had none a moment before. Asked of the
+        // setting, which folds in `--no-steam`, as every other place that
+        // offers the row asks it. See [`settings::steam_integration`].
+        if settings::steam_integration() {
+            let shifted = apps::offer_steam(
+                &mut self.lattice.categories,
+                self.steam.account().map(str::to_owned),
+                self.steam.standing(),
+            );
+            self.absorb(shifted);
+        }
         self.shelve_games(self.steam.rows());
         let shifted = apps::offer_retroarch(
             &mut self.lattice.categories,
@@ -36644,6 +36944,16 @@ impl Shell {
         let shifted =
             apps::shelve_retroarch(&mut self.lattice.categories, self.retroarch.rows(picking));
         self.absorb(shifted);
+        // And the other three integrations' rows and columns, on the same
+        // terms. Each row's note — "Press to set it up", "No games yet" — and
+        // each game's are written in the shell's words as the row is offered,
+        // so a row nobody offered again stayed in the language it was first
+        // offered in: an English "Press to set it up" under Windows Apps on a
+        // start screen that had just turned Polish. An integration that is
+        // off or not installed has nothing to say and is offered nothing.
+        self.rebuild_heroic();
+        self.rebuild_ps3();
+        self.rebuild_proton();
         self.rebuild_settings();
         apps::refresh_language(&mut self.lattice.categories);
         for app in &mut self.lattice.aside {
@@ -45600,8 +45910,21 @@ fn the_press_hands_the_display_over(something_is_running: bool, loading_screen: 
 /// application into its card, the overview having started from a menu frame
 /// that was committed and, from in here, indistinguishable from one that was
 /// seen.
-fn the_loading_screen_is_on_this_frame(on_this_display: bool, drawing: bool) -> bool {
-    on_this_display && drawing
+///
+/// And a third: nothing is drawn for one before the catalogue's pictures have
+/// landed, which is the rule the bar's own arrival keeps — see
+/// [`Shell::finish_startup_icons`]. Only one loading screen can be up that
+/// early, the one an installation-mode session puts up for itself as it starts
+/// (see [`installation`]), and drawn then it showed the application's mark as a
+/// pale square for as long as the pictures took. Until they land the display is
+/// the wallpaper the session handed over, as it is for every session; then the
+/// loading screen is there, whole, with its mark on it.
+fn the_loading_screen_is_on_this_frame(
+    on_this_display: bool,
+    drawing: bool,
+    pictures_ready: bool,
+) -> bool {
+    on_this_display && drawing && pictures_ready
 }
 
 /// Whether a loading screen takes the press instead of what is drawn
@@ -46209,11 +46532,23 @@ fn local_time() -> Option<libc::tm> {
 /// what holds every language and both clocks to it.
 fn wall_clock() -> Option<String> {
     let tm = local_time()?;
-    Some(crate::message!("clock-corner",
-        "month" => (tm.tm_mon + 1).to_string(),
-        "day" => tm.tm_mday.to_string(),
-        "time" => i18n::time_of_day(tm.tm_hour.clamp(0, 23) as u32, tm.tm_min.clamp(0, 59) as u32),
+    Some(corner_clock(
+        (tm.tm_mon.clamp(0, 11) + 1) as u32,
+        tm.tm_mday.clamp(1, 31) as u32,
+        tm.tm_hour.clamp(0, 23) as u32,
+        tm.tm_min.clamp(0, 59) as u32,
     ))
+}
+
+/// What the corner reads at a moment that is stated rather than read off the
+/// machine's clock — `month` 1 to 12, `hour` 0 to 23 — which is what lets a
+/// test say what noon on the twelfth of October looks like.
+fn corner_clock(month: u32, day: u32, hour: u32, minute: u32) -> String {
+    crate::message!("clock-corner",
+        "month" => month.to_string(),
+        "day" => day.to_string(),
+        "time" => i18n::time_of_day(hour, minute),
+    )
 }
 
 /// The time on its own, for the always-on display, with how far into the minute
@@ -50419,20 +50754,38 @@ mod flight_tests {
         const ELSEWHERE: bool = false;
         const DRAWING: bool = true;
         const WATCHING: bool = false;
+        const READY: bool = true;
 
         // The failure, and the whole of it: a splash still held by this
         // display with nothing of itself on the screen shapes nothing.
-        assert!(!the_loading_screen_is_on_this_frame(HERE, WATCHING));
+        assert!(!the_loading_screen_is_on_this_frame(HERE, WATCHING, READY));
 
         // While it is on the screen it is what the display is showing, and the
         // bar goes on giving way to it.
-        assert!(the_loading_screen_is_on_this_frame(HERE, DRAWING));
+        assert!(the_loading_screen_is_on_this_frame(HERE, DRAWING, READY));
 
         // And a loading screen belongs to the display it was started from,
         // whatever it is doing: the other screen is a whole computer while a
         // game comes up on this one.
-        assert!(!the_loading_screen_is_on_this_frame(ELSEWHERE, DRAWING));
-        assert!(!the_loading_screen_is_on_this_frame(ELSEWHERE, WATCHING));
+        assert!(!the_loading_screen_is_on_this_frame(
+            ELSEWHERE, DRAWING, READY
+        ));
+        assert!(!the_loading_screen_is_on_this_frame(
+            ELSEWHERE, WATCHING, READY
+        ));
+    }
+
+    /// The loading screen an installation-mode session puts up for itself is
+    /// up before the catalogue's pictures have landed, and is not drawn until
+    /// they have: before them it was the application's name over a pale square
+    /// where its mark goes, for as long as the pictures took.
+    #[test]
+    fn a_loading_screen_waits_for_the_pictures_it_is_drawn_with() {
+        const HERE: bool = true;
+        const DRAWING: bool = true;
+        const NOT_YET: bool = false;
+        assert!(!the_loading_screen_is_on_this_frame(HERE, DRAWING, NOT_YET));
+        assert!(the_loading_screen_is_on_this_frame(HERE, DRAWING, true));
     }
 
     /// The other half of the same handover, and the bug *it* exists for: a game
@@ -50614,9 +50967,14 @@ mod input_tests {
     /// is the other way round, and it is about the screens rather than about
     /// the applications. That clip belongs to Start, where a press *starts*
     /// something. The guide only ever goes back to what is already up.
+    ///
+    /// Its one exception to that, the entry an installation-mode session leads
+    /// with, presses that application's tile and may start it — and is still
+    /// answered here, because where a press is made is what decides its voice.
     #[test]
     fn every_guide_row_that_acts_answers_in_the_guides_own_voice() {
         for item in [
+            Item::Installation,
             Item::Resume,
             Item::Close,
             Item::Mixer,
@@ -51301,6 +51659,25 @@ mod input_tests {
             .expect("boolean switches should parse without explicit true values");
         assert!(cli.grab_keyboard);
         assert!(cli.no_gamepad);
+    }
+
+    /// The flag the compositor hands on is the shell's own, taking the entry
+    /// as its value; a session without it has no installation mode at all.
+    #[test]
+    fn installation_mode_takes_a_desktop_entry() {
+        let cli = Cli::try_parse_from([
+            "lxb-desktop",
+            "--installation-mode",
+            "test-installer.desktop",
+        ])
+        .expect("the compositor's line should parse");
+        assert_eq!(
+            cli.installation_mode.as_deref(),
+            Some("test-installer.desktop")
+        );
+        let cli = Cli::try_parse_from(["lxb-desktop"]).expect("an ordinary session");
+        assert_eq!(cli.installation_mode, None);
+        assert!(Cli::try_parse_from(["lxb-desktop", "--installation-mode"]).is_err());
     }
 
     #[test]

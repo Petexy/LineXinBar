@@ -158,9 +158,9 @@ rustPlatform.buildRustPackage {
   # configuration reference go with the compositor, which is what loads the one
   # and reads the other.
   postInstall = ''
-    mkdir -p "$out/share/icons/Bibata-Modern-Classic"
-    cp -a --no-preserve=ownership share/icons/Bibata-Modern-Classic/. \
-      "$out/share/icons/Bibata-Modern-Classic/"
+    mkdir -p "$out/share/icons/lxb-Bibata-Modern-Classic"
+    cp -a --no-preserve=ownership share/icons/lxb-Bibata-Modern-Classic/. \
+      "$out/share/icons/lxb-Bibata-Modern-Classic/"
 
     install -Dm0644 LICENSE \
       "$out/share/licenses/$pname/GPL-3.0-only.txt"

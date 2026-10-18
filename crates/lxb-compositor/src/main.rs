@@ -73,6 +73,17 @@ struct Cli {
     #[arg(long)]
     shell: bool,
 
+    /// Start the shell for one application: the desktop entry named here
+    /// (`lxb-installer.desktop`) is opened as the session comes up and kept at
+    /// the head of the start screen and the Home menu. Needs `--shell`.
+    ///
+    /// For a live medium, where the session exists to run its installer:
+    /// handed to the shell as its own `--installation-mode`, so a display
+    /// manager's line is the only thing that has to say it. `lxb-session
+    /// --installation-mode` is the same thing from the session's side.
+    #[arg(long, value_name = "DESKTOP-ENTRY", requires = "shell")]
+    installation_mode: Option<String>,
+
     /// Config file. Defaults to $XDG_CONFIG_HOME/lxb/config.toml.
     #[arg(short, long)]
     config: Option<std::path::PathBuf>,
@@ -277,7 +288,12 @@ fn main() -> anyhow::Result<()> {
     state.end_the_session_on_a_signal();
 
     let autostart = state.lxb.config.general.autostart.clone();
-    let shell = cli.shell.then(|| state.lxb.config.general.shell.clone());
+    let shell = cli.shell.then(|| {
+        state::shell_for(
+            &state.lxb.config.general.shell,
+            cli.installation_mode.as_deref(),
+        )
+    });
     state.start_xwayland(autostart, shell, background_handoff);
 
     // The pass below runs after every dispatch — every event, every render
@@ -474,5 +490,36 @@ mod tests {
         for raw in ["utter nonsense", "1280x", "x800", "1280x800x600", ""] {
             assert!(parse_size(raw).is_err(), "{raw:?} should be refused");
         }
+    }
+
+    /// Installation mode is something the session's shell does, so it is
+    /// refused without one rather than accepted and dropped — a bare
+    /// compositor told to start an installer would say nothing and start
+    /// nothing.
+    #[test]
+    fn installation_mode_needs_the_shell() {
+        let cli = Cli::try_parse_from([
+            "lxb",
+            "--backend",
+            "udev",
+            "--shell",
+            "--installation-mode",
+            "test-installer.desktop",
+        ])
+        .expect("the session's own line should parse");
+        assert!(cli.shell);
+        assert_eq!(
+            cli.installation_mode.as_deref(),
+            Some("test-installer.desktop")
+        );
+        assert!(
+            Cli::try_parse_from(["lxb", "--installation-mode", "test-installer.desktop"]).is_err()
+        );
+        assert_eq!(
+            Cli::try_parse_from(["lxb", "--shell"])
+                .expect("an ordinary session")
+                .installation_mode,
+            None
+        );
     }
 }

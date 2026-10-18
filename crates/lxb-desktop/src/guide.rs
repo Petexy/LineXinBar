@@ -75,6 +75,17 @@ const ELSEWHERE_FLIGHT: f32 = 0.18;
 /// One entry in the guide menu.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Item {
+    /// The application an installation-mode session was started for — the
+    /// installer, on a live medium — named by its own name, at the head of the
+    /// column.
+    ///
+    /// The way back to it from anywhere in the session: somebody who closed it
+    /// to look round the live system, or who opened something else over it,
+    /// brings it back with this one entry, and it is the first thing the menu
+    /// offers because it is what the session is for. Pressing it is pressing
+    /// its tile, which is the first in System — see `installation` in the
+    /// shell. Absent in every other session.
+    Installation,
     /// Whether the right stick moves the pointer inside the application in
     /// front. A square tile, not a row: see [`Item::is_tile`].
     Pointer,
@@ -139,6 +150,8 @@ pub enum Item {
 /// neighbouring entries disagree about which one they are in.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Band {
+    /// What the session was started for, on its own above everything else.
+    Installation,
     /// What the session sounds and looks like.
     Quick,
     /// What the menu does to the application in front of it.
@@ -313,6 +326,9 @@ impl Item {
                 None => crate::i18n::text("shell-close").to_string(),
             },
             Item::StartScreen => crate::i18n::text("shell-start-screen").to_string(),
+            // The application's own name, which only the guide holds — see
+            // [`Guide::label`].
+            Item::Installation => String::new(),
             // Drawn as a glyph or as a track, so there is nothing to write.
             Item::Power
             | Item::Volume
@@ -362,6 +378,7 @@ impl Item {
             | Item::Media => Band::Quick,
             Item::Resume | Item::Close => Band::Window,
             Item::StartScreen | Item::Power => Band::Session,
+            Item::Installation => Band::Installation,
         }
     }
 }
@@ -623,6 +640,11 @@ pub struct Guide {
     /// the keystroke: the switch has to be *seen* to go over, which takes
     /// longer than the frame the button went down on.
     pressed: Option<(Item, Instant)>,
+    /// What the application an installation-mode session was started for is
+    /// called, in the language the session is in — the label of
+    /// [`Item::Installation`], and whether the column has that entry at all.
+    /// `None` in every other session.
+    installation: Option<String>,
 }
 
 impl Guide {
@@ -813,6 +835,28 @@ impl Guide {
         self.pointer_target = running;
     }
 
+    /// Say what the application an installation-mode session was started for
+    /// is called, or that there is none.
+    ///
+    /// Asked of the bar rather than remembered from the start: its name is the
+    /// desktop entry's own, which follows the session's language, and an entry
+    /// that has left the bar takes its row in the menu with it rather than
+    /// leaving one that opens nothing.
+    pub fn set_installation(&mut self, name: Option<&str>) {
+        if self.installation.as_deref() != name {
+            self.installation = name.map(str::to_string);
+        }
+    }
+
+    /// The words on an entry: [`Item::label`], except for the one entry whose
+    /// words are an application's own name, which the guide holds.
+    pub fn label(&self, item: Item, target: Option<&str>) -> String {
+        match item {
+            Item::Installation => self.installation.clone().unwrap_or_default(),
+            _ => item.label(target),
+        }
+    }
+
     /// Whether an entry can be chosen at all.
     ///
     /// The pointer tile is a switch about the application in front, so with
@@ -880,14 +924,23 @@ impl Guide {
 
     /// The entries to offer.
     ///
-    /// Three things vary the column. The tiles and the bars at the top are
-    /// whatever this session can actually change. `closable` is whether the
-    /// selected card is a real window, which governs the two entries that are
-    /// about that window — with the start screen selected there is nothing to
-    /// close, and nothing for Start screen to do that the card does not already
-    /// do, because going to the bar *is* resuming it.
+    /// Four things vary the column. A session started for one application
+    /// leads with it. The tiles and the bars at the top are whatever this
+    /// session can actually change. `closable` is whether the selected card is
+    /// a real window, which governs the two entries that are about that window
+    /// — with the start screen selected there is nothing to close, and nothing
+    /// for Start screen to do that the card does not already do, because going
+    /// to the bar *is* resuming it.
     pub fn items(&self, closable: bool) -> Vec<Item> {
-        let mut items = Vec::with_capacity(8);
+        let mut items = Vec::with_capacity(9);
+        // First of all, in a session started for one application: the way back
+        // to it is the first thing this menu offers, because it is the reason
+        // the session exists. A line of its own and a band of its own, so it
+        // reads as standing apart from the controls under it rather than as
+        // one of them.
+        if self.installation.is_some() {
+            items.push(Item::Installation);
+        }
         // The tiles come first, and they do not come and go with the
         // application the way Close does. A switch that vanished when the
         // application it applies to exited would take the tile beside it
@@ -1836,6 +1889,61 @@ mod tests {
         for closable in [WINDOW, START_CARD] {
             assert_eq!(guide.items(closable).last(), Some(&Item::Power));
         }
+    }
+
+    /// A session started for one application leads the column with it, by
+    /// its own name, on a line and in a band of its own — over the start
+    /// screen and over a window alike — and every other session never sees
+    /// the entry.
+    #[test]
+    fn a_session_started_for_one_application_leads_the_column_with_it() {
+        let mut guide = Guide::default();
+        for closable in [WINDOW, START_CARD] {
+            assert!(!guide.items(closable).contains(&Item::Installation));
+        }
+
+        guide.set_installation(Some("Test Installer"));
+        for closable in [WINDOW, START_CARD] {
+            let items = guide.items(closable);
+            assert_eq!(items.first(), Some(&Item::Installation));
+            assert_eq!(
+                items
+                    .iter()
+                    .filter(|item| **item == Item::Installation)
+                    .count(),
+                1
+            );
+            assert_eq!(lines(&items)[0], (0, 1), "a line of its own");
+            assert!(
+                separator_rows(&items).contains(&1),
+                "and a rule between it and the tiles under it"
+            );
+        }
+        assert_eq!(guide.label(Item::Installation, None), "Test Installer");
+        assert_eq!(guide.label(Item::Resume, None), Item::Resume.label(None));
+        assert_eq!(
+            guide.label(Item::Close, Some("Something")),
+            Item::Close.label(Some("Something"))
+        );
+
+        // The menu still opens on Resume, which is the one row that never
+        // does anything to anybody; the entry is one step up from the tiles.
+        guide.open();
+        assert_eq!(guide.selected_item(WINDOW), Some(Item::Resume));
+        assert!(guide.select(Item::Installation, WINDOW));
+        assert_eq!(guide.selected_item(WINDOW), Some(Item::Installation));
+        assert!(guide.move_selection(1, WINDOW));
+        assert_eq!(guide.selected_item(WINDOW), Some(Item::Mixer));
+        assert!(guide.move_selection(-1, WINDOW));
+        assert_eq!(guide.selected_item(WINDOW), Some(Item::Installation));
+
+        // A name that changes — the session's language did — is the new name,
+        // and an entry that has left the bar takes the row with it.
+        guide.set_installation(Some("Instalator testowy"));
+        assert_eq!(guide.label(Item::Installation, None), "Instalator testowy");
+        guide.set_installation(None);
+        assert!(!guide.items(WINDOW).contains(&Item::Installation));
+        assert_eq!(guide.selected_item(WINDOW), Some(Item::Resume));
     }
 
     /// The column stands still whatever is selected, so an entry under the

@@ -327,7 +327,7 @@ cp -p third_party/lxb-gilrs/LICENSE-MIT GilRs-LICENSE-MIT.txt
 %license LICENSE Roboto-LICENSE.txt RobotoMono-OFL.txt Smithay-LICENSE.txt rcheevos-LICENSE.txt GilRs-LICENSE-MIT.txt
 %doc docs/configuration.md examples/config.toml
 %{_bindir}/lxb
-%{_datadir}/icons/Bibata-Modern-Classic/
+%{_datadir}/icons/lxb-Bibata-Modern-Classic/
 
 # The integration's marks travel with its binary: they are read out of the data
 # directory when the shell starts, which is how a package brings its own

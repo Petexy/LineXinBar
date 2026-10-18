@@ -2,7 +2,43 @@
 
 # A display manager may leave its own display variables in the environment.
 # LineXinBar is the new native session, never a client of that greeter.
+#
+# One option, for a live medium:
+#
+#     lxb-session --installation-mode lxb-installer.desktop
+#
+# starts the session for that one application. It opens on the first display
+# as the session comes up, with nothing animating, and stays the first tile in
+# System and the first entry of the Home menu; the rest of the session is the
+# ordinary one. It reaches the shell through the compositor's own option of the
+# same name. An installed system never passes it.
 set -eu
+
+installation_mode=
+while [ "$#" -gt 0 ]; do
+    case "$1" in
+        --installation-mode)
+            if [ "$#" -lt 2 ] || [ -z "$2" ]; then
+                echo "lxb-session: --installation-mode needs a desktop entry, such as lxb-installer.desktop" >&2
+                exit 2
+            fi
+            installation_mode=$2
+            shift 2
+            ;;
+        --installation-mode=*)
+            installation_mode=${1#--installation-mode=}
+            if [ -z "$installation_mode" ]; then
+                echo "lxb-session: --installation-mode needs a desktop entry, such as lxb-installer.desktop" >&2
+                exit 2
+            fi
+            shift
+            ;;
+        *)
+            echo "lxb-session: unknown option $1" >&2
+            exit 2
+            ;;
+    esac
+done
 
 unset WAYLAND_DISPLAY WAYLAND_SOCKET DISPLAY
 export XDG_SESSION_TYPE=wayland
@@ -11,4 +47,7 @@ export XDG_SESSION_DESKTOP=LineXinBar
 export DESKTOP_SESSION=lxb
 export LXB_PRIVATE_DBUS=1
 
+if [ -n "$installation_mode" ]; then
+    exec dbus-run-session -- lxb --backend udev --shell --installation-mode "$installation_mode"
+fi
 exec dbus-run-session -- lxb --backend udev --shell

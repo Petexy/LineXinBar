@@ -6,11 +6,13 @@
 //!
 //! The theme comes from `XCURSOR_THEME` / `XCURSOR_SIZE`, which `main`
 //! exports from the config before any backend starts. LineXinBar bundles the
-//! Bibata Modern Classic theme under `share/icons/`, and the default arrow
-//! from it is additionally compiled into the binary, so a pointer exists even
-//! on a system with no cursor theme installed at all.
+//! Bibata Modern Classic theme under `share/icons/`, in a directory of its own
+//! ([`BUNDLED_THEME`]), and the default arrow from it is additionally compiled
+//! into the binary, so a pointer exists even on a system with no cursor theme
+//! installed at all.
 
 use std::collections::HashMap;
+use std::path::PathBuf;
 use std::rc::Rc;
 use std::time::Duration;
 
@@ -27,11 +29,28 @@ use smithay::wayland::compositor;
 
 use crate::render::LxbRenderElement;
 
+/// The bundled theme: its directory under `share/icons/`, and so the name
+/// `XCURSOR_THEME` gives it.
+///
+/// It is Bibata Modern Classic, which a person may not have, so LineXinBar
+/// carries its own copy — under a name of its own. linexin-desktop ships the
+/// same theme as `/usr/share/icons/Bibata-Modern-Classic/`, and two packages
+/// that own one file cannot be installed together: pacman refuses the whole
+/// transaction, which is what stopped a medium carrying both desktops from
+/// being built. The `lxb-` prefix is the family's mark for a third party's
+/// work it carries a copy of.
+pub const BUNDLED_THEME: &str = "lxb-Bibata-Modern-Classic";
+
+/// What [`BUNDLED_THEME`] was called until 0.9.4, and so what a setting written
+/// before then names. See [`resolve_theme`].
+const FORMER_BUNDLED_THEME: &str = "Bibata-Modern-Classic";
+
 /// The bundled Bibata arrow, so [`CursorState`] can always produce *some*
 /// pointer: a missing theme must degrade to a plainer cursor, never to an
-/// invisible one.
+/// invisible one. The path is [`BUNDLED_THEME`]'s, written out because
+/// `include_bytes!` takes nothing but a literal.
 const EMBEDDED_ARROW: &[u8] =
-    include_bytes!("../../../share/icons/Bibata-Modern-Classic/cursors/left_ptr");
+    include_bytes!("../../../share/icons/lxb-Bibata-Modern-Classic/cursors/left_ptr");
 
 /// Nominal size when neither the config nor `XCURSOR_SIZE` says otherwise.
 /// 24 is what every desktop environment defaults to.
@@ -121,8 +140,9 @@ pub struct CursorState {
 
 impl CursorState {
     pub fn new() -> Self {
-        let theme_name =
-            std::env::var("XCURSOR_THEME").unwrap_or_else(|_| "Bibata-Modern-Classic".into());
+        // Already resolved: `main` exports the theme, through
+        // [`resolve_theme`], before any backend makes one of these.
+        let theme_name = std::env::var("XCURSOR_THEME").unwrap_or_else(|_| BUNDLED_THEME.into());
         let size = std::env::var("XCURSOR_SIZE")
             .ok()
             .and_then(|raw| raw.parse().ok())
@@ -278,6 +298,36 @@ impl Default for CursorState {
     }
 }
 
+/// The theme to load for one asked for by name.
+///
+/// Every name is taken at its word but one: the name the bundled theme went by
+/// until 0.9.4. A setting written before then still names it — `cursor_theme`
+/// in the configuration, the example configuration's line, an `XCURSOR_THEME`
+/// handed down by the session — and since the copy moved to a directory of its
+/// own, nothing answers to that name unless somebody else's Bibata is
+/// installed. linexin-desktop's is, on a machine with Linexin's GNOME desktop;
+/// then that is the theme the setting names, and it is the one used. Otherwise
+/// the name means what it meant when it was written, the copy LineXinBar
+/// carries, so nobody's pointer changes or disappears across the upgrade.
+///
+/// `installed` says whether a theme of a name is anywhere a theme is looked
+/// for; [`theme_installed`] is the answer the session uses.
+fn resolve_theme(requested: &str, installed: impl Fn(&str) -> bool) -> &str {
+    if requested == FORMER_BUNDLED_THEME && !installed(requested) {
+        BUNDLED_THEME
+    } else {
+        requested
+    }
+}
+
+/// Whether a cursor theme of this name is in one of `search_paths`: a directory
+/// of that name with cursors of its own, which is what an XCursor theme is.
+fn theme_installed(name: &str, search_paths: &[PathBuf]) -> bool {
+    search_paths
+        .iter()
+        .any(|dir| dir.join(name).join("cursors").is_dir())
+}
+
 /// Export `XCURSOR_THEME` / `XCURSOR_SIZE` / `XCURSOR_PATH` for this process
 /// and everything it starts.
 ///
@@ -285,12 +335,13 @@ impl Default for CursorState {
 /// compositor's own [`CursorState`], client toolkits drawing their cursors,
 /// and XWayland. The bundled theme directory is prepended to `XCURSOR_PATH`
 /// so the cursors work from a build tree or an installed prefix alike,
-/// without touching `/usr/share/icons`.
+/// without touching `/usr/share/icons`. The theme is exported resolved (see
+/// [`resolve_theme`]), so every one of the three is told a name that exists.
 pub fn export_cursor_environment(theme: Option<&str>, size: Option<u32>) {
-    let theme = theme
+    let requested = theme
         .map(str::to_string)
         .or_else(|| std::env::var("XCURSOR_THEME").ok())
-        .unwrap_or_else(|| "Bibata-Modern-Classic".to_string());
+        .unwrap_or_else(|| BUNDLED_THEME.to_string());
     let size = size
         .or_else(|| {
             std::env::var("XCURSOR_SIZE")
@@ -300,9 +351,9 @@ pub fn export_cursor_environment(theme: Option<&str>, size: Option<u32>) {
         .filter(|size| *size > 0)
         .unwrap_or(DEFAULT_SIZE);
 
-    let mut paths: Vec<std::path::PathBuf> = Vec::new();
+    let mut paths: Vec<PathBuf> = Vec::new();
     if let Some(dir) = std::env::var_os("LXB_DATA_DIR") {
-        paths.push(std::path::PathBuf::from(dir).join("icons"));
+        paths.push(PathBuf::from(dir).join("icons"));
     }
     if let Ok(exe) = std::env::current_exe() {
         // <prefix>/bin/lxb -> <prefix>/share/icons, and
@@ -324,7 +375,7 @@ pub fn export_cursor_environment(theme: Option<&str>, size: Option<u32>) {
         Ok(existing) => paths.extend(std::env::split_paths(&existing)),
         Err(_) => {
             if let Some(home) = std::env::var_os("HOME") {
-                let home = std::path::PathBuf::from(home);
+                let home = PathBuf::from(home);
                 paths.push(home.join(".icons"));
                 paths.push(home.join(".local/share/icons"));
             }
@@ -332,6 +383,15 @@ pub fn export_cursor_environment(theme: Option<&str>, size: Option<u32>) {
             paths.push("/usr/local/share/icons".into());
             paths.push("/usr/share/pixmaps".into());
         }
+    }
+
+    let theme = resolve_theme(&requested, |name| theme_installed(name, &paths)).to_string();
+    if theme != requested {
+        tracing::info!(
+            requested = %requested,
+            theme = %theme,
+            "the cursor theme setting names the bundled theme by its former name"
+        );
     }
 
     if let Ok(joined) = std::env::join_paths(paths) {
@@ -406,5 +466,66 @@ mod tests {
     fn static_cursors_ignore_time() {
         let cursor = animated(&[0]);
         assert!(cursor.frame_at(Duration::from_secs(1000)).is_some());
+    }
+
+    /// The checkout's own `share/icons/`, which holds the bundled theme and
+    /// nothing else — never a directory this machine's themes are in.
+    fn tree_icons() -> PathBuf {
+        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../share/icons")
+    }
+
+    #[test]
+    fn the_former_name_is_the_bundled_copy_when_nothing_answers_to_it() {
+        // A configuration written before 0.9.4, on a machine without
+        // linexin-desktop: the pointer it always had.
+        assert_eq!(
+            resolve_theme("Bibata-Modern-Classic", |_| false),
+            BUNDLED_THEME
+        );
+    }
+
+    #[test]
+    fn the_former_name_is_linexin_desktops_bibata_when_that_is_installed() {
+        // The same setting beside Linexin's GNOME desktop names a theme that
+        // exists, and the theme that exists is the one used.
+        let installed = |name: &str| name == "Bibata-Modern-Classic";
+        assert_eq!(
+            resolve_theme("Bibata-Modern-Classic", installed),
+            "Bibata-Modern-Classic"
+        );
+    }
+
+    #[test]
+    fn every_other_name_is_taken_at_its_word() {
+        // Installed or not: a theme that is missing degrades to the arrow at
+        // draw time, and only the former name has a meaning to fall back to.
+        for name in [BUNDLED_THEME, "Adwaita", "bibata-modern-classic", ""] {
+            assert_eq!(resolve_theme(name, |_| false), name);
+            assert_eq!(resolve_theme(name, |_| true), name);
+        }
+    }
+
+    #[test]
+    fn the_bundled_theme_never_answers_to_the_name_linexin_desktop_ships() {
+        // The whole point of the directory's name: the tree that is packaged
+        // has the bundled theme, and nothing a second package installs too.
+        let tree = [tree_icons()];
+        assert!(theme_installed(BUNDLED_THEME, &tree));
+        assert!(!theme_installed(FORMER_BUNDLED_THEME, &tree));
+        assert!(!theme_installed(BUNDLED_THEME, &[]));
+        // So in a session that can see only the tree, the former name is
+        // carried to the copy that is there.
+        assert_eq!(
+            resolve_theme(FORMER_BUNDLED_THEME, |name| theme_installed(name, &tree)),
+            BUNDLED_THEME
+        );
+    }
+
+    #[test]
+    fn the_compiled_arrow_is_the_bundled_themes_own() {
+        // `include_bytes!` cannot take the constant, so the path is written
+        // twice; this is what keeps the two the same directory.
+        let arrow = tree_icons().join(BUNDLED_THEME).join("cursors/left_ptr");
+        assert_eq!(std::fs::read(arrow).unwrap(), EMBEDDED_ARROW);
     }
 }

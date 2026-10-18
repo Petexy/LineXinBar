@@ -17,7 +17,9 @@ language = "pl"
 
 The accepted values are `de`, `en-GB`, `en-US`, `es`, `fr`, `hi`, `pl`,
 `pt-BR`, `ru` and `zh-CN`. A missing or unrecognized value, or `system`, means
-nothing has been chosen: the shell follows the session's locale — the first
+nothing has been chosen, and so does having no `shell.toml` at all, which is
+where a live medium and a freshly installed system both start. Then the shell
+follows the session's locale — the first
 nonempty of `LC_ALL`, `LC_MESSAGES`, `LANG` at startup, read by its language
 (any `de_*` is German, any `pt_*` is the Brazilian catalog, any `zh_*` the
 Simplified one), with one region looked at: `en_US` is American English and
@@ -79,7 +81,9 @@ back to the language. See "The clock" below.
    outranks `LANG` when present). Nothing already running changes — a program
    reads its locale once at its start — so the row says "from now on" in
    effect. At startup the same is done without a bus call, so a shell set to
-   Polish on a session that came up English still opens Polish applications.
+   Polish on a session that came up English still opens Polish applications —
+   and again whenever another program writes the language into `shell.toml`
+   (see "Set by another program" below).
 3. **The session bus's activation environment and the systemd user manager's
    environment**, best effort, so a program D-Bus starts on somebody's behalf
    follows too.
@@ -240,6 +244,55 @@ called what sorts, and neither is somebody's setting to change.
 It reaches beyond the shell the way the button hints do, through `shell.toml`:
 the login screen reads the account's copy, and anything built on lxb-toolkit
 reads it for itself.
+
+## Set by another program
+
+`language` and `clock` are the two keys in `shell.toml` another program may
+write, and a shell that is running follows them without being restarted. The
+Linexin live medium is what this is for: its installer runs in the shell's
+installation mode, and the language somebody picks on its first page is written
+into the live account's `~/.config/lxb/shell.toml` as `language = "pl"`. The
+start screen, the Home menu and the clock change within a fraction of a second,
+and so does every program opened from the shell afterwards.
+
+* **What is watched.** The directory the file lives in, with inotify, rather
+  than the file: a careful writer writes beside the file and renames it over
+  the top, which a watch on the file itself would lose. Where the directory
+  does not exist yet — a live medium's first boot has no `~/.config/lxb` — the
+  nearest directory above it is watched until it arrives. The file is read
+  once it has been closed after writing or renamed into place, and then left
+  alone for 150 ms, so a writer that takes more than one step is read at the
+  end.
+* **What is put into force** is what the rows under Settings → Language and
+  Settings → System → Clock put into force: the catalog, the clock, and every
+  label on every display, said again on the spot. The values are read exactly
+  as at startup — a line taken out, a word with no catalog, `system`, an empty
+  file and a file that has gone all mean nobody has chosen, and the shell
+  follows the session's language again. Every other key in the file is read at
+  startup only.
+* **What programs are given.** Every program the shell opens from then on gets
+  the language's locale in `LANG` (and in `LC_ALL`, `LC_MESSAGES` and
+  `LANGUAGE` where the session had them), as it does at startup — where glibc
+  can load that locale. Where it cannot, where the session already speaks the
+  language, and where nobody has chosen, those variables go back to what the
+  session started with. The live image builds all ten locales.
+* **What is not done.** Unlike a press, the locale service is not asked:
+  `/etc/locale.conf` and the machine's environment files are left as they
+  are, nothing asks for a password, and the session bus's activation
+  environment is not told. The system language is changed from Settings, with
+  the person who chose in front of the question, or by the installer on the
+  machine it installs.
+* **What is not followed.** The shell's own writes, which reach the watch like
+  anybody's and are recognised by their text, so a row pressed in Settings is
+  never read back as news; and a file that cannot be read or cannot be parsed —
+  a typo, or a line cut off — which leaves the language and the clock as they
+  were.
+
+A writer should keep every other line in the file, put `language` and `clock`
+before any `[table]`, and write beside the file and rename it over the top. A
+shell that writes the file itself before it has seen another program's change —
+a volume step, a pad picked up — keeps that program's language and clock in
+what it writes rather than putting its own back.
 
 ## The rest of the family
 

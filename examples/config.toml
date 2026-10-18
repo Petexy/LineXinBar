@@ -28,7 +28,7 @@ draw_cursor = true
 
 # Pointer appearance. Unset, these honour XCURSOR_THEME / XCURSOR_SIZE and
 # fall back to the bundled Bibata Modern Classic at 24px.
-# cursor_theme = "Bibata-Modern-Classic"
+# cursor_theme = "lxb-Bibata-Modern-Classic"
 # cursor_size = 24
 
 # Exported to every process LineXinBar starts.

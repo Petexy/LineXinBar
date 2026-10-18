@@ -81,6 +81,43 @@ impl App {
             .iter()
             .any(|name| same_application(name, app_id))
     }
+
+    /// Whether this is the desktop entry `id` names — `lxb-installer.desktop`,
+    /// the way a session's command line names one.
+    ///
+    /// By the entry's file name, exactly: it is somebody's configuration
+    /// naming one file, not a window to be matched loosely, and two
+    /// applications that happen to share a program name are two entries. An
+    /// entry in a subdirectory of an applications folder is named by its own
+    /// file name here rather than by the dashed id the specification builds
+    /// from the directories, which nothing on a machine of today ships.
+    pub fn is_entry(&self, id: &str) -> bool {
+        self.path.file_name().and_then(|name| name.to_str()) == Some(id)
+    }
+}
+
+/// Where on the bar the desktop entry `id` stands: its column and its row, on
+/// the column's own list — the only place an application's tile is.
+pub fn where_is_entry(categories: &[Category], id: &str) -> Option<(usize, usize)> {
+    categories
+        .iter()
+        .enumerate()
+        .find_map(|(column, category)| {
+            category
+                .entries
+                .iter()
+                .position(|entry| matches!(entry, Entry::App(app) if app.is_entry(id)))
+                .map(|row| (column, row))
+        })
+}
+
+/// The application the desktop entry `id` is, where the bar has it.
+pub fn entry_on_the_bar<'a>(categories: &'a [Category], id: &str) -> Option<&'a App> {
+    let (column, row) = where_is_entry(categories, id)?;
+    match categories.get(column)?.entries.get(row)? {
+        Entry::App(app) => Some(app),
+        _ => None,
+    }
 }
 
 /// Refresh translated desktop metadata in place so selections, open folders,
@@ -4293,7 +4330,11 @@ fn strip_field_codes(exec: &str) -> String {
 ///
 /// Entries earlier in the search path win, so a user's override in
 /// `~/.local/share/applications` replaces the system copy of the same id.
-pub fn scan() -> Vec<Category> {
+///
+/// `leading` is the desktop entry an installation-mode session was started
+/// for, which goes at the head of System whatever its categories say — see
+/// [`assemble`]. `None` in every other session.
+pub fn scan(leading: Option<&str>) -> Vec<Category> {
     let mut seen: HashSet<String> = HashSet::new();
     let mut apps: Vec<App> = Vec::new();
 
@@ -4301,14 +4342,27 @@ pub fn scan() -> Vec<Category> {
         collect_from_dir(&dir, &dir, &mut seen, &mut apps);
     }
 
-    assemble(apps)
+    assemble(apps, leading)
 }
 
 /// Sort discovered applications into the bar's columns.
 ///
 /// Split from [`scan`] so the arrangement can be exercised without a
 /// filesystem to arrange.
-fn assemble(apps: Vec<App>) -> Vec<Category> {
+///
+/// `leading` names the one entry that is not filed by its categories: the
+/// application an installation-mode session was started for. It is the first
+/// tile in System — in front of Files, which is otherwise that column's first
+/// row — and nowhere else, so a person who has closed it finds it again where
+/// the session put them, one press away. Taken out of the list before anything
+/// is sorted, so a column it would have been the only thing in is dropped like
+/// any other empty one rather than left standing with nothing in it. An entry
+/// the catalogue has not got leads nothing, and the bar is the ordinary one.
+fn assemble(apps: Vec<App>, leading: Option<&str>) -> Vec<Category> {
+    let mut apps = apps;
+    let mut leading = leading
+        .and_then(|id| apps.iter().position(|app| app.is_entry(id)))
+        .map(|at| apps.remove(at));
     let mut sorted: Vec<Vec<App>> = CATEGORY_TABLE.iter().map(|_| Vec::new()).collect();
     for app in apps {
         let id = app.category_id();
@@ -4322,7 +4376,11 @@ fn assemble(apps: Vec<App>) -> Vec<Category> {
         .zip(&mut sorted)
         .map(|((id, title, icon, _), apps)| {
             apps.sort_by_key(|a| a.name.to_lowercase());
-            let mut entries = subcategories(id);
+            let mut entries = Vec::new();
+            if *id == SYSTEM {
+                entries.extend(leading.take().map(Entry::App));
+            }
+            entries.extend(subcategories(id));
             entries.extend(apps.drain(..).map(Entry::App));
             Category {
                 id,
@@ -4406,6 +4464,12 @@ fn collect_from_dir(root: &Path, dir: &Path, seen: &mut HashSet<String>, apps: &
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The bar every session but an installation-mode one has, which is the
+    /// one nearly every test here is about.
+    fn assemble(apps: Vec<App>) -> Vec<Category> {
+        super::assemble(apps, None)
+    }
 
     fn parse(raw: &str) -> Option<App> {
         App::parse(raw, Path::new("/tmp/test.desktop"))
@@ -6025,6 +6089,99 @@ mod tests {
             );
             assert!(files.entries.is_empty(), "and it holds nothing until then");
         }
+    }
+
+    /// The application an installation-mode session was started for is the
+    /// first tile in System, in front of Files, wherever its own categories
+    /// would have filed it — and it is there once.
+    ///
+    /// Asked for for the Linexin live medium: somebody who closes the
+    /// installer to look round the live system finds it again on the start
+    /// screen, one press away, rather than somewhere down a column.
+    #[test]
+    fn the_entry_a_session_was_started_for_leads_system() {
+        let installer = entry(
+            "test-installer.desktop",
+            "Name=Test Installer\nExec=test-installer\nCategories=System;\n",
+        );
+        // An application whose name sorts before the installer's, in the same
+        // column, so that alphabetical order alone cannot put it first.
+        let monitor = entry(
+            "test-monitor.desktop",
+            "Name=A Monitor\nExec=test-monitor\nCategories=System;\n",
+        );
+        let editor = entry(
+            "test-editor.desktop",
+            "Name=An Editor\nExec=test-editor\nCategories=Development;\n",
+        );
+        let apps = vec![monitor, installer, editor];
+
+        let ordinary = super::assemble(apps.clone(), None);
+        let system = column(&ordinary, SYSTEM).expect("System is always a column");
+        assert!(
+            matches!(&system.entries[0], Entry::Folder(folder) if folder.place.is_some()),
+            "without the mode Files is still the head of System"
+        );
+
+        let led = super::assemble(apps.clone(), Some("test-installer.desktop"));
+        let system = column(&led, SYSTEM).expect("System is always a column");
+        assert!(
+            matches!(&system.entries[0], Entry::App(app) if app.name == "Test Installer"),
+            "the entry leads the column, got {:?}",
+            system.entries[0].title()
+        );
+        assert!(
+            matches!(&system.entries[1], Entry::Folder(folder) if folder.place.is_some()),
+            "and Files follows it"
+        );
+        let tiles = led
+            .iter()
+            .flat_map(|column| column.entries.iter())
+            .filter(|row| matches!(row, Entry::App(app) if app.is_entry("test-installer.desktop")))
+            .count();
+        assert_eq!(
+            tiles, 1,
+            "one tile, not one in System and one where it was filed"
+        );
+        let at = where_is_entry(&led, "test-installer.desktop");
+        let system_at = led.iter().position(|column| column.id == SYSTEM);
+        assert_eq!(at, system_at.map(|column| (column, 0)));
+        assert_eq!(
+            entry_on_the_bar(&led, "test-installer.desktop").map(|app| app.name.as_str()),
+            Some("Test Installer")
+        );
+
+        // From another column, which is left with nothing in it and goes the
+        // way every empty column goes.
+        let led = super::assemble(apps.clone(), Some("test-editor.desktop"));
+        let system = column(&led, SYSTEM).expect("System is always a column");
+        assert!(matches!(&system.entries[0], Entry::App(app) if app.name == "An Editor"));
+        assert!(
+            column(&led, "development").is_none(),
+            "a column whose only tile was moved is an empty column"
+        );
+
+        // And an entry this machine has not got leads nothing.
+        let unknown = super::assemble(apps, Some("not-installed.desktop"));
+        let system = column(&unknown, SYSTEM).expect("System is always a column");
+        assert!(matches!(&system.entries[0], Entry::Folder(_)));
+        assert_eq!(where_is_entry(&unknown, "not-installed.desktop"), None);
+    }
+
+    /// An entry is named by its file, exactly, and not by anything looser: a
+    /// session told to start one application must not start another that
+    /// happens to run a program of the same name.
+    #[test]
+    fn an_entry_is_named_by_its_file() {
+        let app = entry(
+            "org.example.Installer.desktop",
+            "Name=Installer\nExec=installer\nCategories=System;\n",
+        );
+        assert!(app.is_entry("org.example.Installer.desktop"));
+        assert!(!app.is_entry("org.example.installer.desktop"));
+        assert!(!app.is_entry("installer.desktop"));
+        assert!(!app.is_entry("Installer.desktop"));
+        assert!(!app.is_entry(""));
     }
 
     fn found(path: &str) -> crate::media::Shelved {

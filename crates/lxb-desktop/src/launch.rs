@@ -469,6 +469,17 @@ pub struct Launch {
     /// That game's wordmark on this disk, where it has one. A Steam game's is
     /// asked for by app id instead; see [`crate::ui::LaunchView::logo`].
     logo: Option<PathBuf>,
+    /// Whether nobody pressed anything for this: the application an
+    /// installation-mode session starts on its own, as the session comes up.
+    ///
+    /// Two things follow, and both are the same thing. There is no tile it was
+    /// pressed on, so it does not grow out of one — it is the whole display on
+    /// its first frame — and there is no press to acknowledge, so nothing about
+    /// it moves at all: it goes from the display on the frame the window has
+    /// settled, in a cut, rather than fading off it. Between the two it is an
+    /// ordinary loading screen, naming what is coming and holding the display
+    /// until it is there. See `installation` in the shell.
+    unpressed: bool,
     /// What Valve's client is doing to the game instead of starting it, in the
     /// words the row on the bar uses — "Updating · 33% of 1.3 GB".
     ///
@@ -604,6 +615,7 @@ impl Launch {
             heroic_carries_it: false,
             own_picture: false,
             logo: None,
+            unpressed: false,
             said: None,
             fetched: 0,
             game: None,
@@ -684,6 +696,13 @@ impl Launch {
         self.own_picture = true;
         self.logo = logo;
         self.doing = Some(Doing::Game);
+        self
+    }
+
+    /// Mark this as a launch nobody pressed for — see the `unpressed` field:
+    /// on the display whole from its first frame, and off it in a cut.
+    pub fn without_a_press(mut self) -> Self {
+        self.unpressed = true;
         self
     }
 
@@ -1118,7 +1137,13 @@ impl Launch {
 
     /// How far the panel is out of its tile: 0 on the tile, 1 filling the
     /// display. Unshaped — the drawing eases it.
+    ///
+    /// Always 1 for a launch nobody pressed for, which has no tile to come out
+    /// of.
     pub fn open(&self, now: Instant) -> f32 {
+        if self.unpressed {
+            return 1.0;
+        }
         (now.duration_since(self.started).as_secs_f32() / OPEN).clamp(0.0, 1.0)
     }
 
@@ -1169,6 +1194,13 @@ impl Launch {
             return 0.0;
         }
         let since = now.duration_since(at).as_secs_f32();
+        // A cut for a launch nobody pressed for, on the frame the window has
+        // settled: [`SETTLE`] is about a toolkit's blank first frame, which is
+        // as blank at the start of a session as anywhere else, and the fade
+        // after it is the half that answers a press.
+        if self.unpressed {
+            return if since < SETTLE { 1.0 } else { 0.0 };
+        }
         1.0 - ((since - SETTLE) / HANDOVER).clamp(0.0, 1.0)
     }
 
@@ -2614,5 +2646,53 @@ mod tests {
         );
         assert!(never.steam_never_appeared());
         assert!(never.gave_up_waiting_for_the_client());
+    }
+
+    /// The application an installation-mode session opens on comes up with
+    /// nothing moving: whole from the first frame, and gone in a cut.
+    ///
+    /// Asked for by name for the Linexin live medium — "boot straight to an
+    /// app without the animation of opening it". A press is acknowledged by
+    /// the panel growing out of its tile and fading off the window; nobody
+    /// pressed anything here, so both halves go, and only the wait between
+    /// them — the screen that says what is coming — is kept.
+    #[test]
+    fn a_launch_nobody_pressed_for_neither_grows_nor_fades() {
+        let t0 = Instant::now();
+        let mut splash = launch(t0).without_a_press();
+
+        // Whole on its first frame, and not counted as moving while it waits:
+        // what says *working* is the ring going round in place.
+        assert_eq!(splash.open(t0), 1.0);
+        assert_eq!(splash.fade(t0), 1.0);
+        assert!(!splash.is_moving(t0));
+        assert!(splash.waiting());
+
+        // The window arrives, and the screen holds through a toolkit's blank
+        // first frame exactly as a pressed launch's does…
+        assert_eq!(
+            splash.advance(at(t0, 1.0), &[7, 9], "Installer", true),
+            Some(Arrival::Window)
+        );
+        assert_eq!(splash.fade(at(t0, 1.0)), 1.0);
+        assert_eq!(splash.fade(at(t0, 1.0 + SETTLE * 0.5)), 1.0);
+        // …and then it is gone, with no frame in between.
+        assert_eq!(splash.fade(at(t0, 1.0 + SETTLE)), 0.0);
+        assert!(!splash.drawing(at(t0, 1.0 + SETTLE)));
+        for step in 0..=20 {
+            let fade = splash.fade(at(t0, 1.0 + SETTLE * 2.0 * step as f32 / 20.0));
+            assert!(
+                fade == 0.0 || fade == 1.0,
+                "a fade of {fade} is a hand-over somebody can watch"
+            );
+        }
+
+        // A pressed launch is untouched by any of it.
+        let pressed = launch(t0);
+        assert!(pressed.open(at(t0, OPEN * 0.5)) < 1.0);
+        let mut arrived = launch(t0);
+        arrived.advance(at(t0, 1.0), &[7, 9], "Installer", true);
+        let midway = arrived.fade(at(t0, 1.0 + SETTLE + HANDOVER * 0.5));
+        assert!(midway > 0.0 && midway < 1.0);
     }
 }

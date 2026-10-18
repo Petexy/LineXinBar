@@ -335,33 +335,40 @@ const BATTERY_MARK: f32 = 40.0;
 /// the whole bargain battery-empty.svg strikes with the other five, and it is
 /// what keeps the mark from moving as the charge falls.
 const BATTERY_MARK_INSET: f32 = 2.2 / 32.0;
+/// And how much of that cell is left empty past the battery's terminal, on
+/// the other side: the nub ends at 28.6 of the 32 units, the same in all six.
+///
+/// [`BATTERY_MARK_INSET`]'s twin, for whatever stands to the *right* of the
+/// mark — which since 0.9.4 is its charge in figures, wherever the shell writes
+/// them. Wider than the inset by the terminal's own overhang, and for the same
+/// reason a number: air measured to the cell is not the air that is seen.
+const BATTERY_MARK_TAIL: f32 = 3.4 / 32.0;
+/// The air between the battery's terminal and its charge in figures, wherever
+/// the shell draws the two together: the start screen's corner and the guide's
+/// header.
+///
+/// Measured from the terminal's own outline — see [`BATTERY_MARK_TAIL`] — so
+/// that it is the air the eye gets. Tighter than anything else on either line,
+/// deliberately: a number and the mark it is the number *of* have to read as
+/// one thing from across a room, and set any further apart the figures start to
+/// look like a second item rather than the mark's own caption. It is the way a
+/// phone writes it — the battery, and its charge hard beside it.
+const CHARGE_GAP: f32 = 9.0;
+/// How wide the shell's type sets a figure and the per cent sign, as a share of
+/// its size.
+///
+/// The bundled Roboto's own advances — tabular figures, so every digit is the
+/// same — which is what lets a layout with no font system in it know how wide
+/// a charge came out without shaping it. The guide's header needs that and has
+/// nothing else to ask: its figures are an ordinary run of text, and the mark
+/// stands left of wherever that run begins. `gpu`'s
+/// `the_charge_is_as_wide_as_the_shells_type_sets_it` holds both to the face.
+pub(crate) const FIGURE_ADVANCE: f32 = 0.562;
+pub(crate) const PERCENT_ADVANCE: f32 = 0.7324;
 /// How solid the corner is: the letters and the mark together, and the one
 /// number for both because they are one cluster. Short of full, because the
 /// corner is written on the wallpaper and not on a pane that could hold it up.
 const CORNER_INK: f32 = 0.85;
-/// The battery's charge in figures, above its mark: how big they are drawn, and
-/// how far above the middle of the mark their baseline stands.
-///
-/// Smaller than the clock, and above the mark rather than beside it, because it
-/// is a caption on the mark and not a second thing in the corner. On the line
-/// it would read as part of the time; at the clock's own size it would compete
-/// with it, and what the corner is for is the hour.
-///
-/// It is nonetheless *type in this material*, so it cannot be shrunk without
-/// limit: at the reference size the clock's own stems are already thin — see
-/// [`CORNER_CLOCK`] — and this is about three fifths of that. Three figures and
-/// a sign is as small as the water goes and still reads as writing rather than
-/// as wire.
-///
-/// The lift clears the *drawing* rather than the cell, and it is a share of
-/// that cell rather than a number of pixels so that the two cannot drift apart.
-/// A mark's quad is square and the battery lies across the middle of it: figures
-/// placed off the cell's edge would float with a gap of nothing under them, and
-/// figures placed a fixed distance up would be swallowed the moment the mark
-/// grew. This clears the shell's own top by about an eighth of the cell,
-/// whatever the cell is.
-const CORNER_PERCENT: f32 = 18.0;
-const CORNER_PERCENT_LIFT: f32 = 0.36;
 
 /// Where the middle of a mark sits on a line of type, as a share of that type's
 /// size measured from the top of its box.
@@ -688,40 +695,27 @@ const GUIDE_TRANSPORT_MIDDLE: f32 = 0.40;
 const GUIDE_MEDIA_TITLE: f32 = 0.80;
 
 const GUIDE_PADDING: f32 = 44.0;
-/// The air the application's name keeps from whatever the battery has put at
-/// the far end of its line — the mark, or the figures standing left of it — and
-/// so the room that name gives up.
+/// The air the application's name keeps from the battery at the far end of its
+/// line — from the mark's own outline, whether or not its figures stand right of
+/// it — and so the room that name gives up.
 ///
 /// Wider than the corner's own gap between mark and clock, because it separates
 /// two different kinds of thing rather than two marks: on the corner's line
 /// everything is the same material, and here a run of ordinary type stands next
-/// to a bead of water. Wider again than [`GUIDE_CHARGE_GAP`], and that is the
-/// point of there being two numbers: the name and the battery are two
-/// statements sharing a line, while the figures and the mark are one statement
-/// said twice.
+/// to a bead of water. Wider again than [`CHARGE_GAP`], and that is the point of
+/// there being two numbers: the name and the battery are two statements sharing
+/// a line, while the figures and the mark are one statement said twice.
 const GUIDE_BATTERY_GAP: f32 = 16.0;
-/// The air between the battery and its charge in figures.
+/// The box the figures are right-aligned in, against the column's edge, as a
+/// share of the type they are set in.
 ///
-/// About half the size of the type this line is set in, and measured to the
-/// mark's own outline rather than to its cell — see [`BATTERY_MARK_INSET`] — so
-/// that is the air the eye gets. Tighter than anything else here, deliberately:
-/// a number and the mark it is the number *of* have to read as one thing from
-/// across a room, and set any further apart the figures start to look like a
-/// second item in the header rather than a caption on the first.
-const GUIDE_CHARGE_GAP: f32 = 9.0;
-/// The room the figures are given, as a share of the type they are set in.
-///
-/// A box rather than a measurement. Nothing in `ui` has a font system in it and
-/// so nothing here can ask how wide a run came out — see `Gpu::width_needed`,
-/// which is the only thing that knows and is not reachable from a layout — so
-/// the figures are handed a box wide enough for the widest charge there is and
-/// right-aligned inside it. "100%" in Roboto is three tabular digits of 0.562
-/// and a sign of 0.732, which is 2.42; the rest is slack, and slack here costs
-/// only a little of the name's line.
-///
-/// Fixed rather than fitted so that nothing moves as the charge falls: the
-/// digits are tabular, the box does not change, and the name beside it is cut
-/// to the same width at 100 per cent as at 9.
+/// Only ever wider than what is written in it. Where the figures *begin* is not
+/// the box's business — the mark is placed from [`charge_width`], which is what
+/// keeps it [`CHARGE_GAP`] from the first figure whatever the charge says — and
+/// all the box has to do is never cut a run short. "100%" in Roboto is three
+/// tabular digits of 0.562 and a sign of 0.732, which is 2.42; the rest is
+/// slack, which costs nothing, since the box is never drawn and nothing is
+/// measured from its left edge.
 const GUIDE_CHARGE_BOX: f32 = 2.5;
 /// How long the sidebar takes to slide in, seconds.
 const GUIDE_SLIDE: f32 = 0.28;
@@ -2079,9 +2073,10 @@ pub struct Corner<'a> {
     /// that said so would be inventing hardware. See [`crate::power`], which is
     /// also where the cell in a wireless mouse is refused.
     pub battery: Option<crate::power::Charge>,
-    /// Whether the charge is written out in figures above that mark.
+    /// Whether the charge is written out in figures beside that mark, on its
+    /// right.
     ///
-    /// Off unless somebody asked for it, under Settings > Appearance. The mark
+    /// Off unless somebody asked for it, under Settings > Power. The mark
     /// is the answer to *how much is left*, which is what a glance at a corner
     /// is for; the number is for somebody who wants to know whether it is 61 or
     /// 68, and a console that put a number on the wallpaper by default would be
@@ -2114,7 +2109,7 @@ pub struct Corner<'a> {
 /// `at` is `[right, top, size]`: the edge the run is aligned against, the top of
 /// the line it is on, and the type's size — all in this display's pixels.
 ///
-/// Two runs use it: the time, and the battery's charge in figures above the
+/// Two runs use it: the time, and the battery's charge in figures beside the
 /// mark that draws it. Both are the corner, both are this material, and neither
 /// is an invitation to a third — see [`crate::gpu::LETTER_SET`], which is the
 /// whole alphabet either of them may be written in.
@@ -2323,6 +2318,20 @@ fn charge_figures(percent: u8) -> ([char; 4], usize) {
     (written, length + 2)
 }
 
+/// How wide the charge comes out in the shell's own type at `size`: the figures
+/// [`charge_figures`] writes, at Roboto's own advances.
+///
+/// What the guide's header places its battery from. Its figures go through the
+/// text pipeline, which a layout cannot ask, and they stand right of the mark
+/// against the column's edge — so where they begin, and with it where the mark
+/// ends, is this sum and nothing else. No pair in it kerns; see
+/// [`FIGURE_ADVANCE`].
+fn charge_width(percent: u8, size: f32) -> f32 {
+    let (_, length) = charge_figures(percent);
+    let figures = (length - 1) as f32;
+    (figures * FIGURE_ADVANCE + PERCENT_ADVANCE) * size
+}
+
 /// What the keyboard is going into on the display being drawn, if anything.
 ///
 /// One answer rather than a flag per field, because the bar has exactly one row
@@ -2413,6 +2422,36 @@ pub fn build(
         let name = battery_glyph(charge);
         if let Some(slot) = slots.glyph(name) {
             let cell = BATTERY_MARK * scale;
+            // And right of it, for somebody who asked to be told the number
+            // rather than shown the level, the charge in figures — the way a
+            // phone writes it, which is the way most people have learnt to
+            // read a battery.
+            //
+            // On the clock's own line and at the clock's own size, which is
+            // what puts the figures level with the mark beside them: the mark's
+            // cell is a quarter larger than the fan's exactly so that its shell
+            // comes out as tall as the digits on this line — see
+            // [`BATTERY_MARK`]. And outermost, against the inset the whole
+            // cluster is built from, so the mark and the time step left by
+            // however wide the charge came out. That changes twice in a whole
+            // discharge, at 99 and at 9, and only by a figure: the digits are
+            // tabular.
+            if corner.percent {
+                let (written, length) = charge_figures(charge.percent);
+                let figures = corner_run(
+                    &mut quads,
+                    written[..length].iter().copied(),
+                    [clock_right, clock_top, clock_size],
+                    ink,
+                    slots,
+                );
+                // A run whose letters are not all in the atlas yet draws
+                // nothing, and then the mark keeps the edge rather than
+                // standing off it beside an empty space.
+                if figures > 0.0 {
+                    clock_right -= figures + CHARGE_GAP * scale - BATTERY_MARK_TAIL * cell;
+                }
+            }
             quads.push(shaded(
                 Quad {
                     x: clock_right - cell,
@@ -2425,25 +2464,6 @@ pub fn build(
                 },
                 Some(name),
             ));
-            // And the figures over it, for somebody who asked to be told the
-            // number rather than shown the level. Aligned against the same
-            // right edge the whole cluster is, so a charge that falls from 100
-            // to 99 does not slide the mark under it.
-            if corner.percent {
-                let size = CORNER_PERCENT * scale;
-                let (written, length) = charge_figures(charge.percent);
-                corner_run(
-                    &mut quads,
-                    written[..length].iter().copied(),
-                    [
-                        clock_right,
-                        mark_middle - CORNER_PERCENT_LIFT * cell - CORNER_CLOCK_BASELINE * size,
-                        size,
-                    ],
-                    ink,
-                    slots,
-                );
-            }
             clock_right -= cell + CORNER_MARK_GAP * scale;
         }
     }
@@ -5204,40 +5224,22 @@ pub fn build_guide(view: GuideView, width: f32, height: f32) -> Scene {
     // Sharing the second line with the application's name keeps the header the
     // two rows it has always been rather than growing one for a mark.
     //
-    // The figures go to the *left* of the mark here and above it in the corner,
-    // and the difference is the room. The corner is a cluster on a wallpaper
-    // with the whole width of a display beside it, and stacking keeps the run
-    // from pushing the clock inward; this is a narrow column with a line of its
-    // own to spend and nothing above the mark but the date.
+    // The figures go to the *right* of the mark, as they do in the start
+    // screen's corner and on a phone: the battery, then what it holds. So it
+    // is they that stand against the edge the day is aligned to, and the mark
+    // that steps left of them.
     let second_line = 52.0 * scale + title_size * 1.35;
     let mut app_width = text_w;
     if let Some(charge) = view.battery {
         let name = battery_glyph(charge);
         if let Some(slot) = view.slots.glyph(name) {
             let cell = BATTERY_MARK * scale;
-            let mark_x = text_x + text_w - cell;
+            let right = text_x + text_w;
+            let mut mark_x = right - cell;
             // In the day's own ink rather than the white a mark on a lit tile
             // is drawn in. It is not on a tile: it stands on the header's glass
             // beside the date, and the two are one statement about the machine.
             let ink = theme.text_soft.a(0.7 * slide);
-            quads.push(shaded(
-                Quad {
-                    x: sidebar_x + mark_x,
-                    y: second_line + subtitle_size * MARK_LINE - cell * 0.5,
-                    w: cell,
-                    h: cell,
-                    slot,
-                    color: ink,
-                    ..Quad::default()
-                },
-                Some(name),
-            ));
-            // The left edge of everything the battery has put on this line,
-            // which every gap below is measured from. It starts at the mark's
-            // own outline rather than at the edge of the square cell that
-            // outline is drawn in — see [`BATTERY_MARK_INSET`] — because air
-            // measured to an empty corner of a cell is air nobody can see.
-            let mut cluster = mark_x + BATTERY_MARK_INSET * cell;
             if view.battery_percent {
                 // Ordinary type, and not the water the corner writes its own
                 // figures in. Everything in this panel that is *words* goes
@@ -5246,19 +5248,16 @@ pub fn build_guide(view: GuideView, width: f32, height: f32) -> Scene {
                 // figures modelled as beads would be the one place in the
                 // sidebar where writing was made of something else.
                 //
-                // Right-aligned in a box of its own, and that box is the whole
-                // of what this fixes. Given the name's own box to be aligned
-                // in, as it was, the two runs share a rectangle: the layout
-                // cannot ask how wide either came out, so a title long enough
-                // to fill the line was drawn straight under the charge. A box
-                // of its own wide enough for "100%" — see [`GUIDE_CHARGE_BOX`]
-                // — puts the figures against the mark without measuring
-                // anything, and leaves the name a line it is alone on.
+                // Right-aligned against the column's edge, in a box of their
+                // own that only has to be wide enough — see
+                // [`GUIDE_CHARGE_BOX`]. The mark is placed from how wide they
+                // came out rather than from that box, so it stands
+                // [`CHARGE_GAP`] from the first figure at 100 per cent and at
+                // 9 alike.
                 let figures = GUIDE_CHARGE_BOX * subtitle_size;
-                let figures_x = cluster - GUIDE_CHARGE_GAP * scale - figures;
                 texts.push(Text {
                     content: format!("{}%", charge.percent.min(100)),
-                    x: sidebar_x + figures_x,
+                    x: sidebar_x + right - figures,
                     y: second_line,
                     size: subtitle_size,
                     color: ink,
@@ -5271,8 +5270,27 @@ pub fn build_guide(view: GuideView, width: f32, height: f32) -> Scene {
                     cut: Cut::Tail,
                     mono: false,
                 });
-                cluster = figures_x;
+                mark_x -= charge_width(charge.percent, subtitle_size) + CHARGE_GAP * scale
+                    - BATTERY_MARK_TAIL * cell;
             }
+            quads.push(shaded(
+                Quad {
+                    x: sidebar_x + mark_x,
+                    y: second_line + subtitle_size * MARK_LINE - cell * 0.5,
+                    w: cell,
+                    h: cell,
+                    slot,
+                    color: ink,
+                    ..Quad::default()
+                },
+                Some(name),
+            ));
+            // The name stops short of the mark's own outline rather than of
+            // the square cell that outline is drawn in — see
+            // [`BATTERY_MARK_INSET`] — because air measured to an empty corner
+            // of a cell is air nobody can see. The battery is the leftmost
+            // thing it has put on this line, figures or none.
+            let cluster = mark_x + BATTERY_MARK_INSET * cell;
             app_width = (cluster - GUIDE_BATTERY_GAP * scale - text_x).max(0.0);
         }
     }
@@ -5624,7 +5642,7 @@ pub fn build_guide(view: GuideView, width: f32, height: f32) -> Scene {
         let label_size = 24.0 * scale;
         let label_padding = GUIDE_LABEL_PADDING * scale;
         texts.push(Text {
-            content: item.label(view.close_target),
+            content: view.guide.label(*item, view.close_target),
             x: sidebar_x + rx + label_padding + drift,
             // Centred in its chip now that no description shares the row.
             y: ry + rh * 0.5 - label_size * 0.62,
@@ -17739,101 +17757,156 @@ mod tests {
         assert_eq!(laid_out(&scene), laid_out(&bare));
     }
 
-    /// The charge in figures is the corner's own material too — one quad per
+    /// The charge in figures stands right of the mark, the way a phone writes
+    /// it, on the clock's own line and in the clock's own water — one quad per
     /// character, shaded out of a measurement of its shape — and it is off
     /// unless it was asked for.
     ///
     /// The same mistake the clock would fail as: a number drawn through the
     /// text pipeline would be flat coverage sitting over a bead of water.
     #[test]
-    fn the_charge_is_written_in_the_same_water_as_the_time() {
-        let (width, height) = (1920.0, 1080.0);
-        let scale = height / REFERENCE_HEIGHT;
-        let corner = |percent| {
-            corner_scene(
-                Corner {
-                    clock: Some("8/19 10:02"),
-                    signal: Some(Signal::Strong),
-                    battery: Some(crate::power::Charge {
-                        percent: 96,
-                        charging: false,
-                    }),
-                    percent,
-                    aside: 0.0,
-                },
-                width,
-                height,
-            )
-        };
+    fn the_charge_stands_right_of_the_mark_in_the_same_water_as_the_time() {
+        for (width, height) in [(1280.0, 800.0), (1920.0, 1080.0), (3840.0, 2160.0)] {
+            let scale = (height / REFERENCE_HEIGHT).clamp(0.6, 2.5);
+            let corner = |percent, figures| {
+                corner_scene(
+                    Corner {
+                        clock: Some("8/19 10:02"),
+                        signal: Some(Signal::Strong),
+                        battery: Some(crate::power::Charge {
+                            percent,
+                            charging: false,
+                        }),
+                        percent: figures,
+                        aside: 0.0,
+                    },
+                    width,
+                    height,
+                )
+            };
+            let mark = |scene: &Scene| -> Quad {
+                *scene
+                    .quads
+                    .iter()
+                    .find(|quad| quad.slot == Named::slot_of(icons::BATTERY_FULL))
+                    .expect("this charge is drawn full")
+            };
+            // The two runs are told apart by which side of the mark they are
+            // on: the time is left of it, and the charge is right of it.
+            let figures = |scene: &Scene| -> Vec<Quad> {
+                let mark = mark(scene);
+                let mut found: Vec<Quad> = letter_quads(scene)
+                    .into_iter()
+                    .filter(|quad| quad.x > mark.x + mark.w * 0.5)
+                    .copied()
+                    .collect();
+                found.sort_by(|a, b| a.x.total_cmp(&b.x));
+                found
+            };
 
-        // The two runs are told apart by the square each is drawn in: the
-        // clock's letters are the type's own size and the charge's are smaller.
-        let figures = |scene: &Scene| -> Vec<[f32; 4]> {
-            let side = crate::gpu::LETTER_BOX * CORNER_PERCENT * scale;
-            let mut found: Vec<[f32; 4]> = letter_quads(scene)
-                .iter()
-                .filter(|quad| (quad.w - side).abs() < 1e-3)
-                .map(|quad| [quad.x, quad.y, quad.w, quad.h])
-                .collect();
-            found.sort_by(|a, b| a[0].total_cmp(&b[0]));
-            found
-        };
-
-        let quiet = corner(false);
-        assert!(
-            figures(&quiet).is_empty(),
-            "the charge was written out without being asked for",
-        );
-
-        let scene = corner(true);
-        let written = figures(&scene);
-        // "96%" — three characters, every one of them with ink.
-        assert_eq!(written.len(), 3, "{written:?}");
-        for quad in letter_quads(&scene) {
+            let quiet = corner(96, false);
             assert!(
-                quad.glyph_material(),
-                "a figure is drawn as a picture: {quad:?}",
+                figures(&quiet).is_empty(),
+                "{width}x{height}: the charge was written out without being asked for",
+            );
+
+            let scene = corner(96, true);
+            let written = figures(&scene);
+            // "96%" — three characters, every one of them with ink.
+            assert_eq!(written.len(), 3, "{width}x{height}: {written:?}");
+            for quad in letter_quads(&scene) {
+                assert!(
+                    quad.glyph_material(),
+                    "a figure is drawn as a picture: {quad:?}",
+                );
+            }
+
+            // At the clock's own size and on the clock's own line: the same
+            // square, the same height, as every letter of the time.
+            let size = CORNER_CLOCK * scale;
+            let side = crate::gpu::LETTER_BOX * size;
+            let time = letter_quads(&scene)
+                .into_iter()
+                .find(|quad| quad.x < mark(&scene).x)
+                .copied()
+                .expect("the time is still drawn");
+            for figure in &written {
+                assert!(
+                    (figure.w - side).abs() < 1e-3,
+                    "{width}x{height}: {figure:?}"
+                );
+                assert!(
+                    (figure.y - time.y).abs() < 1e-3,
+                    "{width}x{height}: a figure stands at {}, the time at {}",
+                    figure.y,
+                    time.y,
+                );
+            }
+
+            // Outermost, right-aligned against the inset the whole cluster is
+            // built from.
+            let right = width - CORNER_INSET * scale;
+            let last = written.last().expect("the run drew something");
+            let expected = right - 0.7324 * size * 0.5 - side * 0.5;
+            assert!(
+                (last.x - expected).abs() < 1e-3,
+                "{width}x{height}: the figures end at {}, not against the inset at {expected}",
+                last.x,
+            );
+
+            // And the mark's terminal stands the charge's own air from the
+            // first figure — measured from the terminal's outline, not from the
+            // empty end of its cell.
+            let drawn = mark(&scene);
+            let terminal = drawn.x + drawn.w * (1.0 - BATTERY_MARK_TAIL);
+            let first = right - (2.0 * 0.562 + 0.7324) * size;
+            assert!(
+                ((first - terminal) - CHARGE_GAP * scale).abs() < 1e-3,
+                "{width}x{height}: {} between the terminal and the first figure, not {}",
+                first - terminal,
+                CHARGE_GAP * scale,
+            );
+            // Still centred on the clock's line.
+            let middle = CORNER_TOP * scale + CORNER_CLOCK * scale * MARK_LINE;
+            assert!(((drawn.y + drawn.h * 0.5) - middle).abs() < 0.5);
+
+            // The mark and the time both stepped left for the figures, by
+            // exactly what they took and nothing else.
+            let stepped = mark(&quiet).x - drawn.x;
+            let asked = (2.0 * 0.562 + 0.7324) * size + CHARGE_GAP * scale
+                - BATTERY_MARK_TAIL * BATTERY_MARK * scale;
+            assert!(
+                (stepped - asked).abs() < 1e-3,
+                "{width}x{height}: the mark stepped {stepped} aside, not {asked}",
+            );
+            let leftmost = |scene: &Scene| {
+                letter_quads(scene)
+                    .iter()
+                    .map(|quad| quad.x)
+                    .fold(f32::MAX, f32::min)
+            };
+            assert!(
+                ((leftmost(&quiet) - leftmost(&scene)) - stepped).abs() < 1e-3,
+                "{width}x{height}: the time and the mark stepped aside by different amounts",
+            );
+
+            // A charge falling from a hundred to ninety-nine leaves the sign
+            // where it is and brings the mark in by one figure: the digits are
+            // tabular, so that is the whole of what it moves.
+            let full = corner(100, true);
+            let nearly = corner(99, true);
+            let sign = |scene: &Scene| figures(scene).last().map(|quad| quad.x);
+            assert_eq!(
+                sign(&full),
+                sign(&nearly),
+                "{width}x{height}: the sign moved"
+            );
+            let moved = mark(&nearly).x - mark(&full).x;
+            assert!(
+                (moved - 0.562 * size).abs() < 1e-3,
+                "{width}x{height}: the mark moved {moved}, not one figure",
             );
         }
-
-        // Right-aligned against the same inset the mark under it is, so a
-        // charge falling from 100 to 99 does not slide the mark about.
-        let right = width - CORNER_INSET * scale;
-        let last = written.last().expect("the run drew something");
-        let size = CORNER_PERCENT * scale;
-        let expected = right - 0.7324 * size * 0.5 - crate::gpu::LETTER_BOX * size * 0.5;
-        assert!(
-            (last[0] - expected).abs() < 1e-3,
-            "the figures end at {}, not against the inset at {expected}",
-            last[0],
-        );
-
-        // Above the mark, clear of it.
-        let mark = scene
-            .quads
-            .iter()
-            .find(|quad| quad.slot == Named::slot_of(icons::BATTERY_FULL))
-            .expect("96 per cent is drawn full");
-        let foot = written
-            .iter()
-            .map(|quad| quad[1] + quad[3])
-            .fold(f32::MIN, f32::max);
-        assert!(
-            foot < mark.y + mark.h * 0.5,
-            "the figures reach {foot}, past the middle of the mark at {}",
-            mark.y + mark.h * 0.5,
-        );
-
-        // And the mark itself has not moved to make room for them: the figures
-        // are a caption on it, not a second thing in the row.
-        let placed = |scene: &Scene| {
-            scene
-                .quads
-                .iter()
-                .find(|quad| quad.slot == Named::slot_of(icons::BATTERY_FULL))
-                .map(|quad| [quad.x, quad.y, quad.w, quad.h])
-        };
-        assert_eq!(placed(&scene), placed(&quiet));
     }
 
     /// Every charge has a drawing, and being on the mains outranks all five of
@@ -17895,9 +17968,9 @@ mod tests {
     /// the one character of the corner's alphabet that is not the time's.
     ///
     /// The corner draws two runs when a battery is being written out in
-    /// figures, and both are in here. What tells them apart is the square each
-    /// is drawn in — see
-    /// [`the_charge_is_written_in_the_same_water_as_the_time`].
+    /// figures, and both are in here, the same size and on the same line. What
+    /// tells them apart is which side of the battery each stands on — see
+    /// [`the_charge_stands_right_of_the_mark_in_the_same_water_as_the_time`].
     fn letter_quads(scene: &Scene) -> Vec<&Quad> {
         let cells: Vec<u32> = "0123456789:/%".chars().map(|c| 40 + c as u32).collect();
         scene
@@ -25016,15 +25089,16 @@ mod tests {
         );
     }
 
-    /// The charge is written to the *left* of the mark here, not over it as in
-    /// the start screen's corner — and in ordinary type, which is what
-    /// everything else in this panel that is words is drawn in.
+    /// The charge is written to the *right* of the mark here, as it is in the
+    /// start screen's corner and on a phone — and in ordinary type, which is
+    /// what everything else in this panel that is words is drawn in.
     ///
-    /// It stands in a box of its own, hard against the mark, and the
-    /// application's name is cut short of that box rather than aligned inside
-    /// it. Sharing one box is what made a long title overwrite the charge.
+    /// The figures stand against the column's edge and the mark steps left of
+    /// them by exactly what they took, and the application's name is cut short
+    /// of the mark. Sharing one box with the name is what once made a long
+    /// title overwrite the charge.
     #[test]
-    fn the_charge_is_written_left_of_the_guides_battery() {
+    fn the_charge_is_written_right_of_the_guides_battery() {
         let guide = Guide::default();
         let charge = crate::power::Charge {
             percent: 96,
@@ -25034,8 +25108,15 @@ mod tests {
             scene
                 .texts
                 .iter()
-                .find(|text| text.content == "96%")
+                .find(|text| text.content.ends_with('%'))
                 .cloned()
+        };
+        let battery = |scene: &Scene| -> Quad {
+            *scene
+                .quads
+                .iter()
+                .find(|quad| quad.slot == Named::slot_of(icons::BATTERY_FULL))
+                .expect("this charge is drawn full")
         };
 
         let quiet = guide_header(&guide, Some(charge), false);
@@ -25046,19 +25127,24 @@ mod tests {
 
         let scene = guide_header(&guide, Some(charge), true);
         let written = figures(&scene).expect("the charge is written out");
-        let mark = scene
-            .quads
-            .iter()
-            .find(|quad| quad.slot == Named::slot_of(icons::BATTERY_FULL))
-            .expect("96 per cent is drawn full");
+        assert_eq!(written.content, "96%");
+        let mark = battery(&scene);
 
-        // Right-aligned in a box of its own — which is how the layout places it
-        // against the mark without ever measuring how wide it came out — and
-        // that box is wide enough for the widest charge there is. Roboto sets a
-        // digit in 0.562 of its size and the sign in 0.732, so "100%" is 2.42
-        // of it; anything narrower than that would ellipsize a full battery.
+        // Right-aligned against the edge the day is aligned to, in a box that
+        // is wide enough for the widest charge there is. Roboto sets a digit
+        // in 0.562 of its size and the sign in 0.732, so "100%" is 2.42 of it;
+        // anything narrower than that would ellipsize a full battery.
+        let (width, height) = (1920.0, 1080.0);
+        let scale = guide_scale(height);
+        let [panel_x, _, panel_w, _] = sidebar_panel_rect(width, height);
+        let padding = GUIDE_PADDING * scale;
+        let right = panel_x + padding * 0.8 + (panel_w - padding * 1.6);
         assert_eq!(written.align, TextAlign::Right);
-        let scale = guide_scale(1080.0);
+        assert!(
+            ((written.x + written.max_width) - right).abs() < 0.5,
+            "the figures end at {}, not against the column's edge at {right}",
+            written.x + written.max_width,
+        );
         assert!(
             written.max_width >= 2.42 * written.size,
             "\"100%\" wants {}, the box is {}",
@@ -25066,16 +25152,40 @@ mod tests {
             written.max_width,
         );
 
-        // And it ends half its own type from the battery's *outline*, not from
-        // the edge of the empty square that outline is drawn in: the gap the
-        // eye sees is the gap that was asked for.
+        // And the mark's terminal stands the charge's own air from where the
+        // figures begin — from the terminal's *outline*, not from the empty
+        // end of the square that outline is drawn in: the gap the eye sees is
+        // the gap that was asked for.
         let cell = BATTERY_MARK * scale;
-        let outline = mark.x + BATTERY_MARK_INSET * cell;
+        let terminal = mark.x + mark.w - BATTERY_MARK_TAIL * cell;
+        let begins = right - (2.0 * 0.562 + 0.7324) * written.size;
         assert!(
-            ((written.x + written.max_width) - (outline - GUIDE_CHARGE_GAP * scale)).abs() < 0.5,
-            "the figures end at {}, not against the mark at {}",
+            ((begins - terminal) - CHARGE_GAP * scale).abs() < 0.5,
+            "{} between the terminal and the figures, not {}",
+            begins - terminal,
+            CHARGE_GAP * scale,
+        );
+
+        // A full battery is one figure wider, and the mark gives way by that
+        // figure and nothing else: the sign keeps the column's edge.
+        let full = guide_header(
+            &guide,
+            Some(crate::power::Charge {
+                percent: 100,
+                charging: false,
+            }),
+            true,
+        );
+        let moved = mark.x - battery(&full).x;
+        assert!(
+            (moved - 0.562 * written.size).abs() < 0.5,
+            "the mark moved {moved} for a hundred per cent, not one figure",
+        );
+        let full_written = figures(&full).expect("a full charge is written out");
+        assert_eq!(full_written.content, "100%");
+        assert_eq!(
+            full_written.x + full_written.max_width,
             written.x + written.max_width,
-            outline - GUIDE_CHARGE_GAP * scale,
         );
 
         // On the same line as the name beside it, and in the day's own ink.
@@ -25092,15 +25202,15 @@ mod tests {
             .expect("the day is drawn");
         assert_eq!(written.color, day.color, "one ink for the whole column");
 
-        // And the name's line stops clear of the figures' box rather than
-        // running the full width of it. This is the bug itself: both runs were
-        // given the same rectangle, one aligned left and one right, so a title
-        // long enough to fill the line was drawn under the charge.
+        // And the name's line stops clear of the mark's outline rather than
+        // running the full width of the column. Two runs given the same
+        // rectangle, one aligned left and one right, is what once drew a title
+        // long enough to fill the line straight under the charge.
+        let outline = mark.x + BATTERY_MARK_INSET * cell;
         assert!(
-            ((name.x + name.max_width) - (written.x - GUIDE_BATTERY_GAP * scale)).abs() < 0.5,
-            "the name runs to {}, the figures start at {}",
+            ((name.x + name.max_width) - (outline - GUIDE_BATTERY_GAP * scale)).abs() < 0.5,
+            "the name runs to {}, the battery starts at {outline}",
             name.x + name.max_width,
-            written.x,
         );
 
         // Which holds for a name far too long for the column: what it is cut
@@ -25117,16 +25227,17 @@ mod tests {
             .find(|text| text.content.starts_with("Some Application"))
             .expect("the application's name is drawn");
         assert_eq!(long_name.max_width, name.max_width);
-        let long_written = figures(&long).expect("the charge is still written out");
+        let long_mark = battery(&long);
         assert!(
-            long_name.x + long_name.max_width <= long_written.x + 0.5,
-            "a long name reaches {}, past the figures at {}",
+            long_name.x + long_name.max_width <= long_mark.x + BATTERY_MARK_INSET * cell + 0.5,
+            "a long name reaches {}, past the battery at {}",
             long_name.x + long_name.max_width,
-            long_written.x,
+            long_mark.x + BATTERY_MARK_INSET * cell,
         );
 
-        // The room the name gave up: the mark, the air the eye sees in front of
-        // its outline, the figures' box, and the air between the two runs.
+        // The room the name gave up: the figures, the air between them and the
+        // terminal, the battery from terminal to outline, and the air between
+        // the two statements.
         let bare = guide_header(&guide, None, false);
         let bare_name = bare
             .texts
@@ -25134,9 +25245,9 @@ mod tests {
             .find(|text| text.content == "Nothing is running")
             .expect("the second line is drawn");
         let given = bare_name.max_width - name.max_width;
-        let asked = cell * (1.0 - BATTERY_MARK_INSET)
-            + GUIDE_CHARGE_GAP * scale
-            + written.max_width
+        let asked = (right - begins)
+            + CHARGE_GAP * scale
+            + cell * (1.0 - BATTERY_MARK_INSET - BATTERY_MARK_TAIL)
             + GUIDE_BATTERY_GAP * scale;
         assert!(
             (given - asked).abs() < 0.5,

@@ -186,8 +186,10 @@ around the shell.
 ### Bundled, so not required
 
 Roboto and a subset of Bibata Modern Classic ship in the tree and are compiled
-in or loaded from `share/`. LineXinBar does not depend on what fonts or cursor
-themes a console has installed.
+in or loaded from `share/` — the cursors under a directory of their own,
+`share/icons/lxb-Bibata-Modern-Classic/`, so they never share a file with a
+desktop that installs the same theme. LineXinBar does not depend on what fonts
+or cursor themes a console has installed.
 
 ### What this has actually run on
 
@@ -355,6 +357,13 @@ so a build tree runs its own matching shell:
 Set `general.shell` in the config to run something else. To have a display
 manager offer it, install [`share/wayland-sessions/lxb.desktop`](../share/wayland-sessions/lxb.desktop)
 into `/usr/share/wayland-sessions/`.
+
+`lxb --shell --installation-mode lxb-installer.desktop` starts the session for
+one application, which is what a live medium's installer wants: it opens as the
+session comes up, without the animation a press would get, and leads both the
+System column and the Home menu. See
+[Installation mode](packaging.md#installation-mode) for the display manager's
+side of it.
 
 For anything besides the shell, `general.autostart` and a trailing command
 both still work:

@@ -12787,11 +12787,219 @@ fn apply_with(setting: Setting, persist: impl FnOnce(&Stored)) -> bool {
 /// or over a brightness, would be a far worse failure than coming up violet in
 /// SDR.
 pub fn load() {
+    load_from(settings_path().as_deref(), |path| {
+        let read = std::fs::read_to_string(path);
+        // What the shell now knows the file to say, so that reading it again
+        // later can tell a change from the same text. See [`KNOWN`].
+        if let Ok(text) = &read {
+            *known() = Some(text.clone());
+        }
+        read
+    });
+}
+
+/// The whole text of `shell.toml` as this shell last read it or wrote it.
+///
+/// Two programs write this file now: the shell, whenever a row is pressed, and
+/// whatever else is entitled to set the two keys in it that are one answer for
+/// the whole desktop — the language and the clock. The live medium's installer
+/// is that other program: it writes the language somebody picked on its first
+/// page here, and the running shell follows. See [`follow_the_file`].
+///
+/// This is how either side tells the other's write from its own. The shell's
+/// writes come back to it through the same watch as anybody's, and are
+/// recognised by being exactly this text; and a write of the shell's own that
+/// finds the file saying something else knows somebody wrote it since. Held
+/// across each read and write of the file, so a save on one thread and a read
+/// on another take turns.
+static KNOWN: Mutex<Option<String>> = Mutex::new(None);
+
+fn known() -> std::sync::MutexGuard<'static, Option<String>> {
+    KNOWN.lock().unwrap_or_else(|e| e.into_inner())
+}
+
+/// What another program has changed in `shell.toml` that the shell follows: the
+/// language and the clock, each where it differs from the one in force.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub struct Followed {
+    pub language: Option<crate::i18n::Language>,
+    pub clock: Option<crate::i18n::Clock>,
+}
+
+/// Read `shell.toml` again, because something has written it, and put into
+/// force whatever it now says about the language and the clock.
+///
+/// Exactly what Settings > Language and Settings > System > Clock put into
+/// force, and read exactly as [`load`] reads them: a missing key, a word this
+/// shell has no catalog for and `system` all mean nobody has chosen, and a
+/// file that is not there at all means the same. What a row does *beyond*
+/// that is the caller's — the labels rebuilt on every display, and the
+/// language the shell gives the programs it opens ([`crate::locale::follow`]).
+/// Nothing is written back: the file already says it.
+///
+/// Two things are left alone, and what is in force stays:
+///
+/// * the shell's own writes, which arrive here like anybody's and are known by
+///   their text ([`KNOWN`]) — so a row pressed in Settings is not read back as
+///   news, and nothing here ever leads to a write that leads back here;
+/// * and a file that cannot be read, or cannot be read as settings — a
+///   hand-edit with a typo in it, or a writer caught in the middle of a line.
+///
+/// A writer caught in the middle is rare to begin with: the watch only asks
+/// for this once the file has been closed after writing or renamed into
+/// place, and then left alone for a moment. An empty file is not taken for
+/// one. It is what taking the one line out of a file that held only the
+/// language leaves, and it says nobody has chosen, as it does at startup.
+///
+/// Every other key in the file is left to the next session. They are the
+/// shell's own and written by its own rows; the two read here are the ones
+/// another program has any business setting.
+pub fn follow_the_file() -> Followed {
     let Some(path) = settings_path() else {
+        return Followed::default();
+    };
+    let mut known = known();
+    let found = read_again(
+        std::fs::read_to_string(&path),
+        known.as_deref(),
+        crate::i18n::preference(),
+        crate::i18n::clock(),
+    );
+    let (followed, text) = match found {
+        Reading::Known => return Followed::default(),
+        Reading::Kept => {
+            tracing::warn!(
+                path = %path.display(),
+                "the shell settings changed into something that cannot be read; \
+                 the language and the clock stay as they are"
+            );
+            return Followed::default();
+        }
+        Reading::Read { followed, text } => (followed, text),
+    };
+    *known = text;
+    drop(known);
+    if let Some(language) = followed.language {
+        crate::i18n::set(language);
+        tracing::info!(
+            language = language.key(),
+            "another program set the shell's language"
+        );
+    }
+    if let Some(clock) = followed.clock {
+        crate::i18n::set_clock(clock);
+        tracing::info!(clock = clock.key(), "another program set the clock");
+    }
+    followed
+}
+
+/// What reading `shell.toml` again found.
+#[derive(Debug, PartialEq)]
+enum Reading {
+    /// The text this shell last read or wrote — every write of its own.
+    Known,
+    /// Nothing that can be read as settings. What is in force stays.
+    Kept,
+    /// Settings: the language and the clock where they differ from the ones
+    /// in force, and the text now known — `None` for a file that has gone.
+    Read {
+        followed: Followed,
+        text: Option<String>,
+    },
+}
+
+/// [`follow_the_file`]'s decision, with the file, what the shell last knew of
+/// it and what is in force all handed in — so that it can be held without a
+/// file, and without the developer's own settings standing in for one.
+fn read_again(
+    read: std::io::Result<String>,
+    known: Option<&str>,
+    language: crate::i18n::Language,
+    clock: crate::i18n::Clock,
+) -> Reading {
+    let text = match read {
+        Ok(text) if known == Some(text.as_str()) => return Reading::Known,
+        Ok(text) => Some(text),
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => {
+            if known.is_none() {
+                return Reading::Known;
+            }
+            None
+        }
+        Err(_) => return Reading::Kept,
+    };
+    let (said_language, said_clock) = match text.as_deref().map(toml::from_str::<Stored>) {
+        None => (None, None),
+        Some(Ok(stored)) => (stored.language, stored.clock),
+        Some(Err(_)) => return Reading::Kept,
+    };
+    // Read as [`adopt`] reads them, word for word.
+    let wanted_language = said_language
+        .as_deref()
+        .and_then(crate::i18n::Language::parse)
+        .unwrap_or(crate::i18n::Language::System);
+    let wanted_clock = said_clock
+        .as_deref()
+        .and_then(crate::i18n::Clock::parse)
+        .unwrap_or(crate::i18n::Clock::FromLanguage);
+    Reading::Read {
+        followed: Followed {
+            language: (wanted_language != language).then_some(wanted_language),
+            clock: (wanted_clock != clock).then_some(wanted_clock),
+        },
+        text,
+    }
+}
+
+/// The language and the clock as another program has written them into
+/// `shell.toml` since this shell last read or wrote it — `None` where nobody
+/// has, which is nearly always.
+///
+/// For [`save`], which writes the whole file from what is in force. The watch
+/// that brings the shell round to another program's word looks at the
+/// directory a few times a second, not continuously, and a save landing in
+/// between — a volume step, a pad picked up — would otherwise put the old
+/// language back over the new one, and the shell would never hear of it.
+/// Their two keys are written instead of the shell's, and the watch then reads
+/// them as the change they are.
+///
+/// A file that has gone, or is empty, is somebody saying nobody chose, as it is
+/// to [`read_again`]. An unreadable one is nobody's word, and the save replaces
+/// it, as it always has.
+fn their_word(
+    disk: std::io::Result<String>,
+    known: Option<&str>,
+) -> Option<(Option<String>, Option<String>)> {
+    match disk {
+        Ok(text) if known == Some(text.as_str()) => None,
+        Ok(text) => toml::from_str::<Stored>(&text)
+            .ok()
+            .map(|stored| (stored.language, stored.clock)),
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound && known.is_some() => {
+            Some((None, None))
+        }
+        Err(_) => None,
+    }
+}
+
+/// [`load`], with the reading of the file handed in — so that a first run, an
+/// account with no file at all, can be tested without one.
+fn load_from(path: Option<&Path>, read: impl FnOnce(&Path) -> std::io::Result<String>) {
+    // Before the file is looked for, because every way out of this function
+    // below that does not reach [`adopt`] has to leave these two where a
+    // shell nobody has set up keeps them: the language the session speaks,
+    // and the clock that language reads. A live medium and a freshly
+    // installed machine both start with no file, and a shell that returned
+    // before saying so went on speaking whatever it had started on — which
+    // was English (UK), in an `en_US.UTF-8` session: the day first, and the
+    // twenty-four hour clock.
+    crate::i18n::set(crate::i18n::Language::System);
+    crate::i18n::set_clock(crate::i18n::Clock::FromLanguage);
+    let Some(path) = path else {
         tracing::debug!("no config directory; the shell's settings are not persisted");
         return;
     };
-    let raw = match std::fs::read_to_string(&path) {
+    let raw = match read(path) {
         Ok(raw) => raw,
         Err(err) if err.kind() == std::io::ErrorKind::NotFound => return,
         Err(err) => {
@@ -13375,7 +13583,7 @@ fn adopt(stored: Stored) {
 ///
 /// Every field optional, because a file that has been hand-edited down to one
 /// line is a file that says one thing and leaves the rest at their defaults.
-#[derive(Debug, Default, PartialEq, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Default, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 #[serde(default, rename_all = "kebab-case")]
 struct Stored {
     language: Option<String>,
@@ -13998,7 +14206,33 @@ fn save(stored: &Stored) {
         return;
     }
 
-    let body = match toml::to_string_pretty(stored) {
+    // Held until the file has been replaced, so that what is known of it is
+    // never a moment behind what is on the disk. See [`KNOWN`].
+    let mut known = known();
+    // Another program's language and clock, where it has written them since
+    // the shell last looked, are kept rather than written over. See
+    // [`their_word`].
+    let theirs = their_word(std::fs::read_to_string(&path), known.as_deref());
+    let keeps_theirs = theirs.is_some();
+    let keeping;
+    let written = match theirs {
+        None => stored,
+        Some((language, clock)) => {
+            tracing::info!(
+                ?language,
+                ?clock,
+                "the shell settings were changed by another program; keeping its language and clock"
+            );
+            keeping = Stored {
+                language,
+                clock,
+                ..stored.clone()
+            };
+            &keeping
+        }
+    };
+
+    let body = match toml::to_string_pretty(written) {
         Ok(body) => format!("{PREAMBLE}{body}"),
         Err(err) => {
             tracing::warn!(%err, "could not serialise the shell settings");
@@ -14007,7 +14241,7 @@ fn save(stored: &Stored) {
     };
 
     let temporary = path.with_extension("toml.new");
-    if let Err(err) = std::fs::write(&temporary, body) {
+    if let Err(err) = std::fs::write(&temporary, &body) {
         tracing::warn!(%err, path = %temporary.display(), "could not write the shell settings");
         return;
     }
@@ -14016,6 +14250,13 @@ fn save(stored: &Stored) {
         let _ = std::fs::remove_file(&temporary);
         return;
     }
+    // A file written with another program's words in it is left unknown, so
+    // that the watch reads it as the change it is rather than as the shell's
+    // own write — which is the only way the shell comes to speak them.
+    if !keeps_theirs {
+        *known = Some(body);
+    }
+    drop(known);
     published(stored);
 }
 
@@ -14715,7 +14956,7 @@ const PREAMBLE: &str = "\
 
 /// `$XDG_CONFIG_HOME/lxb/shell.toml`, beside the compositor's own config
 /// and the per-application settings.
-fn settings_path() -> Option<PathBuf> {
+pub fn settings_path() -> Option<PathBuf> {
     let config = std::env::var_os("XDG_CONFIG_HOME")
         .map(PathBuf::from)
         .filter(|path| path.is_absolute())
@@ -14831,6 +15072,269 @@ mod tests {
             }
             i18n::set(Language::British);
         });
+    }
+
+    /// A first run — no `shell.toml` at all, which is a live medium and a
+    /// freshly installed machine alike — speaks the session's language and
+    /// reads that language's clock, whatever was in force before the file was
+    /// looked for. So the corner of an `en_US.UTF-8` session reads noon on the
+    /// twelfth of October month first and on the twelve-hour clock, and an
+    /// `en_GB.UTF-8` one day first on the twenty-four.
+    ///
+    /// The session is said here, never read from the machine running the
+    /// test, and the file is never opened: `read` answers for it.
+    #[test]
+    fn a_shell_with_no_settings_file_follows_the_sessions_language_and_clock() {
+        with_displays(&[], || {
+            use crate::i18n::{self, Clock, Language};
+            fn session(lang: &'static str) -> impl FnMut(&str) -> Option<String> {
+                move |name| (name == "LANG").then(|| lang.to_string())
+            }
+            fn no_file(_: &Path) -> std::io::Result<String> {
+                Err(std::io::ErrorKind::NotFound.into())
+            }
+            // What a shell that returned before reading anything went on
+            // speaking: the language and the clock it happened to start on.
+            fn stale() {
+                i18n::set(Language::British);
+                i18n::set_clock(Clock::TwentyFourHour);
+            }
+            fn in_force() -> (Language, Clock) {
+                (i18n::preference(), i18n::clock())
+            }
+            let path = Path::new("/lxb-test/no-such-home/.config/lxb/shell.toml");
+
+            i18n::set_session(session("en_US.UTF-8"));
+            stale();
+            load_from(Some(path), no_file);
+            assert_eq!(in_force(), (Language::System, Clock::FromLanguage));
+            assert_eq!(i18n::spoken(), Language::American);
+            assert_eq!(crate::corner_clock(10, 12, 12, 0), "10/12 12:00 PM");
+            assert_eq!(crate::corner_clock(10, 12, 20, 10), "10/12 8:10 PM");
+
+            // No config directory to look in, a file that cannot be read, and
+            // one that is not a settings file at all are no choice either.
+            stale();
+            load_from(None, |_| unreachable!("there is nowhere to read from"));
+            assert_eq!(in_force(), (Language::System, Clock::FromLanguage));
+            stale();
+            load_from(Some(path), |_| {
+                Err(std::io::ErrorKind::PermissionDenied.into())
+            });
+            assert_eq!(in_force(), (Language::System, Clock::FromLanguage));
+            stale();
+            load_from(Some(path), |_| Ok("language = = \"pl\"".to_string()));
+            assert_eq!(in_force(), (Language::System, Clock::FromLanguage));
+            assert_eq!(crate::corner_clock(10, 12, 12, 0), "10/12 12:00 PM");
+
+            // The British session, and one that names no language at all,
+            // read the day first on the twenty-four hour clock.
+            for said in ["en_GB.UTF-8", "C.UTF-8"] {
+                i18n::set_session(session(said));
+                stale();
+                load_from(Some(path), no_file);
+                assert_eq!(i18n::spoken(), Language::British, "{said}");
+                assert_eq!(crate::corner_clock(10, 12, 12, 0), "12/10 12:00", "{said}");
+            }
+
+            // And a file that says what somebody chose outranks the session,
+            // in both directions — the language and the clock alike.
+            i18n::set_session(session("en_US.UTF-8"));
+            load_from(Some(path), |_| Ok("language = \"en-GB\"\n".to_string()));
+            assert_eq!(i18n::preference(), Language::British);
+            assert_eq!(crate::corner_clock(10, 12, 12, 0), "12/10 12:00");
+            i18n::set_session(session("en_GB.UTF-8"));
+            load_from(Some(path), |_| {
+                Ok("language = \"system\"\nclock = \"12-hour\"\n".to_string())
+            });
+            assert_eq!(in_force(), (Language::System, Clock::TwelveHour));
+            assert_eq!(crate::corner_clock(10, 12, 12, 0), "12/10 12:00 PM");
+
+            i18n::set_session(|_| None);
+            i18n::set(Language::British);
+            i18n::set_clock(Clock::FromLanguage);
+        });
+    }
+
+    /// Another program writing the language or the clock into `shell.toml` is
+    /// followed — the live medium's installer, which writes the language
+    /// somebody picked on its first page — and read as [`load`] reads it: a
+    /// line taken out, a word with no catalog and a file that has gone all
+    /// mean nobody has chosen. The file is handed in, never opened.
+    #[test]
+    fn a_language_another_program_writes_is_followed() {
+        use crate::i18n::{Clock, Language};
+        let file = |text: &str| -> std::io::Result<String> { Ok(text.to_string()) };
+        let read = |text: &str, language, clock| match read_again(file(text), None, language, clock)
+        {
+            Reading::Read { followed, text } => {
+                assert!(text.is_some(), "a file that is there is known by its text");
+                followed
+            }
+            other => panic!("{text:?} was not read: {other:?}"),
+        };
+
+        // The installer's line, into a shell that started on nobody's choice.
+        assert_eq!(
+            read("language = \"pl\"\n", Language::System, Clock::FromLanguage),
+            Followed {
+                language: Some(Language::Polish),
+                clock: None,
+            }
+        );
+        // Changed again, beside every other key the shell itself writes.
+        assert_eq!(
+            read(
+                "accent = \"violet\"\nlanguage = \"de\"\nsound-volume = 0.5\n",
+                Language::Polish,
+                Clock::FromLanguage
+            ),
+            Followed {
+                language: Some(Language::German),
+                clock: None,
+            }
+        );
+        // The line taken out — the only line, leaving the file empty — or a
+        // word this shell has no catalog for: the session's language again.
+        for text in ["accent = \"violet\"\n", "language = \"tlh\"\n", "\n", ""] {
+            assert_eq!(
+                read(text, Language::German, Clock::FromLanguage),
+                Followed {
+                    language: Some(Language::System),
+                    clock: None,
+                },
+                "{text:?}"
+            );
+        }
+        // The clock, on its own.
+        assert_eq!(
+            read(
+                "language = \"pl\"\nclock = \"12-hour\"\n",
+                Language::Polish,
+                Clock::FromLanguage
+            ),
+            Followed {
+                language: None,
+                clock: Some(Clock::TwelveHour),
+            }
+        );
+        // And what is already in force is nothing to do.
+        assert_eq!(
+            read(
+                "language = \"pl\"\nclock = \"24-hour\"\n",
+                Language::Polish,
+                Clock::TwentyFourHour
+            ),
+            Followed::default()
+        );
+
+        // A file that has gone is nobody having chosen, as it is at startup —
+        // and a file that was never there and still is not is nothing new.
+        let gone = || -> std::io::Result<String> { Err(std::io::ErrorKind::NotFound.into()) };
+        assert_eq!(
+            read_again(
+                gone(),
+                Some("language = \"pl\"\n"),
+                Language::Polish,
+                Clock::TwelveHour
+            ),
+            Reading::Read {
+                followed: Followed {
+                    language: Some(Language::System),
+                    clock: Some(Clock::FromLanguage),
+                },
+                text: None,
+            }
+        );
+        assert_eq!(
+            read_again(gone(), None, Language::System, Clock::FromLanguage),
+            Reading::Known
+        );
+    }
+
+    /// What is never followed: the shell's own writes, which come back through
+    /// the same watch as anybody's, and a file nobody can read as settings —
+    /// unreadable, not TOML, or cut off in the middle of a line. What is in
+    /// force stays.
+    #[test]
+    fn the_shells_own_writes_and_a_broken_file_are_not_followed() {
+        use crate::i18n::{Clock, Language};
+        let ours = "# written by the shell\nlanguage = \"en-GB\"\nclock = \"24-hour\"\n";
+        assert_eq!(
+            read_again(
+                Ok(ours.to_string()),
+                Some(ours),
+                Language::Polish,
+                Clock::FromLanguage
+            ),
+            Reading::Known,
+            "the shell's own text, even where it disagrees with what is in force"
+        );
+        for broken in ["language = = \"pl\"", "language = \"p", "language = 7\n"] {
+            assert_eq!(
+                read_again(
+                    Ok(broken.to_string()),
+                    Some(ours),
+                    Language::British,
+                    Clock::TwentyFourHour
+                ),
+                Reading::Kept,
+                "{broken:?}"
+            );
+        }
+        assert_eq!(
+            read_again(
+                Err(std::io::ErrorKind::PermissionDenied.into()),
+                Some(ours),
+                Language::British,
+                Clock::TwentyFourHour
+            ),
+            Reading::Kept
+        );
+    }
+
+    /// A save landing before the watch has read another program's change
+    /// keeps that program's language and clock rather than writing the old
+    /// ones over them. Nearly every save finds the file as the shell left it
+    /// and keeps nothing.
+    #[test]
+    fn a_save_does_not_write_over_another_programs_language() {
+        let ours = "language = \"en-GB\"\naccent = \"violet\"\n";
+        assert_eq!(their_word(Ok(ours.to_string()), Some(ours)), None);
+        assert_eq!(
+            their_word(Ok("language = \"pl\"\n".to_string()), Some(ours)),
+            Some((Some("pl".to_string()), None))
+        );
+        assert_eq!(
+            their_word(
+                Ok("language = \"pl\"\nclock = \"12-hour\"\n".to_string()),
+                None
+            ),
+            Some((Some("pl".to_string()), Some("12-hour".to_string()))),
+            "a file another program created where there was none"
+        );
+        // A file that has gone is nobody having chosen; one that was never
+        // there is nothing to keep.
+        assert_eq!(
+            their_word(Err(std::io::ErrorKind::NotFound.into()), Some(ours)),
+            Some((None, None))
+        );
+        assert_eq!(
+            their_word(Err(std::io::ErrorKind::NotFound.into()), None),
+            None
+        );
+        // And a file nobody could read as settings is nobody's word: the save
+        // replaces it, as it always has.
+        assert_eq!(
+            their_word(Ok("language = = \"pl\"".to_string()), Some(ours)),
+            None
+        );
+        // But an empty file is a file somebody emptied, which says nobody has
+        // chosen, as it does at startup.
+        assert_eq!(
+            their_word(Ok("\n".to_string()), Some(ours)),
+            Some((None, None))
+        );
     }
 
     #[test]

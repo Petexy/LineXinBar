@@ -25,6 +25,11 @@ told apart wrote, is read as `"en-GB"`. Keyboard layouts and application
 languages are independent. See [Shell languages](localization.md) for locale
 resolution and the translator workflow.
 
+Another program may set it too — the Linexin live medium's installer does — and
+a running shell follows the change within a fraction of a second, as if the row
+had been pressed, without asking the locale service for anything. See
+[Set by another program](localization.md#set-by-another-program).
+
 ## The clock
 
 Choose Settings → System → Clock for the form every time of day in the session
@@ -32,7 +37,8 @@ takes. The preference is `clock = "24-hour"` or `"12-hour"` in `shell.toml`; a
 missing or unrecognized value, or `"language"`, leaves the language to answer,
 which means `8:10 PM` under English (US) and हिन्दी and `20:10` under
 everything else. The
-login screen and any application built on lxb-toolkit read the same key. See
+login screen and any application built on lxb-toolkit read the same key, and a
+running shell follows it when another program writes it. See
 [Shell languages](localization.md#the-clock).
 
 ## `[general]`
@@ -45,7 +51,7 @@ login screen and any application built on lxb-toolkit read the same key. See
 | `output_gap`    | integer           | `0`                | Logical pixels inserted between auto-placed outputs. |
 | `background`    | `[r, g, b, a]`    | `[0.02, 0.02, 0.04, 1.0]` | Colour behind everything, components in `0.0..=1.0`. |
 | `draw_cursor`   | boolean           | `true`             | Draw the compositor's own cursor when there is one to draw. Turn off when nesting inside a compositor that already draws one. |
-| `cursor_theme`  | string            | *(unset)*          | XCursor theme for the pointer. Unset falls back to an inherited `XCURSOR_THEME`, then to the bundled Bibata Modern Classic. |
+| `cursor_theme`  | string            | *(unset)*          | XCursor theme for the pointer. Unset falls back to an inherited `XCURSOR_THEME`, then to the bundled Bibata Modern Classic, `lxb-Bibata-Modern-Classic`. |
 | `cursor_size`   | integer           | *(unset)*          | Nominal cursor size in logical pixels. Unset falls back to `XCURSOR_SIZE`, then 24. |
 | `env`           | table of strings  | `{}`               | Environment variables exported to every child process. |
 
@@ -66,9 +72,20 @@ The resolved cursor theme, size, and search path are exported as
 `XCURSOR_THEME`, `XCURSOR_SIZE`, and `XCURSOR_PATH` to every child process, so
 applications drawing their own pointer match the compositor's. LineXinBar ships
 a subset of [Bibata Modern Classic](https://github.com/ful1e5/Bibata_Cursor)
-under `share/icons/` (found relative to the binary in both a build tree and an
-installed prefix), and compiles the default arrow into the binary as a last
-resort, so a missing theme can never leave the pointer invisible.
+as `share/icons/lxb-Bibata-Modern-Classic/` (found relative to the binary in
+both a build tree and an installed prefix), and compiles the default arrow into
+the binary as a last resort, so a missing theme can never leave the pointer
+invisible.
+
+The copy has a directory of its own so that it never shares a file with
+anybody else's Bibata: linexin-desktop installs the same theme as
+`/usr/share/icons/Bibata-Modern-Classic/`, and two packages owning one file
+cannot be installed together. Until 0.9.4 the bundled copy was called
+`Bibata-Modern-Classic` too, so that name — in `cursor_theme`, or in an
+inherited `XCURSOR_THEME` — is still read as the bundled theme wherever no
+theme of that name is installed. Where one is, such as beside Linexin's GNOME
+desktop, it is the theme asked for and the one used. Every other name is taken
+as written.
 
 Whether the pointer is on screen at all is a separate question, and not one
 this setting answers: the session starts without a cursor and shows one only
