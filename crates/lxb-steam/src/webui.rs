@@ -2429,7 +2429,7 @@ pub fn install(
                  case {signup}: return asks('an account to sign up for'); \
                }} \
              }}); \
-             SteamClient.Installs.OpenInstallWizard([{app_id}]); \
+             SteamClient.Installs.OpenInstallWizard([{app_id}], \"0\"); \
              setTimeout(() => failed('Steam never got as far as starting it', 0), {patience}); \
            }}); \
            return JSON.stringify(answer); \
