@@ -2108,3 +2108,9 @@ windows-run-your-windows-games-and-apps-from-the-bar = 从主栏运行您的 Win
 windows-keep-games-and-apps-in-this-folder = 把新的游戏与应用程序放在这个文件夹里
 windows-run-inside-a-game = 在某个游戏里运行
 windows-which-game-to-run-it-in = 选择要在哪个游戏里运行
+
+bluetooth-power-on-failed = 无法开启蓝牙
+bluetooth-power-hardware-blocked = 蓝牙被硬件开关阻止。
+bluetooth-power-software-blocked = 系统已阻止蓝牙。解除阻止后重试。
+bluetooth-power-service-unavailable = 蓝牙服务不可用。
+bluetooth-power-rejected = 蓝牙服务拒绝了请求。详情请查看系统日志。

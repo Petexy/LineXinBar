@@ -412,6 +412,7 @@ enum Ask {
     Power {
         controller: String,
         on: bool,
+        report_failure: bool,
     },
     /// Pair with this device if it is new, and connect to it either way.
     Connect {
@@ -544,8 +545,17 @@ struct State {
     /// allows it, one per device — and a second finishing must not overwrite
     /// the first's answer before the shell has drained it.
     endings: Vec<Outcome>,
+    power_failures: Vec<PowerFailure>,
     dirty: bool,
     done: bool,
+}
+
+#[derive(Clone, Copy)]
+pub enum PowerFailure {
+    HardwareBlocked,
+    SoftwareBlocked,
+    Unavailable,
+    Rejected,
 }
 
 impl Bt {
@@ -629,11 +639,16 @@ impl Bt {
     }
 
     /// Turn one controller on, or off.
-    pub fn set_power(&self, controller: &str, on: bool) {
+    pub fn set_power(&self, controller: &str, on: bool, report_failure: bool) {
         self.ask(Ask::Power {
             controller: controller.to_string(),
             on,
+            report_failure,
         });
+    }
+
+    pub fn power_failures(&self) -> Vec<PowerFailure> {
+        std::mem::take(&mut self.held().power_failures)
     }
 
     /// Connect to a device, pairing with it first if this machine has never
@@ -1337,15 +1352,34 @@ impl Worker {
 
     // --- carrying out a press ---------------------------------------------
 
+    fn note_power_failure(&self, failure: PowerFailure) {
+        self.shared.state.lock().unwrap_or_else(|error| error.into_inner())
+            .power_failures.push(failure);
+    }
+
     fn carry_out(&mut self, ask: Ask) {
         let Some(bus) = self.bus.clone() else {
+            if matches!(ask, Ask::Power { on: true, report_failure: true, .. }) {
+                self.note_power_failure(PowerFailure::Unavailable);
+            }
             return;
         };
         match ask {
-            Ask::Power { controller, on } => {
+            Ask::Power { controller, on, report_failure } => {
                 tracing::info!(controller, on, "Bluetooth controller");
                 if !set_property(&bus, &controller, ADAPTER_IFACE, "Powered", Value::Bool(on)) {
                     tracing::warn!(controller, on, "the controller would not be set");
+                    if on && report_failure {
+                        let interface = leaf(&controller);
+                        let failure = if hard_blocked(&interface) {
+                            PowerFailure::HardwareBlocked
+                        } else if radio_blocked(&interface, "soft") {
+                            PowerFailure::SoftwareBlocked
+                        } else {
+                            PowerFailure::Rejected
+                        };
+                        self.note_power_failure(failure);
+                    }
                 }
                 // A controller that has just been turned off is one nothing is
                 // looking around on any more, whoever asked for it.
@@ -1873,6 +1907,10 @@ fn kind_of(icon: Option<&str>, class: u32) -> Kind {
 /// the controller's own `hci0`. Nothing here is particular to any computer: the
 /// directory is a kernel interface and every line of it is read at runtime.
 fn hard_blocked(interface: &str) -> bool {
+    radio_blocked(interface, "hard")
+}
+
+fn radio_blocked(interface: &str, kind: &str) -> bool {
     let Ok(entries) = std::fs::read_dir(RFKILL) else {
         return false;
     };
@@ -1886,7 +1924,7 @@ fn hard_blocked(interface: &str) -> bool {
         if named("name") != interface {
             continue;
         }
-        return named("hard") == "1";
+        return named(kind) == "1";
     }
     false
 }

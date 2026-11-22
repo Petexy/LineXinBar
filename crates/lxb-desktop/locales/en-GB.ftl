@@ -2310,3 +2310,9 @@ windows-run-your-windows-games-and-apps-from-the-bar = Run your Windows games an
 windows-keep-games-and-apps-in-this-folder = Keep new games and apps in this folder
 windows-run-inside-a-game = Run inside a game
 windows-which-game-to-run-it-in = Choose which game to run it in
+
+bluetooth-power-on-failed = Could not turn on Bluetooth
+bluetooth-power-hardware-blocked = A hardware switch is blocking Bluetooth.
+bluetooth-power-software-blocked = Bluetooth is blocked by the system. Unblock it and try again.
+bluetooth-power-service-unavailable = The Bluetooth service is unavailable.
+bluetooth-power-rejected = The Bluetooth service rejected the request. Check the system log for details.

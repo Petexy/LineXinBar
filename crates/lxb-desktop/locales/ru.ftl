@@ -2410,3 +2410,9 @@ windows-run-your-windows-games-and-apps-from-the-bar = Запускайте св
 windows-keep-games-and-apps-in-this-folder = Хранить новые игры и приложения в этой папке
 windows-run-inside-a-game = Запустить внутри игры
 windows-which-game-to-run-it-in = Выберите игру, внутри которой его запустить
+
+bluetooth-power-on-failed = Не удалось включить Bluetooth
+bluetooth-power-hardware-blocked = Bluetooth заблокирован аппаратным переключателем.
+bluetooth-power-software-blocked = Система блокирует Bluetooth. Снимите блокировку и повторите попытку.
+bluetooth-power-service-unavailable = Служба Bluetooth недоступна.
+bluetooth-power-rejected = Служба Bluetooth отклонила запрос. Подробности в системном журнале.
