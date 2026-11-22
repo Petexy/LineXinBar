@@ -2290,3 +2290,9 @@ windows-run-your-windows-games-and-apps-from-the-bar = Execute os seus jogos e a
 windows-keep-games-and-apps-in-this-folder = Guardar os jogos e aplicativos novos nesta pasta
 windows-run-inside-a-game = Executar dentro de um jogo
 windows-which-game-to-run-it-in = Escolha o jogo em que ele será executado
+
+bluetooth-power-on-failed = Não foi possível ativar o Bluetooth
+bluetooth-power-hardware-blocked = Um interruptor físico bloqueia o Bluetooth.
+bluetooth-power-software-blocked = O sistema bloqueia o Bluetooth. Desbloqueie-o e tente novamente.
+bluetooth-power-service-unavailable = O serviço Bluetooth não está disponível.
+bluetooth-power-rejected = O serviço Bluetooth recusou a solicitação. Consulte o registro do sistema.

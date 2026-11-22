@@ -2286,3 +2286,9 @@ windows-run-your-windows-games-and-apps-from-the-bar = बार से अप�
 windows-keep-games-and-apps-in-this-folder = नए खेल और ऐप्लिकेशन इस फ़ोल्डर में रखें
 windows-run-inside-a-game = किसी खेल के अंदर चलाएँ
 windows-which-game-to-run-it-in = चुनें कि इसे किस खेल के अंदर चलाना है
+
+bluetooth-power-on-failed = Bluetooth चालू नहीं हो सका
+bluetooth-power-hardware-blocked = हार्डवेयर स्विच ने Bluetooth को ब्लॉक किया है।
+bluetooth-power-software-blocked = सिस्टम ने Bluetooth को ब्लॉक किया है। उसे अनब्लॉक करके फिर कोशिश करें।
+bluetooth-power-service-unavailable = Bluetooth सेवा उपलब्ध नहीं है।
+bluetooth-power-rejected = Bluetooth सेवा ने अनुरोध अस्वीकार कर दिया। विवरण के लिए सिस्टम लॉग देखें।

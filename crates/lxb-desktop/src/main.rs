@@ -38910,6 +38910,34 @@ impl Shell {
         self.ask_about_pairing(wanted.as_ref());
         self.bluetooth_wanted = wanted;
         self.announce_pairings();
+        self.announce_bluetooth_power_failures();
+    }
+
+    fn announce_bluetooth_power_failures(&mut self) {
+        use bluetooth::PowerFailure;
+        let failures = self.bt.power_failures();
+        if failures.is_empty() {
+            return;
+        }
+        let mut raised = false;
+        for failure in failures {
+            let reason = match failure {
+                PowerFailure::HardwareBlocked => "bluetooth-power-hardware-blocked",
+                PowerFailure::SoftwareBlocked => "bluetooth-power-software-blocked",
+                PowerFailure::Unavailable => "bluetooth-power-service-unavailable",
+                PowerFailure::Rejected => "bluetooth-power-rejected",
+            };
+            raised |= self.notifications.announce(
+                crate::i18n::text("bluetooth-power-on-failed"),
+                crate::i18n::text(reason),
+                icons::SETTING_BLUETOOTH,
+            );
+        }
+        if raised {
+            self.sounds.notified();
+        }
+        self.sync_notification_panel();
+        self.needs_redraw = true;
     }
 
     /// Notice the card's game going, and say so where it has finished.
@@ -39087,7 +39115,7 @@ impl Shell {
                     startup = ?settings::bluetooth_startup(),
                     "putting Bluetooth where this session should find it"
                 );
-                self.bt.set_power(&controller.path, wanted);
+                self.bt.set_power(&controller.path, wanted, false);
             }
             return;
         }
@@ -39390,7 +39418,7 @@ impl Shell {
     /// pressed, and none of these is a thing this shell does itself.
     fn carry_out_bluetooth(&mut self, value: settings::BluetoothValue) {
         match value {
-            settings::BluetoothValue::Power { controller, on } => self.bt.set_power(controller, on),
+            settings::BluetoothValue::Power { controller, on } => self.bt.set_power(controller, on, true),
             settings::BluetoothValue::Connect { device } => self.bt.connect(device),
             settings::BluetoothValue::Disconnect { device } => self.bt.disconnect(device),
             settings::BluetoothValue::Forget { device } => self.bt.forget(device),
