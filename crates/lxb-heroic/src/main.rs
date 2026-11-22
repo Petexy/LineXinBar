@@ -210,7 +210,7 @@ fn main() -> ExitCode {
         Asked::Forget { data } => ended(install::forget(&mut out, data)),
         Asked::SignIn => {
             let Some(installation) = heroic::installation() else {
-                say(
+                let _ = say(
                     &mut out,
                     &SignIn::Failed {
                         protocol: PROTOCOL,
@@ -237,7 +237,7 @@ fn main() -> ExitCode {
                 reason: result.err(),
             };
             let succeeded = account.name.is_none();
-            say(&mut out, &account);
+            let _ = say(&mut out, &account);
             ended(succeeded)
         }
         Asked::Art { heroes, only } => ended(art::fetch(&mut out, &paths, &only, heroes)),
@@ -266,7 +266,7 @@ fn main() -> ExitCode {
             let answer = tools::use_tool(&paths, &home, game.as_deref(), name.as_deref());
             eprintln!("use-tool: {} ({:?})", answer.note, answer.reason);
             let worked = answer.reason.is_none();
-            say(&mut out, &answer);
+            let _ = say(&mut out, &answer);
             ended(worked)
         }
         Asked::Saves { state } => {
@@ -279,7 +279,7 @@ fn main() -> ExitCode {
                 answer.note, answer.reason, answer.found
             );
             let worked = answer.reason.is_none();
-            say(&mut out, &answer);
+            let _ = say(&mut out, &answer);
             ended(worked)
         }
         Asked::Folder { dir } => {
@@ -289,7 +289,7 @@ fn main() -> ExitCode {
             let answer = folder::choose(&paths, &home, &dir);
             eprintln!("folder: {} ({:?})", answer.note, answer.reason);
             let worked = answer.reason.is_none();
-            say(&mut out, &answer);
+            let _ = say(&mut out, &answer);
             ended(worked)
         }
         Asked::Size { app_name } | Asked::Get { app_name, .. } | Asked::Remove { app_name }
@@ -309,7 +309,7 @@ fn main() -> ExitCode {
         }
         Asked::Get { app_name, repair } => {
             let (Some(installation), Some(home)) = (heroic::installation(), home()) else {
-                say(
+                let _ = say(
                     &mut out,
                     &Download {
                         protocol: PROTOCOL,
@@ -342,7 +342,7 @@ fn main() -> ExitCode {
             };
             eprintln!("remove: {} ({:?})", removal.note, removal.reason);
             let removed = removal.removed;
-            say(&mut out, &removal);
+            let _ = say(&mut out, &removal);
             ended(removed)
         }
         Asked::Library { refresh } => {

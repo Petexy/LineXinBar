@@ -264,7 +264,7 @@ fn main() -> ExitCode {
                 art::cache_root().as_deref(),
                 language.as_deref(),
             ) {
-                say(&mut out, &set);
+                let _ = say(&mut out, &set);
             }
             say(&mut out, &trophies::end())
         }

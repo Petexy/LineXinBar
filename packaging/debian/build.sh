@@ -167,6 +167,11 @@ build_deb() {
         fi
     done
 
+    local installed_size
+    installed_size="$(du -sk "$package_root" | awk '{print $1}')"
+    # dpkg-shlibdeps identifies a staged package by its DEBIAN directory.
+    mkdir -p "$package_root/DEBIAN"
+
     local shlib_arguments=()
     for binary in "${binaries[@]}"; do
         shlib_arguments+=("-e$package_root/usr/bin/$binary")
@@ -180,9 +185,6 @@ build_deb() {
         || package_die "could not determine Debian shared-library dependencies for $name"
     local shlib_depends="${shlib_output#shlibs:Depends=}"
 
-    local installed_size
-    installed_size="$(du -sk "$package_root" | awk '{print $1}')"
-    mkdir -p "$package_root/DEBIAN"
     awk \
         -v version="$PACKAGE_VERSION" \
         -v architecture="$architecture" \

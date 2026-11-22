@@ -488,14 +488,14 @@ fn main() -> ExitCode {
             let offer = offer(&steam, &paths);
             eprintln!("offer: {} ({:?})", offer.note, offer.trouble);
             let worked = offer.trouble.is_none();
-            say(&mut out, &offer);
+            let _ = say(&mut out, &offer);
             ended(worked)
         }
         Asked::Newer => {
             let offer = newer(&steam, &paths);
             eprintln!("newer: {} ({:?})", offer.note, offer.trouble);
             let worked = offer.trouble.is_none();
-            say(&mut out, &offer);
+            let _ = say(&mut out, &offer);
             ended(worked)
         }
         Asked::Fetch => ended(run_fetch(&mut out, &steam, &paths)),
@@ -526,14 +526,14 @@ fn main() -> ExitCode {
             );
             eprintln!("start: {} ({:?})", start.note, start.trouble);
             let worked = start.trouble.is_none();
-            say(&mut out, &start);
+            let _ = say(&mut out, &start);
             ended(worked)
         }
         Asked::End { id } => {
             let gone = end_everything(&paths, &id);
             eprintln!("end: {} ({:?})", gone.note, gone.trouble);
             let worked = gone.trouble.is_none();
-            say(&mut out, &gone);
+            let _ = say(&mut out, &gone);
             ended(worked)
         }
         Asked::New {
@@ -561,7 +561,7 @@ fn main() -> ExitCode {
             );
             eprintln!("new: {} ({:?})", made.note, made.trouble);
             let worked = made.trouble.is_none();
-            say(&mut out, &made);
+            let _ = say(&mut out, &made);
             ended(worked)
         }
         Asked::Settled { id } => match settle(&paths, &id) {
@@ -684,7 +684,7 @@ fn main() -> ExitCode {
             let removal = remove(&paths, &id);
             eprintln!("remove: {} ({:?})", removal.note, removal.trouble);
             let removed = removal.removed;
-            say(&mut out, &removal);
+            let _ = say(&mut out, &removal);
             ended(removed)
         }
         Asked::Folder { dir } => {

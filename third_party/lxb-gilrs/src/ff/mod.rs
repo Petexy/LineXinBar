@@ -64,9 +64,9 @@ pub(crate) use self::time::TICK_DURATION;
 pub use self::time::{Repeat, Ticks};
 
 use std::error::Error as StdError;
+use std::fmt;
 use std::hash::{Hash, Hasher};
 use std::sync::mpsc::{SendError, Sender};
-use std::{f32, fmt};
 
 use self::effect_source::EffectSource;
 use crate::ff::server::Message;
