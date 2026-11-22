@@ -204,18 +204,27 @@ where
         slot.0.age.store(1, Ordering::SeqCst);
         for other_slot in &mut self.slots {
             if !Arc::ptr_eq(other_slot, &slot.0) && other_slot.buffer.is_some() {
-                let res = other_slot
-                    .age
-                    .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |age| {
-                        if age > 0 {
-                            age.checked_add(1)
-                        } else {
-                            Some(0)
-                        }
-                    });
-                // If the age overflows the slot was not used for a long time. Lets clear it
-                if res.is_err() {
-                    *other_slot = Default::default();
+                let mut age = other_slot.age.load(Ordering::SeqCst);
+                loop {
+                    let next_age = if age == 0 {
+                        Some(0)
+                    } else {
+                        age.checked_add(1)
+                    };
+                    let Some(next_age) = next_age else {
+                        // The slot has gone unused long enough for its age to overflow.
+                        *other_slot = Default::default();
+                        break;
+                    };
+                    match other_slot.age.compare_exchange_weak(
+                        age,
+                        next_age,
+                        Ordering::SeqCst,
+                        Ordering::SeqCst,
+                    ) {
+                        Ok(_) => break,
+                        Err(current_age) => age = current_age,
+                    }
                 }
             }
         }

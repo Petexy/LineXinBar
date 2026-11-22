@@ -312,6 +312,20 @@ shares the checkout never replaces the host's own binaries.
 Wayland, EGL and X11 libraries that the application opens dynamically are
 declared explicitly because ELF dependency scanning cannot see them.
 
+On Ubuntu-derived systems, `dpkg-shlibdeps` can report a `libc6` diversion for
+the dynamic loader during dependency scanning. The build uses the dependency
+metadata from the host's installed packages.
+
+If APT reports that its `_apt` user cannot access a package under your home
+directory, build into a temporary directory that `_apt` can traverse:
+
+```sh
+deb_dir=$(mktemp -d /tmp/linexinbar-debs.XXXXXX)
+chmod 755 "$deb_dir"
+./packaging/build.sh debian --output-dir "$deb_dir" &&
+    sudo apt install --reinstall "$deb_dir"/*.deb
+```
+
 `--allow-foreign-host` exists for package-structure testing only. A `.deb`
 built against another distribution's libc and libraries must not be deployed
 on Debian.
