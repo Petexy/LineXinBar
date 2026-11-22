@@ -1023,7 +1023,7 @@ pub enum Command {
     /// answer to is what makes it allowed.
     SteamMoveClientHere(u32),
     SteamInstall(u32),
-    SteamCloseOtherSession(u32, bool),
+    SteamCloseOtherSession(bool),
     /// Stop fetching one, and take away what had arrived. There is no
     /// resuming, so pressing Install again starts over.
     SteamStopInstalling(u32),
