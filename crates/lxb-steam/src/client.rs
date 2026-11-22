@@ -44,7 +44,8 @@
 
 use std::collections::BTreeMap;
 use std::io::{Read, Seek, SeekFrom};
-use std::os::unix::fs::MetadataExt;
+use std::os::fd::{AsRawFd, FromRawFd, OwnedFd};
+use std::os::unix::fs::{FileTypeExt, MetadataExt};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::sync::Mutex;
@@ -950,6 +951,7 @@ pub enum Permission {
 /// about to stop.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct NotOurs {
+    pub another_session: bool,
     /// Which client is in the way.
     pub what: String,
     /// And what moving it would cost, said to whoever is about to decide.
@@ -959,8 +961,16 @@ pub struct NotOurs {
 impl NotOurs {
     fn new(what: &str, cost: &str) -> NotOurs {
         NotOurs {
+            another_session: false,
             what: what.to_string(),
             cost: cost.to_string(),
+        }
+    }
+
+    pub(crate) fn another_session(cost: &str) -> Self {
+        Self {
+            another_session: true,
+            ..Self::new("Steam is running in another session.", cost)
         }
     }
 }
@@ -1122,8 +1132,7 @@ pub fn proven_for(client: &Where, options: &Options, account: u32) -> Result<Pro
         ));
     }
     if !in_this_session(options) {
-        return Err(Refusal::NotOurs(NotOurs::new(
-            "Steam is running in another session.",
+        return Err(Refusal::NotOurs(NotOurs::another_session(
             "This would happen there, not here.",
         )));
     }
@@ -1363,10 +1372,7 @@ pub fn wake(
     // the person who pressed the button rather than decisions for this module.
     if not_ours && permission == Permission::AskFirst {
         let why = if elsewhere {
-            NotOurs::new(
-                "Steam is running in another session.",
-                "Moving it here ends its downloads.",
-            )
+            NotOurs::another_session("Moving it here ends its downloads.")
         } else {
             NotOurs::new(
                 "Steam is signed in to another account.",
@@ -2141,7 +2147,7 @@ pub fn in_this_session(options: &Options) -> bool {
         .iter()
         .map(|name| std::env::var(name).ok())
         .collect();
-    if theirs == ours {
+    if same_displays(pid, &environ, &theirs, &ours) {
         return true;
     }
     tracing::info!(
@@ -2151,6 +2157,120 @@ pub fn in_this_session(options: &Options) -> bool {
         "Valve's client is drawing into another session"
     );
     false
+}
+
+/// A specific Steam client in another graphical session under this user.
+pub struct OtherSession {
+    client: Where,
+    pipe: PathBuf,
+    pid: u32,
+    process: OwnedFd,
+}
+
+pub enum OtherSessionClose {
+    Closed,
+    StillRunning,
+}
+
+impl OtherSession {
+    /// Pin the process before asking the user so a replacement is never the
+    /// target of a confirmation meant for the previous client.
+    pub fn find() -> Option<Self> {
+        let crate::backend::Backend { client, options } = crate::backend::Backend::chosen()?;
+        let client = client?;
+        let pipe = options.home.join("steam.pipe");
+        let pid = holder_of(&pipe)?;
+        // SAFETY: pidfd_open returns a new owned descriptor on success.
+        let fd = unsafe { libc::syscall(libc::SYS_pidfd_open, pid as libc::pid_t, 0) };
+        if fd < 0 {
+            return None;
+        }
+        // SAFETY: fd is the new descriptor returned by pidfd_open.
+        let process = unsafe { OwnedFd::from_raw_fd(fd as i32) };
+        let proc_path = PathBuf::from(format!("/proc/{pid}"));
+        let owner = std::fs::metadata(&proc_path).ok()?.uid();
+        // SAFETY: geteuid takes no arguments and has no memory requirements.
+        if owner != unsafe { libc::geteuid() } {
+            return None;
+        }
+        let environ = std::fs::read(proc_path.join("environ")).ok()?;
+        let theirs = displays_in(&environ);
+        let ours: Vec<_> = DRAWS_INTO
+            .iter()
+            .map(|name| std::env::var(name).ok())
+            .collect();
+        let target = Self { client, pipe, pid, process };
+        if same_displays(pid, &environ, &theirs, &ours)
+            || holder_of(&target.pipe) != Some(pid)
+            || target.exited(0).ok()?
+        {
+            return None;
+        }
+        Some(target)
+    }
+
+    /// Close the selected client, then wait for it to exit on the worker thread.
+    pub fn close(&self, force: bool) -> std::io::Result<OtherSessionClose> {
+        if holder_of(&self.pipe) != Some(self.pid) || self.exited(0)? {
+            return Ok(OtherSessionClose::Closed);
+        }
+
+        let mut courier = None;
+        if force {
+            // SAFETY: the descriptor pins the client selected for this dialog.
+            let sent = unsafe {
+                libc::syscall(
+                    libc::SYS_pidfd_send_signal,
+                    self.process.as_raw_fd(),
+                    libc::SIGKILL,
+                    std::ptr::null::<libc::siginfo_t>(),
+                    0,
+                )
+            };
+            if sent < 0 {
+                let error = std::io::Error::last_os_error();
+                if error.raw_os_error() != Some(libc::ESRCH) {
+                    return Err(error);
+                }
+            }
+        } else {
+            courier = self.client
+                .command()
+                .arg("-shutdown")
+                .stdin(Stdio::null())
+                .stdout(Stdio::null())
+                .stderr(Stdio::null())
+                .spawn()
+                .ok();
+        }
+
+        let timeout = if force { 5_000 } else { UNTIL_IT_STOPS.as_millis() as i32 };
+        let exited = self.exited(timeout);
+        if let Some(mut courier) = courier {
+            if matches!(courier.try_wait(), Ok(None)) {
+                let _ = courier.kill();
+                let _ = courier.wait();
+            }
+        }
+        if exited? || holder_of(&self.pipe) != Some(self.pid) {
+            return Ok(OtherSessionClose::Closed);
+        }
+        Ok(OtherSessionClose::StillRunning)
+    }
+
+    fn exited(&self, timeout_ms: i32) -> std::io::Result<bool> {
+        let mut process = libc::pollfd {
+            fd: self.process.as_raw_fd(),
+            events: libc::POLLIN,
+            revents: 0,
+        };
+        // SAFETY: poll receives one initialized descriptor kept alive by self.
+        let ready = unsafe { libc::poll(&mut process, 1, timeout_ms) };
+        if ready < 0 {
+            return Err(std::io::Error::last_os_error());
+        }
+        Ok(process.revents & (libc::POLLIN | libc::POLLHUP) != 0)
+    }
 }
 
 /// The process listening on that pipe, if it can be found.
@@ -2218,15 +2338,48 @@ fn opened_for_reading(process: &Path, handle: &std::ffi::OsStr) -> bool {
 /// no Xwayland sets no `DISPLAY` at all, and it must not compare equal to one
 /// whose `DISPLAY` is the empty string.
 fn displays_in(environ: &[u8]) -> Vec<Option<String>> {
-    let named = |wanted: &str| {
-        environ
-            .split(|byte| *byte == 0)
-            .filter_map(|entry| std::str::from_utf8(entry).ok())
-            .filter_map(|entry| entry.split_once('='))
-            .find(|(name, _)| *name == wanted)
-            .map(|(_, value)| value.to_string())
+    DRAWS_INTO.iter()
+        .map(|name| environment_value(environ, name).map(str::to_string))
+        .collect()
+}
+
+fn environment_value<'a>(environ: &'a [u8], wanted: &str) -> Option<&'a str> {
+    environ
+        .split(|byte| *byte == 0)
+        .filter_map(|entry| std::str::from_utf8(entry).ok())
+        .filter_map(|entry| entry.split_once('='))
+        .find_map(|(name, value)| (name == wanted).then_some(value))
+}
+
+fn same_displays(pid: u32, environ: &[u8], theirs: &[Option<String>], ours: &[Option<String>]) -> bool {
+    theirs == ours || (
+        theirs[1] == ours[1]
+            && same_wayland_socket(pid, environ, theirs[0].as_deref(), ours[0].as_deref())
+                .unwrap_or(false)
+    )
+}
+
+/// A runtime can mount the same Wayland socket under a different name.
+fn same_wayland_socket(pid: u32, environ: &[u8], theirs: Option<&str>, ours: Option<&str>) -> Option<bool> {
+    let socket = |name: &str, runtime: Option<&str>| {
+        let path = Path::new(name);
+        if path.is_absolute() {
+            Some(path.to_path_buf())
+        } else {
+            Some(Path::new(runtime?).join(path))
+        }
     };
-    DRAWS_INTO.iter().map(|name| named(name)).collect()
+    let their_path = socket(theirs?, environment_value(environ, "XDG_RUNTIME_DIR"))?;
+    let mount_root = PathBuf::from(format!("/proc/{pid}/root"));
+    let their_socket = std::fs::metadata(mount_root.join(their_path.strip_prefix("/").ok()?)).ok()?;
+    let our_runtime = std::env::var("XDG_RUNTIME_DIR").ok();
+    let our_socket = std::fs::metadata(socket(ours?, our_runtime.as_deref())?).ok()?;
+    Some(
+        their_socket.file_type().is_socket()
+            && our_socket.file_type().is_socket()
+            && their_socket.dev() == our_socket.dev()
+            && their_socket.ino() == our_socket.ino()
+    )
 }
 
 /// The account the client is signed in as, if it is signed in.

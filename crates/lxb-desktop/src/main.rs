@@ -1774,6 +1774,10 @@ fn main() -> anyhow::Result<()> {
         retroarch_bios: None,
         retroarch_walk: None,
         keeping_picture: None,
+        other_steam: None,
+        steam_handover: None,
+        steam_start: None,
+        closing_other_steam: None,
         picking: None,
         retroarch_defaults: false,
         retroarch_bios_play: None,
@@ -2124,6 +2128,7 @@ fn main() -> anyhow::Result<()> {
         // the disk is done.
         shell.advance_transfer();
         shell.advance_kept_picture();
+        shell.advance_closing_other_steam();
         shell.sync_picture_picker();
         // The same again for an authorisation this session has been asked to
         // prove: `polkitd` asks on a thread of its own, and polkit's PAM helper
@@ -5477,6 +5482,10 @@ struct Shell {
     retroarch_walk: Option<(Walk, Instant)>,
     /// A picture somebody chose for one of their games, being copied in.
     keeping_picture: Option<Kept>,
+    other_steam: Option<(SteamRetry, Option<lxb_steam::client::OtherSession>)>,
+    steam_handover: Option<(u32, lxb_steam::Doing)>,
+    steam_start: Option<(u64, u32)>,
+    closing_other_steam: Option<ClosingOtherSteam>,
     /// The game a picture is being chosen for, while the walk is open.
     ///
     /// The row it hangs off is built from this — see
@@ -19639,6 +19648,20 @@ impl Shell {
     /// the rectangle of the control that was pressed, which is what anything
     /// this opens grows out of.
     fn carry_out(&mut self, command: menu::Command, from: [f32; 4]) {
+        if matches!(
+            command,
+            menu::Command::SteamInstallInto { .. }
+                | menu::Command::SteamAcceptAgreement(_)
+                | menu::Command::SteamStopInstalling(_)
+                | menu::Command::SteamUninstallNow(_)
+                | menu::Command::SteamMoveInto { .. }
+                | menu::Command::SteamCancelMove
+                | menu::Command::SteamRemoveLibraryNow
+                | menu::Command::SteamRunUnder { .. }
+        ) && self.check_other_steam(move |shell| shell.carry_out(command, from))
+        {
+            return;
+        }
         match command {
             menu::Command::UpdateCancelCheck => {
                 self.updates.cancel_check();
@@ -20254,6 +20277,7 @@ impl Shell {
             menu::Command::SteamPlayAgain(app_id) => self.play_steam_game_again(app_id, false),
             menu::Command::SteamMoveClientHere(app_id) => self.move_steam_here(app_id),
             menu::Command::SteamInstall(app_id) => self.install_steam_game(app_id),
+            menu::Command::SteamCloseOtherSession(force) => self.close_other_steam(force),
             menu::Command::SteamStopInstalling(app_id) => self.steam.stop_installing(app_id),
             menu::Command::SteamInstallWithSteam(app_id) => {
                 self.steam_hand_over(app_id, lxb_steam::Doing::Install)
@@ -22469,6 +22493,7 @@ impl Shell {
     /// not a failure and does not read as one — nothing was done, and what to
     /// do about it is on the panel a game press puts up.
     fn steam_would_not_take_it(&mut self, refused: &lxb_steam::Refused) {
+        let action = self.steam_handover.take();
         // The loading screen on that press first, so the panel that says why
         // is not put up behind it. See [`Self::begin_valves_client_splash`].
         if let Some((_, splash)) = self.the_client_splash() {
@@ -22478,7 +22503,18 @@ impl Shell {
         }
         match refused {
             lxb_steam::Refused::Failed(why) => self.say_steam_would_not(why),
-            lxb_steam::Refused::SomebodyElses(why) => self.say_steam_is_elsewhere(why),
+            lxb_steam::Refused::SomebodyElses(why) => {
+                if why.another_session {
+                    if let Some((app_id, doing)) = action {
+                        self.prompt_to_close_other_steam(
+                            Box::new(move |shell| shell.steam_hand_over(app_id, doing)),
+                            lxb_steam::client::OtherSession::find(),
+                        );
+                        return;
+                    }
+                }
+                self.say_steam_is_elsewhere(why);
+            }
         }
     }
 
@@ -22542,8 +22578,108 @@ impl Shell {
     /// — asked on the shell's own panel once Steam has said how big it is. See
     /// [`Shell::offer_the_libraries`].
     fn install_steam_game(&mut self, app_id: u32) {
+        if self.check_other_steam(move |shell| shell.install_steam_game(app_id)) {
+            return;
+        }
         tracing::info!(app_id, "asking Valve's client to fetch a game");
         self.steam.install(app_id, steam::place_from_the_settings());
+    }
+
+    fn check_other_steam(&mut self, retry: impl FnOnce(&mut Shell) + 'static) -> bool {
+        if self.closing_other_steam.is_some() {
+            return true;
+        }
+        let Some(client) = lxb_steam::client::OtherSession::find() else {
+            return false;
+        };
+        self.prompt_to_close_other_steam(Box::new(retry), Some(client));
+        true
+    }
+
+    fn prompt_to_close_other_steam(
+        &mut self,
+        retry: SteamRetry,
+        client: Option<lxb_steam::client::OtherSession>,
+    ) {
+        if self.closing_other_steam.is_none() {
+            self.other_steam = Some((retry, client));
+            self.offer_to_close_other_steam(false);
+        }
+    }
+
+    fn offer_to_close_other_steam(&mut self, force: bool) {
+        use crate::i18n::text;
+        let (question, button) = if force {
+            ("steam-force-close-other-session-question", "steam-force-close-other-session")
+        } else {
+            ("steam-close-other-session-question", "steam-close-other-session")
+        };
+        let from = self.dialog_origin();
+        self.dialog.ask(
+            from,
+            Some(icons::STEAM.to_string()),
+            vec![
+                dialog::Line::Heading(text(question).to_string()),
+                dialog::Line::Note(text(if force {
+                    "steam-other-session-still-running"
+                } else {
+                    "steam-other-session-running"
+                }).to_string()),
+                dialog::Line::Note(text("steam-other-session-interrupts-work").to_string()),
+                dialog::Line::Rule,
+            ],
+            vec![
+                menu::Entry::new(menu::Command::SteamCloseOtherSession(force), text(button)),
+                menu::Entry::new(menu::Command::Dismiss, text("shell-not-now")),
+            ],
+            1,
+        );
+        self.needs_redraw = true;
+    }
+
+    fn close_other_steam(&mut self, force: bool) {
+        let Some((retry, client)) = self.other_steam.take() else {
+            return;
+        };
+        let Some(client) = client else {
+            self.say_steam_would_not(crate::i18n::text("steam-other-session-target-unavailable"));
+            return;
+        };
+        let (send, answer) = std::sync::mpsc::channel();
+        match std::thread::Builder::new().name("lxb-close-other-steam".into()).spawn(move || {
+            let outcome = client.close(force);
+            let _ = send.send((client, outcome));
+        }) {
+            Ok(_) => {
+                self.closing_other_steam = Some(ClosingOtherSteam { retry, force, answer });
+            }
+            Err(why) => self.say_steam_would_not(&why.to_string()),
+        }
+    }
+
+    fn advance_closing_other_steam(&mut self) {
+        use lxb_steam::client::OtherSessionClose;
+        use std::sync::mpsc::TryRecvError;
+        let Some(pending) = self.closing_other_steam.as_ref() else {
+            return;
+        };
+        let answer = match pending.answer.try_recv() {
+            Ok(answer) => Some(answer),
+            Err(TryRecvError::Empty) => return,
+            Err(TryRecvError::Disconnected) => None,
+        };
+        let Some(ClosingOtherSteam { retry, force, .. }) = self.closing_other_steam.take() else {
+            return;
+        };
+        match answer {
+            Some((_, Ok(OtherSessionClose::Closed))) => retry(self),
+            Some((client, Ok(OtherSessionClose::StillRunning))) if !force => {
+                self.other_steam = Some((retry, Some(client)));
+                self.offer_to_close_other_steam(true);
+            }
+            Some((_, Err(why))) => self.say_steam_would_not(&why.to_string()),
+            _ => self.say_steam_would_not(crate::i18n::text("steam-other-session-still-running")),
+        }
     }
 
     /// Take one game off the disk, having asked first.
@@ -23048,6 +23184,9 @@ impl Shell {
     /// a promise that fails has to say so. See
     /// [`Self::late_word_from_the_client`], which is what says it.
     fn start_steam_because_it_is_needed(&mut self, app_id: u32) {
+        if self.check_other_steam(move |shell| shell.start_steam_because_it_is_needed(app_id)) {
+            return;
+        }
         tracing::info!(app_id, "starting Valve's client, which a press needs");
         // Written down before the ask, because it is what closes the client
         // again: this session started a Steam it was told not to leave running,
@@ -23060,6 +23199,7 @@ impl Shell {
         // be this one's when it lands a minute later.
         let request = self.steam.wake_client();
         self.awaiting_steam.steam_was_promised(request);
+        self.steam_start = Some((request, app_id));
     }
 
     /// Whether Valve's client may be seen, and why it may.
@@ -24117,6 +24257,18 @@ impl Shell {
         take_over: bool,
         joining: Option<lxb_steam::chat::Invite>,
     ) {
+        if self.closing_other_steam.is_some() {
+            return;
+        }
+        if let Some(client) = lxb_steam::client::OtherSession::find() {
+            self.prompt_to_close_other_steam(
+                Box::new(move |shell| {
+                    shell.begin_steam_launch_joining(app_id, name, from, false, joining);
+                }),
+                Some(client),
+            );
+            return;
+        }
         // The press is answered on the screen straight away, exactly as any
         // other launch is. There is no process to watch and there will not be
         // one — the game is the client's child, not ours — so the splash waits
@@ -24252,10 +24404,30 @@ impl Shell {
             lxb_steam::ClientReport::SomebodyElses(why) => {
                 let waiting = match self.awaiting_steam.answered(request) {
                     steam::Answer::Waiting(waiting) => waiting,
+                    steam::Answer::NoGame(steam::NoGame::SteamWasPromised) if why.another_session => {
+                        if let Some((_, app_id)) = self.steam_start.take_if(|(id, _)| *id == request) {
+                            self.prompt_to_close_other_steam(
+                                Box::new(move |shell| shell.start_steam_because_it_is_needed(app_id)),
+                                lxb_steam::client::OtherSession::find(),
+                            );
+                        } else {
+                            self.say_steam_is_elsewhere(&why);
+                        }
+                        return;
+                    }
                     nobody => return self.late_word_from_the_client(&why.to_string(), nobody),
                 };
                 self.end_launch(waiting.display);
-                self.offer_to_move_steam_here(&waiting, &why);
+                if why.another_session {
+                    self.prompt_to_close_other_steam(
+                        Box::new(move |shell| shell.begin_steam_launch_joining(
+                            waiting.app_id, waiting.name, waiting.from, false, waiting.joining,
+                        )),
+                        lxb_steam::client::OtherSession::find(),
+                    );
+                } else {
+                    self.offer_to_move_steam_here(&waiting, &why);
+                }
             }
         }
     }
@@ -25501,6 +25673,7 @@ impl Shell {
         // window for it. See `Shell::steam_hand_over`, where the press is made
         // and where the reason sight waits until now is written down.
         if let Some(handed) = changed.handed_over {
+            self.steam_handover = None;
             self.show_steam_for(handed);
             // And the loading screen on that press moves on to its second
             // wait: the client is up, and what is left is the window. The
@@ -30751,6 +30924,18 @@ impl Shell {
             }
             steam::Ended::Failed {
                 app_id,
+                why: lxb_steam::Stopped::OtherSession(_),
+            } => {
+                if self.closing_other_steam.is_none() {
+                    self.prompt_to_close_other_steam(
+                        Box::new(move |shell| shell.install_steam_game(app_id)),
+                        lxb_steam::client::OtherSession::find(),
+                    );
+                }
+                return;
+            }
+            steam::Ended::Failed {
+                app_id,
                 why: lxb_steam::Stopped::Failed(why),
             } => {
                 tracing::warn!(app_id, %why, "a download did not finish");
@@ -31013,11 +31198,15 @@ impl Shell {
         // instant. What it is not the same instant as is the press that has to
         // sign a client in first, and those seconds are exactly the ones during
         // which the client has a login window up.
+        if self.check_other_steam(move |shell| shell.steam_hand_over(app_id, doing)) {
+            return;
+        }
         if let Err(why) = self.steam.tell(app_id, doing) {
             tracing::warn!(%name, %why, "Steam would not take that");
             self.say_no_steam_client(&name);
             return;
         }
+        self.steam_handover = Some((app_id, doing));
         self.begin_valves_client_splash(doing);
     }
 
@@ -38655,6 +38844,15 @@ impl Shell {
     }
 
     fn carry_out_steam(&mut self, value: settings::SteamValue) {
+        if matches!(
+            value,
+            settings::SteamValue::OtherTitles(_)
+                | settings::SteamValue::AddLibrary(_)
+                | settings::SteamValue::RepairLibrary(_)
+        ) && self.check_other_steam(move |shell| shell.carry_out_steam(value))
+        {
+            return;
+        }
         match value {
             settings::SteamValue::Integration(on) => self.steam_integration_changed(on),
             // What this changes is what happens as a session comes up, and one
@@ -43222,6 +43420,17 @@ struct Chosen {
     rom: PathBuf,
     console: String,
     piece: retroarch::Piece,
+}
+
+type SteamRetry = Box<dyn FnOnce(&mut Shell)>;
+
+struct ClosingOtherSteam {
+    retry: SteamRetry,
+    force: bool,
+    answer: std::sync::mpsc::Receiver<(
+        lxb_steam::client::OtherSession,
+        std::io::Result<lxb_steam::client::OtherSessionClose>,
+    )>,
 }
 
 /// A chosen picture being copied in, and the game it is for.
