@@ -1360,6 +1360,7 @@ pub fn what_the_install_needs(said: &str) -> &'static str {
 /// How one game's journey on or off the disk ended.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Ended {
+    InstallAccepted { app_id: u32 },
     /// The game is on the disk and can be started.
     Done { app_id: u32 },
     /// It is not, and this is what to say. Nothing was left behind, so
@@ -2734,6 +2735,9 @@ impl Steam {
                     fetching.stuck = true;
                 }
             }
+            Event::InstallAccepted { app_id } => {
+                changed.installed.push(Ended::InstallAccepted { app_id });
+            }
             Event::Installed { app_id, .. } => {
                 self.fetching.remove(&app_id);
                 // The row has to become a game that can be started, and what
@@ -3971,6 +3975,16 @@ impl Steam {
         self.places.insert(app_id, place.clone());
         self.client
             .install(app_id, place, crate::i18n::spoken().steam_name());
+    }
+
+    pub fn install_with_parental_pin(&mut self, app_id: u32, pin: lxb_steam::Password) {
+        let place = self.place(app_id).unwrap_or_else(place_from_the_settings);
+        self.client.install_with_parental_pin(
+            app_id,
+            pin,
+            place,
+            crate::i18n::spoken().steam_name(),
+        );
     }
 
     /// Record that the person has accepted these agreements, and fetch the

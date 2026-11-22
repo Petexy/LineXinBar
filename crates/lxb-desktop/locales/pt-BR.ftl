@@ -2290,3 +2290,9 @@ windows-run-your-windows-games-and-apps-from-the-bar = Execute os seus jogos e a
 windows-keep-games-and-apps-in-this-folder = Guardar os jogos e aplicativos novos nesta pasta
 windows-run-inside-a-game = Executar dentro de um jogo
 windows-which-game-to-run-it-in = Escolha o jogo em que ele será executado
+
+steam-parental-pin-title = PIN do controle parental do Steam
+steam-parental-pin-prompt = Digite seu PIN de quatro dígitos para continuar a instalação.
+steam-parental-pin-rejected = O Steam rejeitou o PIN. Digite-o novamente.
+steam-parental-pin-submit = Desbloquear e instalar
+steam-parental-pin-label = PIN

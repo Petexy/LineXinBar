@@ -2108,3 +2108,9 @@ windows-run-your-windows-games-and-apps-from-the-bar = 从主栏运行您的 Win
 windows-keep-games-and-apps-in-this-folder = 把新的游戏与应用程序放在这个文件夹里
 windows-run-inside-a-game = 在某个游戏里运行
 windows-which-game-to-run-it-in = 选择要在哪个游戏里运行
+
+steam-parental-pin-title = Steam 家长控制 PIN 码
+steam-parental-pin-prompt = 请输入四位 PIN 码以继续安装。
+steam-parental-pin-rejected = Steam 拒绝了该 PIN 码，请重新输入。
+steam-parental-pin-submit = 解锁并安装
+steam-parental-pin-label = PIN 码

@@ -1735,6 +1735,9 @@ fn main() -> anyhow::Result<()> {
         joining: None,
         volume: volume::Overlay::default(),
         steam,
+        steam_parental_pin: None,
+        steam_parental_pending: VecDeque::new(),
+        steam_parental_retry: None,
         download_on_the_card: None,
         launch_question: None,
         launch_questions_waiting: VecDeque::new(),
@@ -5288,6 +5291,9 @@ struct Shell {
     /// the reason the walk over the user's files is one: nothing that waits on
     /// a network may happen on the thread that draws.
     steam: steam::Steam,
+    steam_parental_pin: Option<(u32, secret::Secret)>,
+    steam_parental_pending: VecDeque<u32>,
+    steam_parental_retry: Option<u32>,
     /// Which game the download card in the corner of the guide is about, as of
     /// the last pass — so that its *going* can be noticed.
     ///
@@ -9402,7 +9408,8 @@ impl Shell {
     /// all the same, because theirs are the letters that must never go anywhere
     /// else.
     fn type_into_shell(&mut self, stroke: keyboard::Stroke) -> bool {
-        self.type_into_password(stroke)
+        self.type_into_steam_parental_pin(stroke)
+            || self.type_into_password(stroke)
             || self.type_into_authentication(stroke)
             || self.type_into_network(stroke)
             || self.type_into_pairing(stroke)
@@ -9458,6 +9465,7 @@ impl Shell {
             || self.typing.is_some()
             || self.compressing.is_some()
             || self.steam.password_wanted()
+            || self.steam_parental_pin.is_some()
     }
 
     /// Whether the cursor is standing in a search field that is being typed
@@ -20258,6 +20266,7 @@ impl Shell {
             menu::Command::SteamInstallWithSteam(app_id) => {
                 self.steam_hand_over(app_id, lxb_steam::Doing::Install)
             }
+            menu::Command::SteamParentalPinSubmit => self.submit_steam_parental_pin(),
             menu::Command::SteamAcceptAgreement(app_id) => self.accept_the_agreement(app_id),
             menu::Command::SteamInstallInto { app_id, library } => {
                 self.install_into(app_id, library)
@@ -21689,6 +21698,11 @@ impl Shell {
     /// too, and answering is idempotent — the row that dismisses the panel has
     /// usually answered already.
     fn close_dialog(&mut self) -> bool {
+        if self.steam_parental_pin.take().is_some() {
+            self.osk.close();
+            self.steam_parental_pending.clear();
+            self.steam_parental_retry = None;
+        }
         self.updates.hide();
         self.app_facts = None;
         self.removal_plan = None;
@@ -22541,6 +22555,85 @@ impl Shell {
     /// on "Ask every time", and wherever the one it names cannot take the game
     /// — asked on the shell's own panel once Steam has said how big it is. See
     /// [`Shell::offer_the_libraries`].
+    fn show_steam_parental_pin(&mut self, rejected: bool) {
+        let lines = vec![
+            dialog::Line::Heading(crate::i18n::text("steam-parental-pin-title").into()),
+            dialog::Line::Note(if rejected {
+                crate::i18n::text("steam-parental-pin-rejected").into()
+            } else {
+                crate::i18n::text("steam-parental-pin-prompt").into()
+            }),
+            dialog::Line::field(crate::i18n::text("steam-parental-pin-label"), "––––"),
+            dialog::Line::Rule,
+        ];
+        let rows = vec![
+            menu::Entry::new(
+                menu::Command::SteamParentalPinSubmit,
+                crate::i18n::text("steam-parental-pin-submit"),
+            ),
+            menu::Entry::new(menu::Command::Dismiss, crate::i18n::text("shell-cancel")),
+        ];
+        let from = self.dialog_origin();
+        self.dialog.ask(from, Some(icons::STEAM.to_string()), lines, rows, 0);
+        self.osk.open_here();
+        self.sync_surface_state();
+        self.needs_redraw = true;
+    }
+
+    fn type_into_steam_parental_pin(&mut self, stroke: keyboard::Stroke) -> bool {
+        let Some((_, pin)) = self.steam_parental_pin.as_mut() else {
+            return false;
+        };
+        match stroke {
+            keyboard::Stroke::Char(digit) if digit.is_ascii_digit() && pin.typed() < 4 => {
+                pin.push(digit);
+            }
+            keyboard::Stroke::BACKSPACE => pin.pop(),
+            keyboard::Stroke::ENTER => {
+                self.submit_steam_parental_pin();
+                return true;
+            }
+            keyboard::Stroke::ESCAPE => {
+                self.close_dialog();
+                self.sync_surface_state();
+                self.needs_redraw = true;
+                return true;
+            }
+            _ => return true,
+        }
+        let entered = pin.typed();
+        let mut lines = self.dialog.lines().to_vec();
+        if let Some(dialog::Line::Field { value, .. }) = lines.get_mut(2) {
+            *value = format!("{}{}", "•".repeat(entered), "–".repeat(4 - entered));
+        }
+        self.dialog.say(lines);
+        self.needs_redraw = true;
+        true
+    }
+
+    fn submit_steam_parental_pin(&mut self) {
+        let Some((app_id, secret)) = self.steam_parental_pin.as_ref() else {
+            return;
+        };
+        if secret.typed() != 4 {
+            self.osk.open_here();
+            self.sync_surface_state();
+            return;
+        }
+        let app_id = *app_id;
+        let mut pin = lxb_steam::Password::default();
+        let written = secret.hand_to(&mut pin).is_ok();
+        self.steam_parental_pin = None;
+        self.osk.close();
+        self.close_dialog();
+        self.sync_surface_state();
+        self.needs_redraw = true;
+        if written {
+            self.steam_parental_retry = Some(app_id);
+            self.steam.install_with_parental_pin(app_id, pin);
+        }
+    }
+
     fn install_steam_game(&mut self, app_id: u32) {
         tracing::info!(app_id, "asking Valve's client to fetch a game");
         self.steam.install(app_id, steam::place_from_the_settings());
@@ -25539,6 +25632,8 @@ impl Shell {
         // was on — and every conversation goes with it. The store has already
         // thrown its half away; this is the panel's.
         if changed.account {
+            self.steam_parental_pending.clear();
+            self.steam_parental_retry = None;
             self.friends.start_again();
             // And what was announced about those conversations. A row that
             // says somebody wrote is a row that goes to what they wrote, and
@@ -30650,6 +30745,17 @@ impl Shell {
     /// [`Shell::a_download_ended`].
     fn steam_ended(&mut self, answer: steam::Ended) {
         let (app_id, lines, rows) = match answer {
+            steam::Ended::InstallAccepted { app_id } => {
+                if self.steam_parental_retry == Some(app_id) {
+                    self.steam_parental_pending.retain(|id| *id != app_id);
+                    self.steam_parental_retry = self.steam_parental_pending.front().copied();
+                    if let Some(next) = self.steam_parental_retry {
+                        let place = self.steam.place(next).unwrap_or_else(steam::place_from_the_settings);
+                        self.steam.install(next, place);
+                    }
+                }
+                return;
+            }
             steam::Ended::Done { .. } | steam::Ended::Removed { .. } => {
                 tracing::info!(?answer, "a game finished moving");
                 return;
@@ -30682,6 +30788,25 @@ impl Shell {
                     "this game is to go into a library somebody chooses"
                 );
                 self.offer_the_libraries(app_id, choice);
+                return;
+            }
+            steam::Ended::Failed {
+                app_id,
+                why: lxb_steam::Stopped::Asks(what),
+            } if matches!(
+                what.as_str(),
+                lxb_steam::webui::PARENTAL_PIN | lxb_steam::webui::PARENTAL_PIN_REJECTED
+            ) => {
+                if !self.steam_parental_pending.contains(&app_id) {
+                    self.steam_parental_pending.push_back(app_id);
+                }
+                if self.steam_parental_retry == Some(app_id) {
+                    self.steam_parental_retry = None;
+                }
+                if self.steam_parental_pin.is_none() && self.steam_parental_retry.is_none() {
+                    self.steam_parental_pin = Some((app_id, secret::Secret::default()));
+                    self.show_steam_parental_pin(what == lxb_steam::webui::PARENTAL_PIN_REJECTED);
+                }
                 return;
             }
             // Nothing went wrong: the game wants something answered that only
@@ -30753,6 +30878,10 @@ impl Shell {
                 app_id,
                 why: lxb_steam::Stopped::Failed(why),
             } => {
+                if self.steam_parental_retry == Some(app_id) {
+                    self.steam_parental_pending.retain(|id| *id != app_id);
+                    self.steam_parental_retry = None;
+                }
                 tracing::warn!(app_id, %why, "a download did not finish");
                 (
                     app_id,

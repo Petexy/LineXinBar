@@ -2410,3 +2410,9 @@ windows-run-your-windows-games-and-apps-from-the-bar = Запускайте св
 windows-keep-games-and-apps-in-this-folder = Хранить новые игры и приложения в этой папке
 windows-run-inside-a-game = Запустить внутри игры
 windows-which-game-to-run-it-in = Выберите игру, внутри которой его запустить
+
+steam-parental-pin-title = ПИН-код родительского контроля Steam
+steam-parental-pin-prompt = Введите четырёхзначный ПИН-код, чтобы продолжить установку.
+steam-parental-pin-rejected = Steam отклонил ПИН-код. Введите его ещё раз.
+steam-parental-pin-submit = Разблокировать и установить
+steam-parental-pin-label = ПИН-код
