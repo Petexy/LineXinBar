@@ -124,6 +124,8 @@ pub enum Setting {
     /// stopped, a bar being built again and Valve's client being asked to shut
     /// down, and none of those is a thing this module does.
     Steam(SteamValue),
+    Privacy(PrivacyOption, bool),
+    RevealPrivateSettings(PrivacyOption, bool),
     /// One of Settings > Games > Epic Games' own rows, Steam's for Heroic —
     /// carried out by the shell for [`Setting::Steam`]'s reason, and the
     /// last of them by Heroic's helper.
@@ -3756,6 +3758,136 @@ pub fn sun_today() -> Option<crate::sun::Sun> {
 /// is doing and what the speakers are doing are things the user can point at,
 /// and how large the programs on the machine draw themselves is a setting they
 /// go looking for.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PrivacyOption {
+    All,
+    AccountNames,
+    SteamFriends,
+    SteamMessages,
+    Location,
+    Network,
+    Bluetooth,
+}
+
+const PRIVACY_FIELDS: [(PrivacyOption, &str); 6] = [
+    (PrivacyOption::AccountNames, "privacy-account-names"),
+    (PrivacyOption::SteamFriends, "steam-show-friends"),
+    (PrivacyOption::SteamMessages, "privacy-steam-messages"),
+    (PrivacyOption::Location, "privacy-location"),
+    (PrivacyOption::Network, "shell-network"),
+    (PrivacyOption::Bluetooth, "privacy-bluetooth"),
+];
+
+static PRIVACY_VISIBLE: Mutex<[bool; 6]> = Mutex::new([true; 6]);
+static REVEALED_PRIVATE_SETTINGS: Mutex<Option<PrivacyOption>> = Mutex::new(None);
+
+pub fn reveal_private_settings(option: PrivacyOption, reveal: bool) {
+    *REVEALED_PRIVATE_SETTINGS.lock().unwrap() = reveal.then_some(option);
+}
+
+fn private_settings_revealed(option: PrivacyOption) -> bool {
+    *REVEALED_PRIVATE_SETTINGS.lock().unwrap() == Some(option)
+}
+
+fn private_settings_action(option: PrivacyOption, title: &str, icon: &str, reveal: bool) -> Entry {
+    action(
+        title,
+        crate::i18n::text(if reveal { "privacy-press-to-reveal" } else { "privacy-hide-again" }),
+        icon,
+        Setting::RevealPrivateSettings(option, reveal),
+    )
+}
+
+pub fn privacy_visible(option: PrivacyOption) -> bool {
+    let values = PRIVACY_VISIBLE.lock().unwrap();
+    PRIVACY_FIELDS.iter().position(|(field, _)| *field == option)
+        .map_or_else(|| values.iter().all(|value| *value), |index| values[index])
+}
+
+fn set_privacy_visible(option: PrivacyOption, visible: bool) {
+    if option == PrivacyOption::All || private_settings_revealed(option) {
+        reveal_private_settings(option, false);
+    }
+    let mut values = PRIVACY_VISIBLE.lock().unwrap();
+    for (index, (field, _)) in PRIVACY_FIELDS.iter().enumerate() {
+        if option == PrivacyOption::All || option == *field {
+            values[index] = visible;
+        }
+    }
+}
+
+pub fn show_game_account_names() -> bool {
+    privacy_visible(PrivacyOption::AccountNames)
+}
+
+pub fn show_steam_friends() -> bool {
+    privacy_visible(PrivacyOption::SteamFriends)
+}
+
+fn privacy_page() -> Entry {
+    let switches = [(PrivacyOption::All, "privacy-show-all")]
+        .into_iter()
+        .chain(PRIVACY_FIELDS)
+        .map(|(option, title)| {
+            let visible = privacy_visible(option);
+            let (off, on) = match option {
+                PrivacyOption::All => (
+                    "privacy-show-all-off-description",
+                    "privacy-show-all-on-description",
+                ),
+                PrivacyOption::AccountNames => (
+                    "privacy-account-names-off-description",
+                    "privacy-account-names-on-description",
+                ),
+                PrivacyOption::SteamFriends => (
+                    "privacy-steam-friends-off-description",
+                    "privacy-steam-friends-on-description",
+                ),
+                PrivacyOption::SteamMessages => (
+                    "privacy-steam-messages-off-description",
+                    "privacy-steam-messages-on-description",
+                ),
+                PrivacyOption::Location => (
+                    "privacy-location-off-description",
+                    "privacy-location-on-description",
+                ),
+                PrivacyOption::Network => (
+                    "privacy-network-off-description",
+                    "privacy-network-on-description",
+                ),
+                PrivacyOption::Bluetooth => (
+                    "privacy-bluetooth-off-description",
+                    "privacy-bluetooth-on-description",
+                ),
+            };
+            let off = crate::i18n::text(off);
+            let on = crate::i18n::text(on);
+            let description = if visible { on } else { off };
+            let state = crate::i18n::text(if visible { "shell-on" } else { "shell-off" });
+            folder(
+                crate::i18n::text(title),
+                &format!("{state} · {description}"),
+                icons::SETTING_INFO,
+                vec![
+                    value(
+                        crate::i18n::text("shell-on"),
+                        Some(on),
+                        visible,
+                        Setting::Privacy(option, true),
+                    ),
+                    value(
+                        crate::i18n::text("shell-off"),
+                        Some(off),
+                        !visible,
+                        Setting::Privacy(option, false),
+                    ),
+                ],
+            )
+        })
+        .collect();
+    folder(crate::i18n::text("privacy-page"), "", icons::SETTING_INFO, switches)
+}
+
 pub fn column(bar: &[crate::apps::Column]) -> Vec<Entry> {
     let mut rows = vec![
         updates(),
@@ -3768,6 +3900,7 @@ pub fn column(bar: &[crate::apps::Column]) -> Vec<Entry> {
         bluetooth(),
         input(),
         games(),
+        privacy_page(),
     ];
     // The one page in this column that is not on every machine — see the
     // paragraph above for why it is here rather than under Games, and
@@ -5480,6 +5613,9 @@ fn schedule_of(night: NightLight, sun: Option<crate::sun::Sun>) -> String {
         Schedule::Hours => {
             crate::message!("time-range", "from" => hour_title(night.from), "until" => hour_title(night.until))
         }
+        Schedule::SunsetToSunrise if !location_details_visible() => {
+            Schedule::SunsetToSunrise.title().to_string()
+        }
         Schedule::SunsetToSunrise => match sun {
             Some(crate::sun::Sun::Daily { sunrise, sunset }) => {
                 crate::message!("time-range", "from" => clock_title(sunset), "until" => clock_title(sunrise))
@@ -5656,6 +5792,10 @@ fn tint_of(kelvin: u16) -> Color {
 /// neither the row is replaced by the reason there is no row, which is what
 /// [`srgb_intensity`] does on a display that cannot honour it. Offering a
 /// schedule that could never come on would be worse than not offering one.
+fn location_details_visible() -> bool {
+    privacy_visible(PrivacyOption::Location) || private_settings_revealed(PrivacyOption::Location)
+}
+
 fn night_light_schedule(display: &'static str, night: NightLight) -> Entry {
     let at = crate::sun::location();
     let sun = sun_today();
@@ -5680,6 +5820,12 @@ fn night_light_schedule(display: &'static str, night: NightLight) -> Entry {
     // Second in the list, between the two: it is the middle answer — a
     // schedule, but not one anybody has to set.
     let sun_row = match &at {
+        Some(_) if !location_details_visible() => value(
+            Schedule::SunsetToSunrise.title(),
+            Some(crate::i18n::text("privacy-hidden")),
+            night.schedule == Schedule::SunsetToSunrise,
+            setting(display, DisplayValue::NightLightSchedule(Schedule::SunsetToSunrise)),
+        ),
         Some(at) => value(
             Schedule::SunsetToSunrise.title(),
             Some(&match sun {
@@ -5706,6 +5852,16 @@ fn night_light_schedule(display: &'static str, night: NightLight) -> Entry {
         ),
     };
     values.insert(1, sun_row);
+    if at.is_some() && !privacy_visible(PrivacyOption::Location) {
+        let reveal = !private_settings_revealed(PrivacyOption::Location);
+        let title = if reveal { "privacy-location" } else { "privacy-hide-details" };
+        values.push(private_settings_action(
+            PrivacyOption::Location,
+            crate::i18n::text(title),
+            icons::SETTING_INFO,
+            reveal,
+        ));
+    }
 
     folder(
         crate::i18n::text("shell-schedule"),
@@ -6267,6 +6423,18 @@ fn start_music_switch() -> Entry {
 /// See [`crate::network`] for why this one page in the tree depends on a daemon
 /// when nothing else does.
 fn network() -> Entry {
+    let option = PrivacyOption::Network;
+    let visible = privacy_visible(option);
+    if !visible && !private_settings_revealed(option) {
+        return folder(
+            crate::i18n::text("shell-network"),
+            crate::i18n::text("privacy-hidden"),
+            icons::SETTING_NETWORK,
+            vec![private_settings_action(
+                option, crate::i18n::text("shell-information"), icons::SETTING_NETWORK, true,
+            )],
+        );
+    }
     let listing = network_listing();
     let radios = listing.of(crate::network::Kind::Wireless);
     let sockets = listing.of(crate::network::Kind::Wired);
@@ -6283,6 +6451,11 @@ fn network() -> Entry {
         // when pressed. What it has to say instead is *why* — and the two
         // reasons are not the same fact. See [`nothing_to_connect_with`].
         rows.push(nothing_to_connect_with(listing.manager));
+    }
+    if !visible {
+        rows.push(private_settings_action(
+            option, crate::i18n::text("privacy-hide-details"), icons::SETTING_NETWORK, false,
+        ));
     }
     folder(
         crate::i18n::text("shell-network"),
@@ -7075,6 +7248,8 @@ pub const SEARCH_PAGE: &str = "Search to pair";
 /// depends on a daemon, and for the one thing it has that its sister does not:
 /// pairing is a conversation, and this session has to be the one that answers.
 fn bluetooth() -> Entry {
+    let option = PrivacyOption::Bluetooth;
+    let hidden = !privacy_visible(option) && !private_settings_revealed(option);
     let listing = bluetooth_listing();
     let rows = match chosen_controller(&listing) {
         // Never an empty column: the bar refuses to step into one. See
@@ -7088,7 +7263,13 @@ fn bluetooth() -> Entry {
             // radio this machine uses, what it is called and what happens at
             // startup are all questions with answers while it is off.
             if controller.powered && controller.switchable {
-                rows.push(devices_page(&listing, controller));
+                if hidden {
+                    rows.push(private_settings_action(
+                        option, crate::i18n::text("privacy-bluetooth-devices"), icons::SETTING_BLUETOOTH, true,
+                    ));
+                } else {
+                    rows.push(devices_page(&listing, controller));
+                }
             }
             rows.push(configuration(&listing, controller));
             rows
@@ -7510,18 +7691,27 @@ fn configuration(
     listing: &crate::bluetooth::Listing,
     controller: &crate::bluetooth::Controller,
 ) -> Entry {
+    let option = PrivacyOption::Bluetooth;
+    let visible = privacy_visible(option);
     let mut rows = Vec::new();
-    rows.extend(controller_choice(listing, controller));
-    rows.push(bluetooth_name(controller));
-    // A fact and not a setting, so a row that cannot be pressed rather than a
-    // panel to open: it is one line, and a door in front of one line is a door
-    // for its own sake. The information mark is the one [`reading`] carries.
-    rows.push(reading(
-        crate::i18n::text("shell-address"),
-        &controller.address,
-    ));
+    if visible || private_settings_revealed(option) {
+        rows.extend(controller_choice(listing, controller));
+        rows.push(bluetooth_name(controller));
+        rows.push(reading(crate::i18n::text("shell-address"), &controller.address));
+    } else {
+        for field in ["shell-name", "shell-address"] {
+            rows.push(private_settings_action(
+                option, crate::i18n::text(field), icons::SETTING_INFO, true,
+            ));
+        }
+    }
     rows.push(visibility(controller));
     rows.push(startup_row());
+    if !visible && private_settings_revealed(option) {
+        rows.push(private_settings_action(
+            option, crate::i18n::text("privacy-hide-details"), icons::SETTING_BLUETOOTH, false,
+        ));
+    }
     folder(
         crate::i18n::text("shell-configuration"),
         crate::i18n::text("shell-what-this-machine-is-called-over-bluetooth-and-how-it-comes-up"),
@@ -11810,6 +12000,8 @@ pub fn preview(setting: Option<Setting>) {
             // a cursor walking past Off would take the user's library off the
             // screen and put it back, twice, on the way down a list of two.
             | Setting::Steam(_)
+            | Setting::Privacy(_, _)
+            | Setting::RevealPrivateSettings(_, _)
             | Setting::Epic(_)
             // Nor the other three integrations' switches, for the Steam
             // switch's reason exactly: each of them rebuilds the bar, so each
@@ -12349,6 +12541,8 @@ fn apply_with(setting: Setting, persist: impl FnOnce(&Stored)) -> bool {
         // `--no-steam` offers no row to press, so nothing can arrive; and if
         // one ever did, the file should still record the answer the user gave
         // rather than the one this session was able to act on.
+        Setting::Privacy(option, visible) => set_privacy_visible(option, visible),
+        Setting::RevealPrivateSettings(_, _) => return false,
         Setting::Steam(SteamValue::Integration(on)) => {
             *STEAM_INTEGRATION.lock().unwrap() = on;
             tracing::info!(on, "the Steam integration");
@@ -13241,6 +13435,7 @@ fn adopt(stored: Stored) {
     // started running afterwards — which is where a session that has never been
     // asked has all three, and is what every file written before this page
     // existed says. See [`SteamValue`], where each default is argued.
+    *PRIVACY_VISIBLE.lock().unwrap() = stored.privacy_visible.unwrap_or([true; 6]);
     if let Some(on) = stored.steam_integration {
         *STEAM_INTEGRATION.lock().unwrap() = on;
     }
@@ -13857,6 +14052,7 @@ struct Stored {
     /// where the client has since been installed should not have lost the
     /// answers on the way. Above the two maps for [`Stored::steam_sort`]'s
     /// reason.
+    privacy_visible: Option<[bool; 6]>,
     steam_integration: Option<bool>,
     steam_at_startup: Option<bool>,
     steam_after_a_game: Option<bool>,
@@ -14117,6 +14313,7 @@ fn stored() -> Stored {
         // flag quietly turning the user's setting off. See
         // [`STEAM_IN_THIS_SESSION`], which is why these read the statics rather
         // than the three readers above them.
+        privacy_visible: Some(*PRIVACY_VISIBLE.lock().unwrap()),
         steam_integration: Some(*STEAM_INTEGRATION.lock().unwrap()),
         steam_at_startup: Some(*STEAM_AT_STARTUP.lock().unwrap()),
         steam_after_a_game: Some(*STEAM_AFTER_A_GAME.lock().unwrap()),

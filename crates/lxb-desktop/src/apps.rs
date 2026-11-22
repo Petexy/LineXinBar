@@ -733,7 +733,10 @@ impl Service {
         Service {
             comment: match (account.as_deref(), standing) {
                 (Some(_), Some(standing)) => standing,
-                (Some(account), None) => crate::message!("steam-signed-in", "name" => account),
+                (Some(account), None) if crate::settings::show_game_account_names() => {
+                    crate::message!("steam-signed-in", "name" => account)
+                }
+                (Some(_), None) => crate::i18n::text("steam-account-signed-in").to_string(),
                 (None, _) => {
                     crate::i18n::text("shell-sign-in-to-play-your-steam-library-here").to_string()
                 }

@@ -7416,7 +7416,14 @@ pub fn build_friends(view: FriendsView, width: f32, height: f32) -> Scene {
     // account name they signed in with. A shell that greeted people by their
     // login would be greeting them by the one name their friends never see.
     let (name, status) = match view.roster.me.as_ref() {
-        Some(me) => (me.name.clone(), crate::steam::friend_doing(me).to_string()),
+        Some(me) => (
+            if crate::settings::show_game_account_names() {
+                me.name.clone()
+            } else {
+                crate::i18n::text("steam-account-signed-in").to_string()
+            },
+            crate::steam::friend_doing(me).to_string(),
+        ),
         // Signed out, or signed in and waiting on Steam's first answer. Both
         // are the same thing to read: the panel is about Steam and says so.
         None => ("Steam".to_string(), String::new()),

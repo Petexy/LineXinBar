@@ -1879,6 +1879,9 @@ impl Steam {
         values.push((
             crate::i18n::text("shell-account").to_string(),
             match (self.account.as_deref(), self.steam_id) {
+                (Some(_), _) if !crate::settings::show_game_account_names() => {
+                    crate::i18n::text("steam-account-signed-in").to_string()
+                }
                 (Some(account), Some(id)) => format!("{account} (…{})", id % 10_000),
                 (Some(account), None) => account.to_string(),
                 (None, _) => crate::i18n::text("shell-nobody-signed-in").to_string(),

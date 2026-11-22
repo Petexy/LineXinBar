@@ -2296,12 +2296,18 @@ impl Heroic {
                 crate::i18n::text("epic-press-to-finish-setting-up").to_string()
             }
             Found::Here { .. } => match &inner.account {
-                Some(name) if inner.offline => format!(
-                    "{} · {}",
-                    crate::message!("steam-signed-in", "name" => name.as_str()),
-                    crate::i18n::text("epic-no-connection")
-                ),
-                Some(name) => crate::message!("steam-signed-in", "name" => name.as_str()),
+                Some(name) => {
+                    let signed_in = if crate::settings::show_game_account_names() {
+                        crate::message!("steam-signed-in", "name" => name.as_str())
+                    } else {
+                        crate::i18n::text("steam-account-signed-in").to_string()
+                    };
+                    if inner.offline {
+                        format!("{} · {}", signed_in, crate::i18n::text("epic-no-connection"))
+                    } else {
+                        signed_in
+                    }
+                }
                 None => crate::i18n::text("epic-sign-in-to-play").to_string(),
             },
         })
