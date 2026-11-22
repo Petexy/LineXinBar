@@ -2286,3 +2286,9 @@ windows-run-your-windows-games-and-apps-from-the-bar = बार से अप�
 windows-keep-games-and-apps-in-this-folder = नए खेल और ऐप्लिकेशन इस फ़ोल्डर में रखें
 windows-run-inside-a-game = किसी खेल के अंदर चलाएँ
 windows-which-game-to-run-it-in = चुनें कि इसे किस खेल के अंदर चलाना है
+
+steam-parental-pin-title = Steam के अभिभावकीय नियंत्रण का पिन
+steam-parental-pin-prompt = इंस्टॉल करना जारी रखने के लिए अपना चार अंकों का पिन डालें।
+steam-parental-pin-rejected = Steam ने पिन स्वीकार नहीं किया। उसे फिर से डालें।
+steam-parental-pin-submit = अनलॉक करें और इंस्टॉल करें
+steam-parental-pin-label = पिन

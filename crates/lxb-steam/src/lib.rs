@@ -272,6 +272,7 @@ pub enum Ask {
         /// to be recorded before the wizard is opened. Empty for an ordinary
         /// press. See [`webui::install`].
         accepting: Vec<webui::Eula>,
+        parental_pin: Option<Password>,
         /// Steam's name for the language an agreement is to be read in, if
         /// the game turns out to have one. See [`agreement::read_all`].
         language: &'static str,
@@ -1042,6 +1043,7 @@ impl std::fmt::Display for StorageRefused {
 pub enum Event {
     AchievementProgress(achievements::ProgressHeard),
     Achievements(achievements::Heard),
+    InstallAccepted { app_id: u32 },
     /// How a download is going, read off the manifest Valve's client keeps for
     /// the game. `total` is zero for the short stretch at the start where the
     /// client has written the manifest but does not yet know the size.
@@ -1685,6 +1687,23 @@ impl Steam {
         self.ask(Ask::Install {
             app_id,
             accepting: Vec::new(),
+            parental_pin: None,
+            language,
+            place,
+        });
+    }
+
+    pub fn install_with_parental_pin(
+        &self,
+        app_id: u32,
+        pin: Password,
+        place: webui::Place,
+        language: &'static str,
+    ) {
+        self.ask(Ask::Install {
+            app_id,
+            accepting: Vec::new(),
+            parental_pin: Some(pin),
             language,
             place,
         });
@@ -1730,6 +1749,7 @@ impl Steam {
         self.ask(Ask::Install {
             app_id,
             accepting,
+            parental_pin: None,
             language,
             place,
         });
@@ -2887,6 +2907,7 @@ fn answer(
         Ask::Install {
             app_id,
             accepting,
+            parental_pin,
             language,
             place,
         } => {
@@ -2955,7 +2976,13 @@ fn answer(
                     how: match ready {
                         Err(why) => Err(Stopped::Failed(why)),
                         Ok(standing) => {
-                            match webui::install(app_id, &accepting, &place, standing.still()) {
+                            match webui::install(
+                                app_id,
+                                parental_pin.as_ref(),
+                                &accepting,
+                                &place,
+                                standing.still(),
+                            ) {
                                 Ok(()) => {
                                     tracing::info!(app_id, "Valve's client is fetching this game");
                                     Ok(())
@@ -3916,6 +3943,7 @@ fn came_back(
             ..
         } => {
             audit::went(format_args!("install {app_id}"), audit::How::Done);
+            let _ = events.send(Event::InstallAccepted { app_id });
             at_once(state)
         }
         Finished::Installing {

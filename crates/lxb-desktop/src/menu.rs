@@ -1034,6 +1034,7 @@ pub enum Command {
     /// Carries the app because it is offered from a dialog that may be
     /// answered long after the cursor has moved on.
     SteamInstallWithSteam(u32),
+    SteamParentalPinSubmit,
     /// Accept the agreement on the panel, for the game it carries: the next
     /// agreement if the game has another, and the install once there is none.
     ///

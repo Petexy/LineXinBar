@@ -2347,13 +2347,36 @@ fn which_are_missing(wanted: &[&str]) -> Result<Vec<String>, Problem> {
 /// A client that has lost the two calls a choice is made with installs where it
 /// always did — into its own default — rather than refusing the game: the
 /// question is a nicety over a download that works without it.
-pub fn install(
+pub(crate) fn install(
     app_id: u32,
+    parental_pin: Option<&crate::Password>,
     accepting: &[Eula],
     place: &Place,
     still: Still<'_>,
 ) -> Result<(), Problem> {
     let (_turn, socket) = ready_to_drive_the_wizard(&INSTALLING_NEEDS, still)?;
+    if let Some(pin) = parental_pin {
+        let bytes = pin.plain();
+        if bytes.len() != 4 || !bytes.iter().all(u8::is_ascii_digit) {
+            return Err(Problem::Asks(PARENTAL_PIN.to_string()));
+        }
+        let pin = std::str::from_utf8(bytes).expect("validated ASCII digits");
+        // Match Steam's own PIN dialog. Return a fixed value so exceptions
+        // from the client cannot expose the PIN in diagnostic messages.
+        let call = format!(
+            "(async () => {{ try {{ return String(await SteamClient.Parental.UnlockParentalLock('{pin}', true)); }} catch {{ return ''; }} }})()"
+        );
+        match evaluate(&socket, &call).as_deref() {
+            Ok("1") => {}
+            Ok("25") => {
+                return Err(Problem::Stopped("Steam's PIN attempt limit was reached.".into()));
+            }
+            Ok("") | Err(_) => {
+                return Err(Problem::Stopped("Steam could not check the parental control PIN.".into()));
+            }
+            Ok(_) => return Err(Problem::Asks(PARENTAL_PIN_REJECTED.to_string())),
+        }
+    }
     // `SetCreateShortcuts(false, false)` because the two it makes are a
     // desktop file and a start-menu entry on a machine that may have neither
     // — this shell *is* the menu, and the game is already a row on it.
@@ -3701,6 +3724,9 @@ mod state {
 /// `asks` is read first and outranks everything else: nothing has gone wrong
 /// there, and the flow was cancelled on the way out so it would otherwise
 /// arrive as a cancellation somebody had asked for.
+pub const PARENTAL_PIN: &str = "a Steam parental control PIN";
+pub const PARENTAL_PIN_REJECTED: &str = "Steam rejected the parental control PIN";
+
 fn wizard_said(answer: &str) -> Result<(), Problem> {
     let parsed: serde_json::Value =
         serde_json::from_str(answer).map_err(|_| Problem::Refused(answer.to_string()))?;
@@ -3741,6 +3767,10 @@ fn wizard_said(answer: &str) -> Result<(), Problem> {
     // which is all there is to go on, because `errorDetail` has been empty
     // every time this has been seen fail.
     let error = parsed.get("error").and_then(serde_json::Value::as_i64);
+    // Steam_AppUpdateError_45 is the parental control block.
+    if error == Some(45) {
+        return Err(Problem::Asks(PARENTAL_PIN.to_string()));
+    }
     Err(Problem::Stopped(match error {
         Some(0) | None => said.to_string(),
         Some(number) => format!("{said} (error {number})"),
@@ -4272,6 +4302,14 @@ mod tests {
             wizard_said(r#"{"result":1}"#),
             Err(Problem::Refused(_))
         ));
+    }
+
+    #[test]
+    fn a_parental_control_block_requests_a_pin() {
+        assert_eq!(
+            wizard_said(r#"{"failed":"Steam could not start this download","error":45}"#),
+            Err(Problem::Asks(PARENTAL_PIN.to_string()))
+        );
     }
 
     /// The client answers every call with an `EResult`, and only one of them
