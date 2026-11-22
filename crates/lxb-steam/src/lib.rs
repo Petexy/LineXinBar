@@ -3005,6 +3005,11 @@ fn answer(
                                     tracing::warn!(app_id, %problem, "this Steam cannot be driven from here");
                                     Err(Stopped::NotFromHere(problem.to_string()))
                                 }
+                                Err(problem) if !client::in_this_session(&standing.options) => {
+                                    tracing::info!(%problem, "Steam changed sessions during installation");
+                                    let why = client::NotOurs::another_session("This would happen there, not here.");
+                                    Err(Stopped::OtherSession(why.what))
+                                }
                                 Err(problem) => Err(Stopped::Failed(problem.to_string())),
                             }
                         }

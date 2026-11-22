@@ -5480,7 +5480,7 @@ struct Shell {
     retroarch_walk: Option<(Walk, Instant)>,
     /// A picture somebody chose for one of their games, being copied in.
     keeping_picture: Option<Kept>,
-    other_steam: Option<(u32, lxb_steam::client::OtherSession)>,
+    other_steam: Option<(u32, Option<lxb_steam::client::OtherSession>)>,
     closing_other_steam: Option<ClosingOtherSteam>,
     /// The game a picture is being chosen for, while the walk is open.
     ///
@@ -22553,39 +22553,34 @@ impl Shell {
         if self.closing_other_steam.is_some() {
             return;
         }
-        if self.maybe_offer_to_close_other_steam(app_id) {
+        if let Some(client) = lxb_steam::client::OtherSession::find() {
+            self.other_steam = Some((app_id, Some(client)));
+            self.offer_to_close_other_steam(app_id, false);
             return;
         }
+        self.other_steam = None;
         tracing::info!(app_id, "asking Valve's client to fetch a game");
         self.steam.install(app_id, steam::place_from_the_settings());
     }
 
-    fn maybe_offer_to_close_other_steam(&mut self, app_id: u32) -> bool {
-        if self.closing_other_steam.is_some() {
-            return false;
-        }
-        self.other_steam = lxb_steam::client::OtherSession::find().map(|client| (app_id, client));
-        if self.other_steam.is_none() {
-            return false;
-        }
-        self.offer_to_close_other_steam(app_id, false);
-        true
-    }
-
     fn offer_to_close_other_steam(&mut self, app_id: u32, force: bool) {
         use crate::i18n::text;
-        let (note, button) = if force {
-            ("steam-other-session-still-running", "steam-force-close-other-session")
+        let (question, button) = if force {
+            ("steam-force-close-other-session-question", "steam-force-close-other-session")
         } else {
-            ("steam-other-session-running", "steam-close-other-session")
+            ("steam-close-other-session-question", "steam-close-other-session")
         };
         let from = self.dialog_origin();
         self.dialog.ask(
             from,
             Some(icons::STEAM.to_string()),
             vec![
-                dialog::Line::Heading("Steam".to_string()),
-                dialog::Line::Note(text(note).to_string()),
+                dialog::Line::Heading(text(question).to_string()),
+                dialog::Line::Note(text(if force {
+                    "steam-other-session-still-running"
+                } else {
+                    "steam-other-session-running"
+                }).to_string()),
                 dialog::Line::Note(text("steam-other-session-interrupts-work").to_string()),
                 dialog::Line::Rule,
             ],
@@ -22600,6 +22595,10 @@ impl Shell {
 
     fn close_other_steam(&mut self, app_id: u32, force: bool) {
         let Some((_, client)) = self.other_steam.take_if(|(pending, _)| *pending == app_id) else {
+            return;
+        };
+        let Some(client) = client else {
+            self.say_steam_would_not(crate::i18n::text("steam-other-session-target-unavailable"));
             return;
         };
         let (send, answer) = std::sync::mpsc::channel();
@@ -22631,7 +22630,7 @@ impl Shell {
         match answer {
             Some((_, Ok(OtherSessionClose::Closed))) => self.install_steam_game(app_id),
             Some((client, Ok(OtherSessionClose::StillRunning))) if !force => {
-                self.other_steam = Some((app_id, client));
+                self.other_steam = Some((app_id, Some(client)));
                 self.offer_to_close_other_steam(app_id, true);
             }
             Some((_, Err(why))) => self.say_steam_would_not(&why.to_string()),
@@ -30846,22 +30845,12 @@ impl Shell {
                 app_id,
                 why: lxb_steam::Stopped::OtherSession(_),
             } => {
-                if self.maybe_offer_to_close_other_steam(app_id) {
-                    return;
+                if self.closing_other_steam.is_none() {
+                    let client = lxb_steam::client::OtherSession::find();
+                    self.other_steam = Some((app_id, client));
+                    self.offer_to_close_other_steam(app_id, false);
                 }
-                (
-                    app_id,
-                    vec![dialog::Line::Note(
-                        crate::i18n::text("steam-other-session-running").to_string(),
-                    )],
-                    vec![
-                        menu::Entry::new(
-                            menu::Command::SteamInstall(app_id),
-                            crate::i18n::text("shell-try-again"),
-                        ),
-                        menu::Entry::new(menu::Command::Dismiss, "OK"),
-                    ],
-                )
+                return;
             }
             steam::Ended::Failed {
                 app_id,
