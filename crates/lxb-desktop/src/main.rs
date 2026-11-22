@@ -1774,6 +1774,8 @@ fn main() -> anyhow::Result<()> {
         retroarch_bios: None,
         retroarch_walk: None,
         keeping_picture: None,
+        other_steam: None,
+        closing_other_steam: None,
         picking: None,
         retroarch_defaults: false,
         retroarch_bios_play: None,
@@ -2124,6 +2126,7 @@ fn main() -> anyhow::Result<()> {
         // the disk is done.
         shell.advance_transfer();
         shell.advance_kept_picture();
+        shell.advance_closing_other_steam();
         shell.sync_picture_picker();
         // The same again for an authorisation this session has been asked to
         // prove: `polkitd` asks on a thread of its own, and polkit's PAM helper
@@ -5477,6 +5480,8 @@ struct Shell {
     retroarch_walk: Option<(Walk, Instant)>,
     /// A picture somebody chose for one of their games, being copied in.
     keeping_picture: Option<Kept>,
+    other_steam: Option<(u32, lxb_steam::client::OtherSession)>,
+    closing_other_steam: Option<ClosingOtherSteam>,
     /// The game a picture is being chosen for, while the walk is open.
     ///
     /// The row it hangs off is built from this — see
@@ -20254,6 +20259,9 @@ impl Shell {
             menu::Command::SteamPlayAgain(app_id) => self.play_steam_game_again(app_id, false),
             menu::Command::SteamMoveClientHere(app_id) => self.move_steam_here(app_id),
             menu::Command::SteamInstall(app_id) => self.install_steam_game(app_id),
+            menu::Command::SteamCloseOtherSession(app_id, force) => {
+                self.close_other_steam(app_id, force);
+            }
             menu::Command::SteamStopInstalling(app_id) => self.steam.stop_installing(app_id),
             menu::Command::SteamInstallWithSteam(app_id) => {
                 self.steam_hand_over(app_id, lxb_steam::Doing::Install)
@@ -22542,8 +22550,93 @@ impl Shell {
     /// — asked on the shell's own panel once Steam has said how big it is. See
     /// [`Shell::offer_the_libraries`].
     fn install_steam_game(&mut self, app_id: u32) {
+        if self.closing_other_steam.is_some() {
+            return;
+        }
+        if self.maybe_offer_to_close_other_steam(app_id) {
+            return;
+        }
         tracing::info!(app_id, "asking Valve's client to fetch a game");
         self.steam.install(app_id, steam::place_from_the_settings());
+    }
+
+    fn maybe_offer_to_close_other_steam(&mut self, app_id: u32) -> bool {
+        if self.closing_other_steam.is_some() {
+            return false;
+        }
+        self.other_steam = lxb_steam::client::OtherSession::find().map(|client| (app_id, client));
+        if self.other_steam.is_none() {
+            return false;
+        }
+        self.offer_to_close_other_steam(app_id, false);
+        true
+    }
+
+    fn offer_to_close_other_steam(&mut self, app_id: u32, force: bool) {
+        use crate::i18n::text;
+        let (note, button) = if force {
+            ("steam-other-session-still-running", "steam-force-close-other-session")
+        } else {
+            ("steam-other-session-running", "steam-close-other-session")
+        };
+        let from = self.dialog_origin();
+        self.dialog.ask(
+            from,
+            Some(icons::STEAM.to_string()),
+            vec![
+                dialog::Line::Heading("Steam".to_string()),
+                dialog::Line::Note(text(note).to_string()),
+                dialog::Line::Note(text("steam-other-session-interrupts-work").to_string()),
+                dialog::Line::Rule,
+            ],
+            vec![
+                menu::Entry::new(menu::Command::SteamCloseOtherSession(app_id, force), text(button)),
+                menu::Entry::new(menu::Command::Dismiss, text("shell-not-now")),
+            ],
+            1,
+        );
+        self.needs_redraw = true;
+    }
+
+    fn close_other_steam(&mut self, app_id: u32, force: bool) {
+        let Some((_, client)) = self.other_steam.take_if(|(pending, _)| *pending == app_id) else {
+            return;
+        };
+        let (send, answer) = std::sync::mpsc::channel();
+        match std::thread::Builder::new().name("lxb-close-other-steam".into()).spawn(move || {
+            let outcome = client.close(force);
+            let _ = send.send((client, outcome));
+        }) {
+            Ok(_) => {
+                self.closing_other_steam = Some(ClosingOtherSteam { app_id, force, answer });
+            }
+            Err(why) => self.say_steam_would_not(&why.to_string()),
+        }
+    }
+
+    fn advance_closing_other_steam(&mut self) {
+        use lxb_steam::client::OtherSessionClose;
+        use std::sync::mpsc::TryRecvError;
+        let Some(pending) = self.closing_other_steam.as_ref() else {
+            return;
+        };
+        let answer = match pending.answer.try_recv() {
+            Ok(answer) => Some(answer),
+            Err(TryRecvError::Empty) => return,
+            Err(TryRecvError::Disconnected) => None,
+        };
+        let app_id = pending.app_id;
+        let force = pending.force;
+        self.closing_other_steam = None;
+        match answer {
+            Some((_, Ok(OtherSessionClose::Closed))) => self.install_steam_game(app_id),
+            Some((client, Ok(OtherSessionClose::StillRunning))) if !force => {
+                self.other_steam = Some((app_id, client));
+                self.offer_to_close_other_steam(app_id, true);
+            }
+            Some((_, Err(why))) => self.say_steam_would_not(&why.to_string()),
+            _ => self.say_steam_would_not(crate::i18n::text("steam-other-session-still-running")),
+        }
     }
 
     /// Take one game off the disk, having asked first.
@@ -30746,6 +30839,27 @@ impl Shell {
                             menu::Command::Dismiss,
                             crate::i18n::text("shell-not-now"),
                         ),
+                    ],
+                )
+            }
+            steam::Ended::Failed {
+                app_id,
+                why: lxb_steam::Stopped::OtherSession(_),
+            } => {
+                if self.maybe_offer_to_close_other_steam(app_id) {
+                    return;
+                }
+                (
+                    app_id,
+                    vec![dialog::Line::Note(
+                        crate::i18n::text("steam-other-session-running").to_string(),
+                    )],
+                    vec![
+                        menu::Entry::new(
+                            menu::Command::SteamInstall(app_id),
+                            crate::i18n::text("shell-try-again"),
+                        ),
+                        menu::Entry::new(menu::Command::Dismiss, "OK"),
                     ],
                 )
             }
@@ -43222,6 +43336,15 @@ struct Chosen {
     rom: PathBuf,
     console: String,
     piece: retroarch::Piece,
+}
+
+struct ClosingOtherSteam {
+    app_id: u32,
+    force: bool,
+    answer: std::sync::mpsc::Receiver<(
+        lxb_steam::client::OtherSession,
+        std::io::Result<lxb_steam::client::OtherSessionClose>,
+    )>,
 }
 
 /// A chosen picture being copied in, and the game it is for.

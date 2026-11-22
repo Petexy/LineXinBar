@@ -924,6 +924,8 @@ impl std::fmt::Display for Refused {
 /// would be a caller that gets it wrong the day the wording changes.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Stopped {
+    /// The client moved to another graphical session while starting up.
+    OtherSession(String),
     /// Something went wrong, and this is what to say about it.
     Failed(String),
     /// Nothing went wrong: Steam will not go on without the person, and what
@@ -961,7 +963,7 @@ impl Stopped {
     /// What to put in front of somebody.
     pub fn said(&self) -> &str {
         match self {
-            Stopped::Failed(why) => why,
+            Stopped::OtherSession(why) | Stopped::Failed(why) => why,
             Stopped::Asks(why) => why,
             Stopped::Agreements(_) => "agreements to accept",
             Stopped::WhereTo(_) => "a library to choose",
@@ -2948,12 +2950,15 @@ fn answer(
             }
             let generation = watching.generation;
             let ticket = a_job_about(&state, watching);
-            in_the_background(stored, ticket, ground, worker, move |ready| {
+            with_steam_client(stored, ticket, ground, worker, move |ready| {
                 Finished::Installing {
                     app_id,
                     generation,
                     how: match ready {
-                        Err(why) => Err(Stopped::Failed(why)),
+                        Err(client::Refusal::NotOurs(why)) if why.another_session => {
+                            Err(Stopped::OtherSession(why.what))
+                        }
+                        Err(why) => Err(Stopped::Failed(said_about(&why))),
                         Ok(standing) => {
                             match webui::install(app_id, &accepting, &place, standing.still()) {
                                 Ok(()) => {
@@ -3777,6 +3782,18 @@ fn in_the_background(
     worker: &Sender<WorkerMessage>,
     work: impl FnOnce(Result<Standing, String>) -> Finished + Send + 'static,
 ) {
+    with_steam_client(stored, ticket, ground, worker, move |ready| {
+        work(ready.map_err(|refusal| said_about(&refusal)))
+    });
+}
+
+fn with_steam_client(
+    stored: &session::Stored,
+    ticket: Ticket,
+    ground: &Ground,
+    worker: &Sender<WorkerMessage>,
+    work: impl FnOnce(Result<Standing, client::Refusal>) -> Finished + Send + 'static,
+) {
     let stored = stored.clone();
     let ground = ground.clone();
     let worker = worker.clone();
@@ -3795,8 +3812,7 @@ fn in_the_background(
             ticket,
             &ground,
             HaveAClient::ByWaking(client::Need::Context),
-        )
-        .map_err(|refusal| said_about(&refusal));
+        );
         let _ = worker.send(WorkerMessage::Done(work(ready)));
     });
 }
@@ -3933,7 +3949,7 @@ fn came_back(
                 format_args!("install {app_id}"),
                 match &why {
                     Stopped::Failed(said) => audit::How::Failed(said.clone()),
-                    Stopped::Asks(said) | Stopped::NotFromHere(said) => {
+                    Stopped::OtherSession(said) | Stopped::Asks(said) | Stopped::NotFromHere(said) => {
                         audit::How::Refused(said.clone())
                     }
                     Stopped::Agreements(_) | Stopped::WhereTo(_) => {
@@ -4369,10 +4385,7 @@ fn not_ours(
         return None;
     }
     if !client::in_this_session(options) {
-        return Some(client::NotOurs {
-            what: "Steam is running in another session.".to_string(),
-            cost: "This would happen there, not here.".to_string(),
-        });
+        return Some(client::NotOurs::another_session("This would happen there, not here."));
     }
     let stored = stored?;
     // [`client::state_now`], because this is the account half and the log it is
@@ -4382,6 +4395,7 @@ fn not_ours(
     // same wrong sentence [`client::wake`] used to refuse presses with.
     let state = client::state_now(Some(where_it_is), options);
     (state.signed_in() && !state.signed_in_as(credential(stored))).then(|| client::NotOurs {
+        another_session: false,
         what: "Steam is signed in to another account.".to_string(),
         cost: "This would happen to that account.".to_string(),
     })
