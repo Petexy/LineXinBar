@@ -286,15 +286,17 @@ though the workspace's older `rust-version` declaration has not been changed.
 
 Build on Debian, Ubuntu, or another Debian-derived system with the development
 packages listed in [Getting started](getting-started.md#building) plus `dpkg-dev`
-and the PipeWire headers. On Debian 13 take Rust from `rustup` rather than
-`cargo`: the distribution's own is 1.85, older than the locked dependency graph
-allows.
+and the PipeWire headers. Debian 13 ships Rust 1.85, which is too old for the
+locked dependencies. Install the `rustup` package, then run
+`rustup default stable` as your regular user to install and select the stable
+toolchain, including `rustc` and `cargo`.
 
 ```sh
 sudo apt install dpkg-dev build-essential pkg-config clang rustup \
     libasound2-dev libgbm-dev libavcodec-dev libavformat-dev libavutil-dev \
     libswscale-dev libinput-dev libpipewire-0.3-dev libseat-dev libudev-dev \
     libxkbcommon-dev
+rustup default stable
 ./packaging/build.sh debian
 ```
 
