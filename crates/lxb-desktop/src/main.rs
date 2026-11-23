@@ -10285,6 +10285,20 @@ impl Shell {
                     return;
                 }
                 if let Some(setting) = chosen {
+                    if let settings::Setting::RevealPrivateSettings(option, reveal) = setting {
+                        if reveal {
+                            self.confirm_privacy_visibility(option, false);
+                        } else {
+                            self.show_private_settings(option, false);
+                        }
+                        return;
+                    }
+                    if let settings::Setting::Privacy(option, true) = setting {
+                        if !settings::privacy_visible(option) {
+                            self.confirm_privacy_visibility(option, true);
+                            return;
+                        }
+                    }
                     if let settings::Setting::Update(action) = setting {
                         self.close_dialog();
                         self.updates.press(action);
@@ -10375,6 +10389,9 @@ impl Shell {
                     // the switch was thrown and does none of that. It rebuilds
                     // the settings column itself, so it is not in the list
                     // below.
+                    if let settings::Setting::Privacy(_, _) = setting {
+                        self.apply_privacy_settings();
+                    }
                     if let settings::Setting::Steam(value) = setting {
                         self.carry_out_steam(value);
                     }
@@ -11990,6 +12007,9 @@ impl Shell {
     /// see [`Shell::the_announcements_are_read`], which is why three messages
     /// from one person do not leave two stale rows behind the first press.
     fn go_to_the_conversation(&mut self, id: u32) {
+        if !settings::show_steam_friends() {
+            return;
+        }
         // Looked up now rather than carried in the command, for the reason the
         // key of an action is: the list stands for as long as the panel does,
         // and this announcement may have been cleared out from under it — by
@@ -12053,6 +12073,9 @@ impl Shell {
     /// whether it made the sound of a screen arriving — see
     /// [`Shell::go_to_the_conversation`], the one press that has to know.
     fn open_friends(&mut self) -> bool {
+        if !settings::show_steam_friends() {
+            return false;
+        }
         if let Some((_, height)) = self.focused_size() {
             self.friends.fits(ui::friends_rows_that_fit(height));
         }
@@ -12308,6 +12331,9 @@ impl Shell {
     /// deliberately *not* one of these: that is a list that is on its way, and
     /// the panel says so where an empty list is drawn.
     fn why_there_are_no_friends(&self) -> Option<&'static str> {
+        if !settings::show_steam_friends() {
+            return Some(crate::i18n::text("privacy-hidden"));
+        }
         if !settings::steam_integration() {
             return Some(crate::i18n::text(
                 "shell-steam-is-switched-off-in-settings-games-steam",
@@ -13067,10 +13093,18 @@ impl Shell {
         if self.friends.is_open() && self.friends.talking_to() == Some(from) {
             return;
         }
-        let (name, picture) = self.who_it_is_from(from);
-        let asleep =
-            !self.panels.is_empty() && self.panels.iter().all(|panel| panel.is_rested(now));
-        let body = what_a_message_may_say(body, asleep);
+        let (name, body, picture) = if settings::privacy_visible(settings::PrivacyOption::SteamMessages) {
+            let (name, picture) = self.who_it_is_from(from);
+            let asleep =
+                !self.panels.is_empty() && self.panels.iter().all(|panel| panel.is_rested(now));
+            (name, what_a_message_may_say(body, asleep), picture)
+        } else {
+            (
+                "Steam".to_string(),
+                crate::i18n::text("privacy-steam-message-received").to_string(),
+                icons::STEAM.to_string(),
+            )
+        };
         let (id, raised) = self.notifications.announce_message(&name, &body, &picture);
         // And who it was from, kept beside the list so the row can be pressed
         // to go there. Filed whether or not a bubble went up: do-not-disturb
@@ -13148,9 +13182,17 @@ impl Shell {
         let Some(invite) = self.steam.invite(from, id).cloned() else {
             return;
         };
-        let game = self.what_the_game_is_called(&invite);
-        let (name, picture) = self.who_it_is_from(from);
-        let body = crate::message!("steam-invited-you-to-play", "game" => game);
+        let (name, body, picture) = if settings::privacy_visible(settings::PrivacyOption::SteamMessages) {
+            let game = self.what_the_game_is_called(&invite);
+            let (name, picture) = self.who_it_is_from(from);
+            (name, crate::message!("steam-invited-you-to-play", "game" => game), picture)
+        } else {
+            (
+                "Steam".to_string(),
+                crate::i18n::text("privacy-steam-invitation-received").to_string(),
+                icons::STEAM.to_string(),
+            )
+        };
         let (at, raised) = self.notifications.announce_message(&name, &body, &picture);
         self.announced_invites.insert(at, (from, id));
         if raised {
@@ -20254,6 +20296,12 @@ impl Shell {
             menu::Command::SteamPlayAgain(app_id) => self.play_steam_game_again(app_id, false),
             menu::Command::SteamMoveClientHere(app_id) => self.move_steam_here(app_id),
             menu::Command::SteamInstall(app_id) => self.install_steam_game(app_id),
+            menu::Command::RevealPrivateSettings(option) => self.show_private_settings(option, true),
+            menu::Command::ShowPrivacyOption(option) => {
+                self.close_dialog();
+                settings::apply(settings::Setting::Privacy(option, true));
+                self.apply_privacy_settings();
+            }
             menu::Command::SteamStopInstalling(app_id) => self.steam.stop_installing(app_id),
             menu::Command::SteamInstallWithSteam(app_id) => {
                 self.steam_hand_over(app_id, lxb_steam::Doing::Install)
@@ -25162,8 +25210,9 @@ impl Shell {
         let account = self
             .steam
             .account()
-            .map(str::to_string)
-            .unwrap_or_else(|| "Steam".to_string());
+            .filter(|_| settings::show_game_account_names())
+            .unwrap_or("Steam")
+            .to_string();
         let mut lines = vec![
             dialog::Line::Heading(account),
             dialog::Line::Note(
@@ -38229,7 +38278,11 @@ impl Shell {
             from,
             Some(icons::SETTING_WIFI.to_string()),
             vec![
-                dialog::Line::Heading(ssid.to_string()),
+                dialog::Line::Heading(if settings::privacy_visible(settings::PrivacyOption::Network) {
+                    ssid.to_string()
+                } else {
+                    crate::i18n::text("shell-network").to_string()
+                }),
                 dialog::Line::Note(if retry {
                     crate::i18n::text("shell-that-password-was-not-accepted-try-again").to_string()
                 } else {
@@ -38654,6 +38707,90 @@ impl Shell {
         self.windows_removing = false;
     }
 
+    fn confirm_privacy_visibility(&mut self, option: settings::PrivacyOption, save: bool) {
+        use crate::i18n::text;
+        use settings::PrivacyOption;
+        let question = match option {
+            PrivacyOption::All => "privacy-reveal-all-question",
+            PrivacyOption::AccountNames => "privacy-reveal-accounts-question",
+            PrivacyOption::SteamFriends => "privacy-reveal-friends-question",
+            PrivacyOption::SteamMessages => "privacy-reveal-notifications-question",
+            PrivacyOption::Location => "privacy-reveal-location-question",
+            PrivacyOption::Network => "privacy-reveal-network-question",
+            PrivacyOption::Bluetooth => "privacy-reveal-bluetooth-question",
+        };
+        let (action, note) = if save {
+            (menu::Command::ShowPrivacyOption(option), "privacy-reveal-saved")
+        } else {
+            (menu::Command::RevealPrivateSettings(option), "privacy-reveal-session")
+        };
+        let from = self.dialog_origin();
+        self.dialog.ask(
+            from,
+            Some(icons::SETTING_INFO.to_string()),
+            vec![
+                dialog::Line::Heading(text(question).to_string()),
+                dialog::Line::Note(text(note).to_string()),
+                dialog::Line::Rule,
+            ],
+            vec![
+                menu::Entry::new(menu::Command::Dismiss, text("shell-not-now")),
+                menu::Entry::new(action, text("shell-yes")),
+            ],
+            0,
+        );
+        self.needs_redraw = true;
+    }
+
+    fn show_private_settings(&mut self, option: settings::PrivacyOption, reveal: bool) {
+        self.close_dialog();
+        settings::reveal_private_settings(option, reveal);
+        self.rebuild_settings();
+        self.sync_surface_state();
+        self.needs_redraw = true;
+    }
+
+    fn apply_privacy_settings(&mut self) {
+        use settings::PrivacyOption;
+
+        if !settings::show_steam_friends() {
+            self.close_friends_quietly();
+        }
+        if !settings::privacy_visible(PrivacyOption::SteamMessages) {
+            for id in self.announced_messages.keys().copied() {
+                self.notifications.redact_message(
+                    id,
+                    "Steam",
+                    crate::i18n::text("privacy-steam-message-received"),
+                    icons::STEAM,
+                );
+            }
+            for id in self.announced_invites.keys().copied() {
+                self.notifications.redact_message(
+                    id,
+                    "Steam",
+                    crate::i18n::text("privacy-steam-invitation-received"),
+                    icons::STEAM,
+                );
+            }
+            self.sync_notification_panel();
+        }
+        if settings::steam_integration() {
+            let shifted = apps::offer_steam(
+                &mut self.lattice.categories,
+                self.steam.account().map(str::to_owned),
+                self.steam.standing(),
+            );
+            self.absorb(shifted);
+        }
+        if settings::epic_integration() {
+            self.rebuild_heroic();
+        }
+        self.rebuild_settings();
+        self.sync_surface_state();
+        self.needs_redraw = true;
+    }
+
     fn carry_out_steam(&mut self, value: settings::SteamValue) {
         match value {
             settings::SteamValue::Integration(on) => self.steam_integration_changed(on),
@@ -39034,7 +39171,7 @@ impl Shell {
     /// that made the switch not mean anything.
     fn announce_pairings(&mut self) {
         let endings = self.bt.endings();
-        if endings.is_empty() {
+        if endings.is_empty() || !settings::privacy_visible(settings::PrivacyOption::Bluetooth) {
             return;
         }
         let mut raised = false;
@@ -39204,7 +39341,13 @@ impl Shell {
         let Some(pairing) = self.pairing.as_ref() else {
             return Vec::new();
         };
-        let mut lines = vec![dialog::Line::Heading(pairing.name.clone())];
+        let mut lines = vec![dialog::Line::Heading(
+            if settings::privacy_visible(settings::PrivacyOption::Bluetooth) {
+                pairing.name.clone()
+            } else {
+                crate::i18n::text("privacy-bluetooth").to_string()
+            },
+        )];
         match &pairing.question {
             bluetooth::Question::Confirm { code } => {
                 lines.push(dialog::Line::Note(

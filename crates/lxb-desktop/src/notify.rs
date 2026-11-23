@@ -1039,6 +1039,21 @@ impl Center {
         (id, raised)
     }
 
+    /// Replace the text and icon of a message in both the list and its toast.
+    pub fn redact_message(&mut self, id: u32, summary: &str, body: &str, icon: &str) {
+        let redraw = |notice: &mut Notification| {
+            notice.summary = summary.to_string();
+            notice.body = body.to_string();
+            notice.app_icon = icon.to_string();
+        };
+        if let Some(notice) = self.list.iter_mut().find(|notice| notice.id == id) {
+            redraw(notice);
+        }
+        for toast in self.toasts.iter_mut().filter(|toast| toast.id == id) {
+            redraw(&mut toast.about);
+        }
+    }
+
     pub fn announce_update(
         &mut self,
         summary: &str,
