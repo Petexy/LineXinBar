@@ -1884,6 +1884,7 @@ static STEAM_INTEGRATION: Mutex<bool> = Mutex::new(true);
 /// Whether the client is started in the background as the session comes up.
 /// See [`SteamValue::AtStartup`].
 static STEAM_AT_STARTUP: Mutex<bool> = Mutex::new(false);
+static STEAM_DEVICE_RULES_REMINDER: Mutex<bool> = Mutex::new(true);
 
 /// Whether the client is left running once a game has ended. See
 /// [`SteamValue::AfterAGame`].
@@ -2069,6 +2070,15 @@ static STEAM_IN_THIS_SESSION: Mutex<bool> = Mutex::new(true);
 /// module has a reason to care which one was said.
 pub fn steam_integration() -> bool {
     *STEAM_IN_THIS_SESSION.lock().unwrap() && *STEAM_INTEGRATION.lock().unwrap()
+}
+
+pub fn remind_about_steam_device_rules() -> bool {
+    *STEAM_DEVICE_RULES_REMINDER.lock().unwrap()
+}
+
+pub fn stop_reminding_about_steam_device_rules() {
+    *STEAM_DEVICE_RULES_REMINDER.lock().unwrap() = false;
+    save(&stored());
 }
 
 /// Whether Valve's client is started in the background as the shell comes up.
@@ -13244,6 +13254,7 @@ fn adopt(stored: Stored) {
     if let Some(on) = stored.steam_integration {
         *STEAM_INTEGRATION.lock().unwrap() = on;
     }
+    *STEAM_DEVICE_RULES_REMINDER.lock().unwrap() = stored.steam_device_rules_reminder.unwrap_or(true);
     if let Some(on) = stored.steam_at_startup {
         *STEAM_AT_STARTUP.lock().unwrap() = on;
     }
@@ -13859,6 +13870,7 @@ struct Stored {
     /// reason.
     steam_integration: Option<bool>,
     steam_at_startup: Option<bool>,
+    steam_device_rules_reminder: Option<bool>,
     steam_after_a_game: Option<bool>,
     /// The Steam library games go into, by the path Steam lists it under.
     /// Missing is asking every time, which is the default and what every file
@@ -14119,6 +14131,7 @@ fn stored() -> Stored {
         // than the three readers above them.
         steam_integration: Some(*STEAM_INTEGRATION.lock().unwrap()),
         steam_at_startup: Some(*STEAM_AT_STARTUP.lock().unwrap()),
+        steam_device_rules_reminder: Some(remind_about_steam_device_rules()),
         steam_after_a_game: Some(*STEAM_AFTER_A_GAME.lock().unwrap()),
         steam_install_to: steam_install_to(),
         startup_category: Some(startup_category()),

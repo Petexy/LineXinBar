@@ -52,10 +52,7 @@ use crate::system::Level;
 /// machine. Every panel here says the program's name for that reason — somebody
 /// removing something is owed the name of the thing that goes.
 ///
-/// Windows Apps is deliberately not one of these. Proton is what a Windows game
-/// is run *with* rather than a program with a window of its own, that
-/// integration installs no application, and a row offering to remove one would
-/// be a row about nothing. See `Shell::windows_entry_menu`.
+/// Windows Apps removes the Proton and runtime downloads it manages.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Program {
     Steam,
@@ -64,6 +61,8 @@ pub enum Program {
     RetroArch,
     /// RPCS3, which the PlayStation 3 row stands in front of.
     Rpcs3,
+    Windows,
+    SteamDevices,
 }
 
 impl Program {
@@ -75,6 +74,8 @@ impl Program {
             Program::Heroic => "Heroic",
             Program::RetroArch => "RetroArch",
             Program::Rpcs3 => "RPCS3",
+            Program::Windows => crate::proton::TITLE,
+            Program::SteamDevices => crate::i18n::text("steam-controller-rules"),
         }
     }
 
@@ -86,6 +87,8 @@ impl Program {
             Program::Heroic => crate::heroic::mark().to_string(),
             Program::RetroArch => crate::retroarch::mark().to_string(),
             Program::Rpcs3 => crate::ps3::mark().to_string(),
+            Program::Windows => crate::proton::mark().to_string(),
+            Program::SteamDevices => crate::icons::STEAM.to_string(),
         }
     }
 
@@ -99,6 +102,8 @@ impl Program {
             Program::Heroic => "epic-remove-everything-explanation",
             Program::RetroArch => "retroarch-remove-everything-explanation",
             Program::Rpcs3 => "ps3-remove-everything-explanation",
+            Program::Windows => "windows-remove-runtime-explanation",
+            Program::SteamDevices => "steam-install-device-rules",
         }
     }
 
@@ -110,6 +115,8 @@ impl Program {
             Program::Heroic => "epic-remove-what-stays",
             Program::RetroArch => "retroarch-remove-what-stays",
             Program::Rpcs3 => "ps3-remove-what-stays",
+            Program::Windows => "windows-remove-runtime-explanation",
+            Program::SteamDevices => "steam-install-device-rules",
         }
     }
 }
@@ -161,13 +168,14 @@ pub enum Command {
     /// destroys something, and a shell where those are one name is a shell one
     /// mis-routed press away from removing an application nobody asked about.
     ConfirmUninstall,
-    /// Put RetroArch on this machine, the user having said yes.
+    RetroArchOfferInstall,
+    /// Put RetroArch on this machine, the user having selected a source.
     ///
     /// Its own command for the reason [`Command::ConfirmUninstall`] is: one
     /// press opens a question and this one downloads several hundred
     /// megabytes, and a shell where those are one name is a shell one
     /// mis-routed press away from doing it unasked.
-    InstallRetroArch,
+    InstallRetroArch { native: bool },
     /// Fetch the core a game needs, from the panel raised by pressing that
     /// game. See `Shell::say_no_core`.
     GetCore,
@@ -277,7 +285,7 @@ pub enum Command {
     /// [`Command::InstallRetroArch`] is separate from the press that asks.
     EpicOfferInstall,
     /// Set Epic Games up, the user having said yes.
-    EpicInstall,
+    EpicInstall { native: bool },
     /// Start signing in to Epic, or start again.
     EpicSignIn,
     /// Give up a sign-in, or put its panel away.
@@ -298,7 +306,7 @@ pub enum Command {
     /// the yes.
     Ps3OfferSetUp,
     /// Set PlayStation 3 games up, the user having said yes.
-    Ps3SetUp,
+    Ps3SetUp { native: bool },
     /// Open RPCS3's own window, which the shell otherwise keeps off the bar.
     Ps3Open,
     /// Read the PS3 folder and the installed games again.
@@ -437,6 +445,8 @@ pub enum Command {
     /// integration's own row under Games, and only where there is a program
     /// there to remove.
     RemoveProgram(Program),
+    RemoveProgramData(Program),
+    ConfirmRemoveProgramData(Program),
     /// They read that panel and pressed one of its two answers. `true` is
     /// **Remove everything**, which takes the program's own folder with it.
     ///
@@ -904,6 +914,7 @@ pub enum Command {
     /// the same thing as starting, and a second name for it would be a second
     /// place to keep the same list of ways in.
     SteamSignIn,
+    SteamOpenSetup,
     /// Sign in by photographing a code, or by typing an account name and a
     /// password. Two commands rather than one carrying a choice, for the
     /// reason the two display rows are two commands: they are rows the user
@@ -930,6 +941,7 @@ pub enum Command {
     /// is told when it finishes, and pressing the Steam row again brings the
     /// panel back. See [`crate::steam::Steam::let_the_setup_run_in_the_background`].
     SteamSetupInBackground,
+    LauncherSetupInBackground,
     /// Try installing Valve's client again after an install that failed.
     ///
     /// Its own command rather than [`Command::SteamSignIn`], which is the Try
@@ -937,6 +949,11 @@ pub enum Command {
     /// the same request, and one of them can only be made on a machine where
     /// Steam is not installed.
     SteamSetUpAgain,
+    SteamConfirmSetup,
+    InstallSteamPackage { flatpak: bool },
+    OfferSteamDevices,
+    InstallSteamDevices { resume_setup: bool },
+    SkipSteamDevices { remind: bool },
     /// Give up the stored session, so this machine stops being signed in.
     SteamSignOut,
     /// Ask Steam for the library again, now.

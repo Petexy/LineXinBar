@@ -131,6 +131,19 @@ pub const PROTOCOL: u32 = 1;
 /// the *quad* is for.
 const MARK: &str = "lxb:retroarch";
 
+fn native_package_available() -> bool {
+    static AVAILABLE: std::sync::LazyLock<bool> = std::sync::LazyLock::new(|| {
+        Command::new("apt-cache")
+            .args(["show", "--no-all-versions", "retroarch"])
+            .output()
+            .is_ok_and(|out| {
+                out.status.success()
+                    && String::from_utf8_lossy(&out.stdout).lines().any(|line| line == "Package: retroarch")
+            })
+    });
+    *AVAILABLE
+}
+
 /// The mark for a row, or the shell's own pad where the package brought no
 /// drawing.
 ///
@@ -284,7 +297,7 @@ impl Record for Probe {
 }
 
 /// One RetroArch, as found.
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 pub struct Installation {
     /// What starts it, as an argv. A game's own command line is this with a
     /// core and a path on the end of it.
@@ -976,6 +989,7 @@ impl DiscSlot {
 }
 
 /// Whether there is a RetroArch on this machine.
+#[derive(PartialEq, Eq)]
 enum Found {
     /// The probe has not answered yet, which is the state every session starts
     /// in.
@@ -1218,11 +1232,19 @@ impl RetroArch {
     /// the way a Steam library does, and a walk over a collection is a walk
     /// over a collection.
     pub fn rescan(&mut self) {
+        if !self
+            .inner
+            .as_ref()
+            .is_some_and(|inner| matches!(inner.found, Found::Here(_)))
+        {
+            return;
+        }
         let Some(at) = crate::settings::roms_folder() else {
             if let Some(inner) = self.inner.as_mut() {
                 inner.consoles.clear();
                 inner.scanned = None;
                 inner.asked = None;
+                inner.reading = false;
                 inner.unreadable = None;
             }
             return;
@@ -1291,7 +1313,7 @@ impl RetroArch {
         if let Some(inner) = self.inner.as_mut() {
             inner.installing = Some(Installing {
                 progress: None,
-                note: crate::i18n::text("shell-installing-retroarch").to_string(),
+                note: crate::i18n::text("shell-getting-ready").to_string(),
                 ended: None,
             });
         }
@@ -1540,10 +1562,9 @@ impl RetroArch {
                     change.rows = true;
                 }
                 Heard::Probed(probe) => {
-                    inner.broken = None;
-                    inner.fetches_cores = probe.fetches_cores;
-                    inner.config = probe.config.map(PathBuf::from);
-                    inner.found = match probe.retroarch {
+                    let was_broken = inner.broken.take().is_some();
+                    let config = probe.config.map(PathBuf::from);
+                    let found = match probe.retroarch {
                         Some(installation) => {
                             tracing::info!(
                                 version = installation.version.as_deref().unwrap_or("unknown"),
@@ -1556,6 +1577,17 @@ impl RetroArch {
                             flatpak: probe.flatpak,
                         },
                     };
+                    let installation_changed = inner.found != found || inner.config != config;
+                    change.rows |= installation_changed || was_broken || inner.fetches_cores != probe.fetches_cores;
+                    inner.config = config;
+                    inner.fetches_cores = probe.fetches_cores;
+                    inner.found = found;
+                    if installation_changed {
+                        inner.asked = None;
+                    }
+                    if !matches!(inner.found, Found::Here(_)) {
+                        inner.reading = false;
+                    }
                     // Where RetroArch keeps its configuration, put where the
                     // Settings tree can read it: that tree is built by free
                     // functions taking nothing, and this is a fact about the
@@ -1564,11 +1596,7 @@ impl RetroArch {
                     // And what every core on it can be set to, which is a
                     // question only the cores can answer — wanted from here,
                     // and asked when somebody goes looking for the answer.
-                    inner.wants_options |= matches!(inner.found, Found::Here(_));
-                    // What is on the disk decides what the games are startable
-                    // with, so a probe that arrives after a scan has to rebuild
-                    // the rows the scan built.
-                    change.rows = true;
+                    inner.wants_options |= installation_changed && matches!(inner.found, Found::Here(_));
                 }
                 Heard::Tunable(core) => {
                     let mut held = TUNABLES.lock().unwrap_or_else(|err| err.into_inner());
@@ -1591,8 +1619,12 @@ impl RetroArch {
                         note: String::new(),
                         ended: None,
                     });
-                    installing.note = line.note.clone();
-                    installing.progress = line.progress.or(installing.progress);
+                    installing.note = match stage {
+                        Stage::Remote => crate::i18n::text("shell-getting-ready").to_string(),
+                        Stage::Installing => crate::i18n::text("launcher-downloading-and-installing").to_string(),
+                        _ => line.note.clone(),
+                    };
+                    installing.progress = line.progress;
                     change.panel = true;
                     change.rows = true;
                     match stage {
@@ -1654,7 +1686,9 @@ impl RetroArch {
                     }
                 }
                 Heard::Scanned(library) => {
-                    inner.reading = false;
+                    if !matches!(inner.found, Found::Here(_)) {
+                        continue;
+                    }
                     // The answer to a question nobody is asking any more: the
                     // folder was changed while this scan was in flight.
                     let asked = crate::settings::roms_folder();
@@ -1665,6 +1699,7 @@ impl RetroArch {
                         );
                         continue;
                     }
+                    inner.reading = false;
                     inner.scanned = asked;
                     if let Some(why) = &library.unreadable {
                         tracing::warn!(%why, "the games folder could not be read");
@@ -2014,6 +2049,14 @@ impl RetroArch {
         }
     }
 
+    pub fn uninstalled(&self) -> bool {
+        self.inner.as_ref().is_some_and(|inner| {
+            inner.broken.is_none()
+                && inner.installing.is_none()
+                && matches!(inner.found, Found::Absent { .. })
+        })
+    }
+
     /// Where the RetroArch this machine would use is, for the row that takes it
     /// off — see [`Installation::installed`]. `None` while there is none, while
     /// one is being installed, and on a session that has not been told enough
@@ -2029,6 +2072,13 @@ impl RetroArch {
         }
     }
 
+    pub fn installation_sources(&self) -> (bool, bool) {
+        let flatpak = self.inner.as_ref().is_some_and(|inner| {
+            matches!(inner.found, Found::Absent { flatpak: true })
+        });
+        (native_package_available(), flatpak)
+    }
+
     /// What pressing the row means now.
     pub fn press(&self) -> Press {
         let Some(inner) = self.inner.as_ref() else {
@@ -2042,13 +2092,21 @@ impl RetroArch {
         }
         match &inner.found {
             Found::Asking => Press::Waiting,
-            Found::Absent { flatpak: true } => Press::Install,
-            Found::Absent { flatpak: false } => {
+            Found::Absent { flatpak } if *flatpak || native_package_available() => Press::Install,
+            Found::Absent { .. } => {
                 Press::Cannot(crate::i18n::text("retroarch-no-flatpak").to_string())
             }
             Found::Here(_) if crate::settings::roms_folder().is_none() => Press::Folder,
             Found::Here(_) => Press::Enter,
         }
+    }
+
+    pub fn reading_library(&self) -> bool {
+        self.inner.as_ref().is_some_and(|inner| {
+            inner.broken.is_none()
+                && inner.reading
+                && matches!(inner.found, Found::Here(_))
+        })
     }
 
     /// The line under the row, which is the whole of what it carries.
@@ -2069,12 +2127,15 @@ impl RetroArch {
         if inner.broken.is_some() {
             return Some(crate::i18n::text("shell-not-working-on-this-machine").to_string());
         }
+        if self.reading_library() {
+            return Some(crate::i18n::text("shell-looking-through-your-games").to_string());
+        }
         Some(match &inner.found {
             Found::Asking => crate::i18n::text("shell-looking-for-retroarch").to_string(),
-            Found::Absent { flatpak: true } => {
-                crate::i18n::text("shell-press-to-download-it").to_string()
+            Found::Absent { flatpak } if *flatpak || native_package_available() => {
+                crate::i18n::text("shell-press-to-download-and-set-up").to_string()
             }
-            Found::Absent { flatpak: false } => {
+            Found::Absent { .. } => {
                 crate::i18n::text("shell-it-cannot-be-downloaded-on-this-machine").to_string()
             }
             Found::Here(_) => self.library_note(inner),
@@ -2117,7 +2178,7 @@ impl RetroArch {
     /// folder.
     fn library_note(&self, inner: &Inner) -> String {
         if crate::settings::roms_folder().is_none() {
-            return crate::i18n::text("shell-choose-where-your-games-are").to_string();
+            return crate::i18n::text("shell-choose-the-folder-your-games-are-in").to_string();
         }
         if inner.unreadable.is_some() {
             // What the filesystem actually said is in the log — see
@@ -2125,9 +2186,6 @@ impl RetroArch {
             // of a television, and "Permission denied (os error 13)" is a
             // sentence for whoever is reading the log afterwards.
             return crate::i18n::text("shell-that-folder-cannot-be-read").to_string();
-        }
-        if inner.reading && inner.consoles.is_empty() {
-            return crate::i18n::text("shell-looking-through-your-games").to_string();
         }
         let consoles = inner.consoles.len();
         if consoles == 0 {
@@ -3916,8 +3974,8 @@ pub fn menu_rows(
         Press::Install => {
             rows.push(
                 menu::Entry::new(
-                    menu::Command::InstallRetroArch,
-                    crate::i18n::text("shell-download-retroarch"),
+                    menu::Command::RetroArchOfferInstall,
+                    crate::i18n::text("shell-download-and-set-up"),
                 )
                 .glyph(icons::LAUNCH),
             );
@@ -6120,7 +6178,7 @@ input_player1_right_btn = \"14\"
     fn a_machine_without_it_is_offered_it() {
         assert_eq!(
             menu(Press::Install, 0, false),
-            vec!["Download RetroArch", "Cancel"]
+            vec!["Download and set up", "Cancel"]
         );
     }
 

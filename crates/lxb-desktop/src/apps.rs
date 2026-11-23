@@ -718,6 +718,9 @@ pub struct Service {
     pub account: Option<String>,
     /// The line under the name, which is the account or the offer.
     comment: String,
+    pub package_setup: bool,
+    pub setup_progress: Option<u8>,
+    pub setup_busy: bool,
 }
 
 impl Service {
@@ -732,13 +735,18 @@ impl Service {
     fn new(account: Option<String>, standing: Option<String>) -> Service {
         Service {
             comment: match (account.as_deref(), standing) {
-                (Some(_), Some(standing)) => standing,
-                (Some(account), None) => crate::message!("steam-signed-in", "name" => account),
+                (_, Some(standing)) => standing,
+                (Some(account), None) => {
+                    crate::message!("steam-signed-in", "name" => account)
+                }
                 (None, _) => {
-                    crate::i18n::text("shell-sign-in-to-play-your-steam-library-here").to_string()
+                    crate::i18n::text("shell-sign-in").to_string()
                 }
             },
             account,
+            package_setup: false,
+            setup_progress: None,
+            setup_busy: false,
         }
     }
 }
@@ -888,12 +896,14 @@ pub struct Emulation {
     /// download that drew a bar on one of them and not on the other would be
     /// two different pictures of one kind of waiting.
     arriving: Option<Arriving>,
+    pub setup_busy: bool,
 }
 
 impl Emulation {
     pub fn new(comment: String, arriving: Option<f32>) -> Emulation {
         Emulation {
             comment,
+            setup_busy: false,
             // Nothing here has a clock on it: the helper says what it is doing
             // line by line, and a helper that stops talking is a panel rather
             // than a quiet bar.
@@ -1753,7 +1763,7 @@ const SYSTEM: &str = "system";
 /// Games is here for a different reason from the other two: nothing is
 /// *found* for it, but the Steam row goes at its head whether or not a single
 /// game is installed, so the column has to be nameable from outside the table.
-const GAMES: &str = "games";
+pub(crate) const GAMES: &str = "games";
 /// Software and Waydroid are named here for a fourth reason: an entry is filed
 /// into either of them by something other than an XDG main category, so
 /// [`App::category_id`] has to be able to say their names before the table is
@@ -2460,7 +2470,7 @@ pub fn hide_steam_client(categories: &mut Vec<Category>) {
         // Only a column this took something out of can have been emptied by
         // it, which is also what keeps the shell's own Settings column — which
         // has nothing launchable in it and never an application — out of this.
-        if column.entries.len() != before && !column.has_launchable() {
+        if column.entries.len() != before && column.is_empty_after_hiding_client() {
             emptied.push(at);
         }
     }
@@ -2510,16 +2520,9 @@ pub fn offer_steam(
         }
     };
 
-    let column = &mut categories[at];
-    // The row this is replacing, if it is already there.
-    column
-        .entries
-        .retain(|entry| !matches!(entry, Entry::Steam(_)));
-    // At the head of the column, above the applications: it is the way in to
-    // a whole other column, and a way in belongs where the eye lands.
-    column
-        .entries
-        .insert(0, Entry::Steam(Service::new(account, standing)));
+    let entries = &mut categories[at].entries;
+    entries.retain(|entry| !matches!(entry, Entry::Steam(_)));
+    entries.insert(0, Entry::Steam(Service::new(account, standing)));
     shifted
 }
 
@@ -2625,7 +2628,7 @@ pub fn hide_retroarch_client(categories: &mut Vec<Category>) -> bool {
             taken |= is_retroarch;
             !is_retroarch
         });
-        if column.entries.len() != before && !column.has_launchable() {
+        if column.entries.len() != before && column.is_empty_after_hiding_client() {
             emptied.push(at);
         }
     }
@@ -2705,6 +2708,7 @@ pub fn offer_retroarch(
     categories: &mut Vec<Category>,
     comment: Option<String>,
     arriving: Option<f32>,
+    setup_busy: bool,
 ) -> Shifted {
     let mut shifted = Shifted::default();
 
@@ -2736,26 +2740,16 @@ pub fn offer_retroarch(
         }
     };
 
-    let column = &mut categories[at];
-    column
-        .entries
-        .retain(|entry| !matches!(entry, Entry::RetroArch(_)));
+    let entries = &mut categories[at].entries;
+    entries.retain(|entry| !matches!(entry, Entry::RetroArch(_)));
     if let Some(comment) = comment {
-        // Under the Steam row where there is one, and at the head where there
-        // is not — a session started with `--no-steam` has no Steam row, and
-        // this row would then be standing under nothing.
-        // And under the Windows Apps and Epic Games rows where there are
-        // some, for the same reason one step further on: the column order on
-        // the bar is Steam, Windows Apps, Epic Games, RetroArch, and the rows
-        // that lead to them read the same.
-        let under = column
-            .entries
+        let at = entries
             .iter()
-            .take_while(|row| matches!(row, Entry::Steam(_) | Entry::Windows(_) | Entry::Epic(_)))
+            .take_while(|entry| matches!(entry, Entry::Steam(_) | Entry::Windows(_) | Entry::Epic(_)))
             .count();
-        column
-            .entries
-            .insert(under, Entry::RetroArch(Emulation::new(comment, arriving)));
+        let mut row = Emulation::new(comment, arriving);
+        row.setup_busy = setup_busy;
+        entries.insert(at, Entry::RetroArch(row));
     }
     shifted
 }
@@ -2814,7 +2808,7 @@ pub fn hide_heroic_client(categories: &mut Vec<Category>) -> bool {
             taken |= is_heroic;
             !is_heroic
         });
-        if column.entries.len() != before && !column.has_launchable() {
+        if column.entries.len() != before && column.is_empty_after_hiding_client() {
             emptied.push(at);
         }
     }
@@ -2832,6 +2826,7 @@ pub fn offer_epic(
     categories: &mut Vec<Category>,
     comment: Option<String>,
     arriving: Option<f32>,
+    setup_busy: bool,
 ) -> Shifted {
     let mut shifted = Shifted::default();
     let standing = categories.iter().position(|column| column.id == GAMES);
@@ -2857,19 +2852,16 @@ pub fn offer_epic(
             at
         }
     };
-    let column = &mut categories[at];
-    column
-        .entries
-        .retain(|entry| !matches!(entry, Entry::Epic(_)));
+    let entries = &mut categories[at].entries;
+    entries.retain(|entry| !matches!(entry, Entry::Epic(_)));
     if let Some(comment) = comment {
-        let under = column
-            .entries
+        let at = entries
             .iter()
-            .take_while(|row| matches!(row, Entry::Steam(_) | Entry::Windows(_)))
+            .take_while(|entry| matches!(entry, Entry::Steam(_) | Entry::Windows(_)))
             .count();
-        column
-            .entries
-            .insert(under, Entry::Epic(Emulation::new(comment, arriving)));
+        let mut row = Emulation::new(comment, arriving);
+        row.setup_busy = setup_busy;
+        entries.insert(at, Entry::Epic(row));
     }
     shifted
 }
@@ -2882,6 +2874,7 @@ pub fn offer_windows(
     categories: &mut Vec<Category>,
     comment: Option<String>,
     arriving: Option<f32>,
+    setup_busy: bool,
 ) -> Shifted {
     let mut shifted = Shifted::default();
     let standing = categories.iter().position(|column| column.id == GAMES);
@@ -2907,19 +2900,16 @@ pub fn offer_windows(
             at
         }
     };
-    let column = &mut categories[at];
-    column
-        .entries
-        .retain(|entry| !matches!(entry, Entry::Windows(_)));
+    let entries = &mut categories[at].entries;
+    entries.retain(|entry| !matches!(entry, Entry::Windows(_)));
     if let Some(comment) = comment {
-        let under = column
-            .entries
+        let at = entries
             .iter()
-            .take_while(|row| matches!(row, Entry::Steam(_)))
+            .take_while(|entry| matches!(entry, Entry::Steam(_)))
             .count();
-        column
-            .entries
-            .insert(under, Entry::Windows(Emulation::new(comment, arriving)));
+        let mut row = Emulation::new(comment, arriving);
+        row.setup_busy = setup_busy;
+        entries.insert(at, Entry::Windows(row));
     }
     shifted
 }
@@ -3009,7 +2999,7 @@ pub fn hide_rpcs3_client(categories: &mut Vec<Category>) -> bool {
             taken |= is_rpcs3;
             !is_rpcs3
         });
-        if column.entries.len() != before && !column.has_launchable() {
+        if column.entries.len() != before && column.is_empty_after_hiding_client() {
             emptied.push(at);
         }
     }
@@ -3026,6 +3016,7 @@ pub fn offer_ps3(
     categories: &mut Vec<Category>,
     comment: Option<String>,
     arriving: Option<f32>,
+    setup_busy: bool,
 ) -> Shifted {
     let mut shifted = Shifted::default();
     let standing = categories.iter().position(|column| column.id == GAMES);
@@ -3051,24 +3042,16 @@ pub fn offer_ps3(
             at
         }
     };
-    let column = &mut categories[at];
-    column
-        .entries
-        .retain(|entry| !matches!(entry, Entry::Ps3(_)));
+    let entries = &mut categories[at].entries;
+    entries.retain(|entry| !matches!(entry, Entry::Ps3(_)));
     if let Some(comment) = comment {
-        let under = column
-            .entries
+        let at = entries
             .iter()
-            .take_while(|row| {
-                matches!(
-                    row,
-                    Entry::Steam(_) | Entry::Windows(_) | Entry::Epic(_) | Entry::RetroArch(_)
-                )
-            })
+            .take_while(|entry| matches!(entry, Entry::Steam(_) | Entry::Windows(_) | Entry::Epic(_) | Entry::RetroArch(_)))
             .count();
-        column
-            .entries
-            .insert(under, Entry::Ps3(Emulation::new(comment, arriving)));
+        let mut row = Emulation::new(comment, arriving);
+        row.setup_busy = setup_busy;
+        entries.insert(at, Entry::Ps3(row));
     }
     shifted
 }
@@ -3554,6 +3537,9 @@ impl Entry {
             Entry::Choice(choice) => choice.comment.as_deref(),
             Entry::Bar(bar) => bar.comment.as_deref(),
             Entry::Search(search) => Some(&search.note),
+            Entry::Steam(service) if service.package_setup => {
+                Some(crate::i18n::text("launcher-downloading-and-installing"))
+            }
             Entry::Steam(service) => Some(&service.comment),
             Entry::RetroArch(emulation) => Some(&emulation.comment),
             Entry::Epic(store) => Some(&store.comment),
@@ -3671,10 +3657,27 @@ impl Entry {
     /// and waits for. And one row that is not counting up at all: a partition
     /// on the Storage page, whose bar is how full it is — the same picture of
     /// "this much of the whole", read the same way.
+    pub fn has_indeterminate_setup_progress(&self) -> bool {
+        match self {
+            Entry::Steam(service) => service.setup_busy && service.setup_progress.is_none(),
+            Entry::Windows(emulation)
+            | Entry::Ps3(emulation)
+            | Entry::RetroArch(emulation)
+            | Entry::Epic(emulation) => {
+                emulation.setup_busy && emulation.arriving.is_none()
+            }
+            _ => false,
+        }
+    }
+
     pub fn progress(&self) -> Option<Arriving> {
         match self {
+            Entry::Steam(service) => service.setup_progress.map(|percent| Arriving {
+                share: f32::from(percent) / 100.0,
+                stuck: false,
+            }),
             Entry::Game(game) => game.progress,
-            Entry::RetroArch(emulation) => emulation.arriving,
+            Entry::RetroArch(emulation) | Entry::Windows(emulation) => emulation.arriving,
             Entry::Epic(store) => store.arriving,
             Entry::EpicGame(game) => game.progress,
             Entry::Ps3(emulation) => emulation.arriving,
@@ -3860,6 +3863,13 @@ impl Entry {
     pub fn emulation(&self) -> Option<&Emulation> {
         match self {
             Entry::RetroArch(emulation) => Some(emulation),
+            _ => None,
+        }
+    }
+
+    pub fn retroarch(&self) -> Option<&Emulation> {
+        match self {
+            Entry::RetroArch(row) => Some(row),
             _ => None,
         }
     }
@@ -4202,6 +4212,15 @@ impl Category {
             found |= entry.starts_something()
         });
         found
+    }
+
+    fn is_empty_after_hiding_client(&self) -> bool {
+        // Integration rows in Games can start setup without being launchable apps.
+        if self.id == GAMES {
+            self.entries.is_empty()
+        } else {
+            !self.has_launchable()
+        }
     }
 
     /// How many applications this column holds, subcategories included.
@@ -4897,7 +4916,7 @@ mod tests {
         assert_eq!(games.entries[0].title(), "Steam");
         assert_eq!(
             games.entries[0].comment(),
-            Some("Sign in to play your Steam library here")
+            Some("Sign in")
         );
         assert_eq!(
             games.entries[1].title(),
@@ -5086,7 +5105,7 @@ mod tests {
     #[test]
     fn a_deleted_game_leaves_the_bar_with_its_file() {
         let mut categories = catalogue();
-        offer_retroarch(&mut categories, Some("2 games".to_string()), None);
+        offer_retroarch(&mut categories, Some("2 games".to_string()), None, false);
         shelve_retroarch(&mut categories, vec![rom("t8", true), rom("smb", true)]);
         let gone = std::path::PathBuf::from("/roms/psp/t8.iso");
         assert!(forget_file(&mut categories, &gone));
@@ -5112,7 +5131,8 @@ mod tests {
             offer_retroarch(
                 &mut categories,
                 Some("Looking for RetroArch".to_string()),
-                None
+                None,
+                false,
             ),
             Shifted::default(),
             "the Games column was already there"
@@ -5129,14 +5149,14 @@ mod tests {
 
         // Rebuilt rather than added to, so a session that hears twice from its
         // helper has one row and not two.
-        offer_retroarch(&mut categories, Some("Not installed".to_string()), None);
+        offer_retroarch(&mut categories, Some("Not installed".to_string()), None, false);
         let games = column(&categories, GAMES).expect("the Games column");
         let rows: Vec<&str> = games.entries.iter().map(Entry::title).collect();
         assert_eq!(rows, vec!["Steam", "RetroArch", "A Puzzle"]);
 
         // And nothing to say takes it off again, which is what a session whose
         // package has gone does.
-        offer_retroarch(&mut categories, None, None);
+        offer_retroarch(&mut categories, None, None, false);
         let games = column(&categories, GAMES).expect("the Games column");
         let rows: Vec<&str> = games.entries.iter().map(Entry::title).collect();
         assert_eq!(rows, vec!["Steam", "A Puzzle"]);
@@ -5151,15 +5171,15 @@ mod tests {
             let mut categories = catalogue();
             offer_steam(&mut categories, None, None);
             if epic_first {
-                offer_epic(&mut categories, Some("Looking".to_string()), None);
-                offer_retroarch(&mut categories, Some("Looking".to_string()), None);
+                offer_epic(&mut categories, Some("Looking".to_string()), None, false);
+                offer_retroarch(&mut categories, Some("Looking".to_string()), None, false);
             } else {
-                offer_retroarch(&mut categories, Some("Looking".to_string()), None);
-                offer_epic(&mut categories, Some("Looking".to_string()), None);
+                offer_retroarch(&mut categories, Some("Looking".to_string()), None, false);
+                offer_epic(&mut categories, Some("Looking".to_string()), None, false);
             }
             // And rebuilt again, as every change of state rebuilds them.
-            offer_epic(&mut categories, Some("Signed in".to_string()), Some(0.5));
-            offer_retroarch(&mut categories, Some("2 games".to_string()), None);
+            offer_epic(&mut categories, Some("Signed in".to_string()), Some(0.5), false);
+            offer_retroarch(&mut categories, Some("2 games".to_string()), None, false);
             let games = column(&categories, GAMES).expect("the Games column");
             let rows: Vec<&str> = games.entries.iter().map(Entry::title).collect();
             assert_eq!(rows, vec!["Steam", "Epic Games", "RetroArch", "A Puzzle"]);
@@ -5199,6 +5219,7 @@ mod tests {
             &mut categories,
             Some("Looking for RetroArch".to_string()),
             None,
+            false,
         );
 
         let games = column(&categories, GAMES).expect("the Games column");
@@ -5398,6 +5419,30 @@ mod tests {
             rows[1].search().is_none() && rows[0].search().is_none(),
             "and there is no field: the rows are not what the user came for"
         );
+    }
+
+    #[test]
+    fn hiding_a_launcher_keeps_the_steam_setup_row() {
+        for (program, hide_client) in [
+            (
+                "retroarch",
+                hide_retroarch_client as fn(&mut Vec<Category>) -> bool,
+            ),
+            ("heroic", hide_heroic_client),
+            ("rpcs3", hide_rpcs3_client),
+        ] {
+            let app = App::parse(
+                &format!("[Desktop Entry]\nType=Application\nName={program}\nExec={program}\nCategories=Game;\n"),
+                Path::new(&format!("/usr/share/applications/{program}.desktop")),
+            )
+            .expect("a well-formed entry");
+            let mut categories = assemble(vec![app]);
+            offer_steam(&mut categories, None, None);
+
+            assert!(hide_client(&mut categories), "{program}");
+            let games = column(&categories, GAMES).expect("Steam still needs a Games column");
+            assert!(matches!(games.entries.as_slice(), [Entry::Steam(_)]));
+        }
     }
 
     /// The library becomes a column of its own, immediately after Games —

@@ -3470,6 +3470,12 @@ pub fn build(
                         scale * near,
                         alpha,
                     ));
+                } else if entry.has_indeterminate_setup_progress() {
+                    quads.extend(indeterminate_progress(
+                        [text_x, y + ROW_PROGRESS_DROP * scale * near,
+                         (ROW_PROGRESS_WIDTH * scale * near).min(text_max), 0.0],
+                        scale * near, alpha, pulse,
+                    ));
                 }
             } else {
                 let text_size = 22.0 * scale * near;
@@ -10957,15 +10963,8 @@ const DIALOG_QR_QUIET: f32 = 4.0;
 /// beyond the contrast any reader asks for.
 const QR_LIGHT: crate::theme::Color = crate::theme::Color(0xf4f6f8);
 const QR_DARK: crate::theme::Color = crate::theme::Color(0x0a0d12);
-/// The row of lights that stands where an answer will be. Three of them, on
-/// the height of a field so that a panel does not change size when the thing
-/// it was waiting for arrives.
+/// The same height for measured and indeterminate progress.
 const DIALOG_WAITING: f32 = DIALOG_FIELD;
-const WAITING_LIGHTS: usize = 3;
-const WAITING_LIGHT: f32 = 12.0;
-const WAITING_LIGHT_GAP: f32 = 14.0;
-/// How long one full pass of that row takes, in seconds.
-const WAITING_CYCLE: f32 = 1.4;
 /// How far the terminal frame's writing stands in from the well's edge, in
 /// reference pixels, and the space above and below the well.
 const TERMINAL_INSET: f32 = 14.0;
@@ -11192,10 +11191,8 @@ fn dialog_line_height(line: &Line) -> f32 {
         // an account name and asking for its password would be two panels.
         Line::Entry(_) => DIALOG_SECRET,
         Line::Qr(_) => DIALOG_QR,
-        Line::Waiting => DIALOG_WAITING,
-        // The same height as the lights it stands in for. See
-        // [`Line::Progress`], where the reason is.
-        Line::Progress(_) => DIALOG_WAITING,
+        Line::Waiting | Line::Progress(_) | Line::IndeterminateProgress => DIALOG_WAITING,
+        Line::Gap(height) => f32::from(*height),
         Line::Rule => DIALOG_RULE,
         Line::Terminal { rows, .. } => terminal_height(*rows),
         Line::Reading { rows, .. } => reading_height(*rows),
@@ -11377,11 +11374,22 @@ pub fn recede_behind_dialog(
     dialog: &Dialog,
     progress: f32,
 ) {
-    scene.fade(lerp(1.0, DIALOG_DIM, progress));
+    let dim = if launcher_setup_dialog(dialog) { 0.75 } else { DIALOG_DIM };
+    scene.fade(lerp(1.0, dim, progress));
     scene.dim_text_behind(
         dialog_bounds(width, height, dialog, progress),
         ease(progress / DIALOG_PANEL_IN),
     );
+}
+
+fn launcher_setup_dialog(dialog: &Dialog) -> bool {
+    dialog.buttons.entries().first().is_some_and(|entry| {
+        matches!(
+            entry.command,
+            crate::menu::Command::SteamSetupInBackground
+                | crate::menu::Command::LauncherSetupInBackground
+        )
+    })
 }
 
 /// Everything [`build_dialog`] draws from.
@@ -11417,6 +11425,7 @@ pub fn build_dialog(view: DialogView, width: f32, height: f32) -> Scene {
     let pulse = 0.5 + 0.5 * (view.time * std::f32::consts::TAU / PULSE_PERIOD).sin();
 
     let mut scene = Scene::default();
+    let scrim = if launcher_setup_dialog(dialog) { 0.2 } else { DIALOG_SCRIM };
     // The scrim dims what the *compositor* is drawing under this surface. The
     // shell's own scenes are dimmed by `recede_behind_dialog` instead, which can
     // also take their text away.
@@ -11426,7 +11435,7 @@ pub fn build_dialog(view: DialogView, width: f32, height: f32) -> Scene {
         w: width,
         h: height,
         slot: SOLID_SLOT,
-        color: theme.glass.a(DIALOG_SCRIM * open),
+        color: theme.glass.a(scrim * open),
         ..Quad::default()
     });
 
@@ -11721,45 +11730,13 @@ pub fn build_dialog(view: DialogView, width: f32, height: f32) -> Scene {
                     }
                 }
             }
-            // Something is happening elsewhere: a row of lights, each coming up
-            // a little after the one before it.
-            //
-            // A row rather than a ring because it stands in a line of the panel
-            // — where the code will be, where the answer will be — and because
-            // three quads moving in sequence say "still going" without the
-            // shell having to draw a spinner it has nowhere else to use.
-            Line::Waiting => {
-                let light = WAITING_LIGHT * scale;
-                let pitch = light + WAITING_LIGHT_GAP * scale;
-                let run = WAITING_LIGHTS as f32 * pitch - WAITING_LIGHT_GAP * scale;
-                let start = lx + (lw - run) * 0.5;
-                for index in 0..WAITING_LIGHTS {
-                    // Each light is the same wave a third of a cycle behind its
-                    // neighbour, so the row reads as a travelling swell rather
-                    // than as three things blinking together.
-                    let phase = view.time / WAITING_CYCLE - index as f32 / WAITING_LIGHTS as f32;
-                    let lit = 0.5 + 0.5 * (phase * std::f32::consts::TAU).sin();
-                    inside.quads.push(Quad {
-                        x: start + index as f32 * pitch,
-                        y: ly + (lh - light) * 0.5,
-                        w: light,
-                        h: light,
-                        slot: SOLID_SLOT,
-                        color: theme.accent.a(0.25 + 0.55 * lit),
-                        radius: light * 0.5,
-                        ..Quad::default()
-                    });
-                }
+            Line::Waiting | Line::IndeterminateProgress => {
+                let width = (PANEL_PROGRESS_WIDTH * scale).min(*lw);
+                inside.quads.extend(indeterminate_progress(
+                    [lx + (lw - width) * 0.5, ly + lh * 0.5, width, 0.0],
+                    scale, 1.0, pulse,
+                ));
             }
-            // The same thing, for the stretch of it that can be counted: the
-            // groove a game's row is given while it comes down, on the line
-            // the lights would have stood on.
-            //
-            // [`row_progress`] rather than [`track`], and the argument is the
-            // one made there: this is a reading of something, not a value
-            // anybody can set, so it carries no handle. Never stuck, because
-            // the one thing this draws is watched by a panel that goes to a
-            // failure of its own the moment it stops moving.
             Line::Progress(percent) => {
                 let width = (PANEL_PROGRESS_WIDTH * scale).min(*lw);
                 inside.quads.extend(row_progress(
@@ -11774,6 +11751,7 @@ pub fn build_dialog(view: DialogView, width: f32, height: f32) -> Scene {
             }
             // The same barely-there hairline the guide rules its bands with,
             // and the context menu its groups.
+            Line::Gap(_) => {}
             Line::Rule => {
                 let rule_h = (1.0 * scale).max(1.0);
                 inside.quads.push(Quad {
@@ -13606,6 +13584,14 @@ const ROW_PROGRESS_QUIET: f32 = 0.30;
 ///
 /// `band` is `[x, middle, width, _]`, the line it is centred on, as [`track`]
 /// takes it.
+fn indeterminate_progress(band: [f32; 4], scale: f32, alpha: f32, phase: f32) -> Vec<Quad> {
+    let mut quads = row_progress(band, Arriving { share: 0.25, stuck: false }, scale, alpha);
+    if let [_, indicator] = quads.as_mut_slice() {
+        indicator.x += (band[2] - indicator.w) * phase;
+    }
+    quads
+}
+
 fn row_progress(
     [x, middle, w, _]: [f32; 4],
     progress: Arriving,

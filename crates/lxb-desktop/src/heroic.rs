@@ -345,7 +345,13 @@ struct Probe {
     heroic: Option<Installation>,
     #[serde(default)]
     flatpak: bool,
+    #[serde(default)]
+    native: bool,
     account: Option<String>,
+    #[serde(default)]
+    saved_native_login: bool,
+    #[serde(default)]
+    saved_flatpak_login: bool,
     proton: Option<String>,
     #[serde(default)]
     running: bool,
@@ -364,6 +370,8 @@ struct Installation {
     /// changing is a game of Heroic's ending — see [`Heroic::keep`].
     #[serde(default)]
     config: Option<String>,
+    #[serde(default)]
+    managed: Option<PathBuf>,
     /// Heroic's flatpak application id, which is the whole of what removing it
     /// needs to be told: this integration is built on the Flathub build and the
     /// helper finds no other kind, so an installation with no id is one this
@@ -651,7 +659,7 @@ struct Artwork {
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum Ask {
     Probe,
-    Install,
+    Install { native: bool },
     /// Heroic has been removed; the helper is to forget what this integration
     /// kept for it — see its `install::forget`. `data` is the second of the
     /// panel's two buttons, **Remove everything**.
@@ -712,6 +720,7 @@ enum Heard {
     SignIn(u64, SignInLine),
     SignInEnded(u64),
     /// The helper could not be run or could not be understood, for the log.
+    LibraryReadFailed,
     Broken(String),
 }
 
@@ -719,7 +728,13 @@ fn answer(helper: &Path, ask: &Ask, back: &Sender<Heard>) {
     let mut command = helper_command(helper);
     match ask {
         Ask::Probe => command.arg("probe"),
-        Ask::Install => command.arg("install"),
+        Ask::Install { native } => {
+            command.arg("install");
+            if *native {
+                command.arg("--native");
+            }
+            &mut command
+        }
         Ask::Forget { data: true } => command.arg("forget").arg("--data"),
         Ask::Forget { data: false } => command.arg("forget"),
         Ask::SignOut => command.arg("sign-out"),
@@ -767,6 +782,9 @@ fn answer(helper: &Path, ask: &Ask, back: &Sender<Heard>) {
         Ok(child) => child,
         Err(err) => {
             let _ = back.send(Heard::Broken(format!("{HELPER} could not be run: {err}")));
+            if matches!(ask, Ask::Library { .. }) {
+                let _ = back.send(Heard::LibraryReadFailed);
+            }
             return;
         }
     };
@@ -779,7 +797,7 @@ fn answer(helper: &Path, ask: &Ask, back: &Sender<Heard>) {
             }
             let heard = match ask {
                 Ask::Probe => serde_json::from_str(line).map(Heard::Probed),
-                Ask::Install => serde_json::from_str(line).map(Heard::Installing),
+                Ask::Install { .. } => serde_json::from_str(line).map(Heard::Installing),
                 Ask::Forget { .. } => serde_json::from_str(line).map(Heard::Forgotten),
                 Ask::SignOut => serde_json::from_str(line).map(Heard::Account),
                 Ask::Library { .. } => serde_json::from_str(line).map(Heard::Library),
@@ -807,6 +825,9 @@ fn answer(helper: &Path, ask: &Ask, back: &Sender<Heard>) {
     }
     let status = child.wait();
     if !said {
+        if matches!(ask, Ask::Library { .. }) {
+            let _ = back.send(Heard::LibraryReadFailed);
+        }
         let _ = back.send(Heard::Broken(format!(
             "{HELPER} answered nothing to {ask:?} ({status:?})"
         )));
@@ -1149,10 +1170,14 @@ impl Inner {
     }
 }
 
+#[derive(PartialEq, Eq)]
 enum Found {
     Asking,
     Absent {
         flatpak: bool,
+        native: bool,
+        saved_native_login: bool,
+        saved_flatpak_login: bool,
     },
     Here {
         command: Vec<String>,
@@ -1160,6 +1185,7 @@ enum Found {
         /// Heroic's flatpak application id, kept for the row that takes it off
         /// the machine — see [`Heroic::installed_where`].
         id: Option<String>,
+        managed: Option<PathBuf>,
     },
 }
 
@@ -1323,6 +1349,9 @@ impl Heroic {
             return;
         };
         if matches!(ask, Ask::Library { .. }) {
+            if !matches!(inner.found, Found::Here { .. }) {
+                return;
+            }
             inner.reading += 1;
         }
         // Pictures on threads of their own, never in the worker's queue: a
@@ -1560,7 +1589,7 @@ impl Heroic {
     }
 
     /// Install Heroic where there is none, and its Proton either way.
-    pub fn install(&mut self) {
+    pub fn install(&mut self, native: bool) {
         let Some(inner) = self.inner.as_mut() else {
             return;
         };
@@ -1572,7 +1601,7 @@ impl Heroic {
             progress: None,
             ended: None,
         });
-        self.send(Ask::Install);
+        self.send(Ask::Install { native });
     }
 
     /// Heroic has gone; tell the helper to take what was kept for it.
@@ -1583,6 +1612,16 @@ impl Heroic {
     /// permission belonging to a program that is not there. What goes, and what
     /// `everything` adds, is in the helper's `install::forget`.
     pub fn forget_what_it_kept(&mut self, everything: bool) {
+        if let Some(inner) = self.inner.as_mut() {
+            inner.found = Found::Absent {
+                flatpak: on_path("flatpak").is_some(),
+                native: false,
+                saved_native_login: false,
+                saved_flatpak_login: false,
+            };
+            inner.games.clear();
+            inner.account = None;
+        }
         self.send(Ask::Forget { data: everything });
     }
 
@@ -1824,7 +1863,7 @@ impl Heroic {
                 }
                 Heard::Probed(probe) => {
                     let had = inner.account.clone();
-                    inner.found = match probe.heroic {
+                    let found = match probe.heroic {
                         Some(found) => {
                             tracing::info!(version = ?found.version, proton = ?probe.proton, "Heroic is here");
                             inner.kept.playtimes = found
@@ -1834,13 +1873,27 @@ impl Heroic {
                                 command: found.command,
                                 proton: probe.proton.is_some(),
                                 id: found.id,
+                                managed: found.managed,
                             }
                         }
                         None => Found::Absent {
                             flatpak: probe.flatpak,
+                            native: probe.native,
+                            saved_native_login: probe.saved_native_login,
+                            saved_flatpak_login: probe.saved_flatpak_login,
                         },
                     };
-                    inner.account = probe.account;
+                    let installation_changed = inner.found != found;
+                    inner.found = found;
+                    inner.account = probe.account.filter(|_| matches!(inner.found, Found::Here { .. }));
+                    if installation_changed || had != inner.account {
+                        inner.games.clear();
+                        inner.own_tools = None;
+                        inner.trophies.clear();
+                        inner.trophies_asked = false;
+                        inner.icons_asked.clear();
+                        change.trophies = true;
+                    }
                     change.settings |= note_facts(Facts {
                         base: probe.base.map(PathBuf::from),
                         proton: probe.proton,
@@ -1853,7 +1906,7 @@ impl Heroic {
                         inner.held = None;
                         inner.next_fetch();
                     }
-                    if inner.account.is_some() && (had != inner.account || inner.games.is_empty()) {
+                    if inner.account.is_some() && (had != inner.account || installation_changed) {
                         // Off the disk first, which is immediate, and then
                         // from Epic, which takes a few seconds and may not be
                         // reachable at all.
@@ -1878,7 +1931,7 @@ impl Heroic {
                     if matches!(inner.found, Found::Here { .. }) && inner.own_tools.is_none() {
                         asks.push(Ask::Tools);
                     }
-                    change.rows = true;
+                    change.rows |= installation_changed || had != inner.account;
                 }
                 Heard::Tools(line) if line.protocol != PROTOCOL => {}
                 Heard::Tools(line) => {
@@ -1932,11 +1985,19 @@ impl Heroic {
                     change.signed_out = Some(account.reason);
                     change.rows = true;
                 }
+                Heard::LibraryReadFailed => {
+                    inner.reading = inner.reading.saturating_sub(1);
+                    change.rows = true;
+                }
                 Heard::Library(library) if library.protocol != PROTOCOL => {
                     inner.reading = inner.reading.saturating_sub(1);
+                    change.rows = true;
                 }
                 Heard::Library(library) => {
                     inner.reading = inner.reading.saturating_sub(1);
+                    if !matches!(inner.found, Found::Here { .. }) {
+                        continue;
+                    }
                     if let Some(reason) = library.reason {
                         tracing::info!(?reason, "the Epic library was not asked of Epic this time");
                     }
@@ -2212,24 +2273,33 @@ impl Heroic {
         change
     }
 
-    /// Where the Heroic this machine would use is, for the row that takes it
-    /// off — see [`crate::uninstall::Installed`]. `None` while there is none,
-    /// while one is being installed, and on a session whose helper did not say
-    /// which flatpak it found.
-    ///
-    /// Only ever a flatpak, because that is the only kind this integration is
-    /// built on and the only kind the helper looks for: Heroic's Flathub build,
-    /// whose bundled legendary and whose sandbox paths everything in
-    /// `lxb-heroic` is written against. A Heroic installed some other way is
-    /// not found at all, so there is nothing here to offer to remove.
+    pub fn uninstalled(&self) -> bool {
+        self.inner.as_ref().is_some_and(|inner| {
+            inner.broken.is_none()
+                && inner.installing.is_none()
+                && matches!(inner.found, Found::Absent { .. })
+        })
+    }
+
+    /// The managed native installation or Flatpak that the probe identified.
     pub fn installed_where(&self) -> Option<crate::uninstall::Installed> {
         let inner = self.inner.as_ref()?;
         if inner.installing.is_some() {
             return None;
         }
         match &inner.found {
-            Found::Here { id, .. } => Some(crate::uninstall::Installed::Flatpak(id.clone()?)),
+            Found::Here { id, managed, .. } => match managed {
+                Some(path) => Some(crate::uninstall::Installed::ManagedDirectories(vec![path.clone()])),
+                None => Some(crate::uninstall::Installed::Flatpak(id.clone()?)),
+            },
             Found::Asking | Found::Absent { .. } => None,
+        }
+    }
+
+    pub fn installation_sources(&self) -> (bool, bool) {
+        match self.inner.as_ref().map(|inner| &inner.found) {
+            Some(Found::Absent { native, flatpak, .. }) => (*native, *flatpak),
+            _ => (false, false),
         }
     }
 
@@ -2248,14 +2318,22 @@ impl Heroic {
         }
         match &inner.found {
             Found::Asking => Press::Waiting,
-            Found::Absent { flatpak: true } => Press::Install,
-            Found::Absent { flatpak: false } => Press::Cannot(
+            Found::Absent { flatpak, native, .. } if *flatpak || *native => Press::Install,
+            Found::Absent { .. } => Press::Cannot(
                 crate::i18n::text("shell-it-cannot-be-downloaded-on-this-machine").to_string(),
             ),
             Found::Here { proton: false, .. } => Press::SetUp,
             Found::Here { .. } if inner.account.is_none() => Press::SignIn,
             Found::Here { .. } => Press::Enter,
         }
+    }
+
+    pub fn reading_library(&self) -> bool {
+        self.inner.as_ref().is_some_and(|inner| {
+            inner.broken.is_none()
+                && inner.reading > 0
+                && matches!(inner.found, Found::Here { .. })
+        })
     }
 
     /// The line under the row. `None` on a machine without the integration,
@@ -2284,25 +2362,42 @@ impl Heroic {
                 crate::i18n::text("epic-waits-for-heroic")
             ));
         }
+        if self.reading_library() {
+            return Some(crate::i18n::text("shell-loading-your-library").to_string());
+        }
         Some(match &inner.found {
             Found::Asking => crate::i18n::text("epic-looking").to_string(),
-            Found::Absent { flatpak: true } => {
-                crate::i18n::text("shell-press-to-download-it").to_string()
+            Found::Absent {
+                saved_native_login,
+                saved_flatpak_login,
+                ..
+            } if *saved_native_login || *saved_flatpak_login => {
+                let saved = crate::i18n::saved_launcher_sign_in(
+                    TITLE,
+                    *saved_native_login,
+                    *saved_flatpak_login,
+                )?;
+                format!("{} · {saved}", crate::i18n::text("epic-not-installed"))
             }
-            Found::Absent { flatpak: false } => {
+            Found::Absent { flatpak, native, .. } if *flatpak || *native => {
+                crate::i18n::text("shell-press-to-download-and-set-up").to_string()
+            }
+            Found::Absent { .. } => {
                 crate::i18n::text("shell-it-cannot-be-downloaded-on-this-machine").to_string()
             }
             Found::Here { proton: false, .. } => {
-                crate::i18n::text("epic-press-to-finish-setting-up").to_string()
+                crate::i18n::text("shell-press-to-download-and-set-up").to_string()
             }
             Found::Here { .. } => match &inner.account {
-                Some(name) if inner.offline => format!(
-                    "{} · {}",
-                    crate::message!("steam-signed-in", "name" => name.as_str()),
-                    crate::i18n::text("epic-no-connection")
-                ),
-                Some(name) => crate::message!("steam-signed-in", "name" => name.as_str()),
-                None => crate::i18n::text("epic-sign-in-to-play").to_string(),
+                Some(name) => {
+                    let signed_in = crate::message!("steam-signed-in", "name" => name.as_str());
+                    if inner.offline {
+                        format!("{} · {}", signed_in, crate::i18n::text("epic-no-connection"))
+                    } else {
+                        signed_in
+                    }
+                }
+                None => crate::i18n::text("shell-sign-in").to_string(),
             },
         })
     }
@@ -2542,7 +2637,7 @@ impl Heroic {
             Press::Install | Press::SetUp => rows.push(
                 menu::Entry::new(
                     menu::Command::EpicOfferInstall,
-                    crate::i18n::text("shell-install"),
+                    crate::i18n::text("shell-download-and-set-up"),
                 )
                 .glyph(icons::LAUNCH),
             ),
@@ -3318,7 +3413,7 @@ pub fn game_failed_sentence(reason: Reason) -> Option<String> {
 /// What an install is doing, in a sentence.
 pub fn installing_sentence(installing: &Installing) -> String {
     let doing = match installing.stage {
-        Stage::Installing => crate::i18n::text("epic-downloading-heroic"),
+        Stage::Installing => crate::i18n::text("launcher-downloading-and-installing"),
         Stage::Proton => crate::i18n::text("epic-downloading-proton"),
         _ => crate::i18n::text("epic-getting-ready"),
     };
@@ -3663,6 +3758,7 @@ esac
                     command: vec!["flatpak".into(), "run".into(), FLATPAK.into()],
                     proton: true,
                     id: Some(FLATPAK.to_string()),
+                    managed: None,
                 },
                 account: Some("Somebody".to_string()),
                 games,
