@@ -1031,7 +1031,19 @@ impl Lxb {
             return false;
         }
         let app_id = crate::shell_control::window_app_id(window);
-        if !folded_app_id(&app_id).is_some_and(|app_id| self.unseen.contains(&app_id)) {
+        let hidden_by_class =
+            folded_app_id(&app_id).is_some_and(|app_id| self.unseen.contains(&app_id));
+        // Valve's bootstrapper sets the X11 title but leaves WM_CLASS empty.
+        let setting_up_steam = self.unseen.contains(lxb_protocol::STEAM_BOOTSTRAP_WINDOW);
+        let hidden_bootstrap = setting_up_steam
+            && app_id.is_empty()
+            && window.x11_surface().is_some_and(|surface| surface.title() == "Steam");
+        // Steam Runtime uses this title for its progress-only window. Match
+        // the title because Zenity's app ID varies, and keep hiding the
+        // progress window while the managed Steam client is out of sight.
+        let hidden_runtime_progress = (setting_up_steam || self.unseen.contains("steam"))
+            && crate::shell_control::window_title(window) == "Steam setup";
+        if !hidden_by_class && !hidden_bootstrap && !hidden_runtime_progress {
             return false;
         }
         // Hidden by name, and then one exception: a window the shell has asked

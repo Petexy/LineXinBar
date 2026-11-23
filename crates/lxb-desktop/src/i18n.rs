@@ -8,6 +8,15 @@ use std::sync::LazyLock;
 
 use fluent_bundle::{concurrent::FluentBundle, FluentArgs, FluentResource, FluentValue};
 
+pub fn saved_launcher_sign_in(name: &str, native: bool, flatpak: bool) -> Option<String> {
+    Some(match (native, flatpak) {
+        (true, true) => crate::message!("launcher-both-sign-ins-saved", "name" => name),
+        (true, false) => crate::message!("launcher-native-sign-in-saved", "name" => name),
+        (false, true) => crate::message!("launcher-flatpak-sign-in-saved", "name" => name),
+        (false, false) => return None,
+    })
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Language {
     /// English as the shell is written in it, and the language every other

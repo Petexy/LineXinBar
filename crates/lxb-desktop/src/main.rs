@@ -1403,6 +1403,7 @@ fn main() -> anyhow::Result<()> {
             &mut categories,
             Some(crate::i18n::text("shell-looking-for-retroarch").to_string()),
             None,
+            false,
         );
     }
     // And the Epic Games integration's, on exactly those terms: a `PATH`
@@ -1417,6 +1418,7 @@ fn main() -> anyhow::Result<()> {
             &mut categories,
             Some(crate::i18n::text("epic-looking").to_string()),
             None,
+            false,
         );
     }
     // And the PlayStation 3 integration's, on the same terms: RPCS3's own
@@ -1439,6 +1441,7 @@ fn main() -> anyhow::Result<()> {
             &mut categories,
             Some(crate::i18n::text("windows-looking").to_string()),
             None,
+            false,
         );
     }
     if ps3_helper.is_some() && settings::ps3_integration() {
@@ -1447,6 +1450,7 @@ fn main() -> anyhow::Result<()> {
             &mut categories,
             Some(crate::i18n::text("ps3-looking").to_string()),
             None,
+            false,
         );
     }
     // The photo viewer, the film player and the music player have no tiles.
@@ -1659,6 +1663,7 @@ fn main() -> anyhow::Result<()> {
         uninstalling: None,
         compat_menu: None,
         epic_looked: None,
+        launcher_state_checked: Instant::now(),
         epic_compat_menu: None,
         windows_choose_menu: None,
         windows_asked_remove: None,
@@ -1774,6 +1779,10 @@ fn main() -> anyhow::Result<()> {
         retroarch_bios: None,
         retroarch_walk: None,
         keeping_picture: None,
+        other_steam: None,
+        steam_handover: None,
+        steam_start: None,
+        closing_other_steam: None,
         picking: None,
         retroarch_defaults: false,
         retroarch_bios_play: None,
@@ -1807,7 +1816,7 @@ fn main() -> anyhow::Result<()> {
         steam_becoming: None,
         steam_sight: SteamSight::Background,
         steam_button: None,
-        hiding_steams_setup: false,
+        hidden_steam_setup_windows: [false; 2],
         restoring: None,
         guide_card_rects: std::collections::HashMap::new(),
         keyboard: None,
@@ -1923,6 +1932,12 @@ fn main() -> anyhow::Result<()> {
     // A session started for one application opens on its tile everywhere.
     // See [`installation`].
     shell.stand_every_display_on_the_installation_app();
+    if settings::steam_integration() {
+        if let Some(standing) = shell.steam.standing() {
+            let shifted = apps::offer_steam(&mut shell.lattice.categories, None, Some(standing));
+            shell.absorb(shifted);
+        }
+    }
     // A fixture library goes on the bar through exactly the path a real one
     // does — the row that names the account, then the column — so what is on
     // screen is the same arrangement the worker would have produced. Including
@@ -2095,6 +2110,7 @@ fn main() -> anyhow::Result<()> {
         // once more: a helper process on a worker thread, answering on
         // whichever frame it is done.
         if shell.startup.ready {
+            shell.check_launcher_installations();
             shell.sync_retroarch();
             shell.sync_heroic();
             shell.sync_ps3();
@@ -2124,6 +2140,7 @@ fn main() -> anyhow::Result<()> {
         // the disk is done.
         shell.advance_transfer();
         shell.advance_kept_picture();
+        shell.advance_closing_other_steam();
         shell.sync_picture_picker();
         // The same again for an authorisation this session has been asked to
         // prove: `polkitd` asks on a thread of its own, and polkit's PAM helper
@@ -2802,20 +2819,34 @@ enum Removing {
     /// The program one of the integrations drives, from that integration's own
     /// row at the head of Games.
     Program(Program),
+    ProgramData(Program),
+    InstallSteamPackage { flatpak: bool },
+    InstallNativeRetroArch,
+    InstallSteamDevices { resume_setup: bool },
 }
 
 impl Removing {
+    fn installing(&self) -> bool {
+        matches!(self, Self::InstallSteamPackage { .. } | Self::InstallSteamDevices { .. } | Self::InstallNativeRetroArch)
+    }
+
     fn name(&self) -> String {
         match self {
             Removing::Application { name, .. } => name.clone(),
-            Removing::Program(program) => program.name().to_string(),
+            Removing::Program(program) | Removing::ProgramData(program) => program.name().to_string(),
+            Removing::InstallNativeRetroArch => Program::RetroArch.name().to_string(),
+            Removing::InstallSteamDevices { .. } => crate::i18n::text("steam-controller-rules").to_string(),
+            Removing::InstallSteamPackage { flatpak: false } => "steam-installer".to_string(),
+            Removing::InstallSteamPackage { flatpak: true } => "Steam (Flatpak)".to_string(),
         }
     }
 
     fn icon(&self) -> Option<String> {
         match self {
             Removing::Application { icon, .. } => icon.clone(),
-            Removing::Program(program) => Some(program.mark()),
+            Removing::Program(program) | Removing::ProgramData(program) => Some(program.mark()),
+            Removing::InstallNativeRetroArch => Some(Program::RetroArch.mark()),
+            Removing::InstallSteamDevices { .. } | Removing::InstallSteamPackage { .. } => Some(icons::STEAM.to_string()),
         }
     }
 }
@@ -2858,6 +2889,7 @@ enum Step {
     },
     /// It is being removed now.
     Removing,
+    InstallationProgress(u8),
     Removed,
     Failed(String),
 }
@@ -4871,6 +4903,7 @@ struct Shell {
     /// When the Epic Games package was last looked for — see
     /// [`Shell::look_for_the_epic_package`].
     epic_looked: Option<Instant>,
+    launcher_state_checked: Instant,
     /// The Epic game whose Compatibility list is up and waiting for Heroic to
     /// be asked what it can run games with — the twin of `compat_menu`.
     epic_compat_menu: Option<String>,
@@ -5477,6 +5510,10 @@ struct Shell {
     retroarch_walk: Option<(Walk, Instant)>,
     /// A picture somebody chose for one of their games, being copied in.
     keeping_picture: Option<Kept>,
+    other_steam: Option<(SteamRetry, Option<lxb_steam::client::OtherSession>)>,
+    steam_handover: Option<(u32, lxb_steam::Doing)>,
+    steam_start: Option<(u64, u32)>,
+    closing_other_steam: Option<ClosingOtherSteam>,
     /// The game a picture is being chosen for, while the walk is open.
     ///
     /// The row it hangs off is built from this — see
@@ -5700,7 +5737,7 @@ struct Shell {
     ///
     /// A plain remembered answer, so the request is made when it changes and
     /// not once a frame. See [`Shell::sync_steam_setup_windows`].
-    hiding_steams_setup: bool,
+    hidden_steam_setup_windows: [bool; 2],
     /// A window flying back out of its tile, drawn by the compositor.
     restoring: Option<Restore>,
     /// Eased card rectangles by window id (`u64::MAX` is the start card),
@@ -7004,9 +7041,16 @@ impl Shell {
             // back into the control it came from; and the same for the friends
             // list leaving by the right edge, and for a centred panel.
             || self.context_menu.is_animating()
+            || ui::context_label_is_scrolling(&self.context_menu)
             || self.friends.is_moving()
             || self.friends.conversation_is_moving()
             || self.dialog.is_animating()
+            || (dialog_on_screen && self.dialog.lines().iter().any(|line| {
+                matches!(line, dialog::Line::Waiting | dialog::Line::IndeterminateProgress)
+            }))
+            || self.panels.get(focused_panel)
+                .and_then(|panel| panel.cursor.current_entry(&self.lattice))
+                .is_some_and(apps::Entry::has_indeterminate_setup_progress)
             // The picker comes in from the right on its own ramp and its
             // columns ride the bar's own springs.
             || self
@@ -12268,7 +12312,7 @@ impl Shell {
             h,
         ];
         let entries = status_rows(now);
-        if self.context_menu.open_at(
+        if self.context_menu.open_context(
             anchor,
             Some(menu::Title::new(crate::i18n::text("shell-status"))),
             entries,
@@ -13216,7 +13260,7 @@ impl Shell {
         let rows = ui::context_menu_rows_that_fit(height);
         if self
             .context_menu
-            .open_at(anchor, title.map(menu::Title::new), entries, rows)
+            .open_context(anchor, title.map(menu::Title::new), entries, rows)
         {
             if trophies {
                 self.context_menu.widen(ui::TROPHIES_EXTRA_WIDTH);
@@ -18552,7 +18596,7 @@ impl Shell {
         self.windows_choose_menu = None;
         self.windows_compat_menu = None;
         self.ways_menu = None;
-        if self.context_menu.open_at(
+        if self.context_menu.open_context(
             anchor,
             Some(menu::Title::new(FLOATING_WINDOW_TITLE.to_string())),
             entries,
@@ -19639,6 +19683,20 @@ impl Shell {
     /// the rectangle of the control that was pressed, which is what anything
     /// this opens grows out of.
     fn carry_out(&mut self, command: menu::Command, from: [f32; 4]) {
+        if matches!(
+            command,
+            menu::Command::SteamInstallInto { .. }
+                | menu::Command::SteamAcceptAgreement(_)
+                | menu::Command::SteamStopInstalling(_)
+                | menu::Command::SteamUninstallNow(_)
+                | menu::Command::SteamMoveInto { .. }
+                | menu::Command::SteamCancelMove
+                | menu::Command::SteamRemoveLibraryNow
+                | menu::Command::SteamRunUnder { .. }
+        ) && self.check_other_steam(move |shell| shell.carry_out(command, from))
+        {
+            return;
+        }
         match command {
             menu::Command::UpdateCancelCheck => {
                 self.updates.cancel_check();
@@ -19814,8 +19872,11 @@ impl Shell {
             // which is the same thing pressing a search field does.
             menu::Command::Rename => self.begin_rename(),
             menu::Command::ConfirmUninstall => self.begin_uninstall(),
-            menu::Command::InstallRetroArch => self.install_retroarch(),
+            menu::Command::RetroArchOfferInstall => self.offer_to_install_retroarch(),
+            menu::Command::InstallRetroArch { native } => self.install_retroarch(native),
             menu::Command::RemoveProgram(program) => self.offer_to_remove_program(program),
+            menu::Command::RemoveProgramData(program) => self.offer_to_remove_program_data(program),
+            menu::Command::ConfirmRemoveProgramData(program) => self.remove_program_data(program),
             menu::Command::ReallyRemoveProgram(program, everything) => {
                 self.begin_removing_program(program, everything)
             }
@@ -19829,7 +19890,7 @@ impl Shell {
             menu::Command::UseResolution(size) => self.use_resolution(size),
             menu::Command::RetroArchOpen => self.open_retroarch(),
             menu::Command::EpicOfferInstall => self.offer_to_set_up_epic(),
-            menu::Command::EpicInstall => self.set_up_epic(),
+            menu::Command::EpicInstall { native } => self.set_up_epic(native),
             menu::Command::EpicSignIn => {
                 self.heroic.begin_sign_in();
                 self.show_epic_panel();
@@ -19844,10 +19905,10 @@ impl Shell {
             menu::Command::EpicRefresh => self.heroic.refresh(),
             menu::Command::EpicOpenHeroic => self.open_heroic(),
             menu::Command::Ps3OfferSetUp => self.offer_to_set_up_ps3(),
-            menu::Command::Ps3SetUp => self.set_up_ps3(),
+            menu::Command::Ps3SetUp { native } => self.set_up_ps3(native),
             menu::Command::WindowsSetUp => {
                 self.proton.send(proton::Ask::Fetch);
-                self.needs_redraw = true;
+                self.show_windows_setup();
             }
             menu::Command::WindowsPlay => self.play_selected_windows_game(),
             menu::Command::WindowsCompatibility => {
@@ -20122,9 +20183,14 @@ impl Shell {
             menu::Command::SteamLaunchAnswer(at) => self.answer_the_launch(at),
             menu::Command::ShareDisplay(row) => self.answer_share(Some(row)),
             menu::Command::RefuseShare => self.answer_share(None),
+            menu::Command::SteamOpenSetup => self.press_steam_row(),
             menu::Command::SteamSignIn => {
-                self.steam.begin();
-                self.show_steam_panel();
+                if self.steam.has_client() && !self.steam.needs_client_setup() {
+                    self.steam.begin();
+                    self.show_steam_panel();
+                } else {
+                    self.press_steam_row();
+                }
             }
             menu::Command::SteamWithQr => {
                 self.steam.with_qr();
@@ -20164,8 +20230,35 @@ impl Shell {
                 self.steam.cancel();
                 self.show_steam_panel();
             }
+            menu::Command::LauncherSetupInBackground => {
+                self.close_dialog();
+            }
             menu::Command::SteamSetupInBackground => {
                 self.steam.let_the_setup_run_in_the_background();
+                self.show_steam_panel();
+            }
+            menu::Command::InstallSteamPackage { flatpak } => self.install_steam_package(flatpak),
+            menu::Command::OfferSteamDevices => self.offer_steam_devices(false),
+            menu::Command::InstallSteamDevices { resume_setup } => {
+                if self.uninstalling.is_none() && self.steam.needs_device_rules() {
+                    self.uninstalling = Some(Uninstall {
+                        removing: Removing::InstallSteamDevices { resume_setup },
+                        survey: uninstall::Survey::steam_package_install(false, "steam-devices"),
+                        stage: Stage::Surveying,
+                        data: uninstall::ItsData::Kept,
+                    });
+                    self.advance_uninstall();
+                }
+            }
+            menu::Command::SkipSteamDevices { remind } => {
+                if !remind {
+                    settings::stop_reminding_about_steam_device_rules();
+                }
+                self.steam.begin();
+                self.show_steam_panel();
+            }
+            menu::Command::SteamConfirmSetup => {
+                self.steam.confirm_setup();
                 self.show_steam_panel();
             }
             menu::Command::SteamSetUpAgain => {
@@ -20254,6 +20347,7 @@ impl Shell {
             menu::Command::SteamPlayAgain(app_id) => self.play_steam_game_again(app_id, false),
             menu::Command::SteamMoveClientHere(app_id) => self.move_steam_here(app_id),
             menu::Command::SteamInstall(app_id) => self.install_steam_game(app_id),
+            menu::Command::SteamCloseOtherSession(force) => self.close_other_steam(force),
             menu::Command::SteamStopInstalling(app_id) => self.steam.stop_installing(app_id),
             menu::Command::SteamInstallWithSteam(app_id) => {
                 self.steam_hand_over(app_id, lxb_steam::Doing::Install)
@@ -20570,7 +20664,13 @@ impl Shell {
             true
         };
         if started {
-            self.say_working(crate::i18n::text("shell-removing-this-can-take-a-moment"));
+            let installing = self.uninstalling.as_ref()
+                .is_some_and(|state| state.removing.installing());
+            self.say_working(crate::i18n::text(if installing {
+                "launcher-downloading-and-installing"
+            } else {
+                "shell-removing-this-can-take-a-moment"
+            }));
             self.dismiss_password_board();
         }
     }
@@ -20605,7 +20705,7 @@ impl Shell {
                 },
             },
             Stage::Working(run) => match run.outcome() {
-                None => Step::Nothing,
+                None => run.take_progress_update().map_or(Step::Nothing, Step::InstallationProgress),
                 Some(uninstall::Outcome::Removed) => {
                     state.stage = Stage::Done;
                     Step::Removed
@@ -20639,15 +20739,20 @@ impl Shell {
         if matches!(step, Step::Nothing) {
             return;
         }
-        let Some((name, icon, program, data)) = self.uninstalling.as_ref().map(|state| {
+        let Some((name, icon, program, data, installing, remnants)) = self.uninstalling.as_ref().map(|state| {
             (
                 state.removing.name(),
                 state.removing.icon(),
                 match &state.removing {
-                    Removing::Application { .. } => None,
+                    Removing::ProgramData(_) | Removing::Application { .. } | Removing::InstallSteamPackage { .. } | Removing::InstallSteamDevices { .. } | Removing::InstallNativeRetroArch => None,
                     Removing::Program(program) => Some(*program),
                 },
                 state.data,
+                state.removing.installing(),
+                match &state.removing {
+                    Removing::ProgramData(program) => Some(*program),
+                    _ => None,
+                },
             )
         }) else {
             return;
@@ -20679,7 +20784,74 @@ impl Shell {
                 );
             }
             Step::AskPassword { retry } => self.ask_for_password(retry),
-            Step::Removing => self.say_working(crate::i18n::text("shell-removing")),
+            Step::Removing => self.say_working(crate::i18n::text(if installing {
+                "launcher-downloading-and-installing"
+            } else {
+                "shell-removing"
+            })),
+            Step::InstallationProgress(percent) => {
+                let note = crate::i18n::text("launcher-downloading-and-installing");
+                self.dialog.say(vec![
+                    dialog::Line::Heading(name),
+                    dialog::Line::Note(format!("{note} · {percent}%")),
+                    dialog::Line::Progress(percent),
+                ]);
+            }
+            Step::Removed if installing => {
+                let package = self.uninstalling.as_ref().and_then(|state| match state.removing {
+                    Removing::InstallSteamPackage { flatpak } => Some(flatpak),
+                    _ => None,
+                });
+                let resume_setup = self.uninstalling.as_ref().is_some_and(|state| {
+                    matches!(state.removing, Removing::InstallSteamDevices { resume_setup: true })
+                });
+                let retroarch = self.uninstalling.as_ref().is_some_and(|state| {
+                    matches!(state.removing, Removing::InstallNativeRetroArch)
+                });
+                self.finish_uninstall();
+                if retroarch {
+                    self.retroarch.reprobe();
+                    self.announce_launcher_result(Program::RetroArch, true);
+                    if settings::roms_folder().is_none() {
+                        self.ask_where_the_games_are();
+                    } else {
+                        self.close_dialog();
+                    }
+                    return;
+                }
+                let Some(flatpak) = package else {
+                    if resume_setup {
+                        self.steam.begin();
+                        self.show_steam_panel();
+                    } else {
+                        self.say_and_acknowledge(icon, vec![
+                            dialog::Line::Heading(name),
+                            dialog::Line::Note(crate::i18n::text("shell-done").to_string()),
+                        ]);
+                    }
+                    return;
+                };
+                lxb_steam::client::Where::prefer_flatpak(flatpak);
+                self.steam.look_for_the_client_again();
+                self.scan_the_bar_again();
+                self.open_steam_row(false);
+            }
+            Step::Removed if let Some(program) = remnants => {
+                self.finish_uninstall();
+                match program {
+                    Program::Steam if self.steam.signed_in() => self.steam.sign_out(),
+                    Program::RetroArch => settings::forget_roms_folder(),
+                    Program::Rpcs3 => settings::forget_ps3_folder(),
+                    _ => {}
+                }
+                if program == Program::Windows {
+                    self.proton.reread();
+                }
+                self.say_and_acknowledge(icon, vec![
+                    dialog::Line::Heading(name),
+                    dialog::Line::Note(crate::i18n::text("launcher-data-removed").to_string()),
+                ]);
+            }
             Step::Removed => {
                 self.finish_uninstall();
                 match program {
@@ -20705,16 +20877,26 @@ impl Shell {
             }
             Step::Failed(why) => {
                 self.finish_uninstall();
-                self.say_and_acknowledge(
-                    icon,
-                    vec![
-                        dialog::Line::Heading(
-                            crate::message!("could-not-remove-name", "name" => name.as_str()),
-                        ),
-                        dialog::Line::Note(why),
-                        dialog::Line::Rule,
-                    ],
-                );
+                let steam_removed = program == Some(Program::Steam)
+                    && self.steam.look_for_the_client_again()
+                    && !self.steam.has_client();
+                let mut lines = vec![
+                    dialog::Line::Heading(if installing {
+                        crate::i18n::text("shell-it-could-not-be-downloaded").to_string()
+                    } else if steam_removed {
+                        crate::message!("name-has-been-removed", "name" => name.as_str())
+                    } else if remnants.is_some() {
+                        crate::i18n::text("launcher-remove-data").to_string()
+                    } else {
+                        crate::message!("could-not-remove-name", "name" => name.as_str())
+                    }),
+                    dialog::Line::Note(why),
+                ];
+                if steam_removed {
+                    self.scan_the_bar_again();
+                }
+                lines.push(dialog::Line::Rule);
+                self.say_and_acknowledge(icon, lines);
             }
         }
         self.needs_redraw = true;
@@ -20783,6 +20965,8 @@ impl Shell {
     /// Put up the field that collects the password, with the keyboard.
     fn ask_for_password(&mut self, retry: bool) {
         let from = self.dialog_origin();
+        let installing = self.uninstalling.as_ref()
+            .is_some_and(|state| state.removing.installing());
         let Some((name, icon)) = self
             .uninstalling
             .as_ref()
@@ -20798,7 +20982,11 @@ impl Shell {
             from,
             icon,
             vec![
-                dialog::Line::Heading(crate::message!("removing-name", "name" => name.as_str())),
+                dialog::Line::Heading(if installing {
+                    crate::i18n::text("label-authenticate").to_string()
+                } else {
+                    crate::message!("removing-name", "name" => name.as_str())
+                }),
                 dialog::Line::Note(if retry {
                     crate::i18n::text("shell-that-password-was-not-accepted-try-again").to_string()
                 } else {
@@ -20811,7 +20999,7 @@ impl Shell {
                 menu::Entry::new(menu::Command::Dismiss, crate::i18n::text("shell-cancel")),
                 menu::Entry::new(
                     menu::Command::SubmitPassword,
-                    crate::i18n::text("shell-uninstall"),
+                    crate::i18n::text(if installing { "shell-install" } else { "shell-uninstall" }),
                 )
                 .grave(),
             ],
@@ -22469,6 +22657,7 @@ impl Shell {
     /// not a failure and does not read as one — nothing was done, and what to
     /// do about it is on the panel a game press puts up.
     fn steam_would_not_take_it(&mut self, refused: &lxb_steam::Refused) {
+        let action = self.steam_handover.take();
         // The loading screen on that press first, so the panel that says why
         // is not put up behind it. See [`Self::begin_valves_client_splash`].
         if let Some((_, splash)) = self.the_client_splash() {
@@ -22478,7 +22667,18 @@ impl Shell {
         }
         match refused {
             lxb_steam::Refused::Failed(why) => self.say_steam_would_not(why),
-            lxb_steam::Refused::SomebodyElses(why) => self.say_steam_is_elsewhere(why),
+            lxb_steam::Refused::SomebodyElses(why) => {
+                if why.another_session {
+                    if let Some((app_id, doing)) = action {
+                        self.prompt_to_close_other_steam(
+                            Box::new(move |shell| shell.steam_hand_over(app_id, doing)),
+                            lxb_steam::client::OtherSession::find(),
+                        );
+                        return;
+                    }
+                }
+                self.say_steam_is_elsewhere(why);
+            }
         }
     }
 
@@ -22542,8 +22742,108 @@ impl Shell {
     /// — asked on the shell's own panel once Steam has said how big it is. See
     /// [`Shell::offer_the_libraries`].
     fn install_steam_game(&mut self, app_id: u32) {
+        if self.check_other_steam(move |shell| shell.install_steam_game(app_id)) {
+            return;
+        }
         tracing::info!(app_id, "asking Valve's client to fetch a game");
         self.steam.install(app_id, steam::place_from_the_settings());
+    }
+
+    fn check_other_steam(&mut self, retry: impl FnOnce(&mut Shell) + 'static) -> bool {
+        if self.closing_other_steam.is_some() {
+            return true;
+        }
+        let Some(client) = lxb_steam::client::OtherSession::find() else {
+            return false;
+        };
+        self.prompt_to_close_other_steam(Box::new(retry), Some(client));
+        true
+    }
+
+    fn prompt_to_close_other_steam(
+        &mut self,
+        retry: SteamRetry,
+        client: Option<lxb_steam::client::OtherSession>,
+    ) {
+        if self.closing_other_steam.is_none() {
+            self.other_steam = Some((retry, client));
+            self.offer_to_close_other_steam(false);
+        }
+    }
+
+    fn offer_to_close_other_steam(&mut self, force: bool) {
+        use crate::i18n::text;
+        let (question, button) = if force {
+            ("steam-force-close-other-session-question", "steam-force-close-other-session")
+        } else {
+            ("steam-close-other-session-question", "steam-close-other-session")
+        };
+        let from = self.dialog_origin();
+        self.dialog.ask(
+            from,
+            Some(icons::STEAM.to_string()),
+            vec![
+                dialog::Line::Heading(text(question).to_string()),
+                dialog::Line::Note(text(if force {
+                    "steam-other-session-still-running"
+                } else {
+                    "steam-other-session-running"
+                }).to_string()),
+                dialog::Line::Note(text("steam-other-session-interrupts-work").to_string()),
+                dialog::Line::Rule,
+            ],
+            vec![
+                menu::Entry::new(menu::Command::SteamCloseOtherSession(force), text(button)),
+                menu::Entry::new(menu::Command::Dismiss, text("shell-not-now")),
+            ],
+            1,
+        );
+        self.needs_redraw = true;
+    }
+
+    fn close_other_steam(&mut self, force: bool) {
+        let Some((retry, client)) = self.other_steam.take() else {
+            return;
+        };
+        let Some(client) = client else {
+            self.say_steam_would_not(crate::i18n::text("steam-other-session-target-unavailable"));
+            return;
+        };
+        let (send, answer) = std::sync::mpsc::channel();
+        match std::thread::Builder::new().name("lxb-close-other-steam".into()).spawn(move || {
+            let outcome = client.close(force);
+            let _ = send.send((client, outcome));
+        }) {
+            Ok(_) => {
+                self.closing_other_steam = Some(ClosingOtherSteam { retry, force, answer });
+            }
+            Err(why) => self.say_steam_would_not(&why.to_string()),
+        }
+    }
+
+    fn advance_closing_other_steam(&mut self) {
+        use lxb_steam::client::OtherSessionClose;
+        use std::sync::mpsc::TryRecvError;
+        let Some(pending) = self.closing_other_steam.as_ref() else {
+            return;
+        };
+        let answer = match pending.answer.try_recv() {
+            Ok(answer) => Some(answer),
+            Err(TryRecvError::Empty) => return,
+            Err(TryRecvError::Disconnected) => None,
+        };
+        let Some(ClosingOtherSteam { retry, force, .. }) = self.closing_other_steam.take() else {
+            return;
+        };
+        match answer {
+            Some((_, Ok(OtherSessionClose::Closed))) => retry(self),
+            Some((client, Ok(OtherSessionClose::StillRunning))) if !force => {
+                self.other_steam = Some((retry, Some(client)));
+                self.offer_to_close_other_steam(true);
+            }
+            Some((_, Err(why))) => self.say_steam_would_not(&why.to_string()),
+            _ => self.say_steam_would_not(crate::i18n::text("steam-other-session-still-running")),
+        }
     }
 
     /// Take one game off the disk, having asked first.
@@ -23048,6 +23348,9 @@ impl Shell {
     /// a promise that fails has to say so. See
     /// [`Self::late_word_from_the_client`], which is what says it.
     fn start_steam_because_it_is_needed(&mut self, app_id: u32) {
+        if self.check_other_steam(move |shell| shell.start_steam_because_it_is_needed(app_id)) {
+            return;
+        }
         tracing::info!(app_id, "starting Valve's client, which a press needs");
         // Written down before the ask, because it is what closes the client
         // again: this session started a Steam it was told not to leave running,
@@ -23060,6 +23363,7 @@ impl Shell {
         // be this one's when it lands a minute later.
         let request = self.steam.wake_client();
         self.awaiting_steam.steam_was_promised(request);
+        self.steam_start = Some((request, app_id));
     }
 
     /// Whether Valve's client may be seen, and why it may.
@@ -23234,7 +23538,7 @@ impl Shell {
     /// Big Picture's window mapping at 02:02:17. The shell hid the window, as
     /// it hides every window of the client's nobody asked to see, so all the
     /// press left behind was Big Picture running out of sight — and in the way
-    /// of the next press of Open Steam (Client), which found no storefront.
+    /// of the next request to open the Steam desktop client.
     ///
     /// So a window of the client's own that comes up within
     /// [`STEAM_ANSWERS_ITS_BUTTON_WITHIN`] of the button is taken for that
@@ -23915,37 +24219,12 @@ impl Shell {
         control.let_this_window_be_seen(id, u32::from(seen));
     }
 
-    /// Keep the dialogs Valve's *launcher* puts up out of sight while it is
-    /// installing the client, and give the name back the moment it is done.
-    ///
-    /// [`Self::keep_steam_out_of_sight`] covers the client's own windows, by
-    /// the class the client announces. It does not cover these, because these
-    /// are not the client's: Valve's launcher is a shell script, and what it
-    /// shows a progress bar with is `zenity` — measured on this machine on
-    /// 2026-09-04, where installing Steam under this shell put up a 448×182
-    /// window titled "Steam setup" and a second one titled "Progress", and one
-    /// of them **took the keyboard**. A console that answers "sign in to Steam"
-    /// with somebody else's dialog stealing the pad is the whole of what this
-    /// integration exists to prevent.
-    ///
-    /// **Held for as long as the setup runs and not a moment longer**, which is
-    /// what makes hiding a name as general as `zenity` an honest thing to do: it
-    /// is one minute, once on a machine, during which the only thing on it
-    /// starting a `zenity` is Valve's launcher. Anything else that wanted one
-    /// in that minute would be hidden, and gets its window the moment Steam is
-    /// installed.
-    ///
-    /// Only speaks when the answer changes, like every other request of this
-    /// shape — the compositor would answer an unchanged one with nothing, and a
-    /// session repeating it every pass would be saying something it does not
-    /// mean.
+    /// Keep Valve's updater behind the shell. The Flatpak wrapper also uses
+    /// Zenity for warnings that need to be acknowledged before Steam starts.
     fn sync_steam_setup_windows(&mut self) {
-        let hidden = self.steam.setting_up();
-        if hidden == self.hiding_steams_setup {
-            return;
-        }
-        self.hiding_steams_setup = hidden;
-        if !self.steam.driving() {
+        let hidden = [self.steam.hide_setup_zenity(), self.steam.setting_up()];
+        let previous = std::mem::replace(&mut self.hidden_steam_setup_windows, hidden);
+        if hidden == previous || !self.steam.driving() {
             return;
         }
         let Some(control) = self.shell_control.as_ref() else {
@@ -23954,11 +24233,15 @@ impl Shell {
         if control.version() < OUT_OF_SIGHT_SHELL_VERSION {
             return;
         }
-        tracing::info!(
-            hidden,
-            "asking the compositor about the dialogs Valve's launcher puts up while it installs"
-        );
-        control.keep_out_of_sight(SETUP_WINDOW_NAME.to_string(), u32::from(hidden));
+        for ((name, hidden), was_hidden) in [SETUP_WINDOW_NAME, lxb_protocol::STEAM_BOOTSTRAP_WINDOW]
+            .into_iter()
+            .zip(hidden)
+            .zip(previous)
+        {
+            if hidden != was_hidden {
+                control.keep_out_of_sight(name.to_string(), u32::from(hidden));
+            }
+        }
     }
 
     /// Keep Valve's client off the screen, or give it back.
@@ -24117,6 +24400,18 @@ impl Shell {
         take_over: bool,
         joining: Option<lxb_steam::chat::Invite>,
     ) {
+        if self.closing_other_steam.is_some() {
+            return;
+        }
+        if let Some(client) = lxb_steam::client::OtherSession::find() {
+            self.prompt_to_close_other_steam(
+                Box::new(move |shell| {
+                    shell.begin_steam_launch_joining(app_id, name, from, false, joining);
+                }),
+                Some(client),
+            );
+            return;
+        }
         // The press is answered on the screen straight away, exactly as any
         // other launch is. There is no process to watch and there will not be
         // one — the game is the client's child, not ours — so the splash waits
@@ -24252,10 +24547,30 @@ impl Shell {
             lxb_steam::ClientReport::SomebodyElses(why) => {
                 let waiting = match self.awaiting_steam.answered(request) {
                     steam::Answer::Waiting(waiting) => waiting,
+                    steam::Answer::NoGame(steam::NoGame::SteamWasPromised) if why.another_session => {
+                        if let Some((_, app_id)) = self.steam_start.take_if(|(id, _)| *id == request) {
+                            self.prompt_to_close_other_steam(
+                                Box::new(move |shell| shell.start_steam_because_it_is_needed(app_id)),
+                                lxb_steam::client::OtherSession::find(),
+                            );
+                        } else {
+                            self.say_steam_is_elsewhere(&why);
+                        }
+                        return;
+                    }
                     nobody => return self.late_word_from_the_client(&why.to_string(), nobody),
                 };
                 self.end_launch(waiting.display);
-                self.offer_to_move_steam_here(&waiting, &why);
+                if why.another_session {
+                    self.prompt_to_close_other_steam(
+                        Box::new(move |shell| shell.begin_steam_launch_joining(
+                            waiting.app_id, waiting.name, waiting.from, false, waiting.joining,
+                        )),
+                        lxb_steam::client::OtherSession::find(),
+                    );
+                } else {
+                    self.offer_to_move_steam_here(&waiting, &why);
+                }
             }
         }
     }
@@ -25315,12 +25630,38 @@ impl Shell {
         // one moving rebuilds it. They are two different facts and both belong
         // on the one line the row has — see [`apps::Service::new`], which is
         // where the two are weighed against each other.
-        if changed.account || changed.reach {
+        if changed.account || changed.reach || changed.library {
             let account = self.steam.account().map(str::to_string);
             let standing = self.steam.standing();
             tracing::info!(?account, ?standing, "the Steam row changed");
             let shifted = apps::offer_steam(&mut self.lattice.categories, account, standing);
             self.absorb(shifted);
+        }
+        let package_setup = self.uninstalling.as_ref().and_then(|operation| {
+            match (&operation.removing, &operation.stage) {
+                (Removing::InstallSteamPackage { .. }, Stage::Working(run)) => Some(run),
+                _ => None,
+            }
+        });
+        let installing_package = package_setup.is_some();
+        let package_progress = package_setup.and_then(uninstall::Run::progress);
+        let progress = package_progress.or_else(|| self.steam.setup_progress());
+        if let Some(service) = self.lattice.categories.iter_mut()
+            .find(|column| column.id == apps::GAMES)
+            .into_iter()
+            .flat_map(|column| &mut column.entries)
+            .find_map(|entry| match entry {
+                apps::Entry::Steam(service) => Some(service),
+                _ => None,
+            })
+        {
+            let busy = installing_package || self.steam.setting_up() || self.steam.loading_library();
+            self.needs_redraw |= service.setup_progress != progress
+                || service.setup_busy != busy
+                || service.package_setup != installing_package;
+            service.package_setup = installing_package;
+            service.setup_progress = progress;
+            service.setup_busy = busy;
         }
         // And the moment Settings > Games > Steam > Start with the shell is
         // waiting for. It is here rather than beside the first frame because
@@ -25501,6 +25842,7 @@ impl Shell {
         // window for it. See `Shell::steam_hand_over`, where the press is made
         // and where the reason sight waits until now is written down.
         if let Some(handed) = changed.handed_over {
+            self.steam_handover = None;
             self.show_steam_for(handed);
             // And the loading screen on that press moves on to its second
             // wait: the client is up, and what is left is the window. The
@@ -25563,6 +25905,43 @@ impl Shell {
         }
     }
 
+    fn launcher_activity_changed(
+        &self,
+        launcher: impl Fn(&apps::Entry) -> Option<&apps::Emulation>,
+        busy: bool,
+    ) -> bool {
+        self.lattice
+            .categories
+            .iter()
+            .flat_map(|category| &category.entries)
+            .find_map(launcher)
+            .is_some_and(|row| row.setup_busy != busy)
+    }
+
+    fn check_launcher_installations(&mut self) {
+        if self.launcher_state_checked.elapsed() < Duration::from_secs(15)
+            || self.uninstalling.is_some()
+        {
+            return;
+        }
+        self.launcher_state_checked = Instant::now();
+        if self.heroic.installing().is_none()
+            && self.heroic.signing().is_none()
+            && !self.heroic.reading_library()
+        {
+            self.heroic.reprobe();
+        }
+        if self.retroarch.installing().is_none() && !self.retroarch.reading_library() {
+            self.retroarch.reprobe();
+        }
+        if self.ps3.setting_up().is_none() && !self.ps3.busy() && !self.ps3.reading_library() {
+            self.ps3.reprobe();
+        }
+        if self.proton.doing().is_none() && !self.proton.reading_library() {
+            self.proton.send(proton::Ask::Probe);
+        }
+    }
+
     // --- the Epic Games integration ---------------------------------------
 
     /// Bring the Epic Games integration up to date with its helper.
@@ -25587,7 +25966,13 @@ impl Shell {
             tracing::info!("a game of Heroic's has ended");
             self.heroic.game_ended();
         }
-        if change.rows || went {
+        if change.rows
+            || went
+            || self.launcher_activity_changed(
+                apps::Entry::epic,
+                self.heroic.reading_library() || self.heroic.installing().is_some(),
+            )
+        {
             self.rebuild_heroic();
             self.needs_redraw = true;
         }
@@ -25713,9 +26098,14 @@ impl Shell {
     /// — see [`Shell::shelve_games`]: a game that has just been installed
     /// moves to the top half of the column, and so does the cursor watching it.
     fn rebuild_heroic(&mut self) {
-        let note = self.heroic.note();
+        let note = launcher_package_note(self.heroic.note(), self.heroic.installed_where());
         let arriving = self.heroic.arriving();
-        let shifted = apps::offer_epic(&mut self.lattice.categories, note, arriving);
+        let shifted = apps::offer_epic(
+            &mut self.lattice.categories,
+            note,
+            arriving,
+            self.heroic.reading_library() || self.heroic.installing().is_some(),
+        );
         self.absorb(shifted);
         let standing: Vec<Option<String>> = match self.epic_column() {
             Some(at) => self
@@ -25757,6 +26147,11 @@ impl Shell {
     /// What pressing the Epic Games row does — see [`heroic::Heroic::press`],
     /// which is the whole of the decision.
     fn press_epic_row(&mut self) {
+        if self.heroic.installing().is_some() {
+            self.heroic_installing_panel = true;
+            self.show_installing_epic();
+            return;
+        }
         match self.heroic.press() {
             heroic::Press::Waiting => self.heroic.reprobe(),
             heroic::Press::Install | heroic::Press::SetUp => self.offer_to_set_up_epic(),
@@ -25781,52 +26176,66 @@ impl Shell {
     /// Ask whether to set Epic Games up: the whole of it where there is no
     /// Heroic, and only what is left where there is one without a Proton.
     ///
-    /// What is being downloaded is said as what it does — games can start —
-    /// rather than as Heroic, a flatpak and a Proton, which are this shell's
-    /// business. The log says which of them it fetched.
     fn offer_to_set_up_epic(&mut self) {
-        let from = self.dialog_origin();
-        let lines = match self.heroic.press() {
-            heroic::Press::SetUp => vec![
-                dialog::Line::Heading(heroic::TITLE.to_string()),
-                dialog::Line::Note(crate::i18n::text("epic-one-more-download").to_string()),
-                dialog::Line::Rule,
-            ],
-            _ => vec![
-                dialog::Line::Note(crate::i18n::text("epic-plays-your-library").to_string()),
-                dialog::Line::Heading(crate::i18n::text("shell-download-it").to_string()),
-                dialog::Line::Note(crate::i18n::text("epic-install-explanation").to_string()),
-                dialog::Line::Rule,
-            ],
+        let (lines, choices) = if self.heroic.press() == heroic::Press::SetUp {
+            (
+                vec![
+                    dialog::Line::Heading(heroic::TITLE.to_string()),
+                    dialog::Line::Note(crate::i18n::text("epic-one-more-download").to_string()),
+                    dialog::Line::Rule,
+                ],
+                vec![menu::Entry::new(
+                    menu::Command::EpicInstall { native: false },
+                    crate::i18n::text("shell-install"),
+                )],
+            )
+        } else {
+            let (native, flatpak) = self.heroic.installation_sources();
+            let mut choices = Vec::new();
+            if native {
+                choices.push(menu::Entry::new(
+                    menu::Command::EpicInstall { native: true },
+                    crate::i18n::text("launcher-install-native"),
+                ));
+            }
+            if flatpak {
+                choices.push(menu::Entry::new(
+                    menu::Command::EpicInstall { native: false },
+                    crate::i18n::text("steam-install-flatpak"),
+                ));
+            }
+            (
+                vec![
+                    dialog::Line::Heading("Heroic Games Launcher".to_string()),
+                    dialog::Line::Note(crate::i18n::text("epic-uses-heroic-launcher").to_string()),
+                    dialog::Line::Rule,
+                ],
+                choices,
+            )
         };
+        let mut buttons = vec![menu::Entry::new(
+            menu::Command::Dismiss,
+            crate::i18n::text("shell-not-now"),
+        )];
+        buttons.extend(choices);
         self.dialog.ask(
-            from,
+            self.dialog_origin(),
             Some(heroic::mark().to_string()),
             lines,
-            vec![
-                menu::Entry::new(menu::Command::Dismiss, crate::i18n::text("shell-not-now")),
-                menu::Entry::new(
-                    menu::Command::EpicInstall,
-                    crate::i18n::text("shell-install"),
-                ),
-            ],
-            // On Not now, which is the answer drawn first: this one spends
-            // somebody's line and their disk.
+            buttons,
             0,
         );
     }
 
-    /// They said yes.
-    fn set_up_epic(&mut self) {
-        tracing::info!("setting Epic Games up");
-        self.heroic.install();
+    fn set_up_epic(&mut self, native: bool) {
+        tracing::info!(native, "setting Epic Games up");
+        self.heroic.install(native);
         self.rebuild_heroic();
         self.heroic_installing_panel = true;
         self.show_installing_epic();
     }
 
-    /// The panel over a setup: what it is doing and how far along, with
-    /// nothing to press — the disk and the network are busy behind it.
+    /// Show Epic Games setup progress while the user is watching it.
     fn show_installing_epic(&mut self) {
         let Some(installing) = self.heroic.installing() else {
             return;
@@ -25836,10 +26245,8 @@ impl Shell {
             Some(done) => dialog::Line::Progress((done * 100.0).round().clamp(0.0, 100.0) as u8),
             None => dialog::Line::Waiting,
         };
-        let from = self.dialog_origin();
-        self.dialog.wait(
-            from,
-            Some(heroic::mark().to_string()),
+        self.show_launcher_setup(
+            heroic::mark(),
             vec![
                 dialog::Line::Heading(heroic::TITLE.to_string()),
                 dialog::Line::Note(note),
@@ -25864,12 +26271,13 @@ impl Shell {
             return;
         }
         tracing::info!("Epic Games is set up");
+        self.announce_launcher_result(Program::Heroic, true);
         if panel_up && self.dialog.is_open() {
             self.dialog.close();
         }
         // Straight on to signing in, once the machine has been asked again —
         // see [`Self::sync_heroic`].
-        self.heroic_after_setup = true;
+        self.heroic_after_setup = panel_up;
     }
 
     /// Put the sign-in panel up, bring it up to date, or take it away — the
@@ -26033,7 +26441,8 @@ impl Shell {
     /// The menu over the Epic Games row — see [`heroic::Heroic::row_menu`].
     fn epic_entry_menu(&self) -> Option<([f32; 4], Option<String>, Vec<menu::Entry>)> {
         let panel = self.panels.get(self.focused_panel)?;
-        let rows = self.heroic.row_menu();
+        let mut rows = self.heroic.row_menu();
+        self.offer_program_data_row(&mut rows, Program::Heroic);
         if rows.is_empty() {
             return None;
         }
@@ -26333,7 +26742,14 @@ impl Shell {
         }
         self.ps3_playing = playing;
         let change = self.ps3.poll();
-        if change.rows {
+        if change.rows
+            || self.launcher_activity_changed(
+                apps::Entry::ps3,
+                self.ps3.reading_library()
+                    || self.ps3.setting_up().is_some()
+                    || self.ps3.adding().is_some(),
+            )
+        {
             self.rebuild_ps3();
             self.needs_redraw = true;
         }
@@ -26426,8 +26842,11 @@ impl Shell {
     fn rebuild_ps3(&mut self) {
         let shifted = apps::offer_ps3(
             &mut self.lattice.categories,
-            self.ps3.note(),
+            launcher_package_note(self.ps3.note(), self.ps3.installed_where()),
             self.ps3.arriving(),
+            self.ps3.setting_up().is_some()
+                || self.ps3.adding().is_some()
+                || self.ps3.reading_library(),
         );
         self.absorb(shifted);
         let standing: Vec<Option<(String, Option<String>)>> = match self.ps3_column() {
@@ -26499,33 +26918,46 @@ impl Shell {
         }
     }
 
-    /// Ask whether to set PlayStation 3 games up. What is downloaded is said as
-    /// what it does — PlayStation 3 games can be played — and not as RPCS3, a
-    /// flatpak and a firmware file, which are the log's business.
+    /// Choose the installation source for RPCS3, or confirm firmware-only setup.
     fn offer_to_set_up_ps3(&mut self) {
-        let from = self.dialog_origin();
-        self.dialog.ask(
-            from,
-            Some(ps3::mark().to_string()),
-            vec![
-                dialog::Line::Heading(ps3::TITLE.to_string()),
-                dialog::Line::Note(crate::i18n::text("ps3-set-up-explanation").to_string()),
-                dialog::Line::Rule,
-            ],
-            vec![
-                menu::Entry::new(menu::Command::Dismiss, crate::i18n::text("shell-not-now")),
-                menu::Entry::new(menu::Command::Ps3SetUp, crate::i18n::text("shell-install")),
-            ],
-            // On Not now, which is the answer drawn first: this one spends
-            // somebody's line and their disk.
-            0,
-        );
+        let mut lines = vec![
+            dialog::Line::Heading(ps3::TITLE.to_string()),
+            dialog::Line::Gap(12),
+            dialog::Line::Note(crate::i18n::text("ps3-set-up-explanation").to_string()),
+            dialog::Line::Gap(12),
+        ];
+        let mut choices = vec![menu::Entry::new(
+            menu::Command::Dismiss,
+            crate::i18n::text("shell-not-now"),
+        )];
+        if let Some((native, flatpak)) = self.ps3.installation_sources() {
+            if native {
+                choices.push(menu::Entry::new(
+                    menu::Command::Ps3SetUp { native: true },
+                    crate::i18n::text("steam-install-native-recommended"),
+                ));
+            }
+            if flatpak {
+                lines.extend(community_flatpak_notice());
+                choices.push(menu::Entry::new(
+                    menu::Command::Ps3SetUp { native: false },
+                    crate::i18n::text("steam-install-flatpak"),
+                ));
+            }
+        } else {
+            choices.push(menu::Entry::new(
+                menu::Command::Ps3SetUp { native: false },
+                crate::i18n::text("shell-install"),
+            ));
+        }
+        lines.push(dialog::Line::Rule);
+        self.dialog.ask(self.dialog_origin(), Some(ps3::mark().to_string()), lines, choices, 0);
+        self.needs_redraw = true;
     }
 
-    /// They said yes.
-    fn set_up_ps3(&mut self) {
-        tracing::info!("setting PlayStation 3 games up");
-        self.ps3.set_up();
+    fn set_up_ps3(&mut self, native: bool) {
+        tracing::info!(native, "setting PlayStation 3 games up");
+        self.ps3.set_up(native);
         self.rebuild_ps3();
         self.ps3_setup_panel = true;
         self.show_ps3_working();
@@ -26551,16 +26983,17 @@ impl Shell {
             Some(done) => dialog::Line::Progress((done * 100.0).round().clamp(0.0, 100.0) as u8),
             None => dialog::Line::Waiting,
         };
-        let from = self.dialog_origin();
-        self.dialog.wait(
-            from,
-            Some(ps3::mark().to_string()),
-            vec![
-                dialog::Line::Heading(heading),
-                dialog::Line::Note(working.sentence()),
-                bar,
-            ],
-        );
+        let lines = vec![
+            dialog::Line::Heading(heading),
+            dialog::Line::Note(working.sentence()),
+            bar,
+        ];
+        if self.ps3.setting_up().is_some() {
+            self.show_launcher_setup(ps3::mark(), lines);
+        } else {
+            let from = self.dialog_origin();
+            self.dialog.wait(from, Some(ps3::mark().to_string()), lines);
+        }
         self.needs_redraw = true;
     }
 
@@ -26571,10 +27004,11 @@ impl Shell {
         match ended {
             Ok(()) => {
                 tracing::info!("PlayStation 3 games are set up");
+                self.announce_launcher_result(Program::Rpcs3, true);
                 if panel_up && self.dialog.is_open() {
                     self.dialog.close();
                 }
-                self.ps3_after_setup = true;
+                self.ps3_after_setup = panel_up;
             }
             Err(trouble) => {
                 self.say_about_ps3(vec![
@@ -26820,9 +27254,7 @@ impl Shell {
             // Ask again rather than do nothing, as the row does: a press
             // that does nothing twice is a press somebody stops making.
             proton::Press::Waiting => self.proton.send(proton::Ask::Probe),
-            proton::Press::Working => {
-                self.say_about_windows(crate::i18n::text("windows-getting-ready"))
-            }
+            proton::Press::Working => self.show_windows_setup(),
             proton::Press::SetUp => self.offer_to_set_up_windows(),
             proton::Press::Enter => self.run_a_windows_program(exe, None),
         }
@@ -27146,9 +27578,7 @@ impl Shell {
     fn press_windows_row(&mut self) {
         match self.proton.press() {
             proton::Press::Waiting => self.proton.send(proton::Ask::Probe),
-            proton::Press::Working => {
-                self.say_about_windows(crate::i18n::text("windows-getting-ready"))
-            }
+            proton::Press::Working => self.show_windows_setup(),
             proton::Press::SetUp => self.offer_to_set_up_windows(),
             proton::Press::Enter => {
                 if self.step_to_windows_column() {
@@ -27156,6 +27586,23 @@ impl Shell {
                 }
             }
         }
+    }
+
+    fn show_windows_setup(&mut self) {
+        let note = self.proton.note().unwrap_or_else(|| {
+            crate::i18n::text("windows-getting-ready").to_string()
+        });
+        let bar = self.proton.arriving().map_or(dialog::Line::Waiting, |done| {
+            dialog::Line::Progress(proton::setup_percent(done))
+        });
+        self.show_launcher_setup(
+            proton::mark(),
+            vec![
+                dialog::Line::Heading(proton::TITLE.to_string()),
+                dialog::Line::Note(note),
+                bar,
+            ],
+        );
     }
 
     /// A press on the row of a disc carrying a Windows program.
@@ -27171,9 +27618,7 @@ impl Shell {
     fn press_windows_disc(&mut self, number: u64, again: bool) {
         match self.proton.press() {
             proton::Press::Waiting => self.proton.send(proton::Ask::Probe),
-            proton::Press::Working => {
-                self.say_about_windows(crate::i18n::text("windows-getting-ready"))
-            }
+            proton::Press::Working => self.show_windows_setup(),
             proton::Press::SetUp => self.offer_to_set_up_windows(),
             proton::Press::Enter => self.run_the_windows_disc(number, again),
         }
@@ -27321,7 +27766,7 @@ impl Shell {
         };
         let anchor = ui::launch_origin(panel.width as f32, panel.height as f32);
         let rows = ui::context_menu_rows_that_fit(panel.height as f32);
-        if !self.context_menu.open_at(
+        if !self.context_menu.open_context(
             anchor,
             Some(menu::Title::new(crate::i18n::text("windows-what-to-play"))),
             looking_in_the_folder(),
@@ -27434,9 +27879,17 @@ impl Shell {
         self.windows_launches_on_their_way = self
             .windows_launches_on_their_way
             .saturating_sub(change.launches_answered);
-        if change.rows {
+        if change.rows
+            || self.launcher_activity_changed(
+                apps::Entry::windows,
+                self.proton.reading_library() || self.proton.doing().is_some(),
+            )
+        {
             self.rebuild_proton();
             self.needs_redraw = true;
+            if self.watching_launcher_setup(proton::mark()) && self.proton.doing().is_some() {
+                self.show_windows_setup();
+            }
         }
         // A disc's row has just come to be on the column, which was built
         // again above.
@@ -27488,6 +27941,10 @@ impl Shell {
                 proton::Finished::Made(_) => {}
                 proton::Finished::Removed(_) => self.windows_game_removed(None),
                 proton::Finished::Fetched => {
+                    self.announce_launcher_result(Program::Windows, true);
+                    if self.watching_launcher_setup(proton::mark()) {
+                        self.close_dialog();
+                    }
                     self.needs_redraw = true;
                 }
                 // A removal that failed takes its own panel down and puts the
@@ -27548,6 +28005,7 @@ impl Shell {
             &mut self.lattice.categories,
             self.proton.note(),
             self.proton.arriving(),
+            self.proton.doing().is_some() || self.proton.reading_library(),
         );
         self.absorb(shifted);
         // A game by its identifier, and a disc by its drive: a disc's row
@@ -27573,7 +28031,11 @@ impl Shell {
         // because nothing else would notice it changing: see
         // [`Shell::windows_run_inside_row`].
         self.windows_run_inside_row = self.windows_run_inside_for.clone();
-        let rows = self.proton.rows(self.windows_run_inside_for.as_deref());
+        let rows = if self.proton.ready() {
+            self.proton.rows(self.windows_run_inside_for.as_deref())
+        } else {
+            Vec::new()
+        };
         let shifted = apps::shelve_windows(&mut self.lattice.categories, rows);
         self.absorb(shifted);
         if let Some(at) = self.windows_column() {
@@ -28247,23 +28709,38 @@ impl Shell {
     /// menu entries, so a menu repeating them would be two ways to the same
     /// place; what is here is what the rows cannot offer.
     fn windows_entry_menu(&self) -> Option<([f32; 4], Option<String>, Vec<menu::Entry>)> {
+        if self.proton.doing().is_some() {
+            return None;
+        }
         let panel = self.panels.get(self.focused_panel)?;
         let mut rows = Vec::new();
         if self.proton.press() == proton::Press::SetUp {
-            rows.push(menu::Entry::new(
-                menu::Command::WindowsSetUp,
-                crate::i18n::text("shell-install"),
-            ));
+            rows.push(
+                menu::Entry::new(
+                    menu::Command::WindowsSetUp,
+                    crate::i18n::text("shell-download-and-set-up"),
+                )
+                .glyph(icons::LAUNCH),
+            );
         }
-        rows.push(
-            menu::Entry::new(menu::Command::WindowsSort, crate::i18n::text("shell-sort"))
-                .glyph(icons::SORT)
-                .group(1),
-        );
+        if self.proton.ready() {
+            rows.push(
+                menu::Entry::new(menu::Command::WindowsSort, crate::i18n::text("shell-sort"))
+                    .glyph(icons::SORT)
+                    .group(1),
+            );
+        }
+        if self.where_the_program_is(Program::Windows).is_some() {
+            rows.push(menu::Entry::new(
+                menu::Command::RemoveProgram(Program::Windows),
+                crate::i18n::text("shell-uninstall"),
+            ).glyph(icons::UNINSTALL).grave().group(1));
+        }
         rows.push(
             menu::Entry::new(menu::Command::Dismiss, crate::i18n::text("shell-cancel")).group(1),
         );
         let anchor = ui::launch_origin(panel.width as f32, panel.height as f32);
+        self.offer_program_data_row(&mut rows, Program::Windows);
         Some((anchor, Some(proton::TITLE.to_string()), rows))
     }
 
@@ -28393,10 +28870,13 @@ impl Shell {
         let panel = self.panels.get(self.focused_panel)?;
         let mut rows = Vec::new();
         match self.ps3.press() {
-            ps3::Press::SetUp => rows.push(menu::Entry::new(
-                menu::Command::Ps3OfferSetUp,
-                crate::i18n::text("ps3-set-up"),
-            )),
+            ps3::Press::SetUp => rows.push(
+                menu::Entry::new(
+                    menu::Command::Ps3OfferSetUp,
+                    crate::i18n::text("shell-download-and-set-up"),
+                )
+                .glyph(icons::LAUNCH),
+            ),
             ps3::Press::Enter | ps3::Press::Folder => {
                 rows.push(menu::Entry::new(
                     menu::Command::Ps3Rescan,
@@ -28424,6 +28904,7 @@ impl Shell {
             }
             _ => {}
         }
+        self.offer_program_data_row(&mut rows, Program::Rpcs3);
         if rows.is_empty() {
             return None;
         }
@@ -28675,7 +29156,12 @@ impl Shell {
         if !change.pictured.is_empty() {
             self.retroachievements.pictured(&change.pictured);
         }
-        if change.rows {
+        if change.rows
+            || self.launcher_activity_changed(
+                apps::Entry::retroarch,
+                self.retroarch.reading_library() || self.retroarch.installing().is_some(),
+            )
+        {
             self.rebuild_retroarch();
             self.needs_redraw = true;
         }
@@ -28722,8 +29208,11 @@ impl Shell {
         // must not come back on the next line: the row underneath is saying the
         // same thing, which is what it is for.
         if change.panel && self.dialog.is_open() && self.retroachievements.stage.is_none() {
-            self.show_installing_retroarch();
-            self.show_getting_cores();
+            if self.watching_launcher_setup(retroarch::mark()) {
+                self.show_installing_retroarch();
+            } else if self.retroarch_panel {
+                self.show_getting_cores();
+            }
         }
         if let Some(worked) = change.installed {
             self.retroarch_ended(worked);
@@ -29089,9 +29578,14 @@ impl Shell {
             None => Vec::new(),
         };
         self.rebuild_trophies();
-        let note = self.retroarch.note();
+        let note = launcher_package_note(self.retroarch.note(), self.retroarch.installed_where());
         let arriving = self.retroarch.arriving();
-        let shifted = apps::offer_retroarch(&mut self.lattice.categories, note, arriving);
+        let shifted = apps::offer_retroarch(
+            &mut self.lattice.categories,
+            note,
+            arriving,
+            self.retroarch.reading_library() || self.retroarch.installing().is_some(),
+        );
         self.absorb(shifted);
         let picking = self
             .picking
@@ -29119,6 +29613,10 @@ impl Shell {
     /// at the moment of the press rather than carried on the row — see
     /// [`retroarch::RetroArch::press`], which is the whole of the decision.
     fn press_retroarch_row(&mut self) {
+        if self.retroarch.installing().is_some() {
+            self.show_installing_retroarch();
+            return;
+        }
         match self.retroarch.press() {
             // The helper has not answered yet. The press asks again rather
             // than doing nothing visible, which is what the Steam row does with
@@ -29138,49 +29636,164 @@ impl Shell {
         }
     }
 
-    /// Ask whether to put RetroArch on this machine.
-    ///
-    /// What the panel has to answer is what anybody would ask before pressing
-    /// Yes: what is this, does it cost anything, and what does it do to my
-    /// machine. Not *where it comes from* — Flathub, a flatpak installation and
-    /// the difference between a user and a system one are this shell's
-    /// business, and a person in front of a television is owed a plain
-    /// question. The log says which of them it used.
+    /// Offer RetroArch from the distribution repositories or from Flathub.
     fn offer_to_install_retroarch(&mut self) {
-        let from = self.dialog_origin();
+        let (native, flatpak) = self.retroarch.installation_sources();
+        let mut choices = vec![menu::Entry::new(
+            menu::Command::Dismiss,
+            crate::i18n::text("shell-not-now"),
+        )];
+        if native {
+            choices.push(menu::Entry::new(
+                menu::Command::InstallRetroArch { native: true },
+                crate::i18n::text("launcher-install-native"),
+            ));
+        }
+        if flatpak {
+            choices.push(menu::Entry::new(
+                menu::Command::InstallRetroArch { native: false },
+                crate::i18n::text("steam-install-flatpak"),
+            ));
+        }
         self.dialog.ask(
-            from,
+            self.dialog_origin(),
             Some(retroarch::mark().to_string()),
-            // A line each, because the panel clips rather than wraps: what
-            // fits is about sixty characters, and a sentence written as one
-            // `Note` would end in the middle of a word.
             vec![
-                dialog::Line::Note(
-                    crate::i18n::text("shell-retroarch-plays-your-own-game-files").to_string(),
-                ),
-                dialog::Line::Heading(crate::i18n::text("shell-download-it").to_string()),
+                dialog::Line::Heading(Program::RetroArch.name().to_string()),
                 dialog::Line::Note(crate::i18n::text("retroarch-install-explanation").to_string()),
                 dialog::Line::Rule,
             ],
-            vec![
-                menu::Entry::new(menu::Command::Dismiss, crate::i18n::text("shell-no")),
-                menu::Entry::new(
-                    menu::Command::InstallRetroArch,
-                    crate::i18n::text("shell-yes"),
-                ),
-            ],
-            // On No, which is the answer drawn first: this one spends
-            // somebody's line and their disk.
+            choices,
             0,
         );
+        self.needs_redraw = true;
     }
 
-    /// They said yes.
-    fn install_retroarch(&mut self) {
+    fn install_retroarch(&mut self, native: bool) {
+        if native {
+            if self.uninstalling.is_none() && self.retroarch.installation_sources().0 {
+                self.uninstalling = Some(Uninstall {
+                    removing: Removing::InstallNativeRetroArch,
+                    survey: uninstall::Survey::native_package_install("retroarch"),
+                    stage: Stage::Surveying,
+                    data: uninstall::ItsData::Kept,
+                });
+                self.advance_uninstall();
+            }
+            return;
+        }
         tracing::info!("installing RetroArch");
         self.retroarch.install();
         self.rebuild_retroarch();
         self.show_installing_retroarch();
+    }
+
+    fn program_data_to_remove(&self, program: Program) -> Vec<PathBuf> {
+        let Some(home) = std::env::var_os("HOME").map(PathBuf::from)
+            .filter(|path| path.is_absolute() && path.parent().is_some()) else {
+            return Vec::new();
+        };
+        let root = |key, fallback: &str| {
+            std::env::var_os(key).map(PathBuf::from)
+                .filter(|path| path.is_absolute() && path.parent().is_some())
+                .unwrap_or_else(|| home.join(fallback))
+        };
+        let config = root("XDG_CONFIG_HOME", ".config");
+        let data = root("XDG_DATA_HOME", ".local/share");
+        // These are fixed application directories. Library paths and custom
+        // prefix roots can contain unrelated files and are never followed.
+        let locations: Vec<(&Path, &str)> = match program {
+            Program::Steam if !self.steam.has_client() && !self.steam.setting_up() => vec![
+                (&home, ".var/app/com.valvesoftware.Steam"),
+                (&home, ".steam"),
+                (&home, ".local/share/Steam"),
+            ],
+            Program::Heroic if self.heroic.uninstalled() => vec![
+                (&home, ".var/app/com.heroicgameslauncher.hgl"),
+                (&config, "heroic"),
+            ],
+            Program::RetroArch if self.retroarch.uninstalled() => vec![
+                (&home, ".var/app/org.libretro.RetroArch"),
+                (&config, "retroarch"),
+            ],
+            Program::Rpcs3 if self.ps3.uninstalled() => vec![
+                (&home, ".var/app/net.rpcs3.RPCS3"),
+                (&config, "rpcs3"),
+            ],
+            Program::Windows if self.proton.press() == proton::Press::SetUp
+                && self.lattice.windows_running().is_empty()
+                && self.windows_launches_on_their_way == 0 => vec![
+                    (&home, ".lxb-proton"),
+                    (&data, "lxb/proton/downloads"),
+                ],
+            _ => Vec::new(),
+        };
+        locations.into_iter().filter_map(|(base, name)| {
+            let path = base.join(name);
+            let resolved = path.canonicalize().ok()?;
+            (path.is_dir() && resolved == base.canonicalize().ok()?.join(name)).then_some(path)
+        }).collect()
+    }
+
+    fn offer_program_data_row(&self, rows: &mut Vec<menu::Entry>, program: Program) {
+        if self.program_data_to_remove(program).is_empty() {
+            return;
+        }
+        let at = rows.iter().position(|row| row.command == menu::Command::Dismiss).unwrap_or(rows.len());
+        rows.insert(at, menu::Entry::new(
+            menu::Command::RemoveProgramData(program),
+            crate::i18n::text("launcher-remove-data"),
+        ).glyph(icons::UNINSTALL).grave().group(1));
+    }
+
+    fn offer_to_remove_program_data(&mut self, program: Program) {
+        let paths = self.program_data_to_remove(program);
+        if paths.is_empty() || self.uninstalling.is_some() {
+            return;
+        }
+        let mut lines = vec![
+            dialog::Line::Heading(crate::i18n::text("launcher-remove-data").to_string()),
+            dialog::Line::Note(
+                crate::i18n::text(match program {
+                    Program::Rpcs3 => "ps3-remove-leftover-data-explanation",
+                    _ => "launcher-remove-data-explanation",
+                })
+                .to_string(),
+            ),
+        ];
+        if program == Program::Steam && self.steam.signed_in() {
+            lines.push(dialog::Line::Note(crate::i18n::text("steam-remove-signed-in-user-data").to_string()));
+        }
+        lines.push(dialog::Line::Gap(18));
+        lines.extend(paths.iter().map(|path| dialog::Line::Note(path.display().to_string())));
+        lines.push(dialog::Line::Rule);
+        self.dialog.ask(self.dialog_origin(), Some(program.mark()), lines, vec![
+            menu::Entry::new(menu::Command::Dismiss, crate::i18n::text("shell-cancel")),
+            menu::Entry::new(menu::Command::ConfirmRemoveProgramData(program), crate::i18n::text("shell-delete-permanently")).grave(),
+        ], 0);
+        self.needs_redraw = true;
+    }
+
+    fn remove_program_data(&mut self, program: Program) {
+        if self.uninstalling.is_some() {
+            return;
+        }
+        if program == Program::Steam {
+            self.steam.look_for_the_client_again();
+        }
+        let paths = self.program_data_to_remove(program);
+        if paths.is_empty() {
+            self.close_dialog();
+            return;
+        }
+        self.uninstalling = Some(Uninstall {
+            removing: Removing::ProgramData(program),
+            survey: uninstall::Survey::of(uninstall::Installed::ManagedDirectories(paths), uninstall::ItsData::Gone),
+            stage: Stage::Surveying,
+            data: uninstall::ItsData::Gone,
+        });
+        self.say_working(crate::i18n::text("label-checking"));
+        self.advance_uninstall();
     }
 
     /// Offer to take one of the integrations' programs off, saying exactly
@@ -29207,17 +29820,53 @@ impl Shell {
     /// destroys something does.
     fn offer_to_remove_program(&mut self, program: Program) {
         let from = self.dialog_origin();
+        if matches!(program, Program::Windows | Program::SteamDevices)
+            || (program == Program::Steam && !self.steam.uses_flatpak())
+        {
+            let mut lines = vec![dialog::Line::Heading(
+                crate::message!("remove-name-question", "name" => program.name()),
+            )];
+            let explanation = if program == Program::SteamDevices {
+                "steam-remove-device-rules-explanation"
+            } else {
+                program.what_stays()
+            };
+            lines.push(dialog::Line::Gap(18));
+            lines.push(dialog::Line::Heading(crate::i18n::text("shell-remove").to_string()));
+            lines.push(dialog::Line::Note(crate::i18n::text(explanation).to_string()));
+            lines.push(dialog::Line::Rule);
+            self.dialog.ask(
+                from,
+                Some(program.mark()),
+                lines,
+                vec![
+                    menu::Entry::new(menu::Command::Dismiss, crate::i18n::text("shell-cancel")),
+                    menu::Entry::new(menu::Command::ReallyRemoveProgram(program, false), crate::i18n::text("shell-remove")).grave(),
+                ],
+                0,
+            );
+            self.needs_redraw = true;
+            return;
+        }
+        let mut lines = vec![dialog::Line::Heading(
+            crate::message!("remove-name-question", "name" => program.name()),
+        )];
+        lines.push(dialog::Line::Gap(18));
+        lines.push(dialog::Line::Heading(crate::i18n::text("shell-remove").to_string()));
+        lines.push(dialog::Line::Note(crate::i18n::text(program.what_stays()).to_string()));
+        lines.push(dialog::Line::Gap(18));
+        lines.push(dialog::Line::Heading(crate::i18n::text("shell-remove-everything").to_string()));
+        lines.push(dialog::Line::Note(crate::i18n::text(program.what_its_folder_holds()).to_string()));
+        if program == Program::Steam {
+            lines.push(dialog::Line::Note(
+                crate::i18n::text("steam-remove-signed-in-user-data").to_string(),
+            ));
+        }
+        lines.push(dialog::Line::Rule);
         self.dialog.ask(
             from,
             Some(program.mark()),
-            vec![
-                dialog::Line::Heading(
-                    crate::message!("remove-name-question", "name" => program.name()),
-                ),
-                dialog::Line::Note(crate::i18n::text(program.what_stays()).to_string()),
-                dialog::Line::Note(crate::i18n::text(program.what_its_folder_holds()).to_string()),
-                dialog::Line::Rule,
-            ],
+            lines,
             vec![
                 menu::Entry::new(menu::Command::Dismiss, crate::i18n::text("shell-cancel")),
                 menu::Entry::new(
@@ -29278,9 +29927,29 @@ impl Shell {
     fn where_the_program_is(&self, program: Program) -> Option<uninstall::Installed> {
         match program {
             Program::Steam => self.steam.installed_where(),
+            Program::SteamDevices => {
+                let path = Path::new("/usr/lib/udev/rules.d/60-steam-input.rules");
+                ((!self.steam.has_client() || self.steam.uses_flatpak()) && path.is_file())
+                    .then(|| uninstall::Installed::At(path.to_path_buf()))
+            }
             Program::Heroic => self.heroic.installed_where(),
             Program::RetroArch => self.retroarch.installed_where(),
             Program::Rpcs3 => self.ps3.installed_where(),
+            Program::Windows => {
+                if self.proton.doing().is_some() || !self.lattice.windows_running().is_empty()
+                    || self.windows_launches_on_their_way != 0
+                {
+                    return None;
+                }
+                let data = std::env::var_os("XDG_DATA_HOME").map(PathBuf::from)
+                    .filter(|path| path.is_absolute())
+                    .or_else(|| std::env::var_os("HOME").map(PathBuf::from)
+                        .filter(|path| path.is_absolute()).map(|home| home.join(".local/share")))?;
+                let store = data.join("lxb/proton");
+                let paths = vec![store.join("protons"), store.join("runtimes")];
+                paths.iter().any(|path| path.is_dir())
+                    .then_some(uninstall::Installed::ManagedDirectories(paths))
+            }
         }
     }
 
@@ -29310,23 +29979,30 @@ impl Shell {
     /// forgetting where somebody keeps their games would be the one thing that
     /// did not come back.
     fn program_removed(&mut self, program: Program, data: uninstall::ItsData) {
+        if program == Program::SteamDevices {
+            self.say_and_acknowledge(
+                Some(program.mark()),
+                vec![dialog::Line::Heading(
+                    crate::message!("name-has-been-removed", "name" => program.name()),
+                )],
+            );
+            self.needs_redraw = true;
+            return;
+        }
         let everything = matches!(data, uninstall::ItsData::Gone);
         tracing::info!(?program, everything, "the program has been removed");
         match program {
+            Program::Windows => {
+                self.proton.runtime_removed();
+                self.rebuild_proton();
+            }
+            Program::SteamDevices => {},
             Program::Steam => {
-                // Nothing to forget. The shell signs in to Steam itself and
-                // lists the library over the network, so the column stands
-                // without a client and the account stays signed in — what
-                // changes is that every row stops offering to play, which is
-                // what a row says on a machine that never had a client. The
-                // column is built again for it here rather than at the next
-                // tick of the clock that usually asks, so the change is on
-                // screen behind the panel that says it happened.
-                if self.steam.look_for_the_client_again() {
-                    let rows = self.steam.rows();
-                    tracing::info!(games = rows.len(), "the Steam column, with no client");
-                    self.shelve_games(rows);
+                if everything && self.steam.signed_in() {
+                    self.steam.sign_out();
                 }
+                self.steam.look_for_the_client_again();
+                self.scan_the_bar_again();
             }
             Program::Heroic => {
                 self.heroic.forget_what_it_kept(everything);
@@ -29365,22 +30041,30 @@ impl Shell {
         // The page under Settings > Games is built from the same answers, and
         // it grows and shrinks with the integration exactly as these rows do.
         settings::refresh(&mut self.lattice.categories);
-        self.say_and_acknowledge(
-            Some(program.mark()),
-            vec![
-                dialog::Line::Heading(
-                    crate::message!("name-has-been-removed", "name" => program.name()),
-                ),
-                dialog::Line::Note(
-                    crate::i18n::text(match everything {
-                        true => "shell-everything-it-kept-has-gone-with-it",
-                        false => "shell-what-it-kept-is-still-on-the-disk",
-                    })
-                    .to_string(),
-                ),
-                dialog::Line::Note(crate::i18n::text(program.what_stays()).to_string()),
-            ],
-        );
+        self.announce_launcher_result(program, false);
+        let mut lines = vec![
+            dialog::Line::Heading(
+                crate::message!("name-has-been-removed", "name" => program.name()),
+            ),
+            dialog::Line::Note(
+                crate::i18n::text(match (program, everything) {
+                    (Program::Windows, _) => "windows-runtime-removed",
+                    (_, true) => "shell-everything-it-kept-has-gone-with-it",
+                    (_, false) => "shell-what-it-kept-is-still-on-the-disk",
+                })
+                .to_string(),
+            ),
+        ];
+        let detail = match (everything, program) {
+            (true, Program::Steam) => Some("steam-signed-in-user-data-removed"),
+            (_, Program::Windows) => None,
+            (false, _) => Some(program.what_stays()),
+            (true, _) => None,
+        };
+        if let Some(detail) = detail {
+            lines.push(dialog::Line::Note(crate::i18n::text(detail).to_string()));
+        }
+        self.say_and_acknowledge(Some(program.mark()), lines);
     }
 
     /// The panel that stands while it downloads — or while it is taken off
@@ -29389,23 +30073,49 @@ impl Shell {
         let Some(installing) = self.retroarch.installing() else {
             return;
         };
-        let note = match installing.progress {
-            Some(done) => format!("{} — {}%", installing.note, (done * 100.0).round() as u32),
+        let percent = installing
+            .progress
+            .map(|share| (share.clamp(0.0, 1.0) * 100.0).round() as u8);
+        let note = match percent {
+            Some(done) => format!("{} — {done}%", installing.note),
             None => installing.note.clone(),
         };
-        let from = self.dialog_origin();
-        // A panel with nothing to press, like the one over a copy: the disk and
-        // the network are busy behind it and there is nothing useful to offer
-        // until they are not.
-        self.dialog.wait(
-            from,
-            Some(retroarch::mark().to_string()),
+        self.show_launcher_setup(
+            retroarch::mark(),
             vec![
                 dialog::Line::Heading("RetroArch".to_string()),
                 dialog::Line::Note(note),
-                dialog::Line::Waiting,
+                percent.map_or(dialog::Line::Waiting, dialog::Line::Progress),
             ],
         );
+    }
+
+    fn watching_launcher_setup(&self, icon: &str) -> bool {
+        self.dialog.is_open()
+            && self.dialog.icon() == Some(icon)
+            && self.dialog.buttons.entries().first().is_some_and(|entry| {
+                entry.command == menu::Command::LauncherSetupInBackground
+            })
+    }
+
+    fn show_launcher_setup(&mut self, icon: &str, mut lines: Vec<dialog::Line>) {
+        lines.push(dialog::Line::Rule);
+        if self.watching_launcher_setup(icon) {
+            self.dialog.say(lines);
+        } else {
+            let from = self.dialog_origin();
+            self.dialog.ask(
+                from,
+                Some(icon.to_string()),
+                lines,
+                vec![menu::Entry::new(
+                    menu::Command::LauncherSetupInBackground,
+                    crate::i18n::text("shell-carry-on-in-the-background"),
+                )],
+                0,
+            );
+        }
+        self.needs_redraw = true;
     }
 
     /// The install is over, one way or the other.
@@ -29433,10 +30143,13 @@ impl Shell {
             return;
         }
         tracing::info!("RetroArch is installed");
+        self.announce_launcher_result(Program::RetroArch, true);
         // Straight on to the question it was installed *for*. A console that
         // said "done" and left somebody on an empty column would be a console
         // that had finished half a job.
-        self.ask_where_the_games_are();
+        if self.watching_launcher_setup(retroarch::mark()) {
+            self.ask_where_the_games_are();
+        }
     }
 
     /// Ask where somebody keeps their games, and say what the folder has to
@@ -30486,6 +31199,11 @@ impl Shell {
     /// Steam takes to answer. See [`model::Cursor::row_in_column`], which is
     /// where the two are told apart.
     fn shelve_games(&mut self, rows: Vec<apps::Entry>) {
+        let rows = if self.steam.has_client() {
+            rows
+        } else {
+            Vec::new()
+        };
         self.drained.told(
             rows.iter()
                 .filter_map(apps::Entry::game)
@@ -30751,6 +31469,18 @@ impl Shell {
             }
             steam::Ended::Failed {
                 app_id,
+                why: lxb_steam::Stopped::OtherSession(_),
+            } => {
+                if self.closing_other_steam.is_none() {
+                    self.prompt_to_close_other_steam(
+                        Box::new(move |shell| shell.install_steam_game(app_id)),
+                        lxb_steam::client::OtherSession::find(),
+                    );
+                }
+                return;
+            }
+            steam::Ended::Failed {
+                app_id,
                 why: lxb_steam::Stopped::Failed(why),
             } => {
                 tracing::warn!(app_id, %why, "a download did not finish");
@@ -30895,8 +31625,84 @@ impl Shell {
     /// them to the column that signing in built — which is the next column
     /// along, so the press is the same journey Right would have made, and the
     /// row is the sign that there is somewhere to go.
+    fn install_steam_package(&mut self, flatpak: bool) {
+        if self.uninstalling.is_some()
+            || (!flatpak && !Path::new("/etc/debian_version").is_file())
+        {
+            return;
+        }
+        if lxb_steam::client::Where::all()
+            .iter()
+            .any(|client| matches!(client, lxb_steam::client::Where::Flatpak) == flatpak)
+        {
+            lxb_steam::client::Where::prefer_flatpak(flatpak);
+            self.open_steam_row(false);
+            return;
+        }
+        self.uninstalling = Some(Uninstall {
+            removing: Removing::InstallSteamPackage { flatpak },
+            survey: uninstall::Survey::steam_package_install(flatpak, "steam-installer"),
+            stage: Stage::Surveying,
+            data: uninstall::ItsData::Kept,
+        });
+        self.advance_uninstall();
+    }
+
     fn press_steam_row(&mut self) {
-        if self.steam.signed_in() {
+        self.open_steam_row(true);
+    }
+
+    fn open_steam_row(&mut self, offer_choice: bool) {
+        if self.steam.setting_up() {
+            self.steam.begin();
+            self.show_steam_panel();
+            return;
+        }
+        self.steam.look_for_the_client_again();
+        let has_client = self.steam.has_client();
+        if !has_client || (offer_choice && self.steam.needs_client_setup()) {
+            let mut lines = vec![
+                dialog::Line::Heading(crate::i18n::text("shell-install-steam-question").to_string()),
+            ];
+            let native = Path::new("/etc/debian_version").is_file();
+            let flatpak = uninstall::installed("flatpak");
+            if offer_choice && ((!has_client && (native || flatpak)) || (native && flatpak)) {
+                let mut buttons = vec![
+                    menu::Entry::new(menu::Command::Dismiss, crate::i18n::text("shell-cancel")),
+                ];
+                if native {
+                    buttons.push(menu::Entry::new(
+                        menu::Command::InstallSteamPackage { flatpak: false },
+                        crate::i18n::text("steam-install-native-recommended"),
+                    ));
+                }
+                if flatpak {
+                    lines.extend(community_flatpak_notice());
+                    buttons.push(menu::Entry::new(
+                        menu::Command::InstallSteamPackage { flatpak: true },
+                        crate::i18n::text("steam-install-flatpak"),
+                    ));
+                }
+                lines.push(dialog::Line::Rule);
+                let from = self.dialog_origin();
+                self.dialog.ask(from, Some(icons::STEAM.to_string()), lines, buttons, 0);
+                self.needs_redraw = true;
+                return;
+            }
+            if !has_client {
+                lines.push(dialog::Line::Note(
+                    crate::i18n::text("shell-there-is-no-steam-client-installed-on-this-machine")
+                        .to_string(),
+                ));
+                self.say_and_acknowledge(Some(icons::STEAM.to_string()), lines);
+                return;
+            }
+        }
+        if self.steam.needs_device_rules() && settings::remind_about_steam_device_rules() {
+            self.offer_steam_devices(true);
+            return;
+        }
+        if self.steam.signed_in() && !self.steam.needs_client_setup() {
             if self.step_to_steam_column() {
                 self.sounds.step();
             } else {
@@ -30910,6 +31716,41 @@ impl Shell {
         }
         self.steam.begin();
         self.show_steam_panel();
+    }
+
+    fn offer_steam_devices(&mut self, resume_setup: bool) {
+        if !self.steam.needs_device_rules() {
+            return;
+        }
+        let from = self.dialog_origin();
+        let cancel = if resume_setup {
+            menu::Entry::new(menu::Command::SkipSteamDevices { remind: true }, crate::i18n::text("shell-not-now"))
+        } else {
+            menu::Entry::new(menu::Command::Dismiss, crate::i18n::text("shell-cancel"))
+        };
+        let mut buttons = vec![cancel];
+        if resume_setup {
+            buttons.push(menu::Entry::new(
+                menu::Command::SkipSteamDevices { remind: false },
+                crate::i18n::text("steam-device-rules-dont-remind"),
+            ));
+        }
+        buttons.push(menu::Entry::new(
+            menu::Command::InstallSteamDevices { resume_setup },
+            crate::i18n::text("shell-install"),
+        ));
+        self.dialog.ask(
+            from,
+            Some(icons::STEAM.to_string()),
+            vec![
+                dialog::Line::Heading(crate::i18n::text("steam-install-device-rules").to_string()),
+                dialog::Line::Note(crate::i18n::text("steam-device-rules-explanation").to_string()),
+                dialog::Line::Rule,
+            ],
+            buttons,
+            0,
+        );
+        self.needs_redraw = true;
     }
 
     /// Take the focused display to the Steam column. `false` when there is not
@@ -31013,11 +31854,15 @@ impl Shell {
         // instant. What it is not the same instant as is the press that has to
         // sign a client in first, and those seconds are exactly the ones during
         // which the client has a login window up.
+        if self.check_other_steam(move |shell| shell.steam_hand_over(app_id, doing)) {
+            return;
+        }
         if let Err(why) = self.steam.tell(app_id, doing) {
             tracing::warn!(%name, %why, "Steam would not take that");
             self.say_no_steam_client(&name);
             return;
         }
+        self.steam_handover = Some((app_id, doing));
         self.begin_valves_client_splash(doing);
     }
 
@@ -31142,7 +31987,7 @@ impl Shell {
     fn emulation_entry_menu(&self) -> Option<([f32; 4], Option<String>, Vec<menu::Entry>)> {
         let panel = self.panels.get(self.focused_panel)?;
         let anchor = ui::launch_origin(panel.width as f32, panel.height as f32);
-        let rows = retroarch::menu_rows(
+        let mut rows = retroarch::menu_rows(
             &self.retroarch.press(),
             self.retroarch.missing_cores().len(),
             crate::settings::roms_folder().is_some(),
@@ -31150,6 +31995,7 @@ impl Shell {
         );
         // Nothing to offer is no menu at all, rather than a panel of one row
         // saying Cancel. See the list's own note.
+        self.offer_program_data_row(&mut rows, Program::RetroArch);
         if rows.is_empty() {
             return None;
         }
@@ -31389,31 +32235,43 @@ impl Shell {
     /// because this row is the handle the whole library hangs off; the client,
     /// which is another program; and the way out of the menu.
     fn service_entry_menu(&self) -> Option<([f32; 4], Option<String>, Vec<menu::Entry>)> {
+        if self.steam.setting_up()
+            || self.uninstalling.as_ref().is_some_and(|state| {
+                matches!(state.removing, Removing::InstallSteamPackage { .. } | Removing::InstallSteamDevices { .. })
+            })
+        {
+            return None;
+        }
         let panel = self.panels.get(self.focused_panel)?;
         let service = panel.cursor.current_entry(&self.lattice)?.service()?;
         let anchor = ui::launch_origin(panel.width as f32, panel.height as f32);
 
-        let rows = steam_service_menu_rows(
+        let mut rows = steam_service_menu_rows(
             service.account.is_some(),
             self.steam_column().is_some(),
             // Not while it is installing itself: a request handed to the
             // launcher is a request dropped, and a row that can only end in
             // a wait and a refusal is the row the rule below already
             // withholds. See [`Shell::steam_hand_over`].
-            self.steam.has_client() && !self.steam.setting_up(),
+            self.steam.has_client() && !self.steam.needs_client_setup(),
             self.steam.reach().online(),
             self.steam.installed_where().is_some(),
         );
-        Some((
-            anchor,
-            Some(
-                service
-                    .account
-                    .clone()
-                    .unwrap_or_else(|| "Steam".to_string()),
-            ),
-            rows,
-        ))
+        if self.where_the_program_is(Program::SteamDevices).is_some() {
+            let at = rows.len().saturating_sub(1);
+            rows.insert(at, menu::Entry::new(
+                menu::Command::RemoveProgram(Program::SteamDevices),
+                crate::message!("remove-name", "name" => Program::SteamDevices.name()),
+            ).glyph(icons::UNINSTALL).grave().group(1));
+        } else if self.steam.needs_device_rules() {
+            let at = rows.len().saturating_sub(1);
+            rows.insert(at, menu::Entry::new(
+                menu::Command::OfferSteamDevices,
+                crate::i18n::text("steam-install-device-rules-menu"),
+            ).glyph(icons::ARROW_DOWN).group(1));
+        }
+        self.offer_program_data_row(&mut rows, Program::Steam);
+        Some((anchor, Some("Steam".to_string()), rows))
     }
 
     /// Hang whatever the worker has finished on the rows that hold it.
@@ -35353,7 +36211,7 @@ impl Shell {
         self.windows_choose_menu = None;
         self.windows_compat_menu = None;
         self.ways_menu = None;
-        self.context_menu.open_at(
+        self.context_menu.open_context(
             anchor,
             Some(menu::Title::new(crate::i18n::text("label-showing"))),
             rows,
@@ -36933,8 +37791,9 @@ impl Shell {
         self.shelve_games(self.steam.rows());
         let shifted = apps::offer_retroarch(
             &mut self.lattice.categories,
-            self.retroarch.note(),
+            launcher_package_note(self.retroarch.note(), self.retroarch.installed_where()),
             self.retroarch.arriving(),
+            self.retroarch.reading_library() || self.retroarch.installing().is_some(),
         );
         self.absorb(shifted);
         let picking = self
@@ -38655,6 +39514,15 @@ impl Shell {
     }
 
     fn carry_out_steam(&mut self, value: settings::SteamValue) {
+        if matches!(
+            value,
+            settings::SteamValue::OtherTitles(_)
+                | settings::SteamValue::AddLibrary(_)
+                | settings::SteamValue::RepairLibrary(_)
+        ) && self.check_other_steam(move |shell| shell.carry_out_steam(value))
+        {
+            return;
+        }
         match value {
             settings::SteamValue::Integration(on) => self.steam_integration_changed(on),
             // What this changes is what happens as a session comes up, and one
@@ -39013,6 +39881,23 @@ impl Shell {
             crate::i18n::text("shell-steam-is-ready-open-it-to-sign-in"),
             icons::STEAM,
         );
+        self.load_notification_icons();
+        self.sync_notification_panel();
+        self.needs_redraw = true;
+    }
+
+    fn announce_launcher_result(&mut self, program: Program, installed: bool) {
+        let name = match program {
+            Program::Heroic => heroic::TITLE,
+            Program::Rpcs3 => ps3::TITLE,
+            _ => program.name(),
+        };
+        let body = if installed {
+            crate::message!("name-has-been-installed", "name" => name)
+        } else {
+            crate::message!("name-has-been-removed", "name" => name)
+        };
+        self.notifications.announce(name, &body, &program.mark());
         self.load_notification_icons();
         self.sync_notification_panel();
         self.needs_redraw = true;
@@ -40019,6 +40904,28 @@ impl Shell {
     }
 }
 
+fn launcher_package_note(
+    note: Option<String>,
+    installed: Option<uninstall::Installed>,
+) -> Option<String> {
+    let Some(installed) = installed else {
+        return note;
+    };
+    let package = crate::i18n::text(if matches!(installed, uninstall::Installed::Flatpak(_)) {
+        "launcher-flatpak-version-installed"
+    } else {
+        "launcher-native-version-installed"
+    });
+    Some(note.map_or_else(|| package.to_string(), |note| format!("{note} · {package}")))
+}
+
+fn community_flatpak_notice() -> [dialog::Line; 2] {
+    [
+        dialog::Line::Heading(crate::i18n::text("steam-flatpak-unofficial").to_string()),
+        dialog::Line::Heading(crate::i18n::text("steam-flatpak-community").to_string()),
+    ]
+}
+
 /// The rows over the Steam row itself: what can be done to the *account*, as
 /// against to anything in its library.
 ///
@@ -40039,21 +40946,24 @@ fn steam_service_menu_rows(
     removable: bool,
 ) -> Vec<menu::Entry> {
     let mut rows = Vec::new();
+    if !has_client {
+        rows.push(
+            menu::Entry::new(
+                menu::Command::SteamOpenSetup,
+                crate::i18n::text("shell-download-and-set-up"),
+            )
+            .glyph(icons::LAUNCH),
+        );
+    }
     if signed_in {
-        // The same request, and not the same sentence. Offline it is the only
-        // thing on the machine that will make Steam be tried again before its
-        // own five seconds are up, and calling that "Refresh the library" asks
-        // somebody to guess that a row about the library is the retry. It is
-        // also the row that is actually pressed: a column that is a memory is
-        // a column somebody wants made current.
-        let (label, glyph) = match online {
-            true => (
-                crate::i18n::text("shell-refresh-the-library"),
-                icons::REFRESH,
-            ),
-            false => (crate::i18n::text("shell-try-steam-again"), icons::REFRESH),
-        };
-        rows.push(menu::Entry::new(menu::Command::SteamRefresh, label).glyph(glyph));
+        if has_client {
+            let label = crate::i18n::text(if online {
+                "shell-refresh-the-library"
+            } else {
+                "shell-try-steam-again"
+            });
+            rows.push(menu::Entry::new(menu::Command::SteamRefresh, label).glyph(icons::REFRESH));
+        }
         rows.push(
             // Named for what it actually does, which since 2026-09-13 is the
             // whole of what somebody means by it: the account is forgotten
@@ -40071,7 +40981,7 @@ fn steam_service_menu_rows(
             .glyph(icons::SIGN_OUT)
             .grave(),
         );
-    } else {
+    } else if has_client {
         rows.push(
             menu::Entry::new(
                 menu::Command::SteamSignIn,
@@ -40083,32 +40993,22 @@ fn steam_service_menu_rows(
     // Only where there is a library on the bar to be ordered. Nobody signed in
     // has no column, and an order for a column that is not there is a row whose
     // answer the user could not be shown.
-    if has_column {
+    if has_client && has_column {
         rows.push(
             menu::Entry::new(menu::Command::SteamSort, crate::i18n::text("shell-sort"))
                 .glyph(icons::SORT)
                 .group(1),
         );
     }
-    // The client itself is an optional fallback, so do not offer rows which can
-    // only end in a "not installed" refusal.
-    //
-    // Two of them, and Big Picture first, because they are two different
-    // programs to the person pressing: one is a console screen a pad can drive
-    // and the other is a desktop window wanting a mouse. The console one is
-    // what this shell is, so it is the one plainly called "Open Steam"; the
-    // desktop one is named as such rather than being left unreachable, since a
-    // good deal of the client has no Big Picture screen at all.
     if has_client {
-        for doing in [lxb_steam::Doing::BigPicture, lxb_steam::Doing::Open] {
-            rows.push(
-                menu::Entry::new(
-                    menu::Command::SteamDo(doing),
-                    crate::i18n::builtin(doing.label()),
-                )
-                .group(1),
-            );
-        }
+        let doing = lxb_steam::Doing::BigPicture;
+        rows.push(
+            menu::Entry::new(
+                menu::Command::SteamDo(doing),
+                crate::i18n::builtin(doing.label()),
+            )
+            .group(1),
+        );
     }
     // Offered whatever else is: it is the row for a session where something is
     // wrong, and every one of the states worth diagnosing — nobody signed in,
@@ -42733,11 +43633,8 @@ mod steam_game_menu_tests {
         assert_eq!(rows[0].command, menu::Command::SteamRefresh);
     }
 
-    /// The client can be opened two ways and the menu says which is which:
-    /// Big Picture under the plain name, because it is the one a pad across
-    /// the room can drive, and the desktop window under its own.
     #[test]
-    fn the_client_opens_in_big_picture_or_as_a_window() {
+    fn the_steam_menu_opens_the_client_in_big_picture() {
         assert_eq!(
             service(true, true, true),
             vec![
@@ -42745,7 +43642,6 @@ mod steam_game_menu_tests {
                 "Sign out",
                 "Sort",
                 "Open Steam",
-                "Open Steam (Client)",
                 "Steam diagnostics",
                 "Remove Steam",
                 "Cancel"
@@ -42760,38 +43656,24 @@ mod steam_game_menu_tests {
             .collect();
         assert_eq!(
             opens,
-            vec![
-                menu::Command::SteamDo(lxb_steam::Doing::BigPicture),
-                menu::Command::SteamDo(lxb_steam::Doing::Open),
-            ],
-            "the two rows are wired to the same thing, or the wrong way round"
+            vec![menu::Command::SteamDo(lxb_steam::Doing::BigPicture)]
         );
-        // Both belong to the band below the rule, with Sort and Cancel: the
-        // client is another program, not something asked of the account.
         assert!(rows
             .iter()
             .filter(|row| matches!(row.command, menu::Command::SteamDo(_)))
             .all(|row| row.group == 1));
     }
 
-    /// And neither is offered on a machine with no client to open, where they
-    /// could only end in a "not installed" refusal. Signing in still can be:
-    /// the shell talks to Steam itself and needs nothing installed to do it.
+    /// The menu offers setup and diagnostics until there is a client.
     #[test]
     fn without_a_client_there_is_nothing_to_open() {
         assert_eq!(
             service(false, false, false),
-            vec!["Sign in to Steam", "Steam diagnostics", "Cancel"]
+            vec!["Download and set up", "Steam diagnostics", "Cancel"]
         );
         assert_eq!(
             service(true, true, false),
-            vec![
-                "Refresh the library",
-                "Sign out",
-                "Sort",
-                "Steam diagnostics",
-                "Cancel"
-            ]
+            vec!["Download and set up", "Sign out", "Steam diagnostics", "Cancel"]
         );
     }
 
@@ -43222,6 +44104,17 @@ struct Chosen {
     rom: PathBuf,
     console: String,
     piece: retroarch::Piece,
+}
+
+type SteamRetry = Box<dyn FnOnce(&mut Shell)>;
+
+struct ClosingOtherSteam {
+    retry: SteamRetry,
+    force: bool,
+    answer: std::sync::mpsc::Receiver<(
+        lxb_steam::client::OtherSession,
+        std::io::Result<lxb_steam::client::OtherSessionClose>,
+    )>,
 }
 
 /// A chosen picture being copied in, and the game it is for.

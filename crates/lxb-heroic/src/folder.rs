@@ -67,7 +67,7 @@ pub fn choose(paths: &Paths, home: &Path, dir: &Path) -> Folder {
         refused(&mut answer, Reason::HeroicRunning, "Heroic is open".into());
         return answer;
     }
-    if !already_reached(dir, home) {
+    if !paths.is_native() && !already_reached(dir, home) {
         if let Err(why) = permit(dir) {
             refused(&mut answer, Reason::FlatpakRefused, why);
             return answer;

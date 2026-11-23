@@ -105,6 +105,9 @@ pub enum Line {
     /// Whole percent, which is Valve's own granularity and a television's. See
     /// [`lxb_steam::setup::Step::percent`].
     Progress(u8),
+    IndeterminateProgress,
+    /// Vertical space between paragraphs.
+    Gap(u8),
     /// A hairline, where one band of the panel gives way to the next. Drawn
     /// rather than implied by a gap, because two of these panels are a list of
     /// facts and a list is easier to read against a rule than against air.
@@ -238,7 +241,10 @@ impl Dialog {
     ///
     /// It waits for the menu that raised it exactly as [`Self::ask`] does, so
     /// that the first panel of a sequence and the third behave the same way.
-    pub fn wait(&mut self, anchor: [f32; 4], icon: Option<String>, lines: Vec<Line>) {
+    pub fn wait(&mut self, anchor: [f32; 4], icon: Option<String>, mut lines: Vec<Line>) {
+        if !lines.iter().any(|line| matches!(line, Line::Waiting | Line::IndeterminateProgress | Line::Progress(_))) {
+            lines.push(Line::IndeterminateProgress);
+        }
         self.buttons.open_waiting(anchor);
         self.icon = icon;
         self.lines = wrap_notes(lines);

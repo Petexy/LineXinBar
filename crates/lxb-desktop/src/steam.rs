@@ -270,6 +270,8 @@ pub struct Steam {
     reach: lxb_steam::Reach,
     /// When the library on screen was last read from Steam, for a column that
     /// is a memory rather than an answer. `None` once Steam has answered.
+    loading_library: bool,
+    package_logins: [(bool, bool); 2],
     library_as_of: Option<std::time::SystemTime>,
     /// What Steam last said about which compatibility tool runs one title — or
     /// every unverified title.
@@ -1013,6 +1015,7 @@ impl Coming {
 /// What the sign-in panel is asking for.
 #[derive(Debug)]
 pub enum Stage {
+    ConfirmSetup,
     /// Nothing yet, because there is no Steam on this machine to sign in to
     /// and one is being installed.
     ///
@@ -1409,6 +1412,7 @@ impl Steam {
         let client_running = client.client_is_running();
         let client_signed_in = client_running && client.client_is_signed_in();
         Steam {
+            package_logins: [(false, false); 2],
             client,
             account: None,
             steam_id: None,
@@ -1425,6 +1429,7 @@ impl Steam {
             setting_up: None,
             setup_is_watched: false,
             reach: lxb_steam::Reach::Online,
+            loading_library: false,
             library_as_of: None,
             fetching: BTreeMap::new(),
             removing: BTreeSet::new(),
@@ -1458,6 +1463,7 @@ impl Steam {
     pub fn settled() -> Steam {
         Steam {
             client: lxb_steam::Steam::settled(),
+            package_logins: [(false, false); 2],
             account: None,
             steam_id: None,
             games: Vec::new(),
@@ -1468,6 +1474,7 @@ impl Steam {
             setting_up: None,
             setup_is_watched: false,
             reach: lxb_steam::Reach::Online,
+            loading_library: false,
             library_as_of: None,
             fetching: BTreeMap::new(),
             removing: BTreeSet::new(),
@@ -2002,14 +2009,79 @@ impl Steam {
     /// A library that is a memory is dated rather than passed off as current:
     /// somebody looking at a column with a game missing from it should be able
     /// to see that the column is from this morning.
+    pub fn setup_progress(&self) -> Option<u8> {
+        self.setting_up.as_ref()?.percent
+    }
+
+    pub fn loading_library(&self) -> bool {
+        self.has_client() && self.loading_library
+    }
+
+    /// Label the bootstrap phase in the language of the shell.
+    fn setup_phase(said: &str) -> &str {
+        let key = match said {
+            "Downloading Steam" => "steam-bootstrap-downloading",
+            "Unpacking Steam" => "steam-bootstrap-unpacking",
+            "Installing Steam" => "steam-bootstrap-installing",
+            "Finishing up" => "steam-bootstrap-finishing",
+            "Checking what Steam needs" => "steam-bootstrap-checking",
+            "Select Install in the Steam installer window to continue." => "steam-bootstrap-consent",
+            _ => return said,
+        };
+        crate::i18n::text(key)
+    }
+
     pub fn standing(&self) -> Option<String> {
+        if let Some(step) = &self.setting_up {
+            return Some(match step.percent {
+                Some(percent) => format!("{} · {percent}%", Self::setup_phase(&step.said)),
+                None => Self::setup_phase(&step.said).to_owned(),
+            });
+        }
+        if self.loading_library() {
+            return Some(crate::i18n::text("shell-loading-your-library").to_string());
+        }
+        let with_version = |note| crate::launcher_package_note(note, self.installed_where());
+        if !self.signed_in() {
+            let label = if !self.has_client() || self.client.client_needs_setting_up() {
+                "shell-press-to-download-and-set-up"
+            } else if self.uses_flatpak() && self.client_signed_in {
+                "steam-account-signed-in"
+            } else {
+                "shell-sign-in"
+            };
+            return with_version(Some(crate::i18n::text(label).to_string()));
+        }
+        let [(native_active, native_saved), (flatpak_active, flatpak_saved)] = self.package_logins;
+        let installed_version = match (native_active, flatpak_active) {
+            (true, true) => Some("launcher-both-versions-installed"),
+            (true, false) => Some("launcher-native-version-installed"),
+            (false, true) => Some("launcher-flatpak-version-installed"),
+            (false, false) => None,
+        };
+        let saved = crate::i18n::saved_launcher_sign_in("Steam", native_saved, flatpak_saved);
+        if let (false, Some(saved)) = (self.has_client(), saved.as_ref()) {
+            let missing = crate::i18n::text("steam-client-not-installed");
+            return Some(format!("{missing} · {saved}"));
+        }
         let said = match &self.reach {
             lxb_steam::Reach::Restoring => {
                 crate::i18n::text("shell-connecting-to-steam").to_owned()
             }
+            lxb_steam::Reach::Online if !self.has_client() => {
+                crate::i18n::text("steam-signed-in-client-not-installed").to_owned()
+            }
+            lxb_steam::Reach::Online => {
+                if let Some(package) = installed_version.map(crate::i18n::text) {
+                    let label = crate::i18n::text("steam-account-signed-in");
+                    format!("{label} · {package}")
+                } else {
+                    with_version(saved)?
+                }
+            }
             other => other.said()?.to_owned(),
         };
-        let Some(read_at) = self.library_as_of else {
+        let Some(read_at) = self.library_as_of.filter(|_| self.has_client()) else {
             return Some(said);
         };
         Some(crate::message!("steam-library-from", "said" => said, "when" => ago(read_at)))
@@ -2017,6 +2089,23 @@ impl Steam {
 
     pub fn signed_in(&self) -> bool {
         self.account.is_some()
+    }
+
+    pub fn needs_client_setup(&self) -> bool {
+        self.client.client_needs_setting_up()
+    }
+
+    pub fn uses_flatpak(&self) -> bool {
+        matches!(self.client.client_at(), Some(lxb_steam::client::Where::Flatpak))
+    }
+
+    pub fn needs_device_rules(&self) -> bool {
+        !self.setting_up()
+            && self.uses_flatpak()
+            && std::path::Path::new("/etc/debian_version").is_file()
+            && !["/usr/lib/udev/rules.d", "/lib/udev/rules.d", "/etc/udev/rules.d"]
+                .iter()
+                .any(|dir| std::path::Path::new(dir).join("60-steam-input.rules").is_file())
     }
 
     pub fn has_client(&self) -> bool {
@@ -2068,7 +2157,42 @@ impl Steam {
     /// Returns whether the column has to be drawn again.
     pub fn look_for_the_client_again(&mut self) -> bool {
         self.asked_after_the_client = Instant::now();
-        self.client.recheck_client()
+        let changed = self.client.recheck_client();
+        if changed {
+            self.client_signed_in = false;
+            self.loading_library = false;
+        }
+        self.read_package_logins() || changed
+    }
+
+    fn read_package_logins(&mut self) -> bool {
+        if !self.driving {
+            return false;
+        }
+        let native = match self.client.client_at() {
+            Some(client @ lxb_steam::client::Where::Native(_)) => client.clone(),
+            _ => lxb_steam::client::Where::Native(std::path::PathBuf::new()),
+        };
+        let logins = [native, lxb_steam::client::Where::Flatpak]
+        .map(|layout| {
+            let Some(options) = lxb_steam::client::Options::for_client(&layout) else {
+                return (false, false);
+            };
+            let active = self.steam_id.is_some_and(|steam_id| {
+                matches!(
+                    lxb_steam::client::state_now(Some(&layout), &options),
+                    lxb_steam::client::State::SignedIn(id) | lxb_steam::client::State::Offline(id)
+                        if steam_id as u32 == id
+                )
+            });
+            let saved = self.account().is_some_and(|account| {
+                lxb_steam::client::account::remembers_login(&options.home, account)
+            });
+            (active, saved)
+        });
+        let changed = logins != self.package_logins;
+        self.package_logins = logins;
+        changed
     }
 
     /// Take in everything the worker has said. Returns what has to be redrawn.
@@ -2079,8 +2203,7 @@ impl Steam {
         // it can be fetched — so the column is rebuilt for it exactly as it is
         // for a library that arrived.
         if self.asked_after_the_client.elapsed() >= self.how_often_to_look() {
-            self.asked_after_the_client = Instant::now();
-            changed.library |= self.client.recheck_client();
+            changed.library |= self.look_for_the_client_again();
             // On the same clock and for the same reason: it changes what every
             // row in the column *says* — a game whose manifest describes work
             // says whether that work is happening — so the column is rebuilt
@@ -2180,11 +2303,12 @@ impl Steam {
         let now = self.client.client_is_running();
         // Asked on the same look and only of a client that is there: a log is
         // a record of what a client *was* doing, and with nothing running it
-        // says who was signed in, not who is. Nothing the column draws moves
-        // on this, so it is not part of the answer.
-        self.client_signed_in = now && self.client.client_is_signed_in();
+        // says who was signed in, not who is.
+        let signed_in = now && self.client.client_is_signed_in();
+        let login_changed = signed_in != self.client_signed_in;
+        self.client_signed_in = signed_in;
         if now == self.client_running {
-            return false;
+            return login_changed;
         }
         tracing::info!(running = now, "whether a Steam client is running");
         self.client_running = now;
@@ -2663,6 +2787,7 @@ impl Steam {
                 lxb_steam::setup::SetUp::Working(step) => {
                     let moved = self.setting_up.as_ref() != Some(&step);
                     self.setting_up = Some(step.clone());
+                    changed.reach |= moved;
                     // The panel only if there is one. A setup somebody walked
                     // away from must not ask for a frame every second for the
                     // four minutes it takes, on a bar nobody is looking at it
@@ -2692,6 +2817,7 @@ impl Steam {
                 lxb_steam::setup::SetUp::Failed(why) => {
                     tracing::warn!(%why, "Steam could not install itself on this machine");
                     self.setting_up = None;
+                    changed.reach = true;
                     // Raised even where the panel had been dismissed. A
                     // download that finished is a good ending and can wait for
                     // somebody to come back to it; one that failed is a
@@ -2872,7 +2998,14 @@ impl Steam {
                     self.watching_the_client_go = None;
                 }
             }
+            Event::LibraryLoading(loading) => {
+                changed.reach |= self.loading_library != loading;
+                self.loading_library = loading;
+            }
             Event::Reach(reach) => {
+                if reach != lxb_steam::Reach::Online {
+                    changed.reach |= std::mem::take(&mut self.loading_library);
+                }
                 if reach == lxb_steam::Reach::Online && self.reach != reach {
                     self.trophies.reconnected();
                 }
@@ -2977,6 +3110,7 @@ impl Steam {
                 changed.account |= self.account != name;
                 self.account = name;
                 self.steam_id = Some(account.steam_id);
+                changed.reach |= self.read_package_logins();
                 // A different account takes every conversation with it — the
                 // messages, the drafts' worth of pending sends, the unread
                 // counts and anything still in flight. The *same* account
@@ -3005,6 +3139,7 @@ impl Steam {
                 changed.invites.extend(moved.invited);
             }
             Event::SignedOut => {
+                changed.reach |= std::mem::take(&mut self.loading_library);
                 self.trophies.account(None);
                 changed.trophies = true;
                 // Back to the state a session with nobody signed in is in.
@@ -3017,6 +3152,7 @@ impl Steam {
                 self.library_as_of = None;
                 changed.account |= self.account.take().is_some();
                 self.steam_id = None;
+                self.package_logins = [(false, false); 2];
                 // The friends go with the account. Everything about them was
                 // true of somebody who is no longer signed in, and a panel
                 // still holding them would be showing the next person at this
@@ -3506,14 +3642,7 @@ impl Steam {
             return;
         }
         if self.client.client_needs_setting_up() {
-            self.client.set_up_the_client();
-            let step = lxb_steam::setup::Step {
-                said: crate::i18n::text("shell-getting-steam-ready").to_string(),
-                percent: None,
-            };
-            self.setting_up = Some(step.clone());
-            self.setup_is_watched = true;
-            self.signing_in = Some(Stage::FirstSetup(step));
+            self.set_up_again();
             return;
         }
         self.signing_in = Some(Stage::Choosing);
@@ -3540,6 +3669,12 @@ impl Steam {
         self.setting_up.is_some()
     }
 
+    pub fn hide_setup_zenity(&self) -> bool {
+        self.setting_up()
+            && !matches!(self.client.client_at(), Some(lxb_steam::client::Where::Flatpak))
+            && !self.client.client_needs_setup_confirmation()
+    }
+
     /// Take the panel down and leave the install running.
     ///
     /// What Back does on the one panel that is a wait rather than a question.
@@ -3554,7 +3689,21 @@ impl Steam {
 
     /// Start the install again after one that failed.
     pub fn set_up_again(&mut self) {
-        self.client.set_up_the_client();
+        if self.client.client_needs_setup_confirmation() {
+            self.signing_in = Some(Stage::ConfirmSetup);
+        } else {
+            self.start_setup(false);
+        }
+    }
+
+    pub fn confirm_setup(&mut self) {
+        if matches!(self.signing_in, Some(Stage::ConfirmSetup)) {
+            self.start_setup(true);
+        }
+    }
+
+    fn start_setup(&mut self, confirmed: bool) {
+        self.client.set_up_the_client(confirmed);
         let step = lxb_steam::setup::Step {
             said: crate::i18n::text("shell-getting-steam-ready").to_string(),
             percent: None,
@@ -3578,7 +3727,10 @@ impl Steam {
         let cancelling_sign_in = self.signing_in.as_ref().is_some_and(|stage| {
             !matches!(
                 stage,
-                Stage::LibraryUnavailable(_) | Stage::FirstSetup(_) | Stage::SetupFailed(_)
+                Stage::LibraryUnavailable(_)
+                    | Stage::ConfirmSetup
+                    | Stage::FirstSetup(_)
+                    | Stage::SetupFailed(_)
             )
         });
         if matches!(self.signing_in, Some(Stage::FirstSetup(_))) {
@@ -4617,6 +4769,7 @@ impl Steam {
                 // the wait *was* the sign-in, and that Steam was being slow
                 // about their account. It is not their account: it is Steam
                 // arriving on the machine.
+                Stage::ConfirmSetup => crate::i18n::text("shell-install-steam-question"),
                 Stage::FirstSetup(_) | Stage::SetupFailed(_) => {
                     crate::i18n::text("shell-setting-up-steam")
                 }
@@ -4630,6 +4783,24 @@ impl Steam {
         );
 
         let panel = match stage {
+            Stage::ConfirmSetup => Panel {
+                lines: vec![
+                    heading,
+                    dialog::Line::Note(
+                        crate::i18n::text("shell-steam-proprietary-software").to_string(),
+                    ),
+                    dialog::Line::Rule,
+                ],
+                buttons: vec![
+                    cancel,
+                    menu::Entry::new(
+                        menu::Command::SteamConfirmSetup,
+                        crate::i18n::text("shell-install"),
+                    ),
+                ],
+                start: 0,
+                field: None,
+            },
             Stage::FirstSetup(step) => Panel {
                 lines: vec![
                     heading,
@@ -4656,8 +4827,8 @@ impl Steam {
                         crate::i18n::text("shell-this-only-happens-once").to_string(),
                     ),
                     dialog::Line::Note(match step.percent {
-                        Some(percent) => format!("{}  ·  {percent}%", step.said),
-                        None => step.said.clone(),
+                        Some(percent) => format!("{}  ·  {percent}%", Self::setup_phase(&step.said)),
+                        None => Self::setup_phase(&step.said).to_owned(),
                     }),
                     // The bar where there is something to count, and the lights
                     // where there is not. The two are the same height, so the
@@ -4665,7 +4836,7 @@ impl Steam {
                     // and the unpack begins. See [`dialog::Line::Progress`].
                     match step.percent {
                         Some(percent) => dialog::Line::Progress(percent),
-                        None => dialog::Line::Waiting,
+                        None => dialog::Line::IndeterminateProgress,
                     },
                     dialog::Line::Rule,
                 ],
@@ -4918,6 +5089,31 @@ mod tests {
         steam
     }
 
+    #[test]
+    fn steam_setup_uses_the_shell_language_in_the_menu_and_dialog() {
+        use crate::i18n::{self, Language};
+
+        i18n::set(Language::Polish);
+        for (phase, percent, label) in [
+            ("Downloading Steam", Some(24), "Pobieranie Steam"),
+            ("Unpacking Steam", None, "Rozpakowywanie Steam"),
+            ("Installing Steam", None, "Instalowanie Steam"),
+        ] {
+            let steam = setting_up(phase, percent);
+            let standing = steam.standing().unwrap();
+            assert!(standing.starts_with(label));
+            if let Some(percent) = percent {
+                assert!(standing.ends_with(&format!("{percent}%")));
+            }
+            let panel = steam.panel().unwrap();
+            assert!(panel.lines.iter().any(|line| matches!(
+                line,
+                dialog::Line::Note(note) if note.starts_with(label)
+            )));
+        }
+        i18n::set(Language::British);
+    }
+
     /// What the panel says while Steam installs itself, and what it offers.
     ///
     /// The whole of the design decision in one test: it is a *wait*, not a
@@ -4976,6 +5172,7 @@ mod tests {
         assert_eq!(counting.len(), not.len(), "{counting:?} against {not:?}");
         assert!(counting.contains(&dialog::Line::Progress(7)));
         assert!(not.contains(&dialog::Line::Waiting));
+        assert!(not.iter().any(|line| matches!(line, dialog::Line::IndeterminateProgress)));
         assert!(
             !not.iter()
                 .any(|line| matches!(line, dialog::Line::Progress(_))),
@@ -6245,6 +6442,25 @@ mod tests {
         );
     }
 
+    #[test]
+    fn library_loading_does_not_show_without_a_client() {
+        let mut steam = Steam::settled();
+        steam.take_in(vec![Event::SignedIn(lxb_steam::Account {
+            name: "someone".to_string(),
+            steam_id: 1,
+        })]);
+
+        steam.apply(Event::LibraryLoading(true));
+        assert!(!steam.loading_library());
+        assert_ne!(
+            steam.standing().as_deref(),
+            Some(crate::i18n::text("shell-loading-your-library"))
+        );
+
+        steam.apply(Event::SignedOut);
+        assert!(!steam.loading_library);
+    }
+
     /// The two facts a pass carries about the same row, arriving one pass
     /// apart — which is what a session with a stored credential always does:
     /// the account and the remembered library come off the disk at once, and
@@ -6270,7 +6486,7 @@ mod tests {
         assert!(restored.account && restored.reach);
         assert_eq!(
             steam.standing().as_deref(),
-            Some("Connecting to Steam · library from just now")
+            Some("Connecting to Steam")
         );
 
         let answered = steam.take_in(vec![
@@ -6282,7 +6498,24 @@ mod tests {
             "the Games row is built from this and nothing else says it changed"
         );
         assert!(!answered.account, "nobody signed in or out");
-        assert_eq!(steam.standing(), None, "there is nothing left to say");
+        assert_eq!(
+            steam.standing().as_deref(),
+            Some(crate::i18n::text("steam-signed-in-client-not-installed"))
+        );
+        for (native, flatpak, note) in [
+            (true, false, "Native Steam sign-in saved"),
+            (false, true, "Flatpak Steam sign-in saved"),
+            (true, true, "Native and Flatpak Steam sign-in saved"),
+        ] {
+            steam.package_logins = [(false, native), (false, flatpak)];
+            assert_eq!(
+                steam.standing(),
+                Some(format!(
+                    "{} · {note}",
+                    crate::i18n::text("steam-client-not-installed"),
+                ))
+            );
+        }
     }
 
     /// And the other field the fold used to drop: a `steam:` request the

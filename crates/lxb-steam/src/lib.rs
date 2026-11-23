@@ -249,7 +249,7 @@ pub enum Ask {
     /// Does nothing where Steam is already installed, and nothing where a setup
     /// this session started is still running. Both are ordinary: the second is
     /// somebody pressing the row again to see the panel they dismissed.
-    SetUpTheClient,
+    SetUpTheClient { confirmed: bool },
     /// Begin a sign-in to be confirmed by photographing a code.
     SignInWithQr,
     /// Begin one with an account name and a password.
@@ -265,6 +265,8 @@ pub enum Ask {
     SignOut,
     /// Ask Steam for the library again, now, rather than at the next interval.
     Refresh,
+    /// The client was installed, removed or switched to another package.
+    ClientChanged,
     /// Have Valve's client fetch one game.
     Install {
         app_id: u32,
@@ -924,6 +926,8 @@ impl std::fmt::Display for Refused {
 /// would be a caller that gets it wrong the day the wording changes.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Stopped {
+    /// The client moved to another graphical session while starting up.
+    OtherSession(String),
     /// Something went wrong, and this is what to say about it.
     Failed(String),
     /// Nothing went wrong: Steam will not go on without the person, and what
@@ -961,7 +965,7 @@ impl Stopped {
     /// What to put in front of somebody.
     pub fn said(&self) -> &str {
         match self {
-            Stopped::Failed(why) => why,
+            Stopped::OtherSession(why) | Stopped::Failed(why) => why,
             Stopped::Asks(why) => why,
             Stopped::Agreements(_) => "agreements to accept",
             Stopped::WhereTo(_) => "a library to choose",
@@ -1040,6 +1044,7 @@ impl std::fmt::Display for StorageRefused {
 /// What Steam says back.
 #[derive(Debug, Clone)]
 pub enum Event {
+    LibraryLoading(bool),
     AchievementProgress(achievements::ProgressHeard),
     Achievements(achievements::Heard),
     /// How a download is going, read off the manifest Valve's client keeps for
@@ -1495,6 +1500,7 @@ impl Steam {
         }
         tracing::info!(before = ?self.client_at, after = ?now, "Valve's client has come or gone");
         self.client_at = now;
+        self.ask(Ask::ClientChanged);
         true
     }
 
@@ -1622,13 +1628,21 @@ impl Steam {
         }
     }
 
+    /// Whether the Debian launcher may be waiting for the user's consent.
+    pub fn client_needs_setup_confirmation(&self) -> bool {
+        self.client_at.as_ref().is_some_and(|client| {
+            client::Options::for_client(client)
+                .is_some_and(|options| setup::needs_debian_confirmation(client, &options))
+        })
+    }
+
     /// Have it install itself, saying how that goes.
     ///
     /// Answered by [`Event::Setup`]: once per change while it runs, then
     /// exactly one [`setup::SetUp::Done`] or [`setup::SetUp::Failed`]. Safe to
     /// ask twice — see [`Ask::SetUpTheClient`].
-    pub fn set_up_the_client(&self) {
-        self.ask(Ask::SetUpTheClient);
+    pub fn set_up_the_client(&self, confirmed: bool) {
+        self.ask(Ask::SetUpTheClient { confirmed });
     }
 
     pub fn sign_in_with_qr(&self) {
@@ -2675,13 +2689,15 @@ fn restore(
         .as_ref()
         .map(|restored| restored.games.clone())
         .unwrap_or_default();
-    let _ = events.send(Event::LibraryAsOf(
-        remembered.as_ref().map(|restored| restored.read_at),
-    ));
-    let _ = events.send(Event::Library(library::merge(
-        owned.clone(),
-        &installed_now().games,
-    )));
+    if client::Where::find().is_some() {
+        let _ = events.send(Event::LibraryAsOf(
+            remembered.as_ref().map(|restored| restored.read_at),
+        ));
+        let _ = events.send(Event::Library(library::merge(
+            owned.clone(),
+            &installed_now().games,
+        )));
+    }
 
     // `announced` and the remembered catalogue both travel into the connection,
     // so a CM that answers a moment later does not make the account disappear
@@ -2742,8 +2758,8 @@ fn answer(
         return state;
     }
     match ask {
-        Ask::SetUpTheClient => {
-            set_the_client_up(setting_up, worker, events);
+        Ask::SetUpTheClient { confirmed } => {
+            set_the_client_up(setting_up, worker, events, confirmed);
             state
         }
         Ask::SignInWithQr => match auth::begin_with_qr(wire) {
@@ -2948,12 +2964,15 @@ fn answer(
             }
             let generation = watching.generation;
             let ticket = a_job_about(&state, watching);
-            in_the_background(stored, ticket, ground, worker, move |ready| {
+            with_steam_client(stored, ticket, ground, worker, move |ready| {
                 Finished::Installing {
                     app_id,
                     generation,
                     how: match ready {
-                        Err(why) => Err(Stopped::Failed(why)),
+                        Err(client::Refusal::NotOurs(why)) if why.another_session => {
+                            Err(Stopped::OtherSession(why.what))
+                        }
+                        Err(why) => Err(Stopped::Failed(said_about(&why))),
                         Ok(standing) => {
                             match webui::install(app_id, &accepting, &place, standing.still()) {
                                 Ok(()) => {
@@ -2999,6 +3018,11 @@ fn answer(
                                 Err(problem @ webui::Problem::Renamed(_)) => {
                                     tracing::warn!(app_id, %problem, "this Steam cannot be driven from here");
                                     Err(Stopped::NotFromHere(problem.to_string()))
+                                }
+                                Err(problem) if !client::in_this_session(&standing.options) => {
+                                    tracing::info!(%problem, "Steam changed sessions during installation");
+                                    let why = client::NotOurs::another_session("This would happen there, not here.");
+                                    Err(Stopped::OtherSession(why.what))
                                 }
                                 Err(problem) => Err(Stopped::Failed(problem.to_string())),
                             }
@@ -3648,7 +3672,13 @@ fn answer(
             );
             state
         }
-        Ask::Refresh => {
+        ask @ (Ask::Refresh | Ask::ClientChanged) => {
+            if matches!(ask, Ask::ClientChanged) && client::Where::find().is_none() {
+                if let State::In { commands, .. } = &state {
+                    let _ = commands.send(cm::Command::Refresh);
+                }
+                return state;
+            }
             // Offline, this is the retry. A session waiting out its five
             // seconds between attempts had nothing anybody could press: the
             // Refresh row did nothing at all, because there was no CM to ask,
@@ -3725,6 +3755,7 @@ fn set_the_client_up(
     setting_up: &mut bool,
     worker: &Sender<WorkerMessage>,
     events: &Sender<Event>,
+    confirmed: bool,
 ) {
     if *setting_up {
         tracing::info!("Valve's client is already being set up by this session");
@@ -3753,7 +3784,7 @@ fn set_the_client_up(
     *setting_up = true;
     let worker = worker.clone();
     std::thread::spawn(move || {
-        setup::run(&client, &options, |word| {
+        setup::run(&client, &options, confirmed, |word| {
             let _ = worker.send(WorkerMessage::SetUp(word));
         });
     });
@@ -3777,6 +3808,18 @@ fn in_the_background(
     worker: &Sender<WorkerMessage>,
     work: impl FnOnce(Result<Standing, String>) -> Finished + Send + 'static,
 ) {
+    with_steam_client(stored, ticket, ground, worker, move |ready| {
+        work(ready.map_err(|refusal| said_about(&refusal)))
+    });
+}
+
+fn with_steam_client(
+    stored: &session::Stored,
+    ticket: Ticket,
+    ground: &Ground,
+    worker: &Sender<WorkerMessage>,
+    work: impl FnOnce(Result<Standing, client::Refusal>) -> Finished + Send + 'static,
+) {
     let stored = stored.clone();
     let ground = ground.clone();
     let worker = worker.clone();
@@ -3795,8 +3838,7 @@ fn in_the_background(
             ticket,
             &ground,
             HaveAClient::ByWaking(client::Need::Context),
-        )
-        .map_err(|refusal| said_about(&refusal));
+        );
         let _ = worker.send(WorkerMessage::Done(work(ready)));
     });
 }
@@ -3933,7 +3975,7 @@ fn came_back(
                 format_args!("install {app_id}"),
                 match &why {
                     Stopped::Failed(said) => audit::How::Failed(said.clone()),
-                    Stopped::Asks(said) | Stopped::NotFromHere(said) => {
+                    Stopped::OtherSession(said) | Stopped::Asks(said) | Stopped::NotFromHere(said) => {
                         audit::How::Refused(said.clone())
                     }
                     Stopped::Agreements(_) | Stopped::WhereTo(_) => {
@@ -4369,10 +4411,7 @@ fn not_ours(
         return None;
     }
     if !client::in_this_session(options) {
-        return Some(client::NotOurs {
-            what: "Steam is running in another session.".to_string(),
-            cost: "This would happen there, not here.".to_string(),
-        });
+        return Some(client::NotOurs::another_session("This would happen there, not here."));
     }
     let stored = stored?;
     // [`client::state_now`], because this is the account half and the log it is
@@ -4382,6 +4421,7 @@ fn not_ours(
     // same wrong sentence [`client::wake`] used to refuse presses with.
     let state = client::state_now(Some(where_it_is), options);
     (state.signed_in() && !state.signed_in_as(credential(stored))).then(|| client::NotOurs {
+        another_session: false,
         what: "Steam is signed in to another account.".to_string(),
         cost: "This would happen to that account.".to_string(),
     })
@@ -5029,10 +5069,12 @@ fn answer_cm(
             // for — see [`client::offline`].
             take_back_any_offline_mode(&stored.account);
             let _ = events.send(Event::Reach(Reach::Online));
-            let _ = events.send(Event::Library(library::merge(
-                owned.clone(),
-                &installed_now().games,
-            )));
+            if client::Where::find().is_some() {
+                let _ = events.send(Event::Library(library::merge(
+                    owned.clone(),
+                    &installed_now().games,
+                )));
+            }
             State::In {
                 stored,
                 account,
@@ -5044,6 +5086,13 @@ fn answer_cm(
                 next_owned: Instant::now() + OWNED_INTERVAL,
                 next_installed: Instant::now() + INSTALLED_INTERVAL,
             }
+        }
+        (
+            cm::Event::LibraryStarted { generation },
+            state @ State::In { generation: expected, .. },
+        ) if generation == expected => {
+            let _ = events.send(Event::LibraryLoading(true));
+            state
         }
         (
             cm::Event::Library { generation, games },
@@ -5073,6 +5122,7 @@ fn answer_cm(
                 owned.clone(),
                 &installed_now().games,
             )));
+            let _ = events.send(Event::LibraryLoading(false));
             State::In {
                 stored,
                 account,
@@ -5102,6 +5152,7 @@ fn answer_cm(
             // A catalogue failure is not an authentication failure. Keep the
             // account, token and last successful catalogue intact.
             tracing::warn!(%reason, "the Steam CM/PICS library could not be read");
+            let _ = events.send(Event::LibraryLoading(false));
             if owned.is_empty() && !library_failure_announced {
                 let _ = events.send(Event::LibraryUnavailable(
                     "Steam accepted the account, but its library could not be read. LineXinBar will try again."
@@ -5608,11 +5659,18 @@ fn advance(
         } => {
             let now = Instant::now();
             if now >= next_owned {
-                let _ = commands.send(cm::Command::Refresh);
+                if client::Where::find().is_some() {
+                    let _ = commands.send(cm::Command::Refresh);
+                }
                 next_owned = now + OWNED_INTERVAL;
             }
             if now >= next_installed {
-                let on_the_disk = installed_now();
+                let has_client = client::Where::find().is_some();
+                let on_the_disk = if has_client {
+                    installed_now()
+                } else {
+                    OnTheDisk::default()
+                };
                 // Before anything is said about a row: a job whose Steam has
                 // gone out from under it can never finish, and is not this
                 // session's to report on any more.
@@ -5638,7 +5696,9 @@ fn advance(
                 // it would otherwise be the one that crawled.
                 let moving = watching.anything_is_moving()
                     || installed.values().any(|game| game.standing.moving());
-                let _ = events.send(Event::Library(library::merge(owned.clone(), &installed)));
+                if has_client {
+                    let _ = events.send(Event::Library(library::merge(owned.clone(), &installed)));
+                }
                 next_installed = now
                     + match moving {
                         true => WHILE_SOMETHING_MOVES,

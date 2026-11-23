@@ -193,6 +193,16 @@ pub fn download(
         .get(url)
         .call()
         .map_err(offline("the download could not be started"))?;
+    let progress_size = if size == 0 {
+        response
+            .headers()
+            .get("content-length")
+            .and_then(|value| value.to_str().ok())
+            .and_then(|value| value.parse().ok())
+            .unwrap_or(0)
+    } else {
+        size
+    };
     let mut reader = response
         .body_mut()
         .with_config()
@@ -224,7 +234,7 @@ pub fn download(
             break Err((trouble_for(&err), format!("{}: {err}", part.display())));
         }
         got += read as u64;
-        if let Some(percent) = (got * 100).checked_div(size) {
+        if let Some(percent) = (got * 100).checked_div(progress_size) {
             let percent = percent.min(100) as i32;
             if percent != told {
                 told = percent;

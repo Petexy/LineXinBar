@@ -38,8 +38,10 @@
 //! cost is that the user's `sudo` is warmed for its usual few minutes
 //! afterwards, exactly as it would be had they typed `sudo` in a terminal.
 
+use std::io::{BufRead, BufReader};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
+use std::sync::atomic::{AtomicU8, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
 
@@ -88,6 +90,7 @@ pub enum Doing {
     /// knows the file *is* the program says so, which on this bar is the
     /// PlayStation 3 row and nothing else.
     File(PathBuf),
+    ManagedDirectories(Vec<PathBuf>),
 }
 
 /// What removing an application would actually run.
@@ -257,7 +260,7 @@ pub fn authority(removal: &Removal) -> Authority {
 }
 
 /// Whether a program is on `PATH`.
-fn installed(program: &str) -> bool {
+pub(crate) fn installed(program: &str) -> bool {
     // Asked by running it rather than by walking `PATH`, so that a shell
     // function, an alias directory or an unusual `PATH` in the session is
     // answered the same way the removal itself will be.
@@ -310,6 +313,7 @@ pub enum Installed {
     /// One program file somebody downloaded whole, which nothing on this
     /// machine installed. See [`Doing::File`].
     Downloaded(PathBuf),
+    ManagedDirectories(Vec<PathBuf>),
 }
 
 impl Installed {
@@ -317,6 +321,10 @@ impl Installed {
     /// worker.
     fn plan(&self, data: ItsData) -> Plan {
         match self {
+            Installed::ManagedDirectories(paths) => Plan {
+                doing: Some(Doing::ManagedDirectories(paths.clone())),
+                authority: Authority::NotNeeded,
+            },
             Installed::At(path) => plan(&crate::appinfo::identify(path), data),
             Installed::Flatpak(id) => plan(&crate::appinfo::flatpak_origin(id), data),
             // Nothing is asked of the machine beyond whether the file is still
@@ -351,6 +359,46 @@ pub struct Survey {
 const SURVEY_PATIENCE: std::time::Duration = std::time::Duration::from_secs(6);
 
 impl Survey {
+    pub fn native_package_install(package: &'static str) -> Self {
+        Self::package_install(
+            &[
+                "env", "DEBIAN_FRONTEND=noninteractive", "apt-get", "--yes",
+                "--no-remove", "install", "--", package,
+            ],
+            package,
+            Authority::NeedsPassword,
+        )
+    }
+
+    pub fn steam_package_install(flatpak: bool, native_package: &'static str) -> Self {
+        if !flatpak {
+            return Self::native_package_install(native_package);
+        }
+        Self::package_install(
+            &[
+                "flatpak", "install", "--user", "--assumeyes", "--from",
+                "https://flathub.org/repo/appstream/com.valvesoftware.Steam.flatpakref",
+            ],
+            "com.valvesoftware.Steam",
+            Authority::NotNeeded,
+        )
+    }
+
+    fn package_install(argv: &[&str], package: &str, authority: Authority) -> Self {
+        let plan = Plan {
+            doing: Some(Doing::Package(Removal {
+                argv: argv.iter().map(|word| (*word).to_string()).collect(),
+                root: authority == Authority::NeedsPassword,
+                package: package.to_string(),
+            })),
+            authority,
+        };
+        Self {
+            plan: Arc::new(Mutex::new(Some(plan))),
+            asked: Instant::now(),
+        }
+    }
+
     /// What removing the application whose desktop entry is at `path` takes,
     /// leaving whatever it kept where it is — the bar's own Uninstall row,
     /// which removes an application and has never claimed to do more.
@@ -425,6 +473,8 @@ pub enum Outcome {
 /// A removal that has been started.
 pub struct Run {
     outcome: Arc<Mutex<Option<Outcome>>>,
+    progress: Arc<AtomicU8>,
+    displayed_progress: Option<u8>,
 }
 
 impl Run {
@@ -435,11 +485,22 @@ impl Run {
     pub fn start(doing: Doing, password: Option<Secret>) -> Self {
         let outcome = Arc::new(Mutex::new(None));
         let slot = Arc::clone(&outcome);
+        let progress = Arc::new(AtomicU8::new(u8::MAX));
+        let report = Arc::clone(&progress);
         std::thread::spawn(move || {
-            let result = carry_out(&doing, password);
+            let result = match &doing {
+                Doing::Package(removal)
+                    if removal.package == "com.valvesoftware.Steam"
+                        && removal.argv.get(1).is_some_and(|arg| arg == "install") =>
+                {
+                    install_flatpak(removal, &report)
+                }
+                _ => carry_out(&doing, password),
+            };
             let what = match &doing {
                 Doing::Package(removal) => removal.package.clone(),
                 Doing::File(at) => at.display().to_string(),
+                Doing::ManagedDirectories(_) => crate::proton::TITLE.to_string(),
             };
             match &result {
                 Outcome::Removed => tracing::info!(%what, "removed"),
@@ -452,7 +513,17 @@ impl Run {
                 *slot = Some(result);
             }
         });
-        Self { outcome }
+        Self { outcome, progress, displayed_progress: None }
+    }
+
+    pub fn progress(&self) -> Option<u8> {
+        let percent = self.progress.load(Ordering::Relaxed);
+        (percent <= 100).then_some(percent)
+    }
+
+    pub fn take_progress_update(&mut self) -> Option<u8> {
+        let percent = self.progress()?;
+        (self.displayed_progress.replace(percent) != Some(percent)).then_some(percent)
     }
 
     /// How it ended, or `None` while it is still going.
@@ -468,6 +539,118 @@ impl Run {
     }
 }
 
+/// Read carriage-return updates while Flatpak is running. Progress is across
+/// the transaction's jobs, which can include runtimes as well as Steam.
+fn install_flatpak(removal: &Removal, progress: &AtomicU8) -> Outcome {
+    let first = install_flatpak_once(removal, progress, false);
+    if !matches!(first, Outcome::Removed) || steam_flatpak_is_deployed() {
+        return first;
+    }
+
+    // A Flatpak transaction can finish after pulling the ref without
+    // deploying it. Retry once, including when an earlier removal left files.
+    let retry = install_flatpak_once(removal, progress, true);
+    if matches!(retry, Outcome::Removed) && !steam_flatpak_is_deployed() {
+        Outcome::Failed(
+            crate::i18n::text("shell-there-is-no-steam-client-installed-on-this-machine").to_string(),
+        )
+    } else {
+        retry
+    }
+}
+
+fn steam_flatpak_is_deployed() -> bool {
+    Command::new("flatpak")
+        .args(["info", "--user", lxb_steam::client::FLATPAK_APP])
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status()
+        .is_ok_and(|status| status.success())
+}
+
+fn install_flatpak_once(removal: &Removal, progress: &AtomicU8, reinstall: bool) -> Outcome {
+    let mut command = Command::new(&removal.argv[0]);
+    command.args(&removal.argv[1..removal.argv.len() - 1]);
+    if reinstall {
+        command.arg("--reinstall");
+    }
+    let mut child = match command
+        .arg(&removal.argv[removal.argv.len() - 1])
+        .env("LC_ALL", "C")
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+    {
+        Ok(child) => child,
+        Err(error) => return Outcome::Failed(error.to_string()),
+    };
+
+    if let Some(stdout) = child.stdout.take() {
+        let mut job = (1, 1);
+        let stderr = child.stderr.take();
+        let errors = std::thread::spawn(move || {
+            let mut bytes = Vec::new();
+            if let Some(stderr) = stderr {
+                let _ = std::io::Read::read_to_end(&mut BufReader::new(stderr), &mut bytes);
+            }
+            bytes
+        });
+        let mut last = 0;
+        let mut reader = BufReader::new(stdout);
+        let mut line = Vec::new();
+        while let Ok(buffer) = reader.fill_buf() {
+            if buffer.is_empty() {
+                break;
+            }
+            let end = buffer.iter().position(|byte| matches!(byte, b'\r' | b'\n'));
+            let count = end.map_or(buffer.len(), |end| end + 1);
+            line.extend_from_slice(&buffer[..end.unwrap_or(count)]);
+            reader.consume(count);
+            if end.is_some() {
+                if let Some(percent) = flatpak_progress(&String::from_utf8_lossy(&line), &mut job) {
+                    last = last.max(percent);
+                    progress.store(last, Ordering::Relaxed);
+                }
+                line.clear();
+            }
+        }
+        let status = child.wait();
+        let stderr = errors.join().unwrap_or_default();
+        return match status {
+            Ok(status) if status.success() => Outcome::Removed,
+            Ok(_) => Outcome::Failed(complaint(&stderr, &[])),
+            Err(error) => Outcome::Failed(error.to_string()),
+        };
+    }
+    match child.wait_with_output() {
+        Ok(output) if output.status.success() => Outcome::Removed,
+        Ok(output) => Outcome::Failed(complaint(&output.stderr, &output.stdout)),
+        Err(error) => Outcome::Failed(error.to_string()),
+    }
+}
+
+fn flatpak_progress(line: &str, job: &mut (u32, u32)) -> Option<u8> {
+    if let Some(count) = ["Installing ", "Updating "]
+        .iter()
+        .find_map(|prefix| line.split_once(prefix).map(|(_, rest)| rest))
+    {
+        let end = count.find(|c: char| !c.is_ascii_digit() && c != '/').unwrap_or(count.len());
+        let parsed = count[..end].split_once('/').and_then(|(at, total)| {
+            Some((at.parse::<u32>().ok()?, total.parse::<u32>().ok()?))
+        });
+        if let Some((at, total)) = parsed.filter(|&(at, total)| at > 0 && at <= total) {
+            *job = (at, total);
+        }
+    }
+    let percent = line.rsplit_once('%')?.0;
+    let digits = percent.as_bytes().iter().rev().take_while(|byte| byte.is_ascii_digit()).count();
+    let percent = percent[percent.len() - digits..].parse::<u64>().ok()?.min(100);
+    let (at, total) = *job;
+    Some(((u64::from(at - 1) * 100 + percent) / u64::from(total)) as u8)
+}
+
 /// Authenticate if a password was given, then do it.
 fn carry_out(doing: &Doing, password: Option<Secret>) -> Outcome {
     if let Some(password) = password {
@@ -477,6 +660,16 @@ fn carry_out(doing: &Doing, password: Option<Secret>) -> Outcome {
     }
     let removal = match doing {
         Doing::Package(removal) => removal,
+        Doing::ManagedDirectories(paths) => {
+            for path in paths {
+                if let Err(error) = std::fs::remove_dir_all(path) {
+                    if error.kind() != std::io::ErrorKind::NotFound {
+                        return Outcome::Failed(error.to_string());
+                    }
+                }
+            }
+            return Outcome::Removed;
+        }
         // One file, and its own error: nothing was run, so there is no tool's
         // complaint to reduce to a line.
         Doing::File(at) => {
@@ -486,6 +679,35 @@ fn carry_out(doing: &Doing, password: Option<Secret>) -> Outcome {
             }
         }
     };
+    let steam_flatpak = removal.package == "com.valvesoftware.Steam"
+        && removal.argv.first().is_some_and(|arg| arg == "flatpak")
+        && removal.argv.get(1).is_some_and(|arg| arg == "uninstall");
+    if steam_flatpak {
+        // Stop only this application so it cannot keep its deployment or
+        // recreate its data while Flatpak is removing it.
+        let _ = Command::new("flatpak")
+            .args(["kill", "com.valvesoftware.Steam"])
+            .output();
+        let until = Instant::now() + std::time::Duration::from_secs(5);
+        loop {
+            let running = Command::new("flatpak").args(["ps", "--columns=application"]).output();
+            match running {
+                Ok(output) if output.status.success() => {
+                    if !String::from_utf8_lossy(&output.stdout).lines()
+                        .any(|line| line.trim() == "com.valvesoftware.Steam")
+                    {
+                        break;
+                    }
+                }
+                Ok(output) => return Outcome::Failed(complaint(&output.stderr, &output.stdout)),
+                Err(error) => return Outcome::Failed(error.to_string()),
+            }
+            if Instant::now() >= until {
+                return Outcome::Failed(crate::i18n::text("shell-steam-still-running").to_string());
+            }
+            std::thread::sleep(std::time::Duration::from_millis(100));
+        }
+    }
     let mut command = if removal.root {
         // `-n`, so that a timestamp which expired between validating and here
         // comes back as a failure rather than as a process sitting on a prompt

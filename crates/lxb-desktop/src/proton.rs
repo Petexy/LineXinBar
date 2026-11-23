@@ -1288,7 +1288,7 @@ pub struct Runtime {
 /// because today's shell has no use for it is a field the next change has to
 /// rediscover. See `crates/lxb-proton/src/report.rs`.
 #[allow(dead_code)]
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 pub struct Probe {
     pub protocol: u32,
     #[serde(default)]
@@ -1792,6 +1792,7 @@ pub enum Heard {
     /// What was left of a game's Windows, and is not left any more.
     Ended(Ended),
     /// The helper is not answering, or is a version this shell cannot read.
+    GameReadFinished,
     Broken(String),
 }
 
@@ -2013,6 +2014,7 @@ pub struct Proton {
 }
 
 struct Inner {
+    game_reads: std::cell::Cell<usize>,
     asks: Sender<Ask>,
     heard: Receiver<Heard>,
     /// The helper, for the one question not put through `asks`: what is on
@@ -2152,6 +2154,7 @@ impl Proton {
         let generation = Arc::new(AtomicU64::new(0));
         let proton = Proton {
             inner: Some(Inner {
+                game_reads: std::cell::Cell::new(0),
                 asks,
                 heard,
                 // Nobody to ask about a disc: the test says what the helper
@@ -2186,6 +2189,7 @@ impl Proton {
         let (tell, heard) = std::sync::mpsc::channel::<Heard>();
         Proton {
             inner: Some(Inner {
+                game_reads: std::cell::Cell::new(0),
                 asks,
                 heard,
                 helper: PathBuf::new(),
@@ -2223,11 +2227,13 @@ impl Proton {
                     // thread's business is only to say which job a line
                     // came out of.
                     answer(&helper, &ask, counted.load(Ordering::SeqCst), &says);
+                    if matches!(ask, Ask::Games) {
+                        let _ = says.send(Heard::GameReadFinished);
+                    }
                 }
             })
             .ok();
         let _ = asks.send(Ask::Probe);
-        let _ = asks.send(Ask::Games);
         // The Protons, before anybody asks for them. A Compatibility list
         // with nothing in it cannot be opened at all — `menu::Menu::descend`
         // refuses a list with no row anybody can stand on — so a shell that
@@ -2237,6 +2243,7 @@ impl Proton {
         let _ = asks.send(Ask::Tools);
         Proton {
             inner: Some(Inner {
+                game_reads: std::cell::Cell::new(0),
                 asks,
                 heard,
                 helper: asked,
@@ -2281,7 +2288,20 @@ impl Proton {
         if matches!(ask, Ask::Fetch | Ask::Import { .. }) {
             inner.generation.fetch_add(1, Ordering::SeqCst);
         }
-        let _ = inner.asks.send(ask);
+        let reading = matches!(ask, Ask::Games);
+        if reading && !self.ready() {
+            return;
+        }
+        if inner.asks.send(ask).is_ok() && reading {
+            inner.game_reads.set(inner.game_reads.get() + 1);
+        }
+    }
+
+    pub fn runtime_removed(&mut self) {
+        if let Some(probe) = self.inner.as_mut().and_then(|inner| inner.probe.as_mut()) {
+            probe.proton = None;
+        }
+        self.send(Ask::Probe);
     }
 
     /// Ask for the games again — after a game has been installed or removed
@@ -2486,8 +2506,16 @@ impl Proton {
                     if let Ok(mut roots) = ROOTS.lock() {
                         *roots = probe.prefix_roots.first().cloned();
                     }
+                    change.rows |= inner.probe.as_ref() != Some(&probe);
+                    let was_ready = inner
+                        .probe
+                        .as_ref()
+                        .and_then(|probe| probe.proton.as_ref())
+                        .is_some_and(Tool::usable);
+                    if !was_ready && probe.proton.as_ref().is_some_and(Tool::usable) {
+                        asks.push(Ask::Games);
+                    }
                     inner.probe = Some(probe);
-                    change.rows = true;
                 }
                 Heard::Tooled(tools) => {
                     inner.chosen = tools.chosen.clone();
@@ -2664,6 +2692,10 @@ impl Proton {
                         ));
                     }
                 }
+                Heard::GameReadFinished => {
+                    inner.game_reads.set(inner.game_reads.get().saturating_sub(1));
+                    change.rows = true;
+                }
                 Heard::Broken(why) => {
                     tracing::warn!(why, "the Windows Apps helper");
                     // A helper that cannot answer cannot be about to hand
@@ -2677,7 +2709,7 @@ impl Proton {
             }
         }
         for ask in asks {
-            let _ = inner.asks.send(ask);
+            self.send(ask);
         }
         change
     }
@@ -2698,7 +2730,7 @@ fn protocol_of(heard: &Heard) -> Option<u32> {
         Heard::Working(_, said) => Some(said.protocol),
         Heard::Removed(said) => Some(said.protocol),
         Heard::Ended(said) => Some(said.protocol),
-        Heard::Broken(_) => None,
+        Heard::GameReadFinished | Heard::Broken(_) => None,
     }
 }
 
@@ -3022,6 +3054,14 @@ impl Proton {
 // --- what the shell draws ---------------------------------------------------
 
 impl Proton {
+    pub fn reading_library(&self) -> bool {
+        self.inner.as_ref().is_some_and(|inner| {
+            !inner.broken
+                && inner.game_reads.get() > 0
+                && self.ready()
+        })
+    }
+
     /// The line under the Windows Apps row in the Games column, or `None`
     /// where there is no row at all.
     ///
@@ -3037,16 +3077,20 @@ impl Proton {
             return Some(crate::i18n::text("windows-looking").to_string());
         };
         if let Some(doing) = &inner.doing {
-            return Some(
-                crate::i18n::text(match doing.stage {
-                    Stage::Checking | Stage::Settling => "windows-settling",
-                    _ => "windows-getting-ready",
-                })
-                .to_string(),
-            );
+            let note = crate::i18n::text(match doing.stage {
+                Stage::Checking | Stage::Settling => "windows-settling",
+                _ => "windows-getting-ready",
+            });
+            return Some(match doing.progress {
+                Some(done) => format!("{note} · {}%", setup_percent(done)),
+                None => note.to_string(),
+            });
         }
         if probe.proton.as_ref().is_none_or(|tool| !tool.usable()) {
-            return Some(crate::i18n::text("windows-press-to-set-up").to_string());
+            return Some(crate::i18n::text("shell-press-to-download-and-set-up").to_string());
+        }
+        if self.reading_library() {
+            return Some(crate::i18n::text("shell-looking-through-your-games").to_string());
         }
         // A disc's own Windows is not a game anybody can find in the column,
         // so it is not counted as one.
@@ -3124,7 +3168,7 @@ impl Proton {
                         // The one press worth offering on a machine that has
                         // nothing to run anything with: it fetches first and
                         // installs after.
-                        false => crate::i18n::text("windows-press-to-set-up").to_string(),
+                        false => crate::i18n::text("shell-press-to-download-and-set-up").to_string(),
                     }),
                 },
                 // A plus: this row adds a program the machine did not have.
@@ -3153,7 +3197,7 @@ impl Proton {
                 title: crate::i18n::text("windows-add-a-game-or-app-folder").to_string(),
                 comment: Some(match ready {
                     true => crate::i18n::text("windows-add-a-game-or-app-folder-note").to_string(),
-                    false => crate::i18n::text("windows-press-to-set-up").to_string(),
+                    false => crate::i18n::text("shell-press-to-download-and-set-up").to_string(),
                 }),
                 icon: Some(crate::icons::FILE_FOLDER.to_string()),
                 place: Some(crate::files::Place::Volumes(crate::files::Shows::Folders(
@@ -3241,4 +3285,8 @@ impl Proton {
             false => Press::SetUp,
         }
     }
+}
+
+pub(crate) fn setup_percent(share: f32) -> u8 {
+    (share.clamp(0.0, 1.0) * 100.0).round() as u8
 }

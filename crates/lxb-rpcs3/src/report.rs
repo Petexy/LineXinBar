@@ -27,9 +27,10 @@ pub struct Probe {
     pub protocol: u32,
     /// The RPCS3 that would be used, or `None` for a machine with none.
     pub rpcs3: Option<Installation>,
-    /// Whether `flatpak` is here, which is what decides whether the shell may
-    /// offer to install RPCS3 at all.
+    /// Whether Flatpak is available for installing RPCS3.
     pub flatpak: bool,
+    #[serde(default)]
+    pub native: bool,
     /// The PlayStation 3 system software that RPCS3 has, `4.93`, or `None`
     /// where it has none — no game boots without it.
     pub firmware: Option<String>,

@@ -241,7 +241,7 @@ pub fn is_ps3_folder(name: &str) -> bool {
 pub fn folder_row() -> Entry {
     let comment = match folder() {
         Some(at) => crate::screenshot::abbreviated(&at),
-        None => crate::i18n::text("ps3-choose-the-folder-your-games-are-in").to_string(),
+        None => crate::i18n::text("shell-choose-the-folder-your-games-are-in").to_string(),
     };
     Entry::Folder(apps::Folder {
         title_message: Some("shell-games-folder"),
@@ -350,6 +350,8 @@ struct Probe {
     protocol: u32,
     rpcs3: Option<Installation>,
     flatpak: bool,
+    #[serde(default)]
+    native: bool,
     firmware: Option<String>,
     config: Option<String>,
 }
@@ -585,7 +587,7 @@ struct Permission {
 
 enum Ask {
     Probe,
-    Setup,
+    Setup { native: bool },
     /// RPCS3 has been removed; the helper is to forget what this integration
     /// kept for it — see its `setup::forget`. `data` is the second of the
     /// panel's two buttons, **Remove everything**.
@@ -626,7 +628,13 @@ fn answer(helper: &Path, ask: &Ask, back: &Sender<Heard>) {
     let mut command = Command::new(helper);
     match ask {
         Ask::Probe => command.arg("probe"),
-        Ask::Setup => command.arg("setup"),
+        Ask::Setup { native } => {
+            command.arg("setup");
+            if *native {
+                command.arg("--native");
+            }
+            &mut command
+        }
         Ask::Forget { data: true } => command.arg("forget").arg("--data"),
         Ask::Forget { data: false } => command.arg("forget"),
         Ask::Scan(folder) => command.arg("scan").args(folder),
@@ -658,7 +666,7 @@ fn answer(helper: &Path, ask: &Ask, back: &Sender<Heard>) {
             }
             let heard = match ask {
                 Ask::Probe => serde_json::from_str(line).map(Heard::Probed),
-                Ask::Setup => serde_json::from_str(line).map(Heard::SettingUp),
+                Ask::Setup { .. } => serde_json::from_str(line).map(Heard::SettingUp),
                 Ask::Forget { .. } => serde_json::from_str(line).map(Heard::Forgotten),
                 Ask::Scan(_) => serde_json::from_str(line).map(Heard::Scanned),
                 Ask::Key(image) => {
@@ -737,10 +745,12 @@ struct Inner {
     trophies_coming: Option<BTreeMap<String, TrophySet>>,
 }
 
+#[derive(PartialEq, Eq)]
 enum Found {
     Asking,
     Absent {
         flatpak: bool,
+        native: bool,
     },
     Here {
         command: Vec<String>,
@@ -776,8 +786,10 @@ impl Working {
     /// What is happening, as the panel says it.
     pub fn sentence(&self) -> String {
         let key = match self.stage {
-            Stage::Remote | Stage::Installing => "ps3-getting-rpcs3",
-            Stage::Downloading | Stage::Firmware => "ps3-getting-the-system-software",
+            Stage::Remote => "shell-getting-ready",
+            Stage::Installing => "launcher-downloading-and-installing",
+            Stage::Downloading => "ps3-getting-the-system-software",
+            Stage::Firmware => "ps3-installing-firmware",
             Stage::Unpacking | Stage::Adding => "ps3-installing-the-game",
             Stage::Done => "ps3-ready",
             Stage::Failed => "ps3-not-done",
@@ -944,7 +956,7 @@ impl Ps3 {
     }
 
     /// Get RPCS3 and the system software, whichever is missing.
-    pub fn set_up(&mut self) {
+    pub fn set_up(&mut self, native: bool) {
         let Some(inner) = self.inner.as_mut() else {
             return;
         };
@@ -952,7 +964,7 @@ impl Ps3 {
             return;
         }
         inner.setting_up = Some(Working::new());
-        self.send(Ask::Setup);
+        self.send(Ask::Setup { native });
     }
 
     /// RPCS3 has gone; tell the helper to take what was kept for it.
@@ -1107,8 +1119,7 @@ impl Ps3 {
                         change.rows = true;
                         continue;
                     }
-                    let was_here = matches!(inner.found, Found::Here { .. });
-                    inner.found = match probe.rpcs3 {
+                    let found = match probe.rpcs3 {
                         Some(installation) => Found::Here {
                             installed: installed_where(&installation),
                             play: match installation.play.is_empty() {
@@ -1121,17 +1132,24 @@ impl Ps3 {
                         },
                         None => Found::Absent {
                             flatpak: probe.flatpak,
+                            native: probe.native,
                         },
                     };
+                    let installation_changed = inner.found != found;
+                    inner.found = found;
                     tracing::info!(config = ?probe.config, "the PlayStation 3 helper has probed");
                     crate::ps3_settings::known_config(match &inner.found {
                         Found::Here { config, .. } => config.clone(),
                         _ => None,
                     });
-                    if !was_here && matches!(inner.found, Found::Here { .. }) {
-                        rescan = true;
+                    if installation_changed {
+                        rescan = matches!(inner.found, Found::Here { .. });
+                        inner.trophies.clear();
+                        inner.trophies_coming = None;
+                        change.trophies = true;
                     }
-                    change.rows = true;
+                    let was_broken = inner.broken.take().is_some();
+                    change.rows |= installation_changed || was_broken;
                 }
                 Heard::SettingUp(progress) if progress.protocol != PROTOCOL => {
                     tracing::warn!(said = progress.protocol, "a setup line of another protocol");
@@ -1198,7 +1216,10 @@ impl Ps3 {
                     change.rows = true;
                 }
                 Heard::Scanned(library) => {
-                    inner.reading = false;
+                    if !matches!(inner.found, Found::Here { .. }) {
+                        inner.reading = false;
+                        continue;
+                    }
                     if library.protocol != PROTOCOL {
                         inner.broken = Some("protocol".to_string());
                         change.rows = true;
@@ -1210,6 +1231,7 @@ impl Ps3 {
                     if inner.asked.as_ref().is_some_and(|asked| *asked != folder) {
                         continue;
                     }
+                    inner.reading = false;
                     inner.scanned = Some(folder);
                     inner.unreadable = library.unreadable;
                     inner.games = library.games;
@@ -1325,6 +1347,13 @@ impl Ps3 {
     }
 
     /// What pressing the row does.
+    pub fn installation_sources(&self) -> Option<(bool, bool)> {
+        match &self.inner.as_ref()?.found {
+            Found::Absent { flatpak, native } => Some((*native, *flatpak)),
+            _ => None,
+        }
+    }
+
     pub fn press(&self) -> Press {
         let Some(inner) = self.inner.as_ref() else {
             return Press::Waiting;
@@ -1339,14 +1368,22 @@ impl Ps3 {
         }
         match &inner.found {
             Found::Asking => Press::Waiting,
-            Found::Absent { flatpak: true } => Press::SetUp,
-            Found::Absent { flatpak: false } => Press::Cannot(
+            Found::Absent { flatpak, native } if *flatpak || *native => Press::SetUp,
+            Found::Absent { .. } => Press::Cannot(
                 crate::i18n::text("shell-it-cannot-be-downloaded-on-this-machine").to_string(),
             ),
             Found::Here { firmware: None, .. } => Press::SetUp,
             Found::Here { .. } if folder().is_none() && inner.games.is_empty() => Press::Folder,
             Found::Here { .. } => Press::Enter,
         }
+    }
+
+    pub fn uninstalled(&self) -> bool {
+        self.inner.as_ref().is_some_and(|inner| {
+            inner.broken.is_none()
+                && inner.setting_up.is_none()
+                && matches!(inner.found, Found::Absent { .. })
+        })
     }
 
     /// Where the RPCS3 this machine would use is, for the row that takes it
@@ -1362,6 +1399,14 @@ impl Ps3 {
             Found::Here { installed, .. } => installed.clone(),
             Found::Asking | Found::Absent { .. } => None,
         }
+    }
+
+    pub fn reading_library(&self) -> bool {
+        self.inner.as_ref().is_some_and(|inner| {
+            inner.broken.is_none()
+                && inner.reading
+                && matches!(inner.found, Found::Here { firmware: Some(_), .. })
+        })
     }
 
     /// The line under the row. `None` on a machine without the integration,
@@ -1383,23 +1428,25 @@ impl Ps3 {
                 .unwrap_or_default();
             return Some(format!("{name} · {}", working.sentence()));
         }
+        if self.reading_library() {
+            return Some(crate::i18n::text("shell-looking-through-your-games").to_string());
+        }
         Some(match &inner.found {
             Found::Asking => crate::i18n::text("ps3-looking").to_string(),
-            Found::Absent { flatpak: true } => crate::i18n::text("ps3-press-to-set-up").to_string(),
-            Found::Absent { flatpak: false } => {
+            Found::Absent { flatpak, native } if *flatpak || *native => {
+                crate::i18n::text("shell-press-to-download-and-set-up").to_string()
+            }
+            Found::Absent { .. } => {
                 crate::i18n::text("shell-it-cannot-be-downloaded-on-this-machine").to_string()
             }
             Found::Here { firmware: None, .. } => {
-                crate::i18n::text("ps3-press-to-set-up").to_string()
-            }
-            Found::Here { .. } if inner.reading && inner.games.is_empty() => {
-                crate::i18n::text("ps3-looking").to_string()
+                crate::i18n::text("shell-press-to-download-and-set-up").to_string()
             }
             Found::Here { .. } if inner.unreadable.is_some() && inner.games.is_empty() => {
                 crate::i18n::text("ps3-the-folder-cannot-be-read").to_string()
             }
             Found::Here { .. } if folder().is_none() && inner.games.is_empty() => {
-                crate::i18n::text("ps3-choose-the-folder-your-games-are-in").to_string()
+                crate::i18n::text("shell-choose-the-folder-your-games-are-in").to_string()
             }
             Found::Here { .. } => {
                 let count = inner.games.len();

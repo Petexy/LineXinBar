@@ -44,9 +44,11 @@
 
 use std::collections::BTreeMap;
 use std::io::{Read, Seek, SeekFrom};
-use std::os::unix::fs::MetadataExt;
+use std::os::fd::{AsRawFd, FromRawFd, OwnedFd};
+use std::os::unix::fs::{FileTypeExt, MetadataExt};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
@@ -146,7 +148,14 @@ pub enum Where {
     Flatpak,
 }
 
+static PREFER_FLATPAK: AtomicBool = AtomicBool::new(false);
+
 impl Where {
+    /// Respect the Steam package selected in this LineXinBar session.
+    pub fn prefer_flatpak(prefer: bool) {
+        PREFER_FLATPAK.store(prefer, Ordering::Relaxed);
+    }
+
     /// Find it. `None` on a machine with no Valve client, which is a machine
     /// where nothing in this integration works and the shell says so once,
     /// plainly, rather than failing at every press.
@@ -169,7 +178,11 @@ impl Where {
             found.push(Where::Native(path));
         }
         if flatpak_deployed() && on_path("flatpak").is_some() {
-            found.push(Where::Flatpak);
+            if PREFER_FLATPAK.load(Ordering::Relaxed) {
+                found.insert(0, Where::Flatpak);
+            } else {
+                found.push(Where::Flatpak);
+            }
         }
         found
     }
@@ -196,6 +209,10 @@ impl Where {
             Where::Native(path) => Installed::Package(path.clone()),
             Where::Flatpak => Installed::Flatpak(FLATPAK_APP),
         }
+    }
+
+    pub(crate) fn uses_debian_installer(&self) -> bool {
+        matches!(self, Self::Native(path) if path == Path::new("/usr/games/steam"))
     }
 
     pub(crate) fn command(&self) -> Command {
@@ -541,13 +558,19 @@ impl Options {
         match client {
             // The two symbolic links the client maintains come first, since
             // those follow a Steam that has been moved, then the directory it
-            // unpacks into — which is also where a client that has never run
-            // will put itself, and so is the fallback.
+            // unpacks into. The Debian launcher has its own first-run path,
+            // which matters before Steam has created its library or log.
             Where::Native(_) => Options {
                 root: crate::library::native_roots(home)
                     .into_iter()
                     .find(|path| crate::library::looks_like_a_root(path))
-                    .unwrap_or_else(|| crate::library::unpacks_into(home)),
+                    .unwrap_or_else(|| {
+                        if client.uses_debian_installer() {
+                            debian_setup_root(home)
+                        } else {
+                            crate::library::unpacks_into(home)
+                        }
+                    }),
                 home: home.join(".steam"),
             },
             Where::Flatpak => {
@@ -559,6 +582,23 @@ impl Options {
             }
         }
     }
+}
+
+/// Match the Debian launcher's directory choice before the client is installed.
+fn debian_setup_root(home: &Path) -> PathBuf {
+    let control = home.join(".steam");
+    for name in ["steam", "root"] {
+        let link = control.join(name);
+        if link.is_symlink() {
+            if let Ok(target) = link.canonicalize() {
+                return target;
+            }
+        }
+    }
+    if control.join("steam").is_dir() {
+        return control;
+    }
+    control.join("debian-installation")
 }
 
 /// The whole of what this shell says to Valve's client on the command line.
@@ -950,6 +990,7 @@ pub enum Permission {
 /// about to stop.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct NotOurs {
+    pub another_session: bool,
     /// Which client is in the way.
     pub what: String,
     /// And what moving it would cost, said to whoever is about to decide.
@@ -959,8 +1000,16 @@ pub struct NotOurs {
 impl NotOurs {
     fn new(what: &str, cost: &str) -> NotOurs {
         NotOurs {
+            another_session: false,
             what: what.to_string(),
             cost: cost.to_string(),
+        }
+    }
+
+    pub(crate) fn another_session(cost: &str) -> Self {
+        Self {
+            another_session: true,
+            ..Self::new("Steam is running in another session.", cost)
         }
     }
 }
@@ -1122,8 +1171,7 @@ pub fn proven_for(client: &Where, options: &Options, account: u32) -> Result<Pro
         ));
     }
     if !in_this_session(options) {
-        return Err(Refusal::NotOurs(NotOurs::new(
-            "Steam is running in another session.",
+        return Err(Refusal::NotOurs(NotOurs::another_session(
             "This would happen there, not here.",
         )));
     }
@@ -1363,10 +1411,7 @@ pub fn wake(
     // the person who pressed the button rather than decisions for this module.
     if not_ours && permission == Permission::AskFirst {
         let why = if elsewhere {
-            NotOurs::new(
-                "Steam is running in another session.",
-                "Moving it here ends its downloads.",
-            )
+            NotOurs::another_session("Moving it here ends its downloads.")
         } else {
             NotOurs::new(
                 "Steam is signed in to another account.",
@@ -2141,7 +2186,7 @@ pub fn in_this_session(options: &Options) -> bool {
         .iter()
         .map(|name| std::env::var(name).ok())
         .collect();
-    if theirs == ours {
+    if same_displays(pid, &environ, &theirs, &ours) {
         return true;
     }
     tracing::info!(
@@ -2151,6 +2196,120 @@ pub fn in_this_session(options: &Options) -> bool {
         "Valve's client is drawing into another session"
     );
     false
+}
+
+/// A specific Steam client in another graphical session under this user.
+pub struct OtherSession {
+    client: Where,
+    pipe: PathBuf,
+    pid: u32,
+    process: OwnedFd,
+}
+
+pub enum OtherSessionClose {
+    Closed,
+    StillRunning,
+}
+
+impl OtherSession {
+    /// Pin the process before asking the user so a replacement is never the
+    /// target of a confirmation meant for the previous client.
+    pub fn find() -> Option<Self> {
+        let crate::backend::Backend { client, options } = crate::backend::Backend::chosen()?;
+        let client = client?;
+        let pipe = options.home.join("steam.pipe");
+        let pid = holder_of(&pipe)?;
+        // SAFETY: pidfd_open returns a new owned descriptor on success.
+        let fd = unsafe { libc::syscall(libc::SYS_pidfd_open, pid as libc::pid_t, 0) };
+        if fd < 0 {
+            return None;
+        }
+        // SAFETY: fd is the new descriptor returned by pidfd_open.
+        let process = unsafe { OwnedFd::from_raw_fd(fd as i32) };
+        let proc_path = PathBuf::from(format!("/proc/{pid}"));
+        let owner = std::fs::metadata(&proc_path).ok()?.uid();
+        // SAFETY: geteuid takes no arguments and has no memory requirements.
+        if owner != unsafe { libc::geteuid() } {
+            return None;
+        }
+        let environ = std::fs::read(proc_path.join("environ")).ok()?;
+        let theirs = displays_in(&environ);
+        let ours: Vec<_> = DRAWS_INTO
+            .iter()
+            .map(|name| std::env::var(name).ok())
+            .collect();
+        let target = Self { client, pipe, pid, process };
+        if same_displays(pid, &environ, &theirs, &ours)
+            || holder_of(&target.pipe) != Some(pid)
+            || target.exited(0).ok()?
+        {
+            return None;
+        }
+        Some(target)
+    }
+
+    /// Close the selected client, then wait for it to exit on the worker thread.
+    pub fn close(&self, force: bool) -> std::io::Result<OtherSessionClose> {
+        if holder_of(&self.pipe) != Some(self.pid) || self.exited(0)? {
+            return Ok(OtherSessionClose::Closed);
+        }
+
+        let mut courier = None;
+        if force {
+            // SAFETY: the descriptor pins the client selected for this dialog.
+            let sent = unsafe {
+                libc::syscall(
+                    libc::SYS_pidfd_send_signal,
+                    self.process.as_raw_fd(),
+                    libc::SIGKILL,
+                    std::ptr::null::<libc::siginfo_t>(),
+                    0,
+                )
+            };
+            if sent < 0 {
+                let error = std::io::Error::last_os_error();
+                if error.raw_os_error() != Some(libc::ESRCH) {
+                    return Err(error);
+                }
+            }
+        } else {
+            courier = self.client
+                .command()
+                .arg("-shutdown")
+                .stdin(Stdio::null())
+                .stdout(Stdio::null())
+                .stderr(Stdio::null())
+                .spawn()
+                .ok();
+        }
+
+        let timeout = if force { 5_000 } else { UNTIL_IT_STOPS.as_millis() as i32 };
+        let exited = self.exited(timeout);
+        if let Some(mut courier) = courier {
+            if matches!(courier.try_wait(), Ok(None)) {
+                let _ = courier.kill();
+                let _ = courier.wait();
+            }
+        }
+        if exited? || holder_of(&self.pipe) != Some(self.pid) {
+            return Ok(OtherSessionClose::Closed);
+        }
+        Ok(OtherSessionClose::StillRunning)
+    }
+
+    fn exited(&self, timeout_ms: i32) -> std::io::Result<bool> {
+        let mut process = libc::pollfd {
+            fd: self.process.as_raw_fd(),
+            events: libc::POLLIN,
+            revents: 0,
+        };
+        // SAFETY: poll receives one initialized descriptor kept alive by self.
+        let ready = unsafe { libc::poll(&mut process, 1, timeout_ms) };
+        if ready < 0 {
+            return Err(std::io::Error::last_os_error());
+        }
+        Ok(process.revents & (libc::POLLIN | libc::POLLHUP) != 0)
+    }
 }
 
 /// The process listening on that pipe, if it can be found.
@@ -2218,15 +2377,48 @@ fn opened_for_reading(process: &Path, handle: &std::ffi::OsStr) -> bool {
 /// no Xwayland sets no `DISPLAY` at all, and it must not compare equal to one
 /// whose `DISPLAY` is the empty string.
 fn displays_in(environ: &[u8]) -> Vec<Option<String>> {
-    let named = |wanted: &str| {
-        environ
-            .split(|byte| *byte == 0)
-            .filter_map(|entry| std::str::from_utf8(entry).ok())
-            .filter_map(|entry| entry.split_once('='))
-            .find(|(name, _)| *name == wanted)
-            .map(|(_, value)| value.to_string())
+    DRAWS_INTO.iter()
+        .map(|name| environment_value(environ, name).map(str::to_string))
+        .collect()
+}
+
+fn environment_value<'a>(environ: &'a [u8], wanted: &str) -> Option<&'a str> {
+    environ
+        .split(|byte| *byte == 0)
+        .filter_map(|entry| std::str::from_utf8(entry).ok())
+        .filter_map(|entry| entry.split_once('='))
+        .find_map(|(name, value)| (name == wanted).then_some(value))
+}
+
+fn same_displays(pid: u32, environ: &[u8], theirs: &[Option<String>], ours: &[Option<String>]) -> bool {
+    theirs == ours || (
+        theirs[1] == ours[1]
+            && same_wayland_socket(pid, environ, theirs[0].as_deref(), ours[0].as_deref())
+                .unwrap_or(false)
+    )
+}
+
+/// A runtime can mount the same Wayland socket under a different name.
+fn same_wayland_socket(pid: u32, environ: &[u8], theirs: Option<&str>, ours: Option<&str>) -> Option<bool> {
+    let socket = |name: &str, runtime: Option<&str>| {
+        let path = Path::new(name);
+        if path.is_absolute() {
+            Some(path.to_path_buf())
+        } else {
+            Some(Path::new(runtime?).join(path))
+        }
     };
-    DRAWS_INTO.iter().map(|name| named(name)).collect()
+    let their_path = socket(theirs?, environment_value(environ, "XDG_RUNTIME_DIR"))?;
+    let mount_root = PathBuf::from(format!("/proc/{pid}/root"));
+    let their_socket = std::fs::metadata(mount_root.join(their_path.strip_prefix("/").ok()?)).ok()?;
+    let our_runtime = std::env::var("XDG_RUNTIME_DIR").ok();
+    let our_socket = std::fs::metadata(socket(ours?, our_runtime.as_deref())?).ok()?;
+    Some(
+        their_socket.file_type().is_socket()
+            && our_socket.file_type().is_socket()
+            && their_socket.dev() == our_socket.dev()
+            && their_socket.ino() == our_socket.ino()
+    )
 }
 
 /// The account the client is signed in as, if it is signed in.
@@ -3347,6 +3539,14 @@ pub mod account {
             .is_some_and(|account| !account.trim().is_empty())
     }
 
+    /// Whether this layout retains automatic login for the given account.
+    pub fn remembers_login(home: &Path, account: &str) -> bool {
+        !account.is_empty()
+            && read(&home.join("registry.vdf"))
+                .and_then(|node| node.string(&AUTO_LOGIN_USER).map(str::to_owned))
+                .is_some_and(|name| name.eq_ignore_ascii_case(account))
+    }
+
     /// Where the client keeps the credentials it signs itself back in with.
     ///
     /// One entry per account it remembers, under a key derived from the
@@ -3580,7 +3780,10 @@ pub mod account {
             )
             .unwrap();
 
+            assert!(remembers_login(&root, "SOMEONE"));
+            assert!(!remembers_login(&root, "somebody"));
             sign_out(&root, &root, "someone");
+            assert!(!remembers_login(&root, "someone"));
 
             let registry = vdf::parse(&std::fs::read_to_string(root.join("registry.vdf")).unwrap());
             assert_eq!(registry.string(&AUTO_LOGIN_USER), Some(""));
@@ -5740,8 +5943,15 @@ mod tests {
         // moment later. See [`crate::AStateDirectoryOfItsOwn`].
         let _state = crate::a_state_directory_of_its_own("first-run");
         let scratch = scratch("first-run");
-        let options = Options::in_home(&Where::Native(PathBuf::from("/usr/bin/steam")), &scratch);
+        let native = Where::Native(PathBuf::from("/usr/bin/steam"));
+        let options = Options::in_home(&native, &scratch);
         assert!(!options.root.exists(), "nothing has been run here");
+
+        let debian = Where::Native(PathBuf::from("/usr/games/steam"));
+        assert_eq!(
+            Options::in_home(&debian, &scratch).root,
+            scratch.join(".steam/debian-installation")
+        );
 
         assert_eq!(expose(&options), Ok(true), "the marker had to be made");
         assert!(options.root.is_dir(), "and the directory to put it in");

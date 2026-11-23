@@ -911,15 +911,19 @@ pub fn wrap_reading(content: &str) -> Vec<String> {
 /// panel's labels are a handful of strings; the memo is emptied rather than
 /// grown without bound, since answers carry addresses and sizes that change.
 pub fn dialog_text_width(content: &str, size: f32) -> f32 {
+    single_line_width(content, size, false)
+}
+
+pub fn single_line_width(content: &str, size: f32, bold: bool) -> f32 {
     thread_local! {
         static FONTS: std::cell::RefCell<FontSystem> = std::cell::RefCell::new(shell_faces());
-        static MEMO: std::cell::RefCell<std::collections::HashMap<(String, u32), f32>> =
+        static MEMO: std::cell::RefCell<std::collections::HashMap<(String, u32, bool), f32>> =
             std::cell::RefCell::new(std::collections::HashMap::new());
     }
     if content.is_empty() || size <= 0.0 {
         return 0.0;
     }
-    let key = (content.to_owned(), size.to_bits());
+    let key = (content.to_owned(), size.to_bits(), bold);
     if let Some(width) = MEMO.with(|memo| memo.borrow().get(&key).copied()) {
         return width;
     }
@@ -929,7 +933,9 @@ pub fn dialog_text_width(content: &str, size: f32) -> f32 {
         buffer.set_size(None, None);
         buffer.set_text(
             content,
-            &Attrs::new().family(Family::Name(UI_FONT)),
+            &Attrs::new()
+                .family(Family::Name(UI_FONT))
+                .weight(if bold { Weight::BOLD } else { Weight::NORMAL }),
             Shaping::Advanced,
             None,
         );

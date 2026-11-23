@@ -118,6 +118,9 @@ pub enum Event {
         generation: u64,
         commands: mpsc::UnboundedSender<Command>,
     },
+    LibraryStarted {
+        generation: u64,
+    },
     Library {
         generation: u64,
         games: Vec<ProtocolGame>,
@@ -345,8 +348,9 @@ async fn run_session(
     }
 
     // Steam may put the license list immediately before or after the logon
-    // response. Keep the early one; otherwise wait for the push now.
-    if package_ids.is_none() {
+    // response. Wait for the push only when a library can be loaded. The
+    // main loop also accepts it if the client is installed later.
+    if package_ids.is_none() && crate::client::Where::find().is_some() {
         match wait_for_licenses(&mut connection, &mut roll, generation, worker).await? {
             LicenseWait::Packages(packages) => package_ids = Some(packages),
             LicenseWait::Failed(reason) => library_failed(worker, generation, reason),
@@ -376,9 +380,17 @@ async fn run_session(
     })));
     let achievement_slots = Arc::new(tokio::sync::Semaphore::new(4));
     let mut latest_library = 0u64;
+    let mut library_task = None;
     let mut naming = false;
     if let Some(packages) = package_ids.as_deref() {
-        start_library(&mut background, &connection, packages, &mut latest_library);
+        library_task = start_library(
+            &mut background,
+            &connection,
+            packages,
+            &mut latest_library,
+            worker,
+            generation,
+        );
     }
 
     loop {
@@ -386,12 +398,17 @@ async fn run_session(
         tokio::select! {
             command = receive_commands.recv() => match command {
                 Some(Command::Refresh) => {
+                    if let Some(task) = library_task.take() {
+                        task.abort();
+                    }
                     if let Some(packages) = package_ids.as_deref() {
-                        start_library(
+                        library_task = start_library(
                             &mut background,
                             &connection,
                             packages,
                             &mut latest_library,
+                            worker,
+                            generation,
                         );
                     }
                 }
@@ -510,11 +527,16 @@ async fn run_session(
                     match packages_from(&packet) {
                         Ok(packages) => {
                             package_ids = Some(packages);
-                            start_library(
+                            if let Some(task) = library_task.take() {
+                                task.abort();
+                            }
+                            library_task = start_library(
                                 &mut background,
                                 &connection,
                                 package_ids.as_deref().unwrap_or_default(),
                                 &mut latest_library,
+                                worker,
+                                generation,
                             );
                         }
                         Err(reason) => library_failed(worker, generation, reason),
@@ -549,7 +571,7 @@ async fn run_session(
                     // A typing notice, which nothing is said back about.
                     Some(Ok(Background::Chat(None))) => {}
                     Some(Ok(Background::Library { request, result }))
-                        if request == latest_library =>
+                        if request == latest_library && crate::client::Where::find().is_some() =>
                     {
                         match result {
                             Ok(games) => {
@@ -901,17 +923,23 @@ fn start_library(
     connection: &Arc<Connection>,
     packages: &[u32],
     latest: &mut u64,
-) {
+    worker: &Sender<WorkerMessage>,
+    generation: u64,
+) -> Option<tokio::task::AbortHandle> {
     *latest = latest.wrapping_add(1);
+    if crate::client::Where::find().is_none() {
+        return None;
+    }
+    let _ = worker.send(WorkerMessage::Cm(Event::LibraryStarted { generation }));
     let request = *latest;
     let packages = packages.to_vec();
     let connection = Arc::clone(connection);
-    tasks.spawn(async move {
+    Some(tasks.spawn(async move {
         Background::Library {
             request,
             result: load_library(&connection, &packages).await,
         }
-    });
+    }))
 }
 
 fn start_naming(
@@ -1297,6 +1325,9 @@ async fn load_library(
 /// fallback path and no cached second answer: an unanswered question is a
 /// game that does not start.
 fn library_failed(worker: &Sender<WorkerMessage>, generation: u64, reason: String) {
+    if crate::client::Where::find().is_none() {
+        return;
+    }
     let _ = worker.send(WorkerMessage::Cm(Event::LibraryFailed {
         generation,
         reason,

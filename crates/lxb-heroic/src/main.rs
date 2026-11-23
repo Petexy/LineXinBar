@@ -68,11 +68,13 @@ enum Asked {
     /// Whether this machine has Heroic, whose Epic account it holds, and
     /// whether it has a Proton to start games with.
     Probe,
-    /// Install Heroic into this user's own flatpak installation where there is
-    /// none, then make sure it has Heroic's own default Proton.
+    /// Install Heroic for this user, then set up its default Proton.
     ///
     /// Deliberately `--user`: it needs no password and no polkit agent.
-    Install,
+    Install {
+        #[arg(long)]
+        native: bool,
+    },
     /// Heroic has been taken off this machine; forget what this integration
     /// kept for it.
     ///
@@ -180,6 +182,8 @@ fn main() -> ExitCode {
     match cli.asked {
         Asked::Probe => {
             let installation = heroic::installation();
+            let selected_paths = installation.as_ref().map(|found| Paths::at(PathBuf::from(&found.config)));
+            let paths = selected_paths.as_ref().unwrap_or(&paths);
             if let Some(found) = &installation {
                 eprintln!("heroic: {:?} {:?}", found.kind, found.version);
             }
@@ -187,13 +191,18 @@ fn main() -> ExitCode {
                 &mut out,
                 &Probe {
                     protocol: PROTOCOL,
-                    account: heroic::account(&paths),
-                    proton: heroic::proton(&paths),
+                    account: installation.as_ref().and_then(|_| heroic::account(paths)),
+                    saved_native_login: heroic::native_config()
+                        .and_then(|path| heroic::account(&Paths::at(path))).is_some(),
+                    saved_flatpak_login: Paths::flatpak()
+                        .as_ref().and_then(heroic::account).is_some(),
+                    proton: heroic::proton(paths),
                     running: heroic::running(),
                     flatpak: heroic::flatpak_available(),
-                    cloud_saves: heroic::cloud_saves(&paths),
+                    native: heroic::native_available(),
+                    cloud_saves: heroic::cloud_saves(paths),
                     base: home().map(|home| {
-                        heroic::install_base(&paths, &home)
+                        heroic::install_base(paths, &home)
                             .to_string_lossy()
                             .into_owned()
                     }),
@@ -201,16 +210,16 @@ fn main() -> ExitCode {
                 },
             )
         }
-        Asked::Install => {
+        Asked::Install { native } => {
             let Some(home) = home() else {
                 return ExitCode::FAILURE;
             };
-            ended(install::run(&mut out, &paths, &home))
+            ended(install::run(&mut out, &home, native))
         }
         Asked::Forget { data } => ended(install::forget(&mut out, data)),
         Asked::SignIn => {
             let Some(installation) = heroic::installation() else {
-                say(
+                let _ = say(
                     &mut out,
                     &SignIn::Failed {
                         protocol: PROTOCOL,
@@ -237,7 +246,7 @@ fn main() -> ExitCode {
                 reason: result.err(),
             };
             let succeeded = account.name.is_none();
-            say(&mut out, &account);
+            let _ = say(&mut out, &account);
             ended(succeeded)
         }
         Asked::Art { heroes, only } => ended(art::fetch(&mut out, &paths, &only, heroes)),
@@ -266,7 +275,7 @@ fn main() -> ExitCode {
             let answer = tools::use_tool(&paths, &home, game.as_deref(), name.as_deref());
             eprintln!("use-tool: {} ({:?})", answer.note, answer.reason);
             let worked = answer.reason.is_none();
-            say(&mut out, &answer);
+            let _ = say(&mut out, &answer);
             ended(worked)
         }
         Asked::Saves { state } => {
@@ -279,7 +288,7 @@ fn main() -> ExitCode {
                 answer.note, answer.reason, answer.found
             );
             let worked = answer.reason.is_none();
-            say(&mut out, &answer);
+            let _ = say(&mut out, &answer);
             ended(worked)
         }
         Asked::Folder { dir } => {
@@ -289,7 +298,7 @@ fn main() -> ExitCode {
             let answer = folder::choose(&paths, &home, &dir);
             eprintln!("folder: {} ({:?})", answer.note, answer.reason);
             let worked = answer.reason.is_none();
-            say(&mut out, &answer);
+            let _ = say(&mut out, &answer);
             ended(worked)
         }
         Asked::Size { app_name } | Asked::Get { app_name, .. } | Asked::Remove { app_name }
@@ -309,7 +318,7 @@ fn main() -> ExitCode {
         }
         Asked::Get { app_name, repair } => {
             let (Some(installation), Some(home)) = (heroic::installation(), home()) else {
-                say(
+                let _ = say(
                     &mut out,
                     &Download {
                         protocol: PROTOCOL,
@@ -342,7 +351,7 @@ fn main() -> ExitCode {
             };
             eprintln!("remove: {} ({:?})", removal.note, removal.reason);
             let removed = removal.removed;
-            say(&mut out, &removal);
+            let _ = say(&mut out, &removal);
             ended(removed)
         }
         Asked::Library { refresh } => {
@@ -369,7 +378,7 @@ fn main() -> ExitCode {
             }
             // A signed-out account has no library, whatever legendary left
             // on the disk.
-            let account = heroic::account(&paths);
+            let account = installation.as_ref().and_then(|_| heroic::account(&paths));
             let games = if account.is_some() {
                 library::read(&paths)
             } else {
