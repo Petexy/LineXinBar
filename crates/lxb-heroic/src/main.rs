@@ -378,7 +378,7 @@ fn main() -> ExitCode {
             }
             // A signed-out account has no library, whatever legendary left
             // on the disk.
-            let account = heroic::account(&paths);
+            let account = installation.as_ref().and_then(|_| heroic::account(&paths));
             let games = if account.is_some() {
                 library::read(&paths)
             } else {

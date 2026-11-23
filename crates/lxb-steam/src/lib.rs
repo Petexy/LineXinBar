@@ -265,6 +265,8 @@ pub enum Ask {
     SignOut,
     /// Ask Steam for the library again, now, rather than at the next interval.
     Refresh,
+    /// The client was installed, removed or switched to another package.
+    ClientChanged,
     /// Have Valve's client fetch one game.
     Install {
         app_id: u32,
@@ -1042,6 +1044,7 @@ impl std::fmt::Display for StorageRefused {
 /// What Steam says back.
 #[derive(Debug, Clone)]
 pub enum Event {
+    LibraryLoading(bool),
     AchievementProgress(achievements::ProgressHeard),
     Achievements(achievements::Heard),
     /// How a download is going, read off the manifest Valve's client keeps for
@@ -1497,6 +1500,7 @@ impl Steam {
         }
         tracing::info!(before = ?self.client_at, after = ?now, "Valve's client has come or gone");
         self.client_at = now;
+        self.ask(Ask::ClientChanged);
         true
     }
 
@@ -2685,13 +2689,15 @@ fn restore(
         .as_ref()
         .map(|restored| restored.games.clone())
         .unwrap_or_default();
-    let _ = events.send(Event::LibraryAsOf(
-        remembered.as_ref().map(|restored| restored.read_at),
-    ));
-    let _ = events.send(Event::Library(library::merge(
-        owned.clone(),
-        &installed_now().games,
-    )));
+    if client::Where::find().is_some() {
+        let _ = events.send(Event::LibraryAsOf(
+            remembered.as_ref().map(|restored| restored.read_at),
+        ));
+        let _ = events.send(Event::Library(library::merge(
+            owned.clone(),
+            &installed_now().games,
+        )));
+    }
 
     // `announced` and the remembered catalogue both travel into the connection,
     // so a CM that answers a moment later does not make the account disappear
@@ -3666,7 +3672,13 @@ fn answer(
             );
             state
         }
-        Ask::Refresh => {
+        ask @ (Ask::Refresh | Ask::ClientChanged) => {
+            if matches!(ask, Ask::ClientChanged) && client::Where::find().is_none() {
+                if let State::In { commands, .. } = &state {
+                    let _ = commands.send(cm::Command::Refresh);
+                }
+                return state;
+            }
             // Offline, this is the retry. A session waiting out its five
             // seconds between attempts had nothing anybody could press: the
             // Refresh row did nothing at all, because there was no CM to ask,
@@ -5057,10 +5069,12 @@ fn answer_cm(
             // for — see [`client::offline`].
             take_back_any_offline_mode(&stored.account);
             let _ = events.send(Event::Reach(Reach::Online));
-            let _ = events.send(Event::Library(library::merge(
-                owned.clone(),
-                &installed_now().games,
-            )));
+            if client::Where::find().is_some() {
+                let _ = events.send(Event::Library(library::merge(
+                    owned.clone(),
+                    &installed_now().games,
+                )));
+            }
             State::In {
                 stored,
                 account,
@@ -5072,6 +5086,13 @@ fn answer_cm(
                 next_owned: Instant::now() + OWNED_INTERVAL,
                 next_installed: Instant::now() + INSTALLED_INTERVAL,
             }
+        }
+        (
+            cm::Event::LibraryStarted { generation },
+            state @ State::In { generation: expected, .. },
+        ) if generation == expected => {
+            let _ = events.send(Event::LibraryLoading(true));
+            state
         }
         (
             cm::Event::Library { generation, games },
@@ -5101,6 +5122,7 @@ fn answer_cm(
                 owned.clone(),
                 &installed_now().games,
             )));
+            let _ = events.send(Event::LibraryLoading(false));
             State::In {
                 stored,
                 account,
@@ -5130,6 +5152,7 @@ fn answer_cm(
             // A catalogue failure is not an authentication failure. Keep the
             // account, token and last successful catalogue intact.
             tracing::warn!(%reason, "the Steam CM/PICS library could not be read");
+            let _ = events.send(Event::LibraryLoading(false));
             if owned.is_empty() && !library_failure_announced {
                 let _ = events.send(Event::LibraryUnavailable(
                     "Steam accepted the account, but its library could not be read. LineXinBar will try again."
@@ -5636,11 +5659,18 @@ fn advance(
         } => {
             let now = Instant::now();
             if now >= next_owned {
-                let _ = commands.send(cm::Command::Refresh);
+                if client::Where::find().is_some() {
+                    let _ = commands.send(cm::Command::Refresh);
+                }
                 next_owned = now + OWNED_INTERVAL;
             }
             if now >= next_installed {
-                let on_the_disk = installed_now();
+                let has_client = client::Where::find().is_some();
+                let on_the_disk = if has_client {
+                    installed_now()
+                } else {
+                    OnTheDisk::default()
+                };
                 // Before anything is said about a row: a job whose Steam has
                 // gone out from under it can never finish, and is not this
                 // session's to report on any more.
@@ -5666,7 +5696,9 @@ fn advance(
                 // it would otherwise be the one that crawled.
                 let moving = watching.anything_is_moving()
                     || installed.values().any(|game| game.standing.moving());
-                let _ = events.send(Event::Library(library::merge(owned.clone(), &installed)));
+                if has_client {
+                    let _ = events.send(Event::Library(library::merge(owned.clone(), &installed)));
+                }
                 next_installed = now
                     + match moving {
                         true => WHILE_SOMETHING_MOVES,
