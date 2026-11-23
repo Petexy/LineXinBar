@@ -12331,6 +12331,9 @@ impl Shell {
     /// deliberately *not* one of these: that is a list that is on its way, and
     /// the panel says so where an empty list is drawn.
     fn why_there_are_no_friends(&self) -> Option<&'static str> {
+        if !settings::show_steam_friends() {
+            return Some(crate::i18n::text("privacy-hidden"));
+        }
         if !settings::steam_integration() {
             return Some(crate::i18n::text(
                 "shell-steam-is-switched-off-in-settings-games-steam",
