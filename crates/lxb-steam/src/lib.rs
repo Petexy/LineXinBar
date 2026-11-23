@@ -249,7 +249,7 @@ pub enum Ask {
     /// Does nothing where Steam is already installed, and nothing where a setup
     /// this session started is still running. Both are ordinary: the second is
     /// somebody pressing the row again to see the panel they dismissed.
-    SetUpTheClient,
+    SetUpTheClient { confirmed: bool },
     /// Begin a sign-in to be confirmed by photographing a code.
     SignInWithQr,
     /// Begin one with an account name and a password.
@@ -1624,13 +1624,21 @@ impl Steam {
         }
     }
 
+    /// Whether the Debian launcher may be waiting for the user's consent.
+    pub fn client_needs_setup_confirmation(&self) -> bool {
+        self.client_at.as_ref().is_some_and(|client| {
+            client::Options::for_client(client)
+                .is_some_and(|options| setup::needs_debian_confirmation(client, &options))
+        })
+    }
+
     /// Have it install itself, saying how that goes.
     ///
     /// Answered by [`Event::Setup`]: once per change while it runs, then
     /// exactly one [`setup::SetUp::Done`] or [`setup::SetUp::Failed`]. Safe to
     /// ask twice — see [`Ask::SetUpTheClient`].
-    pub fn set_up_the_client(&self) {
-        self.ask(Ask::SetUpTheClient);
+    pub fn set_up_the_client(&self, confirmed: bool) {
+        self.ask(Ask::SetUpTheClient { confirmed });
     }
 
     pub fn sign_in_with_qr(&self) {
@@ -2744,8 +2752,8 @@ fn answer(
         return state;
     }
     match ask {
-        Ask::SetUpTheClient => {
-            set_the_client_up(setting_up, worker, events);
+        Ask::SetUpTheClient { confirmed } => {
+            set_the_client_up(setting_up, worker, events, confirmed);
             state
         }
         Ask::SignInWithQr => match auth::begin_with_qr(wire) {
@@ -3735,6 +3743,7 @@ fn set_the_client_up(
     setting_up: &mut bool,
     worker: &Sender<WorkerMessage>,
     events: &Sender<Event>,
+    confirmed: bool,
 ) {
     if *setting_up {
         tracing::info!("Valve's client is already being set up by this session");
@@ -3763,7 +3772,7 @@ fn set_the_client_up(
     *setting_up = true;
     let worker = worker.clone();
     std::thread::spawn(move || {
-        setup::run(&client, &options, |word| {
+        setup::run(&client, &options, confirmed, |word| {
             let _ = worker.send(WorkerMessage::SetUp(word));
         });
     });

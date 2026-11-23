@@ -60,3 +60,6 @@ pub mod server {
         wayland_scanner::generate_server_code!("protocols/frog-color-management-v1.xml");
     }
 }
+
+/// Visibility key for the classless X11 window opened by the Steam bootstrapper.
+pub const STEAM_BOOTSTRAP_WINDOW: &str = "lxb-steam-bootstrap";

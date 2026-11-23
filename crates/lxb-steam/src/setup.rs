@@ -119,6 +119,24 @@ pub fn needed(options: &Options) -> bool {
     !crate::library::looks_like_a_root(&options.root)
 }
 
+/// Debian asks for consent when any part of the bootstrap is missing.
+pub(crate) fn needs_debian_confirmation(client: &Where, options: &Options) -> bool {
+    use std::os::unix::fs::PermissionsExt;
+
+    client.uses_debian_installer()
+        && [
+            "steam.sh",
+            "ubuntu12_32/steam",
+            "ubuntu12_32/steam-runtime/run.sh",
+            "ubuntu12_32/steam-runtime/setup.sh",
+        ]
+        .iter()
+        .any(|file| {
+            !std::fs::metadata(options.root.join(file))
+                .is_ok_and(|metadata| metadata.permissions().mode() & 0o111 != 0)
+        })
+}
+
 /// How far along the first setup is, as the updater's own log says it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Step {
@@ -163,8 +181,8 @@ pub enum SetUp {
 /// `say` is called for every change and for the ending. It is called at least
 /// once: a setup that fails before Valve's launcher has written a word still
 /// answers, because something raised a panel to wait for this.
-pub fn run(client: &Where, options: &Options, say: impl Fn(SetUp)) {
-    match install(client, options, &say) {
+pub fn run(client: &Where, options: &Options, confirmed: bool, say: impl Fn(SetUp)) {
+    match install(client, options, confirmed, &say) {
         Ok(()) => {
             tracing::info!(
                 root = %options.root.display(),
@@ -181,7 +199,12 @@ pub fn run(client: &Where, options: &Options, say: impl Fn(SetUp)) {
 
 /// The whole of it, with the ending as a `Result` so the one place above can
 /// turn it into the one event.
-fn install(client: &Where, options: &Options, say: &impl Fn(SetUp)) -> Result<(), String> {
+fn install(
+    client: &Where,
+    options: &Options,
+    confirmed: bool,
+    say: &impl Fn(SetUp),
+) -> Result<(), String> {
     // The same turn a wake takes, held for the whole of it, and for a stronger
     // reason than a wake has: this unpacks half a gigabyte into the directory a
     // wake would be starting a client out of. Two of them at once is two of
@@ -226,7 +249,27 @@ fn install(client: &Where, options: &Options, say: &impl Fn(SetUp)) -> Result<()
     // same log, and the only thing given up is the child to ask about: the
     // stall below is what says it has stopped.
     let already = crate::client::running(&options.home);
+    if already && !crate::client::in_this_session(options) {
+        return Err(
+            "Steam is still running in another session. Close it there, then try again."
+                .to_string(),
+        );
+    }
+    let previous_log_size = if already {
+        0
+    } else {
+        std::fs::metadata(log(&options.root)).map_or(0, |file| file.len())
+    };
 
+
+    let needs_confirmation = needs_debian_confirmation(client, options);
+    let confirmation = if confirmed && needs_confirmation && !already {
+        Some(Confirmation::new().map_err(|error| {
+            format!("Could not prepare the Steam installer confirmation: {error}")
+        })?)
+    } else {
+        None
+    };
     // Before the launcher is started, and that ordering is the whole of why it
     // works: the client reads the marker as it comes up and never looks again.
     // It costs nothing on the download and saves a restart at the end of it —
@@ -237,9 +280,14 @@ fn install(client: &Where, options: &Options, say: &impl Fn(SetUp)) -> Result<()
     // there".
     let ours = crate::client::expose(options)?;
 
-    // Kept rather than dropped. See the module docs: a first start is the one
-    // that can be over in a second, and a launcher that has exited without
-    // finishing is the only failure signal that needs no prose of Valve's.
+    if needs_confirmation && confirmation.is_none() {
+        say(SetUp::Working(Step {
+            said: "Select Install in the Steam installer window to continue.".to_string(),
+            percent: None,
+        }));
+    }
+    let console = options.root.join("logs/console-linux.txt");
+    let mut previous_console_size = std::fs::metadata(&console).map_or(0, |file| file.len());
     let mut launcher = match already {
         true => {
             tracing::info!(
@@ -254,10 +302,12 @@ fn install(client: &Where, options: &Options, say: &impl Fn(SetUp)) -> Result<()
                 root = %options.root.display(),
                 "starting Valve's client for the first time on this machine"
             );
+            let mut command = client.command();
+            if let Some(confirmation) = &confirmation {
+                confirmation.apply(&mut command);
+            }
             Some(
-                client
-                    .command()
-                    .args(words)
+                command.args(words)
                     .stdin(Stdio::null())
                     .stdout(Stdio::null())
                     .stderr(Stdio::null())
@@ -267,7 +317,18 @@ fn install(client: &Where, options: &Options, say: &impl Fn(SetUp)) -> Result<()
         }
     };
 
-    let outcome = watch(options, say, launcher.as_mut());
+    let outcome = watch(options, say, launcher.as_mut(), previous_log_size, || {
+        if !matches!(client, Where::Flatpak) {
+            return false;
+        }
+        if std::fs::metadata(&console).is_ok_and(|file| file.len() < previous_console_size) {
+            previous_console_size = 0;
+        }
+        tail_since(&console, previous_console_size).is_some_and(|text| {
+            text.contains("requires a working D-Bus session bus")
+                && text.contains("flatpak-portal service")
+        })
+    });
 
     // Whatever happened, the marker is spent — it is read as the client starts
     // and never again — and only what this call created is taken back. The same
@@ -297,6 +358,45 @@ fn install(client: &Where, options: &Options, say: &impl Fn(SetUp)) -> Result<()
     outcome
 }
 
+/// A private PATH entry for one confirmed Debian launcher invocation.
+struct Confirmation(std::path::PathBuf);
+
+impl Confirmation {
+    fn new() -> std::io::Result<Self> {
+        use std::os::unix::fs::{DirBuilderExt, OpenOptionsExt};
+        use std::io::Write;
+
+        let directory = std::env::temp_dir().join(format!(
+            "lxb-steam-confirm-{:032x}",
+            rand::random::<u128>()
+        ));
+        std::fs::DirBuilder::new().mode(0o700).create(&directory)?;
+        let confirmation = Self(directory);
+        std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .mode(0o700)
+            .open(confirmation.0.join("zenity"))?
+            .write_all(include_bytes!("confirm-debian-steam.sh"))?;
+        Ok(confirmation)
+    }
+
+    fn apply(&self, command: &mut std::process::Command) {
+        let mut path = self.0.as_os_str().to_owned();
+        path.push(":");
+        path.push(std::env::var_os("PATH").unwrap_or_else(|| "/usr/bin:/bin".into()));
+        command.env("PATH", path);
+    }
+}
+
+impl Drop for Confirmation {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_file(self.0.join("zenity"));
+        let _ = std::fs::remove_dir(self.0.join("used"));
+        let _ = std::fs::remove_dir(&self.0);
+    }
+}
+
 /// Watch it happen, and say when it stops.
 ///
 /// `launcher` is the process this module started, where it started one. `None`
@@ -307,13 +407,18 @@ fn watch(
     options: &Options,
     say: &impl Fn(SetUp),
     mut launcher: Option<&mut std::process::Child>,
+    mut previous_log_size: u64,
+    mut flatpak_portal_failed: impl FnMut() -> bool,
 ) -> Result<(), String> {
     let mut said: Option<Step> = None;
-    let mut written = 0;
+    let mut written = previous_log_size;
     let mut last_moved = Instant::now();
     let mut gone_since: Option<Instant> = None;
 
     loop {
+        if flatpak_portal_failed() {
+            return Err("Steam Flatpak could not start: it requires a working D-Bus session and Flatpak portal.".to_string());
+        }
         // Asked first, so that a launcher which has already handed over to the
         // client it installed is never mistaken for one that fell over.
         if finished(options) {
@@ -335,7 +440,10 @@ fn watch(
             last_moved = Instant::now();
         }
 
-        if let Some(step) = read(&options.root) {
+        if now < previous_log_size {
+            previous_log_size = 0;
+        }
+        if let Some(step) = read_since(&options.root, previous_log_size) {
             if said.as_ref() != Some(&step) {
                 said = Some(step.clone());
                 say(SetUp::Working(step));
@@ -426,7 +534,11 @@ fn fatal_line(root: &Path) -> Option<String> {
 /// and every run on a machine whose Steam directory this shell has only just
 /// made.
 pub fn read(root: &Path) -> Option<Step> {
-    let text = tail(&log(root))?;
+    read_since(root, 0)
+}
+
+fn read_since(root: &Path, offset: u64) -> Option<Step> {
+    let text = tail_since(&log(root), offset)?;
     text.lines().rev().find_map(|line| said_about(line.trim()))
 }
 
@@ -454,16 +566,20 @@ const TAIL: u64 = 16 * 1024;
 /// starts in the middle of the file starts in the middle of a line, and a
 /// half-line is not something to parse a number out of.
 fn tail(path: &Path) -> Option<String> {
+    tail_since(path, 0)
+}
+
+fn tail_since(path: &Path, offset: u64) -> Option<String> {
     use std::io::{Read, Seek, SeekFrom};
 
     let mut file = std::fs::File::open(path).ok()?;
     let length = file.metadata().ok()?.len();
-    let from = length.saturating_sub(TAIL);
+    let from = length.saturating_sub(TAIL).max(offset);
     file.seek(SeekFrom::Start(from)).ok()?;
     let mut bytes = Vec::with_capacity(TAIL as usize);
     file.read_to_end(&mut bytes).ok()?;
     let text = String::from_utf8_lossy(&bytes).into_owned();
-    match from == 0 {
+    match from == offset {
         true => Some(text),
         false => text.split_once('\n').map(|(_, rest)| rest.to_string()),
     }

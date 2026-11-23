@@ -211,6 +211,10 @@ impl Where {
         }
     }
 
+    pub(crate) fn uses_debian_installer(&self) -> bool {
+        matches!(self, Self::Native(path) if path == Path::new("/usr/games/steam"))
+    }
+
     pub(crate) fn command(&self) -> Command {
         let mut command = match self {
             Where::Native(path) => Command::new(path),
@@ -554,13 +558,19 @@ impl Options {
         match client {
             // The two symbolic links the client maintains come first, since
             // those follow a Steam that has been moved, then the directory it
-            // unpacks into — which is also where a client that has never run
-            // will put itself, and so is the fallback.
+            // unpacks into. The Debian launcher has its own first-run path,
+            // which matters before Steam has created its library or log.
             Where::Native(_) => Options {
                 root: crate::library::native_roots(home)
                     .into_iter()
                     .find(|path| crate::library::looks_like_a_root(path))
-                    .unwrap_or_else(|| crate::library::unpacks_into(home)),
+                    .unwrap_or_else(|| {
+                        if client.uses_debian_installer() {
+                            debian_setup_root(home)
+                        } else {
+                            crate::library::unpacks_into(home)
+                        }
+                    }),
                 home: home.join(".steam"),
             },
             Where::Flatpak => {
@@ -572,6 +582,23 @@ impl Options {
             }
         }
     }
+}
+
+/// Match the Debian launcher's directory choice before the client is installed.
+fn debian_setup_root(home: &Path) -> PathBuf {
+    let control = home.join(".steam");
+    for name in ["steam", "root"] {
+        let link = control.join(name);
+        if link.is_symlink() {
+            if let Ok(target) = link.canonicalize() {
+                return target;
+            }
+        }
+    }
+    if control.join("steam").is_dir() {
+        return control;
+    }
+    control.join("debian-installation")
 }
 
 /// The whole of what this shell says to Valve's client on the command line.
@@ -5916,8 +5943,15 @@ mod tests {
         // moment later. See [`crate::AStateDirectoryOfItsOwn`].
         let _state = crate::a_state_directory_of_its_own("first-run");
         let scratch = scratch("first-run");
-        let options = Options::in_home(&Where::Native(PathBuf::from("/usr/bin/steam")), &scratch);
+        let native = Where::Native(PathBuf::from("/usr/bin/steam"));
+        let options = Options::in_home(&native, &scratch);
         assert!(!options.root.exists(), "nothing has been run here");
+
+        let debian = Where::Native(PathBuf::from("/usr/games/steam"));
+        assert_eq!(
+            Options::in_home(&debian, &scratch).root,
+            scratch.join(".steam/debian-installation")
+        );
 
         assert_eq!(expose(&options), Ok(true), "the marker had to be made");
         assert!(options.root.is_dir(), "and the directory to put it in");
