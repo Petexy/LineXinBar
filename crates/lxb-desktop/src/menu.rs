@@ -1641,6 +1641,8 @@ pub struct Menu {
     /// screen: a menu that has been answered hands the keys straight back while
     /// the panel is still folding into its anchor.
     open: bool,
+    context: bool,
+    label_focus: Option<((usize, Command), f32)>,
     entries: Vec<Entry>,
     title: Option<Title>,
     /// The control it was raised over, in display coordinates.
@@ -1720,6 +1722,17 @@ struct Step {
     scroll: usize,
 }
 
+fn add_cancel(entries: &mut Vec<Entry>) {
+    let label = crate::i18n::text("shell-cancel");
+    if entries.iter().any(|entry| {
+        entry.enabled && entry.command == Command::Dismiss && entry.label == label
+    }) {
+        return;
+    }
+    let group = entries.last().map_or(0, |entry| entry.group.saturating_add(1));
+    entries.push(Entry::new(Command::Dismiss, label).group(group));
+}
+
 impl Menu {
     // -- what is in it ------------------------------------------------------
 
@@ -1740,6 +1753,23 @@ impl Menu {
         self.open_selecting(anchor, title, entries, rows, 0)
     }
 
+    /// Open an options menu, with a Cancel action on each level.
+    pub fn open_context(
+        &mut self,
+        anchor: [f32; 4],
+        title: Option<Title>,
+        mut entries: Vec<Entry>,
+        rows: usize,
+    ) -> bool {
+        if !entries.iter().any(|entry| entry.enabled) {
+            return false;
+        }
+        add_cancel(&mut entries);
+        self.open_at(anchor, title, entries, rows);
+        self.context = true;
+        true
+    }
+
     /// The same, opening on the first choosable row at or after `from` instead
     /// of at the top of the list.
     ///
@@ -1758,6 +1788,8 @@ impl Menu {
         if !entries.iter().any(|entry| entry.enabled) {
             return false;
         }
+        self.context = false;
+        self.label_focus = None;
         self.window = rows;
         self.selected = entries
             .iter()
@@ -1799,6 +1831,7 @@ impl Menu {
     /// on refusing to open. This is not that: it is a panel that has not
     /// finished, and something else is on its way to replace it.
     pub fn open_waiting(&mut self, anchor: [f32; 4]) {
+        self.context = false;
         self.window = 0;
         self.selected = 0;
         self.entries = Vec::new();
@@ -1842,11 +1875,14 @@ impl Menu {
     pub fn descend_selecting(
         &mut self,
         title: Option<Title>,
-        entries: Vec<Entry>,
+        mut entries: Vec<Entry>,
         from: usize,
     ) -> bool {
         if !entries.iter().any(|entry| entry.enabled) {
             return false;
+        }
+        if self.context {
+            add_cancel(&mut entries);
         }
         self.next = Some((title, entries, from));
         // Choosing a row handed the keys back. The step is not a way *off* the
@@ -1898,9 +1934,12 @@ impl Menu {
     /// Returns whether there was anything to write, on the terms
     /// [`Self::descend`] returns them: a list with nothing choosable in it is a
     /// dead end, and the caller keeps whatever it has.
-    pub fn replace(&mut self, title: Option<Title>, entries: Vec<Entry>) -> bool {
+    pub fn replace(&mut self, title: Option<Title>, mut entries: Vec<Entry>) -> bool {
         if !entries.iter().any(|entry| entry.enabled) {
             return false;
+        }
+        if self.context {
+            add_cancel(&mut entries);
         }
         if self.next.is_some() {
             self.next = Some((title, entries, 0));
@@ -2326,7 +2365,10 @@ impl Menu {
         true
     }
 
-    pub fn refresh(&mut self, entries: Vec<Entry>) -> bool {
+    pub fn refresh(&mut self, mut entries: Vec<Entry>) -> bool {
+        if self.context {
+            add_cancel(&mut entries);
+        }
         if entries == self.entries {
             return false;
         }
@@ -2408,6 +2450,10 @@ impl Menu {
     ///
     /// One number in both directions, so a menu dismissed before it finished
     /// opening falls back from where it is rather than snapping open first.
+    pub fn label_focus_seconds(&self) -> f32 {
+        self.label_focus.map_or(0.0, |(_, seconds)| seconds)
+    }
+
     pub fn animate(&mut self, dt: f32) -> f32 {
         // A press that has finished being watched is what releases the panel.
         // Until then the menu holds its ground: nothing here disappears before
@@ -2432,6 +2478,13 @@ impl Menu {
             if self.returning.is_some() {
                 self.back();
             }
+        }
+        if self.open {
+            let selected = self.selected_entry().map(|entry| (self.selected, entry.command));
+            self.label_focus = selected.map(|selected| match self.label_focus {
+                Some((before, seconds)) if before == selected => (selected, seconds + dt),
+                _ => (selected, 0.0),
+            });
         }
         // The selected row opening out to show the rest of its label, or
         // closing again behind the highlight as it leaves.
@@ -2503,6 +2556,34 @@ mod tests {
         let mut menu = Menu::default();
         assert!(menu.open_at([10.0, 10.0, 40.0, 40.0], None, rows(labels), count));
         menu
+    }
+
+    #[test]
+    fn a_context_menu_keeps_one_cancel_when_its_rows_change() {
+        let mut menu = Menu::default();
+        let anchor = [10.0, 10.0, 40.0, 40.0];
+        assert!(menu.open_context(anchor, None, rows(&["Download and set up"]), 2));
+        assert_eq!(menu.entries().last().unwrap().command, Command::Dismiss);
+
+        let cancel = Entry::new(Command::Dismiss, crate::i18n::text("shell-cancel"));
+        let mut updated = rows(&["Install"]);
+        updated.push(cancel);
+        assert!(menu.refresh(updated));
+        assert_eq!(menu.entries().len(), 2);
+
+        assert!(menu.descend(None, rows(&["Native"])));
+        assert_eq!(
+            menu.next.as_ref().unwrap().1.last().unwrap().command,
+            Command::Dismiss,
+        );
+        assert!(menu.replace(None, rows(&["Flatpak"])));
+        assert_eq!(
+            menu.next.as_ref().unwrap().1.last().unwrap().command,
+            Command::Dismiss,
+        );
+
+        assert!(menu.open_at(anchor, None, rows(&["OK"]), 2));
+        assert_eq!(menu.entries().len(), 1);
     }
 
     #[test]

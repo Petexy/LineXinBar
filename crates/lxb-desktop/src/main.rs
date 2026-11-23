@@ -12277,7 +12277,7 @@ impl Shell {
             h,
         ];
         let entries = status_rows(now);
-        if self.context_menu.open_at(
+        if self.context_menu.open_context(
             anchor,
             Some(menu::Title::new(crate::i18n::text("shell-status"))),
             entries,
@@ -13225,7 +13225,7 @@ impl Shell {
         let rows = ui::context_menu_rows_that_fit(height);
         if self
             .context_menu
-            .open_at(anchor, title.map(menu::Title::new), entries, rows)
+            .open_context(anchor, title.map(menu::Title::new), entries, rows)
         {
             if trophies {
                 self.context_menu.widen(ui::TROPHIES_EXTRA_WIDTH);
@@ -18561,7 +18561,7 @@ impl Shell {
         self.windows_choose_menu = None;
         self.windows_compat_menu = None;
         self.ways_menu = None;
-        if self.context_menu.open_at(
+        if self.context_menu.open_context(
             anchor,
             Some(menu::Title::new(FLOATING_WINDOW_TITLE.to_string())),
             entries,
@@ -27494,7 +27494,7 @@ impl Shell {
         };
         let anchor = ui::launch_origin(panel.width as f32, panel.height as f32);
         let rows = ui::context_menu_rows_that_fit(panel.height as f32);
-        if !self.context_menu.open_at(
+        if !self.context_menu.open_context(
             anchor,
             Some(menu::Title::new(crate::i18n::text("windows-what-to-play"))),
             looking_in_the_folder(),
@@ -35542,7 +35542,7 @@ impl Shell {
         self.windows_choose_menu = None;
         self.windows_compat_menu = None;
         self.ways_menu = None;
-        self.context_menu.open_at(
+        self.context_menu.open_context(
             anchor,
             Some(menu::Title::new(crate::i18n::text("label-showing"))),
             rows,

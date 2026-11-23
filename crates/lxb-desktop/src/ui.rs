@@ -9268,6 +9268,22 @@ pub fn context_label_box(entry: &MenuEntry, extra: f32) -> (f32, f32) {
     (context_text_width(entry, extra), CONTEXT_LABEL_SIZE)
 }
 
+fn context_scrolling_label_width(entry: &MenuEntry, focused: bool) -> Option<f32> {
+    (entry.lines <= 1 && entry.level.is_none())
+        .then(|| crate::gpu::single_line_width(&entry.label, CONTEXT_LABEL_SIZE, focused))
+}
+
+pub fn context_label_is_scrolling(menu: &Menu) -> bool {
+    menu.is_open()
+        && menu.entries().iter().enumerate()
+            .skip(menu.first_visible())
+            .take(menu.visible_rows())
+            .any(|(index, entry)| {
+                context_scrolling_label_width(entry, index == menu.selected())
+                    .is_some_and(|width| width > context_text_width(entry, menu.extra_width()))
+            })
+}
+
 /// The same for the line under the label — see [`crate::menu::Entry::detail`].
 /// The width is the label's; the size is not.
 pub fn context_detail_box(entry: &MenuEntry, extra: f32) -> (f32, f32) {
@@ -10729,16 +10745,36 @@ pub fn build_context_menu(view: ContextMenuView, width: f32, height: f32) -> Sce
             });
         }
 
+        let label_w = label_w.max(0.0);
+        let scrolling = if label_w > 0.0 {
+            context_scrolling_label_width(entry, focused)
+                .map(|width| width * scale)
+                .filter(|width| *width > label_w)
+        } else {
+            None
+        };
+        let (shift, layout_width, clip) = if let Some(width) = scrolling {
+            let distance = width - label_w;
+            let travel = distance / (36.0 * scale);
+            let period = 2.0 * (travel + 0.8);
+            let seconds = if focused { menu.label_focus_seconds() } else { view.time };
+            let phase = seconds % period;
+            let elapsed = phase.min(period - phase);
+            let shift = ((elapsed - 0.4).max(0.0) * 36.0 * scale).min(distance);
+            (shift, width.ceil() + 1.0, Some([label_x, chip[1], label_w, chip[3]]))
+        } else {
+            (0.0, label_w, None)
+        };
         inside.texts.push(Text {
             content: entry.label.clone(),
-            x: label_x,
+            x: label_x - shift,
             y: stack_top + stamp_box,
             size: label_size,
             color,
             bold: focused,
-            max_width: label_w.max(0.0),
+            max_width: layout_width,
             align: TextAlign::Left,
-            clip: None,
+            clip,
             halo: 0.0,
             lines: label_lines,
             cut: Cut::Tail,
@@ -29209,6 +29245,40 @@ mod tests {
             height,
         )
     }
+
+    #[test]
+    fn long_menu_labels_scroll_inside_their_boxes() {
+        let mut menu = Menu::default();
+        let label = "Remove controller rules for the PlayStation and Steam controllers";
+        assert!(menu.open_at(
+            [400.0, 500.0, 160.0, 160.0],
+            None,
+            vec![
+                MenuEntry::new(Command::Placeholder("remove"), label),
+                MenuEntry::new(Command::Placeholder("other"), format!("{label} again")),
+                MenuEntry::new(Command::Placeholder("cancel"), "Cancel"),
+            ],
+            4,
+        ));
+        menu.animate(0.0);
+        assert!(context_label_is_scrolling(&menu));
+        let before = context_scene(&menu, 1920.0, 1080.0);
+        menu.animate(1.0);
+        let after = context_scene(&menu, 1920.0, 1080.0);
+        let before = before.texts.iter().find(|text| text.content == label).unwrap();
+        let after = after.texts.iter().find(|text| text.content == label).unwrap();
+        assert!(before.clip.is_some());
+        assert_eq!(before.clip, after.clip);
+        assert!(after.x < before.x);
+
+        let scene = context_scene(&menu, 1920.0, 1080.0);
+        let other = scene.texts.iter().find(|text| text.content == format!("{label} again")).unwrap();
+        assert!(!other.bold);
+        assert!(other.clip.is_some());
+        let cancel = scene.texts.iter().find(|text| text.content == "Cancel").unwrap();
+        assert!(cancel.clip.is_none());
+    }
+
 
     /// The panel is the guide sidebar's material, not a second recipe that
     /// happens to look like it.
