@@ -3,10 +3,8 @@
 //! none. The user asked for both to be done for them, as RetroArch's cores
 //! are.
 //!
-//! **RPCS3 goes into this user's own flatpaks**, for the reason the RetroArch
-//! helper gives: a `--user` install needs nobody's password, so the shell can
-//! offer it as a plain Yes. An RPCS3 already here — a distribution package, a
-//! flatpak, an AppImage — is used as it is.
+//! RPCS3 can be installed as a per-user Flatpak or the official AppImage.
+//! An existing installation is used for firmware-only setup.
 //!
 //! **The system software comes from Sony**, from the update server a real PS3
 //! asks, and is installed by RPCS3's own installer (`--headless --installfw`),
@@ -28,11 +26,11 @@ const UPDATE_LIST: &str =
     "http://fus01.ps3.update.playstation.net/update/ps3/list/us/ps3-updatelist.txt";
 
 /// Do whatever of the two is not done yet. Returns whether both are done.
-pub fn run(out: &mut impl Write) -> bool {
+pub fn run(out: &mut impl Write, native: bool) -> bool {
     let installation = match rpcs3::installation() {
         Some(installation) => installation,
         None => {
-            if !rpcs3::flatpak_available() {
+            if !native && !rpcs3::flatpak_available() {
                 tell(
                     out,
                     Stage::Failed,
@@ -42,7 +40,12 @@ pub fn run(out: &mut impl Write) -> bool {
                 );
                 return false;
             }
-            if !install_flatpak(out) {
+            if native {
+                if let Err((trouble, note)) = install_appimage(out) {
+                    tell(out, Stage::Failed, None, Some(trouble), &note);
+                    return false;
+                }
+            } else if !install_flatpak(out) {
                 return false;
             }
             match rpcs3::installation() {
@@ -53,7 +56,7 @@ pub fn run(out: &mut impl Write) -> bool {
                         Stage::Failed,
                         None,
                         Some(Trouble::Refused),
-                        "flatpak said it installed RPCS3, and there is none",
+                        "RPCS3 was downloaded but its installation could not be found",
                     );
                     return false;
                 }
@@ -82,6 +85,92 @@ pub fn run(out: &mut impl Write) -> bool {
         return true;
     }
     firmware(out, &installation, &console)
+}
+
+pub fn native_available() -> bool {
+    cfg!(any(target_arch = "x86_64", target_arch = "aarch64"))
+}
+
+/// Download the official Linux build before making it visible to the probe.
+fn install_appimage(out: &mut impl Write) -> Result<(), (Trouble, String)> {
+    use sha2::{Digest, Sha256};
+    use std::os::unix::fs::PermissionsExt;
+
+
+    #[derive(serde::Deserialize)]
+    struct Release {
+        assets: Vec<Asset>,
+    }
+    #[derive(serde::Deserialize)]
+    struct Asset {
+        name: String,
+        browser_download_url: String,
+        size: u64,
+        digest: Option<String>,
+    }
+
+    let (repo, suffix) = match std::env::consts::ARCH {
+        "x86_64" => ("rpcs3-binaries-linux", "_linux64.AppImage"),
+        "aarch64" => ("rpcs3-binaries-linux-arm64", "_linux_aarch64.AppImage"),
+        _ => return Err((Trouble::Refused, "no AppImage for this architecture".into())),
+    };
+    let release_url = format!("https://api.github.com/repos/RPCS3/{repo}/releases/latest");
+    let assets_url = format!("https://github.com/RPCS3/{repo}/releases/download/");
+    tell(out, Stage::Remote, None, None, "looking up the official RPCS3 release");
+    let raw = crate::net::agent()
+        .get(&release_url)
+        .call()
+        .map_err(|err| (crate::net::trouble(&err), err.to_string()))?
+        .body_mut()
+        .read_to_string()
+        .map_err(|err| (Trouble::Offline, err.to_string()))?;
+    let release: Release = serde_json::from_str(&raw)
+        .map_err(|err| (Trouble::Refused, err.to_string()))?;
+    let asset = release.assets.into_iter().find(|asset| {
+        asset.name.starts_with("rpcs3-")
+            && asset.name.ends_with(suffix)
+            && asset.browser_download_url.strip_prefix(&assets_url).is_some_and(|path| {
+                path.split_once('/').is_some_and(|(_, name)| name == asset.name)
+            })
+    }).ok_or_else(|| (Trouble::Refused, "no official Linux AppImage in the release".into()))?;
+
+    let digest = asset.digest.as_deref()
+        .and_then(|digest| digest.strip_prefix("sha256:"))
+        .filter(|digest| digest.len() == 64 && digest.bytes().all(|byte| byte.is_ascii_hexdigit()))
+        .ok_or_else(|| (Trouble::Refused, "the AppImage has no SHA-256 digest".into()))?;
+
+    let home = rpcs3::home().ok_or_else(|| (Trouble::Other, "no home directory".into()))?;
+    let folder = home.join("AppImages");
+    let io_error = |err: std::io::Error| (crate::net::disk(&err), err.to_string());
+    std::fs::create_dir_all(&folder).map_err(io_error)?;
+    let destination = folder.join("rpcs3.AppImage");
+    let work = folder.join(format!(".lxb-rpcs3-{}", std::process::id()));
+    std::fs::create_dir(&work).map_err(io_error)?;
+    let staged = work.join("download");
+    let result = (|| {
+        tell(out, Stage::Installing, None, None, "downloading the RPCS3 AppImage");
+        let size = crate::net::download(&asset.browser_download_url, &staged, |progress| {
+            tell(out, Stage::Installing, progress, None, "downloading the RPCS3 AppImage");
+        })?;
+        let mut file = std::fs::File::open(&staged).map_err(io_error)?;
+        let mut magic = [0; 4];
+        file.read_exact(&mut magic).map_err(io_error)?;
+        let mut checksum = Sha256::new();
+        checksum.update(magic);
+        std::io::copy(&mut file, &mut checksum).map_err(io_error)?;
+        if size != asset.size
+            || magic != *b"\x7fELF"
+            || !format!("{:x}", checksum.finalize()).eq_ignore_ascii_case(digest)
+        {
+            return Err((Trouble::Refused, "the AppImage does not match the official release".into()));
+        }
+        std::fs::set_permissions(&staged, std::fs::Permissions::from_mode(0o755))
+            .map_err(io_error)?;
+        std::fs::hard_link(&staged, &destination).map_err(io_error)?;
+        Ok(())
+    })();
+    let _ = std::fs::remove_dir_all(work);
+    result
 }
 
 /// RPCS3 from Flathub, into this user's own installation.

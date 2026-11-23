@@ -72,8 +72,11 @@ pub struct Probe {
     /// Whether flatpak is on this machine at all, which decides whether the
     /// shell may offer to install Heroic.
     pub flatpak: bool,
+    pub native: bool,
     /// Whose Epic account Heroic is signed in as.
     pub account: Option<String>,
+    pub saved_native_login: bool,
+    pub saved_flatpak_login: bool,
     /// The Proton Heroic will start games with, where it is actually on the
     /// disk. `None` is a Heroic that would stop on its first launch to ask
     /// which one to use, in a window the shell is keeping off the screen — so
@@ -114,13 +117,11 @@ pub struct Installation {
     /// installation no flatpak claims.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub managed: Option<std::path::PathBuf>,
 }
 
-/// Which flatpak installation it is in.
-///
-/// Only flatpaks: the integration is built on Heroic's Flathub build, whose
-/// bundled legendary and whose sandbox paths everything here is written
-/// against.
+/// The source this Heroic was installed from.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum Kind {
@@ -128,6 +129,7 @@ pub enum Kind {
     FlatpakUser,
     /// Installed for the whole machine by somebody.
     FlatpakSystem,
+    Native,
 }
 
 /// One line of `lxb-heroic install` as it happens.

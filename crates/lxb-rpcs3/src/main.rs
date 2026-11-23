@@ -69,10 +69,13 @@ enum Asked {
     /// Whether this machine has RPCS3, and whether that RPCS3 has the
     /// PlayStation 3's system software.
     Probe,
-    /// Install RPCS3 into this user's own flatpaks where there is none, then
-    /// the system software from Sony where RPCS3 has none. One line per
-    /// change, ending on `done` or `failed`.
-    Setup,
+    /// Install RPCS3 and Sony's system software where they are missing.
+    /// One progress line per change, ending on `done` or `failed`.
+    Setup {
+        /// Install the official Linux AppImage when no RPCS3 is present.
+        #[arg(long)]
+        native: bool,
+    },
     /// RPCS3 has been taken off this machine; forget what this integration
     /// kept for it.
     ///
@@ -182,10 +185,11 @@ fn main() -> ExitCode {
                         .map(|console| console.config.to_string_lossy().into_owned()),
                     rpcs3: installation,
                     flatpak: rpcs3::flatpak_available(),
+                    native: setup::native_available(),
                 },
             )
         }
-        Asked::Setup => ended(setup::run(&mut out)),
+        Asked::Setup { native } => ended(setup::run(&mut out, native)),
         Asked::Forget { data } => ended(setup::forget(&mut out, data)),
         Asked::Scan { folder } => {
             let art = art::art_root();
@@ -264,7 +268,7 @@ fn main() -> ExitCode {
                 art::cache_root().as_deref(),
                 language.as_deref(),
             ) {
-                say(&mut out, &set);
+                let _ = say(&mut out, &set);
             }
             say(&mut out, &trophies::end())
         }

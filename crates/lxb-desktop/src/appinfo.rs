@@ -216,7 +216,15 @@ pub fn identify(path: &Path) -> Origin {
 /// answer an unplaceable application gets: the shell says it cannot find it and
 /// offers nothing further.
 pub fn flatpak_origin(id: &str) -> Origin {
-    match flatpak_scope(id) {
+    // Ask the same scoped question as the launcher probes. The listing can
+    // render aligned columns instead of tabs, and the same ID can be present
+    // in both installations. Prefer the user's copy as the launchers do.
+    let scope = [("--user", Scope::User), ("--system", Scope::System)]
+        .into_iter()
+        .find_map(|(flag, scope)| {
+            run("flatpak", &["info", flag, "--show-location", id]).map(|_| scope)
+        });
+    match scope {
         Some(scope) => Origin::Flatpak {
             id: id.to_string(),
             scope,

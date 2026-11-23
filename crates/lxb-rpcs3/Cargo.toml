@@ -24,6 +24,7 @@ serde_json = "1"
 # the reasons the RetroArch helper gives: this process has nothing else to do
 # while it waits. Already in the lock.
 ureq = "3"
+sha2 = "0.10"
 
 # A downloaded game is nearly always a zip, and a package inside one is read
 # without being unpacked first. The same inflate the shell decodes every PNG

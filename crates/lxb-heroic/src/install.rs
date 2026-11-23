@@ -1,10 +1,7 @@
 //! Making Heroic ready to start a game: Heroic itself, then its Proton.
 //!
-//! **Heroic, into this user's own flatpak installation**, for the reasons the
-//! RetroArch helper gives in its own `install.rs`: a `--user` install needs no
-//! password and no polkit, which is what lets the shell offer it behind a plain
-//! Yes. A Heroic that is already on the machine — the user's or the system's —
-//! is used as it is and never installed a second time beside itself.
+//! Install Heroic per user with Flatpak or the official Linux archive.
+//! Reuse an existing installation when the user only needs to set up Proton.
 //!
 //! **Then its Proton**, which is `proton.rs`: without one, Heroic's first
 //! launch of a game stops to ask a question nobody can see.
@@ -23,9 +20,14 @@ use crate::report::{Progress, Reason, Stage, PROTOCOL};
 const FLATHUB: &str = "https://dl.flathub.org/repo/flathub.flatpakrepo";
 
 /// Make Heroic ready. Whether it ended ready.
-pub fn run(out: &mut impl Write, paths: &Paths, home: &Path) -> bool {
+pub fn run(out: &mut impl Write, home: &Path, native: bool) -> bool {
     match heroic::installation() {
         Some(found) => eprintln!("install: Heroic is already here ({:?})", found.kind),
+        None if native => {
+            if let Err((reason, why)) = install_native(out) {
+                return failed(out, reason, why);
+            }
+        }
         None => {
             if !heroic::flatpak_available() {
                 return failed(
@@ -57,6 +59,10 @@ pub fn run(out: &mut impl Write, paths: &Paths, home: &Path) -> bool {
         }
     }
 
+    let Some(installation) = heroic::installation() else {
+        return failed(out, Reason::NoHeroic, "Heroic could not be located after installation".into());
+    };
+    let paths = Paths::at(installation.config.into());
     tell(out, Stage::Proton, None, "Getting Proton".into());
     let settled = {
         let mut told = |fraction: f32| {
@@ -67,7 +73,7 @@ pub fn run(out: &mut impl Write, paths: &Paths, home: &Path) -> bool {
                 "Downloading Proton".into(),
             );
         };
-        proton::settle(paths, home, &mut told)
+        proton::settle(&paths, home, &mut told)
     };
     match settled {
         Ok(name) => {
@@ -85,6 +91,114 @@ pub fn run(out: &mut impl Write, paths: &Paths, home: &Path) -> bool {
 
 /// Add Flathub to this user's own remotes, which costs nothing when it is
 /// there already.
+/// Install Heroic's official Linux archive in this user's application data directory.
+fn install_native(out: &mut impl Write) -> Result<(), (Reason, String)> {
+    use sha2::{Digest, Sha256};
+
+    const RELEASE: &str = "https://api.github.com/repos/Heroic-Games-Launcher/HeroicGamesLauncher/releases/latest";
+    const ASSETS: &str = "https://github.com/Heroic-Games-Launcher/HeroicGamesLauncher/releases/download/";
+    #[derive(serde::Deserialize)]
+    struct Release {
+        assets: Vec<Asset>,
+    }
+    #[derive(serde::Deserialize)]
+    struct Asset {
+        name: String,
+        browser_download_url: String,
+        size: u64,
+        digest: Option<String>,
+    }
+
+    let files = |err: std::io::Error| (Reason::Files, err.to_string());
+    if !heroic::native_available() {
+        return Err((Reason::Files, "the native archive requires x86-64, tar, xz and curl".into()));
+    }
+    tell(out, Stage::Remote, None, "Looking up the official Heroic release".into());
+    let agent: ureq::Agent = ureq::Agent::config_builder()
+        .user_agent(concat!("LineXinBar/", env!("CARGO_PKG_VERSION")))
+        .timeout_connect(Some(std::time::Duration::from_secs(20)))
+        .timeout_global(Some(std::time::Duration::from_secs(1800)))
+        .build()
+        .into();
+    let offline = |err: ureq::Error| (Reason::Offline, err.to_string());
+    let raw = agent.get(RELEASE).call().map_err(offline)?
+        .body_mut().read_to_string().map_err(offline)?;
+    let release: Release = serde_json::from_str(&raw).map_err(|err| (Reason::Files, err.to_string()))?;
+    let asset = release.assets.into_iter().find(|asset| {
+        asset.name.starts_with("Heroic-") && asset.name.ends_with("-linux-x64.tar.xz")
+            && asset.browser_download_url.strip_prefix(ASSETS).is_some_and(|path| {
+                path.split_once('/').is_some_and(|(_, name)| name == asset.name)
+            })
+    }).ok_or_else(|| (Reason::Files, "no official x86-64 Heroic archive in the release".into()))?;
+    let digest = asset.digest.as_deref().and_then(|digest| digest.strip_prefix("sha256:"))
+        .filter(|digest| digest.len() == 64 && digest.bytes().all(|byte| byte.is_ascii_hexdigit()))
+        .ok_or_else(|| (Reason::Files, "the Heroic archive has no SHA-256 digest".into()))?;
+    if asset.size == 0 {
+        return Err((Reason::Files, "the Heroic archive is empty".into()));
+    }
+    let destination = heroic::native_directory()
+        .ok_or_else(|| (Reason::Files, "no application data directory".into()))?;
+    let parent = destination.parent().expect("the native Heroic directory has a parent");
+    std::fs::create_dir_all(parent).map_err(files)?;
+    let staging = parent.join(format!(".heroic-install-{}", std::process::id()));
+    std::fs::create_dir(&staging).map_err(files)?;
+    let result = (|| {
+        let archive = staging.join("heroic.tar.xz");
+        let mut file = std::fs::File::create(&archive).map_err(files)?;
+        let mut response = agent.get(&asset.browser_download_url).call().map_err(offline)?;
+        let mut body = response.body_mut().with_config().limit(asset.size.saturating_add(1)).reader();
+        let mut checksum = Sha256::new();
+        let mut received = 0u64;
+        let mut percent = 0;
+        let mut buffer = [0u8; 64 * 1024];
+        tell(out, Stage::Installing, Some(0.0), "Downloading Heroic".into());
+        loop {
+            let read = body.read(&mut buffer).map_err(files)?;
+            if read == 0 {
+                break;
+            }
+            file.write_all(&buffer[..read]).map_err(files)?;
+            checksum.update(&buffer[..read]);
+            received += read as u64;
+            let current = received.saturating_mul(100) / asset.size;
+            if current != percent {
+                percent = current;
+                tell(out, Stage::Installing, Some(percent.min(100) as f32 / 100.0), "Downloading Heroic".into());
+            }
+        }
+        file.sync_all().map_err(files)?;
+        drop(file);
+        if received != asset.size || !format!("{:x}", checksum.finalize()).eq_ignore_ascii_case(digest) {
+            return Err((Reason::Files, "the Heroic archive does not match the official release".into()));
+        }
+
+        tell(out, Stage::Installing, None, "Unpacking Heroic".into());
+        let unpacked = staging.join("unpacked");
+        std::fs::create_dir(&unpacked).map_err(files)?;
+        let result = Command::new("tar")
+            .args(["--extract", "--xz", "--no-same-owner", "--no-same-permissions", "--file"])
+            .arg(&archive).arg("--directory").arg(&unpacked)
+            .stdin(Stdio::null()).output().map_err(files)?;
+        if !result.status.success() {
+            return Err((Reason::Files, said(&result.stderr).unwrap_or_else(|| "could not unpack Heroic".into())));
+        }
+        let valid = |path: &Path| path.join("heroic").is_file() && heroic::native_legendary(path).is_file();
+        let root = if valid(&unpacked) {
+            unpacked
+        } else {
+            std::fs::read_dir(&unpacked).map_err(files)?
+                .filter_map(Result::ok)
+                .find(|entry| entry.file_type().is_ok_and(|kind| kind.is_dir()) && valid(&entry.path()))
+                .map(|entry| entry.path())
+                .ok_or_else(|| (Reason::Files, "the archive contains no usable Heroic and Legendary binaries".into()))?
+        };
+        std::fs::rename(root, &destination).map_err(files)?;
+        Ok(())
+    })();
+    let _ = std::fs::remove_dir_all(staging);
+    result
+}
+
 fn remote() -> Result<(), String> {
     let out = Command::new("flatpak")
         .args([
@@ -316,7 +430,7 @@ pub fn forget(out: &mut impl Write, data: bool) -> bool {
         gone.push(art);
     }
     if data {
-        if let Some(config) = own_config() {
+        if let Some(config) = heroic::native_config() {
             gone.push(config);
         }
     }
@@ -361,10 +475,6 @@ fn reset() {
 /// Heroic's own configuration directory on a machine where it was not a
 /// flatpak, worked out here without an installation because by now there is
 /// none.
-fn own_config() -> Option<std::path::PathBuf> {
-    let home = std::env::var_os("HOME").map(std::path::PathBuf::from)?;
-    Some(home.join(".config/heroic"))
-}
 
 #[cfg(test)]
 mod tests {

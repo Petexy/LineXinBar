@@ -48,6 +48,7 @@ use std::os::fd::{AsRawFd, FromRawFd, OwnedFd};
 use std::os::unix::fs::{FileTypeExt, MetadataExt};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
@@ -147,7 +148,14 @@ pub enum Where {
     Flatpak,
 }
 
+static PREFER_FLATPAK: AtomicBool = AtomicBool::new(false);
+
 impl Where {
+    /// Respect the Steam package selected in this LineXinBar session.
+    pub fn prefer_flatpak(prefer: bool) {
+        PREFER_FLATPAK.store(prefer, Ordering::Relaxed);
+    }
+
     /// Find it. `None` on a machine with no Valve client, which is a machine
     /// where nothing in this integration works and the shell says so once,
     /// plainly, rather than failing at every press.
@@ -170,7 +178,11 @@ impl Where {
             found.push(Where::Native(path));
         }
         if flatpak_deployed() && on_path("flatpak").is_some() {
-            found.push(Where::Flatpak);
+            if PREFER_FLATPAK.load(Ordering::Relaxed) {
+                found.insert(0, Where::Flatpak);
+            } else {
+                found.push(Where::Flatpak);
+            }
         }
         found
     }
@@ -3500,6 +3512,14 @@ pub mod account {
             .is_some_and(|account| !account.trim().is_empty())
     }
 
+    /// Whether this layout retains automatic login for the given account.
+    pub fn remembers_login(home: &Path, account: &str) -> bool {
+        !account.is_empty()
+            && read(&home.join("registry.vdf"))
+                .and_then(|node| node.string(&AUTO_LOGIN_USER).map(str::to_owned))
+                .is_some_and(|name| name.eq_ignore_ascii_case(account))
+    }
+
     /// Where the client keeps the credentials it signs itself back in with.
     ///
     /// One entry per account it remembers, under a key derived from the
@@ -3733,7 +3753,10 @@ pub mod account {
             )
             .unwrap();
 
+            assert!(remembers_login(&root, "SOMEONE"));
+            assert!(!remembers_login(&root, "somebody"));
             sign_out(&root, &root, "someone");
+            assert!(!remembers_login(&root, "someone"));
 
             let registry = vdf::parse(&std::fs::read_to_string(root.join("registry.vdf")).unwrap());
             assert_eq!(registry.string(&AUTO_LOGIN_USER), Some(""));

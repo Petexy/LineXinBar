@@ -1,29 +1,9 @@
 //! Whether this machine has Heroic, where it keeps everything, and how its
 //! bundled legendary is run.
 //!
-//! ## Only the flatpak
-//!
-//! The integration is built on Heroic's Flathub build: its bundled legendary is
-//! a Python zipapp that runs on the flatpak's own Python, its paths are the
-//! sandbox's, and what `probe` hands the shell to start a game with is
-//! `flatpak run`. The user's own installation is looked in first, because that
-//! is the one `install` puts there; a system-wide one is used as it is and
-//! never duplicated beside.
-//!
-//! ## Where everything is
-//!
-//! Under `~/.var/app/com.heroicgameslauncher.hgl/config/heroic`, whichever
-//! installation it is — flatpak binds that directory into the sandbox at the
-//! same path, so the spelling this process reads and the spelling Heroic writes
-//! are one. [`Paths`] names every file this helper touches, and nothing outside
-//! it is read.
-//!
-//! ## legendary is run inside the sandbox, told where Heroic's copy is
-//!
-//! `LEGENDARY_CONFIG_PATH` is not a detail. Without it legendary keeps its own
-//! `~/.config/legendary` inside the sandbox, and an account signed in there is
-//! a private copy Heroic never sees — which is the one thing a settings row in
-//! this shell must never be.
+//! The per-user native archive and the Flathub package each keep their own
+//! configuration. Run the Legendary bundled with the selected installation
+//! and use `LEGENDARY_CONFIG_PATH` so Heroic and LineXinBar share its account.
 
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
@@ -51,6 +31,10 @@ pub struct Paths {
 impl Paths {
     /// Heroic's configuration directory for this user.
     pub fn of_this_user() -> Option<Paths> {
+        installation().map(|found| Self::at(found.config.into())).or_else(Self::flatpak)
+    }
+
+    pub(crate) fn flatpak() -> Option<Paths> {
         let home = std::env::var_os("HOME")
             .map(PathBuf::from)
             .filter(|home| home.is_absolute())?;
@@ -63,6 +47,10 @@ impl Paths {
     /// directory, for a test.
     pub fn at(root: PathBuf) -> Paths {
         Paths { root }
+    }
+
+    pub fn is_native(&self) -> bool {
+        native_config().as_deref() == Some(self.root())
     }
 
     pub fn root(&self) -> &Path {
@@ -198,8 +186,55 @@ pub fn plain(app_name: &str) -> bool {
 
 /// The Heroic this machine would use, or `None` for one that has none.
 pub fn installation() -> Option<Installation> {
-    let paths = Paths::of_this_user()?;
-    flatpak(Kind::FlatpakUser, &paths).or_else(|| flatpak(Kind::FlatpakSystem, &paths))
+    native_installation().or_else(|| {
+        let paths = Paths::flatpak()?;
+        flatpak(Kind::FlatpakUser, &paths).or_else(|| flatpak(Kind::FlatpakSystem, &paths))
+    })
+}
+
+pub fn native_available() -> bool {
+    cfg!(target_arch = "x86_64")
+        && ["tar", "xz", "curl"].iter().all(|program| on_path(program).is_some())
+}
+
+pub fn native_directory() -> Option<PathBuf> {
+    let home = crate::home()?;
+    let data = std::env::var_os("XDG_DATA_HOME")
+        .map(PathBuf::from)
+        .filter(|path| path.is_absolute())
+        .unwrap_or_else(|| home.join(".local/share"));
+    Some(data.join("lxb/heroic-native"))
+}
+
+pub fn native_config() -> Option<PathBuf> {
+    let home = crate::home()?;
+    Some(
+        std::env::var_os("XDG_CONFIG_HOME")
+            .map(PathBuf::from)
+            .filter(|path| path.is_absolute())
+            .unwrap_or_else(|| home.join(".config"))
+            .join("heroic"),
+    )
+}
+
+pub fn native_legendary(directory: &Path) -> PathBuf {
+    directory.join("resources/app.asar.unpacked/build/bin/x64/linux/legendary")
+}
+
+fn native_installation() -> Option<Installation> {
+    let directory = native_directory()?;
+    let program = directory.join("heroic");
+    if !program.is_file() || !native_legendary(&directory).is_file() {
+        return None;
+    }
+    Some(Installation {
+        kind: Kind::Native,
+        id: None,
+        command: vec![program.to_str()?.to_string()],
+        config: native_config()?.to_str()?.to_string(),
+        version: None,
+        managed: Some(directory),
+    })
 }
 
 fn flatpak(kind: Kind, paths: &Paths) -> Option<Installation> {
@@ -218,6 +253,7 @@ fn flatpak(kind: Kind, paths: &Paths) -> Option<Installation> {
         ],
         version: flatpak_version(scope),
         config: paths.root().to_string_lossy().into_owned(),
+        managed: None,
     })
 }
 
@@ -226,6 +262,7 @@ pub fn scope(kind: Kind) -> &'static str {
     match kind {
         Kind::FlatpakUser => "--user",
         Kind::FlatpakSystem => "--system",
+        Kind::Native => unreachable!("native Heroic has no Flatpak scope"),
     }
 }
 
@@ -297,6 +334,14 @@ pub fn legendary_with(
     paths: &Paths,
     env: &[(&str, String)],
 ) -> Command {
+    if let Some(directory) = &installation.managed {
+        let mut command = Command::new(native_legendary(directory));
+        command
+            .env("LEGENDARY_CONFIG_PATH", paths.legendary())
+            .envs(env.iter().map(|(key, value)| (*key, value)))
+            .stdin(Stdio::null());
+        return command;
+    }
     let mut argv = legendary_argv(installation.kind, paths);
     let app = argv.pop().unwrap_or_else(|| FLATPAK_ID.to_string());
     for (name, value) in env {
@@ -337,11 +382,7 @@ fn sandbox_not_set_up(stderr: &[u8]) -> bool {
 }
 
 pub fn legendary(installation: &Installation, paths: &Paths) -> Command {
-    let mut command = Command::new("flatpak");
-    command
-        .args(legendary_argv(installation.kind, paths))
-        .stdin(Stdio::null());
-    command
+    legendary_with(installation, paths, &[])
 }
 
 /// Whether a Heroic is running now — its window, its tray icon, or a headless
@@ -382,10 +423,12 @@ pub fn in_the_way() -> bool {
 /// one of them.
 fn is_heroic(cmdline: &[u8]) -> bool {
     let first = cmdline.split(|b| *b == 0).next().unwrap_or_default();
-    first == HEROIC_BINARY.as_bytes()
-        || first
-            .strip_prefix(HEROIC_BINARY.as_bytes())
-            .is_some_and(|rest| rest.first() == Some(&b' '))
+    let native = native_directory().map(|directory| directory.join("heroic"));
+    let matches = |binary: &[u8]| {
+        first == binary || first.strip_prefix(binary).is_some_and(|rest| rest.first() == Some(&b' '))
+    };
+    matches(HEROIC_BINARY.as_bytes())
+        || native.as_ref().is_some_and(|path| matches(path.as_os_str().as_encoded_bytes()))
 }
 
 /// Whose Epic account Heroic is signed in as, from legendary's `user.json`.
